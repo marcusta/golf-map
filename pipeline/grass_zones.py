@@ -201,6 +201,32 @@ def cut_blockers(area: BaseGeometry, buildings: list[BaseGeometry], roads: list[
 S_NONE, S_DEEP, S_ROUGH, S_WATER, S_BLEND, S_OTHER = 0, 1, 2, 8, 9, 10
 S_PLAY = (2, 3, 4, 5, 6, 7)   # rough, semi, fairway, green, tee, bunker
 S_FORBIDDEN = (3, 4, 5, 6, 7, 8, 9, 11)   # semi, fairway, green, tee, bunker, water, blend, rock
+# A rock slab cut out into its own mesh (Spline_<name>_Rock_-_Mesh): bare, but the grass around
+# it reaches SLAB_FRINGE_M in over its edge on average (0 .. 2x, by noise: no mesh edge shows),
+# and patches cover SLAB_PATCH_COVER of the rock. No clearance around it.
+S_SLAB = 12
+SLAB_FRINGE_M = 0.4            # 0.6 took a metre all round: half of a 5 m slab
+SLAB_PATCH_COVER = 0.15
+SLAB_NOISE_FEATURE_M = 1.2
+SLAB_SKIRT_M = 0.5             # out into mown rough beside it (0 .. 2x): no clean grass line along the rock
+
+
+def slab_grass(cls: np.ndarray, cell: float, seed: int = 0) -> np.ndarray | None:
+    """Where grass grows on the rock slabs (S_SLAB cells): a ragged fringe in over the edge,
+    so the mesh edge is under grass all the way round, and patches here and there on the rock
+    (SLAB_PATCH_COVER of it). None when the map has no slab."""
+    from scipy.ndimage import distance_transform_edt
+    from creek_bank_zones import smooth_noise
+
+    slab = cls == S_SLAB
+    if not slab.any():
+        return None
+    inside = distance_transform_edt(slab) * cell   # 1 cell on the slab's edge cells
+    reach = SLAB_FRINGE_M * (1.0 + smooth_noise(cls.shape, cell, SLAB_NOISE_FEATURE_M, seed + 1))
+    fringe = inside - cell / 2 < reach
+    noise = smooth_noise(cls.shape, cell, SLAB_NOISE_FEATURE_M, seed + 2)
+    patches = noise >= np.quantile(noise[slab], 1.0 - SLAB_PATCH_COVER)
+    return slab & (fringe | patches)
 
 
 def weight_field(cls: np.ndarray, cell: float, blocked: np.ndarray | None, rules: Rules,
@@ -221,6 +247,16 @@ def weight_field(cls: np.ndarray, cell: float, blocked: np.ndarray | None, rules
     deep = cls == S_DEEP
     rough = cls == S_ROUGH
     w = deep.astype(np.float32)
+    grown = slab_grass(cls, cell, seed)
+    if grown is not None:
+        # Whatever lies beside the slab: where it meets mown rough its edge needs the cover too
+        # (the deep-rough-only version left a straight bare mesh edge there). The clearances
+        # below still keep it off tees, greens and fairways.
+        w[grown] = 1.0
+        # And a ragged skirt out into the mown rough beside it: tufts against the rock, so the
+        # slab's edge is broken up from both sides (deep rough is tall grass already).
+        skirt = SLAB_SKIRT_M * (1.0 + smooth_noise(cls.shape, cell, SLAB_NOISE_FEATURE_M, seed + 3))
+        w[rough & (dist(cls == S_SLAB) - cell / 2 < skirt)] = 1.0
     if rules.spill > 0 and rough.any():
         # Into the rough from its deep border, as far as the noise says: 0 .. 2 x spill.
         reach = rules.spill * (1.0 + smooth_noise(cls.shape, cell, EDGE_NOISE_FEATURE_M, seed))
@@ -309,11 +345,16 @@ def tall_grass_from_surfaces(cls: np.ndarray, cell: float, west: float, north: f
     w = weight_field(cls, cell, blocked, rules)
     cut = ways_cut(roads, paths, rules)
 
+    # A patch of grass on a rock slab is small by design: the minimum area does not apply there.
+    slab = cls == S_SLAB
+    slabs = _union(shape(g) for g, v in features.shapes(slab.astype(np.uint8), mask=slab, transform=transform) if v == 1) if slab.any() else Polygon()
+
     bands = []
     for i, level in enumerate(levels):
         m = w >= level
         polys = [shape(g) for g, v in features.shapes(m.astype(np.uint8), mask=m, transform=transform) if v == 1]
-        band = _union(p.simplify(rules.simplify) for p in _each_polygon(_union(polys)) if p.area >= rules.min_area)
+        band = _union(p.simplify(rules.simplify) for p in _each_polygon(_union(polys))
+                      if p.area >= rules.min_area or (not slabs.is_empty and p.intersects(slabs)))
         if not cut.is_empty:   # after the simplify: the path's edge stays exact
             band = _union(p for p in _each_polygon(make_valid(band.difference(cut))) if p.area >= min(rules.min_area, MIN_SLIVER_M2))
         bands.append((1.0 if i == len(levels) - 1 else float(level), band))

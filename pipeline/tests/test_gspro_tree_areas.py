@@ -169,3 +169,26 @@ def test_stems_on_a_path_are_moved_to_just_beside_it_and_keep_their_id():
     assert trees[2] == {"id": "c", "x": 110.0, "z": 30.0}
     assert all(path.distance(Point(t["x"], t["z"])) >= 0.8 for t in trees)
 
+
+
+def test_low_stems_on_rocks_and_every_stem_in_a_power_line_corridor_are_left_out(tmp_path):
+    """What the lidar reads as a tree but is a boulder or a wire: a low stem on a rock goes, a tall
+    tree over the same rock stays, and a power line's corridor is cleared whatever the height."""
+    from shapely.geometry import box
+    rocks_file = tmp_path / "stone-walls.json"
+    rocks_file.write_text(json.dumps({"boulders": [{"id": "r1", "e": 1050.0, "n": 2050.0, "lengthM": 4.0},
+                                                   {"id": "broken", "e": "x"}]}), encoding="utf-8")
+    rocks = gspro._load_placed_rocks(rocks_file) + [box(1000.0, 2000.0, 1010.0, 2010.0)]   # + a slab
+    wire = box(1100.0, 2000.0, 1108.0, 2100.0)                 # an 8 m corridor running north
+    trees = [{"id": "bush-on-boulder", "x": 51.0, "z": 50.5, "h": 1.8},
+             {"id": "pine-over-boulder", "x": 50.5, "z": 51.0, "h": 14.0},
+             {"id": "bush-on-slab", "x": 5.0, "z": 5.0, "h": 2.4},
+             {"id": "bush-beside-boulder", "x": 54.0, "z": 50.0, "h": 1.8},
+             {"id": "wire", "x": 104.0, "z": 40.0, "h": 17.0},
+             {"id": "low-under-wire", "x": 101.0, "z": 60.0, "h": 2.0},
+             {"id": "tree", "x": 120.0, "z": 40.0, "h": 17.0}]
+    kept, as_rock, as_wire = gspro._drop_stems_on_rocks_and_power_lines(trees, rocks, [wire], 1000.0, 2000.0)
+    assert [t["id"] for t in kept] == ["pine-over-boulder", "bush-beside-boulder", "tree"]
+    assert (as_rock, as_wire) == (2, 2)
+    # nothing to keep out: the list comes back as it is
+    assert gspro._drop_stems_on_rocks_and_power_lines(trees, [], [], 0.0, 0.0) == (trees, 0, 0)

@@ -1651,10 +1651,31 @@ def plan_units(ctx, op):
             units.append(Unit(shape, names, None, (lambda names: lambda margin=0.0: split_reads(ctx, names, margin))(names),
                               extra=extra))
         return units, problems
+    if kind == "golfmap.cut_out":
+        # one unit, named by the op; reads = every Spline mesh the cut or its weld can reach (the outline's box + 1 m)
+        box = sl.polygon_bbox(cut_out_poly(ctx, op))
+        return [Unit(op["name"], [], None, lambda margin=0.0: {
+            o.name for o in spline_meshes() if ctx.box(o.name)
+            and sl.bbox_distance(box, ctx.box(o.name)) <= 1.0 + margin})], []
     if kind == "golfmap.weld_tjunctions":
         recs, problems = sl.select(op["select"], ctx.index)
         names = [r["name"] for r in recs]
         return [Unit("*", names, None, lambda margin=0.0: near_boxes(ctx, names, 1.0 + margin))], problems
+    if kind == "golfmap.path_transition":
+        import shape_surfaces as ss
+        recs, problems = sl.select(dict(op["select"], kind="any"), ctx.index)
+        doc = ss.load_sidecar(_split_sidecar(ctx, op))
+        units = []
+        for svg_id, group in sl.group_by_feature(recs):
+            entries = [e for e in doc.get("transitions", []) if e.get("shape") == svg_id]
+            if not entries:
+                continue
+            names = sorted(r["name"] for r in ctx.index if r["svgId"] == svg_id)
+            extra = json.dumps([entries, _file_sha(os.path.join(HERE, "shape_transition.py")),
+                               _file_sha(os.path.join(HERE, "shape_edgefade.py"))], sort_keys=True)
+            units.append(Unit(svg_id, names, None,
+                              (lambda names: lambda margin=0.0: set(names))(names), extra=extra))
+        return units, problems
     if kind == "golfmap.path_edge_fade":
         # one unit per road shape: its path pieces and every blend object (the strips of several pieces share one);
         # reads = the shape's objects + what the weld afterwards can reach (their boxes + 1 m)
@@ -3513,6 +3534,221 @@ def split_surfaces(ctx, op, unit):
     return run
 
 
+# ---------------------------------------------------------------- golfmap.cut_out
+#
+# Something that is no drawn feature (a rock slab in the rough, traced off the ortho) becomes its own object, so
+# Unity can give it its own material and physics material. One op = one outline (`outline3006`, EPSG:3006):
+#   1. every visible Spline mesh under the outline (meshes and blends, any surface; `protect` types cancel the op)
+#      is cut along it (insert_polyline, the ring put in twice from opposite starts so it closes); the cut's slivers
+#      collapse (`sliverM`) and weld_tjunctions closes what the cut left on the neighbours (`weld`, default on);
+#   2. the faces inside leave their meshes (which keep their names, ids and materials) and are joined, welded along
+#      the old mesh borders inside the outline, into one new object `Spline_<name>_<surface>_-_Mesh` (`surface`
+#      default Rock: no golf surface word, so Unity's GolfMapSurfaces classes it Other and vegetation keeps off);
+#      `opcd_kind` mesh, `opcd_shape_id` = name, `golfmap_surface`, `golfmap_cut_from`; first source's materials;
+#   3. both sides of the new border are the same edge chain (same vertices): custom normals are set per vertex from
+#      the smooth normals before the cut, as split_surfaces does, so the border shades alike on both sides.
+# Run `border` = the new object's boundary vertices and how many have no coincident vertex outside (0 expected).
+
+CUT_OUT_WELD_M = 1e-3  # inside parts of different source meshes are welded along their old border within this
+CUT_OUT_UV_M = 4.0     # the new object's planar UVs: one texture tile per this many metres
+
+
+def cut_out_name(op):
+    return "Spline_%s_%s_-_Mesh" % (op["name"], op.get("surface", "Rock"))
+
+
+def cut_out_poly(ctx, op):
+    poly = [shape_coords.to_blend(e, n, ctx.frame) for e, n in op["outline3006"]]
+    if len(poly) > 3 and math.dist(poly[0], poly[-1]) < 1e-6:
+        poly.pop()
+    return poly
+
+
+def op_cut_out(ctx, op):
+    units, _ = plan_units(ctx, op)
+    runs = []
+    for unit in units:
+        run = ctx.runner.run(ctx, op, unit, lambda: cut_out(ctx, op))
+        if run is not None:
+            runs.append(run)
+    return runs, []
+
+
+def _cut_ring(obj, poly):
+    """Cut the closed outline into the mesh as an exact edge chain. Returns insert_polyline's stats, summed."""
+    import bmesh
+    me = obj.data
+    if SPLIT_VN_ATTR not in me.attributes:
+        _store_vertex_normals(obj)
+    bm = bmesh.new()
+    bm.from_mesh(me)
+    layer = bm.edges.layers.int.get(SPLIT_EDGE_ATTR) or bm.edges.layers.int.new(SPLIT_EDGE_ATTR)
+    vn_layer = bm.verts.layers.float_vector.get(SPLIT_VN_ATTR)
+    stats = {}
+    half = len(poly) // 2
+    # insert_polyline leaves the piece before its first crossing and after its last uncut: the second pass starts
+    # on the other side of the ring and closes it (what the first pass cut is passed through as existing edges).
+    for pts in (poly + [poly[0]], poly[half:] + poly[:half] + [poly[half]]):
+        for k, v in insert_polyline(bm, pts, SEAM_CUT, layer, vn_layer).items():
+            stats[k] = stats.get(k, 0) + v
+    bm.to_mesh(me)
+    bm.free()
+    me.update()
+    return stats
+
+
+def _drop_cut_attrs(me, normals=True):
+    """Remove the cut's temporary attributes; with `normals`, first set the custom normals from the stored ones."""
+    vn = None
+    a = me.attributes.get(SPLIT_VN_ATTR)
+    if a is not None and normals and len(me.vertices):
+        vn = np.empty(len(me.vertices) * 3, dtype=np.float32)
+        a.data.foreach_get("vector", vn)
+        vn = vn.reshape(-1, 3)
+    for n in (SPLIT_CLASS_ATTR, SPLIT_EDGE_ATTR, SPLIT_VN_ATTR):
+        if me.attributes.get(n) is not None:
+            me.attributes.remove(me.attributes[n])
+    if vn is not None:
+        ln = np.linalg.norm(vn, axis=1)
+        vn[ln < 1e-6] = (0.0, 0.0, 1.0)
+        me.normals_split_custom_set_from_vertices([tuple(v) for v in vn.tolist()])
+    me.update()
+
+
+def cut_out(ctx, op):
+    """One outline: steps 1-3 above. Returns the run record."""
+    import bmesh
+    t = time.time()
+    name = cut_out_name(op)
+    surface = op.get("surface", "Rock")
+    run = {"feature": op["name"], "targets": [], "seed": None, "object": name}
+    if name in bpy.data.objects:
+        return dict(run, result=["CANCELLED"], error=f"{name} exists already")
+    poly = cut_out_poly(ctx, op)
+    box = sl.polygon_bbox(poly)
+    protect = set(op.get("protect", sl.DEFAULT_PROTECT))
+    protected = {r["name"]: r["type"] for r in ctx.index if r["type"] in protect}
+    object_mode()
+    cands, overlap = [], set()
+    for o in sorted(spline_meshes(), key=lambda o: o.name):
+        b = ctx.box(o.name)
+        if not o.visible_get() or not b or sl.bbox_distance(box, b) > 0:
+            continue
+        if o.name in protected:
+            co = positions(o)
+            m = (co[:, 0] >= box[0]) & (co[:, 0] <= box[2]) & (co[:, 1] >= box[1]) & (co[:, 1] <= box[3])
+            if any(sl.point_in_polygon(float(co[i, 0]), float(co[i, 1]), poly) for i in np.nonzero(m)[0]):
+                overlap.add(o.name)
+            continue
+        if not np.allclose(np.array(o.matrix_world), np.eye(4), atol=1e-7):
+            return dict(run, result=["CANCELLED"], error=f"{o.name} has an object transform (the cut works in mesh coordinates)")
+        cands.append(o)
+    if overlap:
+        return dict(run, result=["CANCELLED"],
+                    skipped="outline overlaps protected " + ", ".join(sorted(f"{n} ({protected[n]})" for n in overlap)))
+    snap = {o.name: {"co": positions(o).astype(np.float64)} for o in cands}
+    cut = {o.name: _cut_ring(o, poly) for o in cands}
+    names = [o.name for o in cands]
+    slivers = collapse_cut_slivers(names, snap, float(op.get("sliverM", SLIVER_M)), mark_attr=SPLIT_EDGE_ATTR)
+    weld = weld_tjunctions(names) if op.get("weld", True) is not False else None
+    area_before = area_inside = area_outside = 0.0
+    parts, sources = [], []
+    for o in cands:
+        me = o.data
+        bm = bmesh.new()
+        bm.from_mesh(me)
+        inside = set()
+        for f in bm.faces:
+            c = f.calc_center_median()
+            if box[0] - 2 <= c.x <= box[2] + 2 and box[1] - 2 <= c.y <= box[3] + 2 and sl.point_in_polygon(*_face_point(f), poly):
+                inside.add(f.index)
+        if not inside:
+            bm.free()
+            _drop_cut_attrs(me, normals=bool(cut[o.name].get("edgeSplits") or cut[o.name].get("faceSplits")))
+            continue
+        total = sum(f.calc_area() for f in bm.faces)
+        part = me.copy()
+        pb = bmesh.new()
+        pb.from_mesh(part)
+        bmesh.ops.delete(pb, geom=[f for f in pb.faces if f.index not in inside], context="FACES")
+        bmesh.ops.delete(pb, geom=[v for v in pb.verts if not v.link_faces], context="VERTS")
+        a_in = sum(f.calc_area() for f in pb.faces)
+        pb.to_mesh(part)
+        pb.free()
+        bmesh.ops.delete(bm, geom=[f for f in bm.faces if f.index in inside], context="FACES")
+        bmesh.ops.delete(bm, geom=[v for v in bm.verts if not v.link_faces], context="VERTS")
+        a_out = sum(f.calc_area() for f in bm.faces)
+        bm.to_mesh(me)
+        bm.free()
+        _drop_cut_attrs(me)
+        area_before += total
+        area_inside += a_in
+        area_outside += a_out
+        parts.append(part)
+        sources.append({"name": o.name, "kind": o.get("opcd_kind"), "type": (ctx.by_name.get(o.name) or {}).get("type"),
+                        "facesOut": len(inside), "areaOutM2": round(a_in, 3), "cut": cut[o.name]})
+    if not parts:
+        return dict(run, result=["CANCELLED"], error="no Spline mesh face lies inside the outline")
+    first = bpy.data.objects[sources[0]["name"]]
+    new_me = parts[0]
+    jb = bmesh.new()
+    for part in parts:
+        jb.from_mesh(part)
+    welded = len(jb.verts)
+    bmesh.ops.remove_doubles(jb, verts=[v for v in jb.verts if v.is_boundary], dist=CUT_OUT_WELD_M)
+    welded -= len(jb.verts)
+    for f in jb.faces:
+        f.material_index = 0
+    # Planar UVs, one tile per `uvM` metres: OPCD's meshes have none (their materials project in world space), a
+    # rock material in Unity needs them.
+    uv_m = float(op.get("uvM", CUT_OUT_UV_M))
+    uv = jb.loops.layers.uv.verify()
+    for f in jb.faces:
+        for loop in f.loops:
+            loop[uv].uv = (loop.vert.co.x / uv_m, loop.vert.co.y / uv_m)
+    jb.to_mesh(new_me)
+    jb.free()
+    for part in parts[1:]:
+        bpy.data.meshes.remove(part)
+    _drop_cut_attrs(new_me)
+    new_me.name = name
+    new = bpy.data.objects.new(name, new_me)
+    for col in first.users_collection:
+        col.objects.link(new)
+    new["opcd_kind"] = "mesh"
+    new["opcd_shape_id"] = op["name"]
+    new["golfmap_surface"] = surface.lower()
+    new["golfmap_cut_from"] = ",".join(s["name"] for s in sources)
+    new.hide_render = first.hide_render
+    # The border: every boundary vertex of the new object has the same vertex on a mesh outside.
+    outside = np.concatenate([boundary_points(o) for o in spline_meshes()
+                              if o.name != name and ctx.box(o.name) is not None
+                              and sl.bbox_distance(box, bbox_xy(o)) <= 1.0] or [np.zeros((0, 3))])
+    kd = KDTree(len(outside))
+    for i, p in enumerate(outside):
+        kd.insert((float(p[0]), float(p[1]), 0.0), i)
+    kd.balance()
+    own = boundary_points(new)
+    unmatched, max_dz = 0, 0.0
+    for p in own:
+        hit = kd.find_range((float(p[0]), float(p[1]), 0.0), SEAM_XY)
+        if not hit:
+            unmatched += 1
+        else:
+            max_dz = max(max_dz, min(abs(float(outside[j][2] - p[2])) for _, j, _ in hit))
+    run.update(result=["FINISHED"], targets=[name] + [s["name"] for s in sources], created=[name], sources=sources,
+               faces=len(new_me.polygons), vertices=len(new_me.vertices), areaM2=round(area_inside, 3),
+               areaCheckM2=round(area_before - area_inside - area_outside, 6), weldedInside=welded,
+               slivers=slivers, weld=weld,
+               border={"vertices": int(len(own)), "unmatched": unmatched, "maxAbsDz": round(max_dz, 6)},
+               seconds=round(time.time() - t, 2))
+    if unmatched or any(s["cut"].get("failed") for s in sources):
+        run["warning"] = "the border is not closed everywhere (see border.unmatched / sources[].cut.failed)"
+    print(f"[shape_apply] cut_out {name}: {len(sources)} source mesh(es), {run['faces']} faces, {run['areaM2']} m2, "
+          f"border {len(own)} vertices / {unmatched} unmatched, {run['seconds']} s")
+    return run
+
+
 # ---------------------------------------------------------------- golfmap.path_edge_fade
 #
 # A gravel or dirt path meets the grass along a fringe strip (`..._B_..._Blend`, OPCD's blend) one quad wide
@@ -3635,6 +3871,29 @@ def _ef_finish(obj, bm, colours):
     if me.attributes.get("s") is not None:
         me.attributes.remove(me.attributes["s"])
     me.update()
+
+
+def op_path_transition(ctx, op):
+    import shape_transition as transition
+    import shape_surfaces as ss
+    units, problems = plan_units(ctx, op)
+    doc = ss.load_sidecar(_split_sidecar(ctx, op))
+    runs = []
+    for unit in units:
+        def compute(unit=unit):
+            object_mode()
+            entries = [e for e in doc.get("transitions", []) if e.get("shape") == unit.id]
+            surfaces = {e.get("surface") for e in entries} & {"gravel", "dirt"}
+            objects = [bpy.data.objects[n] for n in unit.targets if n in bpy.data.objects
+                       and _edge_fade_surface(ctx, bpy.data.objects[n], doc) in surfaces]
+            changed = transition.apply(objects, entries, ctx.frame, float(op.get("maxEdgeM", .3)))
+            warnings = changed.pop('warnings', [])
+            return {"feature": unit.id, "targets": list(unit.targets), "result": ["FINISHED"], "objects": changed,
+                    "warnings": warnings}
+        run = ctx.runner.run(ctx, op, unit, compute)
+        if run is not None:
+            runs.append(run)
+    return runs, problems
 
 
 def op_path_edge_fade(ctx, op):
@@ -3955,7 +4214,9 @@ def edge_fade_core(pieces, blends, width, max_edge, amplitude, seed, weld=True, 
 
 RUNNERS = {
     "golfmap.split_surfaces": op_split_surfaces,
+    "golfmap.cut_out": op_cut_out,
     "golfmap.path_edge_fade": op_path_edge_fade,
+    "golfmap.path_transition": op_path_transition,
     "afrod.flattentees": op_flattentees,
     "afrod.cutcartpaths": op_cutcartpaths,
     "afrod.smoothcartpaths": op_smoothcartpaths,
@@ -4498,7 +4759,7 @@ def path_surface_check(names, frame=None, svg_paths=None):
 
 
 def cut_objects(ops_report):
-    return {n for e in ops_report if e["op"] in ("afrod.cutcartpaths", "golfmap.weld_tjunctions", "golfmap.split_surfaces")
+    return {n for e in ops_report if e["op"] in ("afrod.cutcartpaths", "golfmap.weld_tjunctions", "golfmap.split_surfaces", "golfmap.cut_out")
             for r in e.get("runs", [])
             for n in list(r["targets"]) + list((r.get("post") or {}).get("objects", {}))}
 

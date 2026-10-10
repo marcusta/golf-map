@@ -55,7 +55,7 @@ namespace GolfMap.Editor
         }
 
         [BridgeCommand("golfmap.roughgrass.plant", "Add a StixGames GrassRenderer to every rough course mesh (Spline_*_Rough_-_Mesh, no blends) in the active scene and set its material; with lip=true (default) also to bunker meshes painted with a red grass-lip ring (rough material, blades by red) and to every bunker blend (*_Bunker_-_Blend) on a lip material derived from the rough one (<course>/Grass/<material> Lip.mat, rebuilt every run: even density instead of by vertex red, denser, taller, more lean), so the grass grows right up to the sand. Meshes that already have one only get the material; new ones get their Stix mesh cache rebuilt. Sets _ColorMapTiling/_TerrainSize to the inner terrain's size.",
-            args = "material=NewRough (material asset name), lip=true, lipDensity=0.7 (x the rough's blade spacing), lipHeight=1.15, lipDisorder=1.5, dryRun=false")]
+            args = "material=NewRough (material asset name), lip=true, lipDensity=0.7 (x the rough's blade spacing), lipHeight=1.15, lipDisorder=1.5, dryRun=false, only (object names, comma-separated)")]
         static object Command(BridgeArgs a)
         {
             var lip = new LipOptions
@@ -65,7 +65,8 @@ namespace GolfMap.Editor
                 height = (float)a.Number("lipHeight", 1.15),
                 disorder = (float)a.Number("lipDisorder", 1.5),
             };
-            return Plant(a.String("material", DefaultMaterial), lip, a.Bool("dryRun", false));
+            var only = a.Strings("only").SelectMany(s => s.Split(',')).Select(s => s.Trim()).Where(s => s.Length > 0).ToList();
+            return Plant(a.String("material", DefaultMaterial), lip, a.Bool("dryRun", false), only.Count > 0 ? only : null);
         }
 
         public static bool IsBunkerMesh(string name)
@@ -88,11 +89,14 @@ namespace GolfMap.Editor
         public static bool IsPathEdgeBlend(MeshFilter f)
         {
             var name = f.name;
-            if (!name.StartsWith("Spline_", StringComparison.Ordinal) || !name.EndsWith("_Concrete_-_Blend", StringComparison.Ordinal)) return false;
+            // a path mesh painted the same way (a road end that fades out) grows grass on its red too
+            bool pathMesh = name.EndsWith("_Concrete_-_Mesh", StringComparison.Ordinal);
+            if (!name.StartsWith("Spline_", StringComparison.Ordinal) || !(pathMesh || name.EndsWith("_Concrete_-_Blend", StringComparison.Ordinal))) return false;
             var mesh = f.sharedMesh;
             if (mesh == null) return false;
             var colors = mesh.colors;
-            return colors != null && colors.Length == mesh.vertexCount && colors.Any(c => c.g >= 0.25f);
+            return colors != null && colors.Length == mesh.vertexCount && (colors.Any(c => c.g >= 0.25f) || GolfMapPathTransitionMetadata.IsPainted(f))
+                && (!pathMesh || colors.Any(c => c.r >= 0.25f));
         }
 
         public static bool IsBunkerBlend(string name)
@@ -100,7 +104,7 @@ namespace GolfMap.Editor
             return name.StartsWith("Spline_", StringComparison.Ordinal) && name.Contains(BunkerBlendMarker) && !name.Contains("Potwall");
         }
 
-        public static Dictionary<string, object> Plant(string materialName, LipOptions lip, bool dryRun)
+        public static Dictionary<string, object> Plant(string materialName, LipOptions lip, bool dryRun, ICollection<string> only = null)
         {
             var type = AppDomain.CurrentDomain.GetAssemblies()
                 .Select(asm => asm.GetType(RendererType, false))
@@ -114,6 +118,7 @@ namespace GolfMap.Editor
             var filters = scene.GetRootGameObjects()
                 .SelectMany(root => root.GetComponentsInChildren<MeshFilter>(true))
                 .Where(f => f.name.StartsWith("Spline_", StringComparison.Ordinal) && !GolfMapWaterplanes.IsWaterPlane(f.name))
+                .Where(f => only == null || only.Contains(f.name))
                 .ToList();
             var meshes = filters
                 .Where(f => GolfMapSurfaces.Classify(f.name) == GolfMapSurfaces.Surface.Rough)
@@ -132,8 +137,10 @@ namespace GolfMap.Editor
                 .Select(f => f.gameObject).Distinct().OrderBy(g => g.name, StringComparer.Ordinal).ToList();
             // lip off: blends and bunker meshes that have a renderer of ours are cleared below (and bunker meshes whose
             // red lip is gone)
-            var lipOff = filters.Where(f => (IsBunkerBlend(f.name) || IsBunkerMesh(f.name)) && f.GetComponent(type) != null)
-                .Select(f => f.gameObject).Distinct().Where(g => !blends.Contains(g) && !paintedLips.Contains(g)).ToList();
+            var lipOff = filters.Where(f => (IsBunkerBlend(f.name) || IsBunkerMesh(f.name)
+                    || f.name.EndsWith("_Concrete_-_Mesh", StringComparison.Ordinal)
+                    || f.name.EndsWith("_Concrete_-_Blend", StringComparison.Ordinal)) && f.GetComponent(type) != null)
+                .Select(f => f.gameObject).Distinct().Where(g => !blends.Contains(g) && !paintedLips.Contains(g) && !pathEdges.Contains(g)).ToList();
 
             if (dryRun)
             {

@@ -24,6 +24,8 @@ const FEATURE_FILL: Record<string, string> = {
     outside: '#8a8e90',
     vegetation_zone: '#7c8f3a',
     tree_area: '#a0662e',
+    rock_slab: '#a69b8c',
+    power_line: '#b06ad6',
 };
 
 const FEATURE_OUTLINE: Record<string, string> = {
@@ -44,13 +46,15 @@ const FEATURE_OUTLINE: Record<string, string> = {
     outside: '#565c61',
     vegetation_zone: '#4c5a20',
     tree_area: '#6b3f16',
+    rock_slab: '#6f6558',
+    power_line: '#6f3a94',
 };
 
 /** Bottom → top draw order (copied from draw TYPE_Z_ORDER). */
 const TYPE_Z_ORDER: readonly string[] = [
     'outside', 'deep_rough', 'rough', 'semi_rough', 'fairway', 'tee', 'green',
-    'vegetation_zone', 'tree_area', 'trees', 'bunker', 'water', 'water_creek',
-    'penalty_yellow', 'penalty_red', 'oob', 'path',
+    'rock_slab', 'vegetation_zone', 'tree_area', 'trees', 'bunker', 'water', 'water_creek',
+    'penalty_yellow', 'penalty_red', 'oob', 'path', 'power_line',
 ];
 
 /**

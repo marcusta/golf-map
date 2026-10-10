@@ -20,8 +20,9 @@ import { createAnalysisApi } from './api/analysis.api';
 import { createGreenCalibrationApi } from './api/green-calibration.api';
 import { createPuttEstimateApi } from './api/putt-estimate.api';
 import { createMapBuildApi } from './api/map-build.api';
-import { createOrthoPatchesApi } from './api/ortho-patches.api';
-import { createOrthoPatchFileRoutes } from './api/ortho-patches.routes';
+import { createCleanedPhotoApi } from './api/cleaned-photo.api';
+import { createCleanupAreasApi } from './api/cleanup-areas.api';
+import { createCleanedPhotoFileRoutes } from './api/cleaned-photo.routes';
 import { createHydroApi } from './api/hydro.api';
 import { createOsmApi } from './api/osm.api';
 import { createTerrainEditsApi } from './api/terrain-edits.api';
@@ -68,7 +69,7 @@ export function mountApiRoutes(app: Hono, services: Services, opts: { mode: Serv
         mapBuildService,
         gsproExportService,
         shapingService,
-        orthoPatchesService,
+        cleanedPhotoService,
         hydroService,
         osmService,
         terrainEditsService,
@@ -115,10 +116,11 @@ export function mountApiRoutes(app: Hono, services: Services, opts: { mode: Serv
     if (opts.mode === 'builder') {
         // --- Builder-only APIs (absent on the VPS — unmounted routes 404) ---
         mount(app, '/api', createMapBuildApi(mapBuildService));
-        mount(app, '/api', createOrthoPatchesApi(orthoPatchesService));
-        // Export image download + edited-image upload (hand-mounted: a file
+        mount(app, '/api', createCleanedPhotoApi(cleanedPhotoService));
+        mount(app, '/api', createCleanupAreasApi(services.cleanupAreasService));
+        // Cleaned photo download + image upload (hand-mounted: a file
         // stream and a raw request body, which `mount()` cannot carry).
-        app.route('/api', createOrthoPatchFileRoutes(orthoPatchesService));
+        app.route('/api', createCleanedPhotoFileRoutes(cleanedPhotoService));
         mount(app, '/api', createHydroApi(hydroService));
         mount(app, '/api', createOsmApi(osmService));
         mount(app, '/api', createTerrainEditsApi(terrainEditsService));

@@ -469,17 +469,6 @@ export async function preflight(deps: PublishDeps, siteId: string): Promise<stri
         .executeTakeFirst();
     if (running) throw new Error(`A map build is in progress for site ${siteId} (job ${running.id}) — wait for it to finish`);
 
-    // Warn if patched ortho sources are newer than the built tile tree (unbaked edits).
-    const sourcesDir = path.join(dataDir, 'sources', siteId);
-    const orthoDir = path.join(dataDir, 'tiles', siteId, 'ortho');
-    if (existsSync(sourcesDir) && existsSync(orthoDir)) {
-        const builtMtime = statSync(orthoDir).mtimeMs;
-        for (const ent of readdirSync(sourcesDir)) {
-            if (ent.endsWith('.patched.tif') && statSync(path.join(sourcesDir, ent)).mtimeMs > builtMtime) {
-                warnings.push(`Patched ortho ${ent} is newer than the built tiles — edits may be unbaked. Rebuild before publishing.`);
-            }
-        }
-    }
     return warnings;
 }
 

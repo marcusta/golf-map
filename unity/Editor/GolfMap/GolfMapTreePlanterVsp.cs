@@ -503,7 +503,10 @@ namespace GolfMap.Editor
                     if(renderer is BillboardRenderer){renderer.enabled=false;continue;}
                     var slots=renderer.sharedMaterials;
                     for(int i=0;i<slots.Length;i++){
-                        var source=slots[i];if(!source||!source.HasProperty("_MainTex"))throw new InvalidOperationException("Billboard material needs a main texture: "+original.name);
+                        var source=slots[i];
+                        // CTI's bark array shader has no 2D main texture: bake from the material the trial replaced.
+                        if(source&&!source.HasProperty("_MainTex"))source=GolfMapCtiTrial.Original(GolfMapCourses.Folder(Course),source);
+                        if(!source||!source.HasProperty("_MainTex"))throw new InvalidOperationException("Billboard material needs a main texture: "+original.name);
                         var mat=new Material(shader);materials.Add(mat);
                         mat.SetTexture("_MainTex",source.GetTexture("_MainTex"));mat.SetTextureScale("_MainTex",source.GetTextureScale("_MainTex"));mat.SetTextureOffset("_MainTex",source.GetTextureOffset("_MainTex"));
                         Color tint=Color.white;
@@ -539,6 +542,7 @@ namespace GolfMap.Editor
                 if(forceBillboards&&!useBiome&&scaleWidth)throw new InvalidOperationException("Outer VSP billboards require uniform scaling. Disable width scaling or use the biome.");
                 if(storage&&!StorageMatchesTerrain(storage,terrain)){
                     string reason=StorageMismatchDetails(storage,terrain);
+                    if(unattended)throw new InvalidOperationException(reason+" Plant from the Tree Planter window once: it offers to create a matching storage.");
                     if(!EditorUtility.DisplayDialog("Create matching storage?",reason+"\n\nCreate and select a new empty storage for '"+terrain.name+"' and continue planting? The old system and its trees will remain. You can remove it with Delete storage.","Create new and continue","Cancel")){
                         status="Plant cancelled. "+reason;return;
                     }
@@ -582,7 +586,7 @@ namespace GolfMap.Editor
                 int strays = Doubles(false).Where(d => d.storage != storage).Sum(d => d.items.Count);
                 if (strays > 0) throw new InvalidOperationException(strays + " imported trees from another storage already stand in the " + RoleKey + " area and would render on top of these. Use Remove doubled trees first. Nothing changed.");
                 int prior = SourceCount(package);
-                if (prior > 0 && !EditorUtility.DisplayDialog("Replace " + RoleKey + " trees?", "Replace the " + prior + " imported trees in " + Path.GetFileName(AssetDatabase.GetAssetPath(package)) + " with " + prepared.Count + " from " + Path.GetFileName(filePath) + "?\n\nA backup is written first.", "Replace", "Cancel")) { status = "Plant cancelled. Nothing changed."; return; }
+                if (prior > 0 && !unattended && !EditorUtility.DisplayDialog("Replace " + RoleKey + " trees?", "Replace the " + prior + " imported trees in " + Path.GetFileName(AssetDatabase.GetAssetPath(package)) + " with " + prepared.Count + " from " + Path.GetFileName(filePath) + "?\n\nA backup is written first.", "Replace", "Cancel")) { status = "Plant cancelled. Nothing changed."; return; }
                 var mapping = EnsureCatalog(system, prepared.Select(t => t.prefab), regenerateBillboards);
                 var backup=BackupStorage(package);
                 Undo.RegisterCompleteObjectUndo(package, "Import GolfMap trees");

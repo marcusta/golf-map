@@ -7,6 +7,8 @@ Terrain-RGB encoding of a single elevation band).
 
 from __future__ import annotations
 
+import os
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from typing import Callable
 
@@ -73,6 +75,9 @@ def generate_tile_pyramid(
     )
 
 
+TILE_ENCODE_THREADS = max(1, min(8, os.cpu_count() or 1))
+
+
 def generate_tiles(
     vrt,
     tiles,
@@ -84,23 +89,33 @@ def generate_tiles(
     body of generate_tile_pyramid). apply-ortho-patches uses this directly to
     rewrite only the pyramid subtree its patches touch.
     """
-    written = 0
-    for tile in tiles:
-        bounds_3857 = mercantile.xy_bounds(tile)
-        data = read_window_bounds(
-            vrt,
-            (bounds_3857.left, bounds_3857.bottom, bounds_3857.right, bounds_3857.top),
-            TILE_SIZE,
-        )
-
+    def finish(tile, data) -> int:
         encoded = encode_tile(data)
         if encoded is None:
-            continue
-
+            return 0
         tile_path = out_dir / str(tile.z) / str(tile.x) / f"{tile.y}.{file_ext}"
         tile_path.parent.mkdir(parents=True, exist_ok=True)
         tile_path.write_bytes(encoded)
-        written += 1
+        return 1
+
+    # The raster is read here, one window at a time (a dataset is not shared
+    # between threads); encoding and writing, most of the time per tile, go to
+    # a pool. Batched so a big pyramid never holds every window in memory.
+    written = 0
+    with ThreadPoolExecutor(max_workers=TILE_ENCODE_THREADS) as pool:
+        pending = []
+        for tile in tiles:
+            bounds_3857 = mercantile.xy_bounds(tile)
+            data = read_window_bounds(
+                vrt,
+                (bounds_3857.left, bounds_3857.bottom, bounds_3857.right, bounds_3857.top),
+                TILE_SIZE,
+            )
+            pending.append(pool.submit(finish, tile, data))
+            if len(pending) >= 8 * TILE_ENCODE_THREADS:
+                written += sum(f.result() for f in pending)
+                pending = []
+        written += sum(f.result() for f in pending)
 
     return written
 

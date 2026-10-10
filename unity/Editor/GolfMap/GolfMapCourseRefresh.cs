@@ -25,7 +25,7 @@
 // them; the bunker convention on the bunker sets they belong to; paint on them and the meshes within their bounds +
 // featherM; terrain match inside the union of their bounds + featherM; a lake's plane only when a named lake has one
 // of ours; creeks only when a creek mesh is named (the creeks crossing it); walls only when a wall's bank meets them;
-// surfaces.export is left for later (pending). Where each object is: the scene object (before and after the swap,
+// surfaces.export is re-run when a rock slab is among them (else left for later, pending). Where each object is: the scene object (before and after the swap,
 // both), else its imported FBX, else the shaping report's place for it (a dry run of meshes not imported yet).
 using System;
 using System.Collections;
@@ -75,7 +75,7 @@ namespace GolfMap.Editor
         }
 
         [BridgeCommand("golfmap.course.refresh", "After a Blender shaping run: bring the course in step with the exported FBX by chaining meshes.sync (prune; OPCD Set Default Materials on what it re-adds), Bunker Materials (paint convention), paths.materials (cart path look), paint.apply, roughgrass.plant (Stix grass on roughs + bunker lips), terrain.conform mode=match, waterplanes.build, creeks.import (refit), walls.build and surfaces.export. Grass zones (pipeline grass:zones -> zones.import -> grass.apply) and props.place (hand-moved props) are reported as pending manual steps. dryRun runs each step's own dry run where it has a side-effect-free one and lists the rest as 'would run'. Writes <course>/refresh-report.json (dry run: GolfMapSpelunk/<Course>_refresh-report.dryrun.json). Marks the scene dirty, does not save it.",
-            args = "only (comma-separated object names = FBX names without extension: the fast per-feature path - just those FBX re-imported and swapped, bunker convention on their sets, paint and terrain match only within their bounds + featherM, water/creeks/walls only where they are concerned, surfaces.export pending), dryRun=false, prune=true, folder (FBX folder under Assets; default the course's meshFolder), parent, convention (bunker paint convention id; default the Bunker Materials window's), conventionFile, margin=0.01, featherM=2 (terrain match; with only also the paint scope), grassMaterial=NewRough, lipGrass=true (Stix grass on the bunker blends too), pathLook=surface|photo (cart path material: surface = golfmap.paths.materials' per-surface OPCD MAHS material (satellite off) and fringe strips fading into their neighbour, photo = OPCD's satellite concrete), skip (step ids, comma-separated: meshes.sync, bunkers.materials, paths.materials, paint.apply, roughgrass.plant, terrain.conform, waterplanes.build, creeks.import, walls.build, surfaces.export), continueOnError=false")]
+            args = "only (comma-separated object names = FBX names without extension: the fast per-feature path - just those FBX re-imported and swapped, bunker convention on their sets, paint and terrain match only within their bounds + featherM, water/creeks/walls only where they are concerned, surfaces.export only when a rock slab is among them, else pending), dryRun=false, prune=true, folder (FBX folder under Assets; default the course's meshFolder), parent, convention (bunker paint convention id; default the Bunker Materials window's), conventionFile, margin=0.01, featherM=2 (terrain match; with only also the paint scope), grassMaterial=NewRough, lipGrass=true (Stix grass on the bunker blends too), pathLook=surface|photo (cart path material: surface = golfmap.paths.materials' per-surface OPCD MAHS material (satellite off) and fringe strips fading into their neighbour, photo = OPCD's satellite concrete), skip (step ids, comma-separated: meshes.sync, bunkers.materials, paths.materials, paint.apply, roughgrass.plant, terrain.conform, waterplanes.build, creeks.import, walls.build, surfaces.export), continueOnError=false")]
         static IEnumerator Command(BridgeArgs a) { return Refresh(a); }
 
         sealed class Step
@@ -166,6 +166,9 @@ namespace GolfMap.Editor
             // 3b. the cart path look (Set Default Materials puts OPCD's satellite concrete back on a re-added path)
             run("paths.materials", "Cart path look (" + a.String("pathLook", GolfMapPathMaterials.DefaultLook) + ")", () =>
                 GolfMapPathMaterials.Apply(a.String("pathLook", GolfMapPathMaterials.DefaultLook), dryRun), planned);
+
+            // 3c. rock slabs: their rock material and stone physics (Set Default Materials knows no such surface)
+            run("slabs.materials", "Rock slab material and physics", () => GolfMapRockSlabs.Apply(dryRun), planned);
 
             // 4. vertex paint (+ the stone-wall ground reshape)
             run("paint.apply", "Vertex paint (and stone-wall ground)", () => WithoutKey(GolfMapVertexPaint.Apply(dryRun), "meshes"), planned);
@@ -259,6 +262,7 @@ namespace GolfMap.Editor
             var courseName = GolfMapCourses.Name(course);
             var reportPath = dryRun ? GolfMapCourses.ReportPath(course, DryRunSuffix) : courseFolder + ReportFile;
             var creeksExport = GolfMapCourses.ExportFile(course, "inner", "creeks");
+            var exportPrefix = course.exportPrefix;
             var meshFolder = "Assets/" + (a.String("folder") ?? course.meshFolder).Trim('/', '\\').Replace('\\', '/');
             course = null;   // OPCD's Set Default Materials unloads it (see RefreshAll)
             var started = DateTime.Now;
@@ -334,6 +338,12 @@ namespace GolfMap.Editor
                 run("paths.materials", "Cart path look (" + a.String("pathLook", GolfMapPathMaterials.DefaultLook) + ", named path meshes)", () =>
                     GolfMapPathMaterials.Apply(a.String("pathLook", GolfMapPathMaterials.DefaultLook), dryRun, only), planned);
 
+            // 3c. rock slabs among them: rock material and stone physics
+            if (!only.Any(GolfMapRockSlabs.IsSlab))
+                notNeeded("slabs.materials", "Rock slab material and physics", "no rock slab (*_Rock_-_Mesh) among them");
+            else
+                run("slabs.materials", "Rock slab material and physics (named slabs)", () => GolfMapRockSlabs.Apply(dryRun, only), planned);
+
             // 4. paint on them and the meshes around them
             if (boxes.Count == 0)
                 notNeeded("paint.apply", "Vertex paint (and stone-wall ground)", "none of them is in the scene, the FBX folder or the shaping report");
@@ -397,13 +407,40 @@ namespace GolfMap.Editor
                 else run("walls.build", "Stone walls on them", () => GolfMapWalls.Build(null, new HashSet<string>(ids), false, 0, null, false), "done");
             }
 
-            // 9. the surface map: left for a full run
-            steps.Add(new Step { id = "surfaces.export", label = "Surface map for grass zones", status = "pending",
-                note = "not run on the per-feature path (whole-course export); run golfmap.surfaces.export terrain=inner (or a full golfmap.course.refresh) before regenerating grass zones" });
+            // 9. the surface map: re-exported when a rock slab is among them (the meshes rasterize as rock, so the grass zones
+            // would otherwise still read the old surface), else left for a full run
+            bool surfaceExported = false;
+            if (only.Any(GolfMapRockSlabs.IsSlab))
+            {
+                if (dryRun)
+                {
+                    if (begin("surfaces.export", "Surface map for grass zones"))
+                    {
+                        steps.Add(new Step { id = "surfaces.export", label = "Surface map for grass zones", status = "would run",
+                            note = "a rock slab is among them: writes " + exportPrefix + "-inner-surfaces.bin/.json/-preview.png to the export folder (no dry run)" });
+                        surfaceExported = true;
+                    }
+                }
+                else if (begin("surfaces.export", "Surface map for grass zones"))
+                {
+                    var s = new Step { id = "surfaces.export", label = "Surface map for grass zones" };
+                    var drive = Drive(() => GolfMapSurfaces.Export(new BridgeArgs(new Dictionary<string, object> { { "terrain", "inner" } })), s);
+                    while (drive.MoveNext()) yield return null;
+                    if (s.status == null) s.status = "done";
+                    if (s.error != null) failed |= !continueOnError;
+                    else surfaceExported = true;
+                    steps.Add(s);
+                }
+            }
+            else
+                steps.Add(new Step { id = "surfaces.export", label = "Surface map for grass zones", status = "pending",
+                    note = "not run on the per-feature path (whole-course export); run golfmap.surfaces.export terrain=inner (or a full golfmap.course.refresh) before regenerating grass zones" });
 
             var pending = new List<object>
             {
-                "Surface map: golfmap.surfaces.export terrain=inner (skipped on the per-feature path), then grass zones: bun run grass:zones -- <course>, golfmap.zones.import terrain=inner, golfmap.grass.apply.",
+                surfaceExported
+                    ? "Grass zones: bun run grass:zones -- <course> (reads the surface map this run exported), golfmap.zones.import terrain=inner, golfmap.grass.apply."
+                    : "Surface map: golfmap.surfaces.export terrain=inner (skipped on the per-feature path), then grass zones: bun run grass:zones -- <course>, golfmap.zones.import terrain=inner, golfmap.grass.apply.",
                 "Props: golfmap.props.place is not re-run automatically (it replaces every prop, hand moves included).",
             };
             if (dryRun) pending.Insert(0, "This was a dry run: nothing changed. Run golfmap.course.refresh only=... without dryRun to apply.");

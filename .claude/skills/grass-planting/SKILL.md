@@ -43,7 +43,7 @@ Every step is a CLI or a bridge command; the `unity` MCP server drives Unity
    playing-surface meshes down instead and re-exports their FBX. VSP MeshTerrain (plant on the meshes)
    works in the editor but bakes 7M triangles and is untested in GSPro's forked VSP runtime.
 5. **Unity** (done by Plant vegetation; by hand after the CLI): `unity_command golfmap.zones.import
-   {terrain: "inner", package: "GolfMap lower vegetation"}` then `unity_command golfmap.grass.apply`.
+   {terrain: "inner", package: "GolfMap lower vegetation", brief: true}` (`brief: true` keeps the result short: counts, not every group and rule) then `unity_command golfmap.grass.apply`.
    A **new item** (a species just added to a palette) needs one more round: import binds masks only to
    items that exist, apply creates the item but turns spawning on only once it has rules - so
    import, apply ("added item ..."), import, apply. Plant vegetation repeats the round by itself when
@@ -70,6 +70,13 @@ between deep rough and a semi becomes a thin, dipping band - it reads as a hole 
   rough lies between (1 m starts to count, 2 m is enough: `ROUGH_BUFFER_M`), the rough is the buffer and
   the clearance does not reach through it (a tee in a 3 m ring of rough used to leave ~5 m of bare deep
   rough around the ring);
+- rock slabs (surface class `slab`: a mesh cut out by Blender's `golfmap.cut_out`, `Spline_<name>_Rock_-_Mesh`):
+  bare, no clearance around them; grass reaches in over its edge whatever lies beside it (taking it only
+  from deep rough left a straight bare mesh edge where a slab met mown rough)
+  (`SLAB_FRINGE_M` 0.4 m x 0..2 by noise: most edge cells, so no mesh edge shows; 0.6 m took a metre all
+  round, half of a 5 m slab) and patches cover `SLAB_PATCH_COVER` 15 % of it (exempt from the minimum zone
+  area). Where a slab lies in mown rough, a ragged skirt of grass also grows out into the rough
+  (`SLAB_SKIRT_M` 0.5 m x 0..2 by noise), so the rock's edge is broken up from both sides. The painted klippor (`rock`) keep their 0.2 m clearance;
 - times a 10 m ramp to 0 at the reach limit (75 m from rough/semi/fairway/green/tee/bunker);
 - times a 1.5 m ramp to 0 at buildings (+4 m);
 - paths and roads are **not in the weight field**: it runs on under them (the path mesh's `other` cells and
@@ -318,6 +325,30 @@ there) or Draw's selection panel, or `bun run zones -- creek <course> <id> --pal
   same material block and tints work; ~11 m canopy -> scale 0.2-0.32 (2-3.5 m); its CollisionObject1
   sphere has no renderer (VSP colliders are off). Untinted it read yellow-lime: tint `#9a9ea4`. The path to the wooden footbridge stops at the ditch in
   the app, so the thicket closes the crossing; extend the path over the creek to keep it clear.
+
+## Patched fields (hand-drawn variant zones inside a deep rough field)
+
+A deep rough field that should read as several covers is a set of **hand-drawn** `rough_tall/<variant>`
+zones tiling it. Vreta, between 15 and 17 (deep_rough `eb42b6b1`, `39609929`, `9224059c`, 2026-10-10,
+from the 26 Sept reference photos): `blond` (closed straw sward on an olive foot - the `fresh` textures
+and density, straw tints), `hummock` (low dull tussocks along the rim and the pale north band) and
+`weedy` (thistle heads, dark seed stems, dry umbels over an olive base).
+
+- **Re-planting keeps them**: Plant vegetation / `grass:zones` replace generated zones only, and a drawn
+  replace zone takes its ground from the generated tall rough under it. Checked by a real re-plant: same
+  zone ids, standard tall rough 0.00 in the fields' mask.
+- **Tile, never overlap**: drawn zones add up, so two overlapping patches plant double. Cut the field
+  into disjoint polygons and load them in one go: `bun run zones -- add <course> rough_tall
+  --from-geojson <file> --feather 0.5 --noise 0` (`properties.variant` per polygon).
+- **Patches for another field**: `pipeline/rough_patches.py <out.geojson> <preview.png> <deep_rough id>`
+  reads them off the orthophoto (dark + textured = weedy, pale mottled + a ragged rim = hummock, rest
+  blond); look at the preview before adding. Seeded per field id, so a re-run on a planted field gives a
+  new layout: remove that field's patch zones first. A patch is an ordinary zone in the web editor.
+- **A moved field outline does not move its patches**: they are copies of the outline at the time. After
+  reshaping the deep rough, remove the field's patch zones and cut it again.
+- **Colour targets** (same shot, linear luminance, against the mown rough beside the field): blond ~2.0x,
+  hue ~44, less saturated than the rough; hummock ~1.0-1.2x (first pass rendered as bare red soil: brown
+  tufts sparse, tussock tint light); weedy ~0.8x the blond. Open: hummocks read as a flat mat at eye height.
 
 ## Later: variety
 

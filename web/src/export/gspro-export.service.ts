@@ -205,7 +205,7 @@ export class GsproExportService {
             this.orthoSources.set(sources);
             // Preselect what the map is showing (the pristine copy), else the
             // newest vintage — the list is newest first.
-            const preferred = sources.find(s => s.active && !s.patched) ?? sources[0];
+            const preferred = sources.find(s => s.active && !s.cleaned) ?? sources[0];
             this.orthoSource.set(preferred?.source ?? '');
         } catch (e) {
             this.error.set(messageOf(e));
@@ -416,7 +416,7 @@ export class GsproExportService {
      * when there is one, since that is where the Clean tool's baked edits
      * are) with the cleaned section's boxes as ticked, then put its -meshes
      * file onto the course meshes in the open Unity editor. With both boxes
-     * off it is the patched photo alone. Unity must be open.
+     * off it is the cleaned photo alone. Unity must be open.
      */
     async runUnityOrtho(): Promise<boolean> {
         const courseId = this.courseId.peek();
@@ -431,11 +431,11 @@ export class GsproExportService {
         return this.runExport({ kind: 'unity-ortho', source, darken, ...tint, ...floor, ...this.buildingsValue() });
     }
 
-    /** The source `runUnityOrtho` renders: the picked vintage's patched copy when the site has one, else the picked file. */
+    /** The source `runUnityOrtho` renders: the picked vintage's cleaned photo when the site has one, else the picked file. */
     get unityOrthoSource(): string {
         const picked = this.orthoSource.peek();
         const collection = this.pickedCollection;
-        return this.orthoSources.peek()?.find(s => s.patched && s.collection === collection)?.source ?? picked;
+        return this.orthoSources.peek()?.find(s => s.cleaned && s.collection === collection)?.source ?? picked;
     }
 
     /** The cleaned export's fields (nothing for the plain one); false with the error set when it has nothing to do or a bad mix. */
@@ -673,9 +673,9 @@ export function jobLabel(job: GsproExportJob | null, now = Date.now()): string {
     return job.status === 'succeeded' ? `Last export: ${job.label}, done in ${elapsed}` : `Last export: ${job.label} failed after ${elapsed}`;
 }
 
-/** Label for a vintage in the picker: `orto-l2-2025 (shown on map)`, `orto-l2-2025, patched`. */
+/** Label for a vintage in the picker: `orto-l2-2025 (shown on map)`, `orto-l2-2025 (cleaned)`. */
 export function orthoSourceLabel(s: GsproOrthoSource): string {
-    const notes = [s.patched ? 'patched' : '', s.active && !s.patched ? 'shown on map' : ''].filter(Boolean);
+    const notes = [s.cleaned ? 'cleaned' : '', s.active && !s.cleaned ? 'shown on map' : ''].filter(Boolean);
     return notes.length ? `${s.collection} (${notes.join(', ')})` : s.collection;
 }
 

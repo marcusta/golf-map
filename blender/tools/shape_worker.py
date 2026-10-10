@@ -43,6 +43,7 @@ import sys
 import threading
 import time
 import traceback
+from types import SimpleNamespace
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 import bpy
@@ -185,8 +186,21 @@ class Worker:
         out = []
         for path, layer in layers:
             for op in layer["ops"]:
+                canon = sa.op_canonical(op)
+                if op["op"] == "golfmap.path_transition":
+                    # Transition settings live outside the constant generated op.
+                    # Diff them before sync's unchanged fast path, independently
+                    # of split_surfaces so a paint edit does not rebuild roads.
+                    import shape_surfaces
+                    ctx = self.app.ctx if self.app is not None else SimpleNamespace(svg_file=self.args.svg)
+                    paths = sa._split_sidecar(ctx, op)
+                    try:
+                        dependency = shape_surfaces.load_sidecar(paths).get("transitions", [])
+                    except (OSError, ValueError) as error:
+                        dependency = {"missing": paths, "error": str(error)}
+                    canon += json.dumps(dependency, sort_keys=True, separators=(",", ":"))
                 out.append({"key": sa.op_key(layer, op), "layer": layer, "path": path, "op": op,
-                            "canon": sa.op_canonical(op)})
+                            "canon": canon})
         return out
 
     def load(self, body):
@@ -198,7 +212,6 @@ class Worker:
         if not blend or not layers_dir:
             raise HttpError(400, "blend and layersDir are needed (body or --blend/--layers)")
         layers_dir = os.path.abspath(layers_dir)
-        ops = self.op_list(layers_dir)
         source, conformed, prepared = self.ensure_conformed(blend)
         self.app = None
         self.set_status(phase="opening " + os.path.basename(conformed), blend=source or conformed, conformed=conformed,
@@ -210,6 +223,8 @@ class Worker:
         app = sa.Applier(svg=body.get("svg") or a.svg, sidecar=body.get("sidecar") or a.sidecar,
                          cache=body.get("cache", not a.no_cache), history=self.history)
         sa.object_mode()
+        self.app = app
+        ops = self.op_list(layers_dir)
         self.ops, self.entries = ops, {}
         t_apply = time.time()
         for i, rec in enumerate(ops):
@@ -351,6 +366,8 @@ class Worker:
 
     def sync_ops(self, body, t0):
         app, old = self.app, self.ops
+        # Any subsequent planner must see freshly exported sidecar content.
+        app.ctx.__dict__.pop("_sidecars", None)
         new = self.op_list(self.status["layersDir"])
         d = self.diff(old, new)
         base = {"changedOps": [new[j]["key"] for j in d["changedNew"]],

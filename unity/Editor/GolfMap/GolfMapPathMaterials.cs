@@ -77,6 +77,55 @@ namespace GolfMap.Editor
 
         static bool IsBlend(string name) { return name.EndsWith("_-_Blend", StringComparison.Ordinal); }
 
+        // A path mesh with green paint: plain path meshes are all red.
+        static bool FadePainted(MeshRenderer r)
+        {
+            var mf = r.GetComponent<MeshFilter>();
+            if (GolfMapPathTransitionMetadata.IsPainted(mf)) return true;
+            var colors = mf != null && mf.sharedMesh != null ? mf.sharedMesh.colors : null;
+            return colors != null && colors.Length > 0 && colors.Any(c => c.g >= 0.25f);
+        }
+
+        static bool DirtPainted(MeshRenderer r)
+        {
+            var mf = r.GetComponent<MeshFilter>();
+            var colors = mf != null && mf.sharedMesh != null ? mf.sharedMesh.colors32 : null;
+            return colors != null && colors.Any(c => c.b > 1) && FadePainted(r);
+        }
+
+        static string TransitionKey(string shape, string surface) { return shape + "|" + surface; }
+
+        // The exported convention is explicit: a fully grass/dirt-painted end may have no green left.
+        // Also recognise the earlier FBX-only prototype, whose sidecar predates transitions.
+        static HashSet<string> TransitionRoads(string sidecar, List<MeshRenderer> all,
+            Dictionary<string, string> shapes, ICollection<string> surfaces)
+        {
+            var result = new HashSet<string>(StringComparer.Ordinal);
+            if (!string.IsNullOrEmpty(sidecar) && File.Exists(sidecar))
+            {
+                var entries = GolfMapJsonDoc.ParseObject(File.ReadAllText(sidecar)).Array("transitions");
+                if (entries != null) foreach (var entry in entries.OfType<GolfMapJsonObject>())
+                {
+                    var treatments = entry.Array("transitions");
+                    if (entry.String("shape") != null && treatments != null && treatments.Count > 0)
+                        result.Add(TransitionKey(entry.String("shape"), entry.String("surface")));
+                }
+            }
+            foreach (var r in all.Where(DirtPainted))
+            {
+                string shape;
+                var surface = SurfaceOf(r.name, shapes, surfaces, out shape);
+                if (shape != null) result.Add(TransitionKey(shape, surface));
+            }
+            foreach (var r in all.Where(r => GolfMapPathTransitionMetadata.IsPainted(r.GetComponent<MeshFilter>())))
+            {
+                string shape;
+                var surface = SurfaceOf(r.name, shapes, surfaces, out shape);
+                if (shape != null) result.Add(TransitionKey(shape, surface));
+            }
+            return result;
+        }
+
         // What an object wore before this tool touched it.
         sealed class Record { public string material, channels, physic; }
 
@@ -93,6 +142,8 @@ namespace GolfMap.Editor
             public Dictionary<string, Look> looks = new Dictionary<string, Look>(StringComparer.Ordinal);
             public string unknownSurface = "asphalt", baseMaterial = DefaultBase;
             public List<string[]> sharpPairs = new List<string[]>();
+            public Color transitionDirtTint = new Color(89f / 255, 83f / 255, 72f / 255, 1);
+            public double transitionPathStrength = 3, transitionDirtStrength = 1;
             public bool Sharp(string a, string b)
             {
                 return a == b || sharpPairs.Any(p => (p[0] == a && p[1] == b) || (p[0] == b && p[1] == a));
@@ -108,6 +159,7 @@ namespace GolfMap.Editor
             public BunkerPaintChannel pathCh = BunkerPaintChannel.Red, farCh = BunkerPaintChannel.Black, nbCh = BunkerPaintChannel.Red;
             public Material neighbour;
             public string paint;   // inner/outer tallies, for the report
+            public bool transition;
         }
 
         internal static Dictionary<string, object> Apply(string look, bool dryRun, ICollection<string> only = null, string sidecarPath = null)
@@ -184,6 +236,7 @@ namespace GolfMap.Editor
             result["sidecar"] = shapes != null ? sidecarPath
                 : "(none: " + (sidecarPath ?? "the course names no export folder") + ") - every path mesh is " + spec.unknownSurface;
             var roads = new Roads(all, shapes, spec.looks.Keys);
+            var transitionRoads = TransitionRoads(sidecarPath, all, shapes, spec.looks.Keys);
             Physics.SyncTransforms();
 
             // 1. the plan: every object's surface, and for blends the paint and the neighbour (read-only, also dry runs)
@@ -205,11 +258,30 @@ namespace GolfMap.Editor
                 var surface = SurfaceOf(r.name, shapes, spec.looks.Keys, out shape);
                 if (surface == null) { surface = spec.unknownSurface; if (shapes != null) unnamed.Add(r.name); }
                 if (!spec.looks.ContainsKey(surface)) { problems.Add(r.name + ": surface '" + surface + "' has no look in " + SpecFile); continue; }
-                var p = new Plan { r = r, rec = rec, surface = surface, shape = shape, kind = "mesh" };
+                var p = new Plan { r = r, rec = rec, surface = surface, shape = shape, kind = "mesh",
+                    transition = transitionRoads.Contains(TransitionKey(shape, surface)) };
                 if (IsBlend(r.name)) PlanBlend(p, roads, spec, problems);
-                p.target = folder + "Surfaces/" + Safe(TargetName(p)) + ".mat";
                 plans.Add(p);
             }
+            // A path mesh painted the fade way (green = the path, red = grass: a road end that fades out) wears the
+            // fringe material of its own strips, so the paint runs across the seam between the two meshes unbroken.
+            foreach (var p in plans.Where(q => q.kind == "mesh" && FadePainted(q.r)).ToList())
+            {
+                var strip = plans.FirstOrDefault(q => q.kind == "fringe" && q.shape == p.shape && q.surface == p.surface);
+                if (strip == null)
+                    foreach (var r in all.Where(r => IsBlend(r.name) && !meshes.Contains(r)))
+                    {
+                        string shape;
+                        if (SurfaceOf(r.name, shapes, spec.looks.Keys, out shape) != p.surface || shape != p.shape) continue;
+                        var q = new Plan { r = r, surface = p.surface, shape = shape, kind = "mesh", transition = p.transition };
+                        PlanBlend(q, roads, spec, new List<string>());
+                        if (q.kind == "fringe" && q.pathCh == BunkerPaintChannel.Green) { strip = q; break; }
+                    }
+                if (strip == null) { problems.Add(p.r.name + ": fade paint but no faded strip of its road to take the material from; wears its surface"); continue; }
+                p.kind = "fringe"; p.neighbour = strip.neighbour; p.pathCh = strip.pathCh; p.farCh = strip.farCh; p.nbCh = strip.nbCh;
+                p.note = "fade paint: the material of " + strip.r.name;
+            }
+            foreach (var p in plans) p.target = folder + "Surfaces/" + Safe(TargetName(p)) + ".mat";
 
             // 2. the arrays and materials, then assign
             var built = new Dictionary<string, Material>(StringComparer.Ordinal);
@@ -273,7 +345,7 @@ namespace GolfMap.Editor
                     // OPCD's blend convention (path red, far black, the neighbour painted red) needs no qualifier.
                     if (p.pathCh != BunkerPaintChannel.Red || p.farCh != BunkerPaintChannel.Black || p.nbCh != BunkerPaintChannel.Red)
                         name += " (path " + p.pathCh + ", far " + p.farCh + " from " + p.nbCh + ")";
-                    return name;
+                    return name + (p.transition ? " (transition dirt Blue)" : "");
                 case "pair": return p.surface + " to " + p.other + (p.pathCh != BunkerPaintChannel.Red || p.farCh != BunkerPaintChannel.Black ? " (path " + p.pathCh + ", far " + p.farCh + ")" : "");
                 default: return p.surface;
             }
@@ -339,6 +411,8 @@ namespace GolfMap.Editor
             p.paint = "path edge " + inner + ", far edge " + outer;
             if (inner.total == 0 || outer.total == 0) { Same(p, "no edge on its road"); problems.Add(name + ": " + (inner.total == 0 ? "no edge on its road's boundary" : "no far edge") + ", wears its road's surface"); return; }
             p.pathCh = inner.Top; p.farCh = outer.Top;
+            // Dirt/grass can dominate even the inner edge. Never infer a transition's roles from its weights.
+            if (p.transition) { p.pathCh = BunkerPaintChannel.Green; p.farCh = BunkerPaintChannel.Red; }
             if (p.pathCh == p.farCh) { Same(p, "one colour both edges"); problems.Add(name + ": paint " + p.pathCh + " on both edges, wears its road's surface"); return; }
 
             // past the far edge, straight down
@@ -661,6 +735,21 @@ namespace GolfMap.Editor
                 if (p.nbCh != p.farCh) GolfMapBunkerChannels.CopyChannel(source, p.nbCh, m, p.farCh);
                 SetSurfaceChannel(m, p.pathCh, p.surface, lk, s);
                 m.SetFloat(GolfMapBunkerChannels.Prefix(p.pathCh) + "BlendStrength", (float)lk.fringeBlendStrength);
+                if (p.transition)
+                {
+                    Look dirt;
+                    if (!spec.looks.TryGetValue("dirt", out dirt) || !s.index.ContainsKey("dirt"))
+                        throw new BridgeError("Path transitions require a dirt surface with available textures in " + SpecFile + ".");
+                    SetSurfaceChannel(m, BunkerPaintChannel.Blue, "dirt", dirt, s);
+                    m.SetColor("_BlueDetailColorTint", spec.transitionDirtTint);
+                    // Keep the distant colour consistent with the independently tinted transition dirt.
+                    var originalTint = dirt.tint;
+                    dirt.tint = spec.transitionDirtTint;
+                    m.SetColor("_BlueBaseColorTint", BaseTint(dirt, s.mean["dirt"], s.baseMean));
+                    dirt.tint = originalTint;
+                    m.SetFloat("_BlueBlendStrength", (float)spec.transitionDirtStrength);
+                    m.SetFloat("_GreenBlendStrength", (float)spec.transitionPathStrength);
+                }
             }
             else
             {
@@ -829,6 +918,7 @@ namespace GolfMap.Editor
                 { "unknownSurface", "asphalt" },
                 { "baseMaterial", DefaultBase },
                 { "sharpPairs", new List<object> { new List<object> { "asphalt", "concrete" } } },
+                { "transitions", new Dictionary<string, object> { { "dirtTint", "#595348" }, { "pathBlendStrength", 3 }, { "dirtBlendStrength", 1 } } },
                 { "surfaces", new Dictionary<string, object>
                     {
                         // Tuned on Vreta 2026-10-04 at 1.7 m eye height (unity/README.md "Cart paths"), to read as the
@@ -896,6 +986,19 @@ namespace GolfMap.Editor
             }
             if (root.String("format") != SpecFormat) throw new BridgeError(path + " is not a " + SpecFormat + " file.");
             var spec = new Spec { unknownSurface = root.String("unknownSurface") ?? "asphalt", baseMaterial = root.String("baseMaterial") ?? DefaultBase };
+            var transition = root.Object("transitions");
+            if (transition != null)
+            {
+                Color tint;
+                if (!ColorUtility.TryParseHtmlString(transition.String("dirtTint") ?? "#595348", out tint))
+                    throw new BridgeError("transitions.dirtTint must be a HTML colour in " + path);
+                spec.transitionDirtTint = tint;
+                spec.transitionPathStrength = transition.Number("pathBlendStrength", 3);
+                spec.transitionDirtStrength = transition.Number("dirtBlendStrength", 1);
+                if (double.IsNaN(spec.transitionPathStrength) || double.IsInfinity(spec.transitionPathStrength) || spec.transitionPathStrength <= 0
+                    || double.IsNaN(spec.transitionDirtStrength) || double.IsInfinity(spec.transitionDirtStrength) || spec.transitionDirtStrength <= 0)
+                    throw new BridgeError("Transition blend strengths must be finite and positive in " + path);
+            }
             var pairs = root.Array("sharpPairs");
             if (pairs != null)
                 foreach (var pr in pairs.OfType<List<object>>())

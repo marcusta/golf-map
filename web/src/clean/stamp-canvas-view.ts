@@ -1,11 +1,12 @@
-// Map view of one clone-stamp preview surface.
+// Map view of one block of changed pixels of the cleaned photo (clean-tool.service.ts).
 //
-// The surface pixels live in a persistent 2D canvas that the map reads
-// through a MapLibre CanvasSource (animate: false). A draw copies only the
-// changed rectangle into the canvas and asks the source for one texture
-// upload. The source and its raster layer are added once and stay until
-// remove(); a style reload or a recreated map gets them back on the next
-// draw.
+// The block's pixels live in a persistent 2D canvas that the map reads
+// through a MapLibre CanvasSource (animate: false). The canvas starts
+// transparent and only stamped pixels are ever opaque, so the photo's own
+// tiles show everywhere else. A put copies one changed rectangle into the
+// canvas and asks the source for one texture upload. The source and its
+// raster layer are added once and stay until remove(); a style reload or a
+// recreated map gets them back on the next put.
 //
 // With terrain on, raster layers are draped through render-to-texture tiles
 // that MapLibre caches by source revision. A canvas texture update does not
@@ -17,15 +18,14 @@
 
 import type { Map as MaplibreMap } from 'maplibre-gl';
 import type { MapService } from '../map/map.service';
-import type { PxRect } from './clean-stamp';
 
 export type SurfaceCorners = [[number, number], [number, number], [number, number], [number, number]];
 
-/** One preview surface on the map. */
+/** One preview block on the map. */
 export interface StampSurfaceView {
-    /** Show `pixels` (size x size RGBA). `rect` limits the copy to what
-     * changed; null copies everything. */
-    draw(pixels: Uint8ClampedArray, rect: PxRect | null): void;
+    /** Replace the `w` x `h` rectangle at (`x`, `y`) with `patch` (RGBA;
+     * alpha 0 lets the photo show through). */
+    put(patch: Uint8ClampedArray, x: number, y: number, w: number, h: number): void;
     /** Take the source and layer off the map. Idempotent. */
     remove(): void;
 }
@@ -57,7 +57,7 @@ export const canvasStampView: StampViewFactory = (mapService, id, size, corners)
     canvas.height = size;
     const g = canvas.getContext('2d');
     // The map instance the source was added to; a different (recreated) map
-    // or a style that lost the source gets a fresh add and a full copy.
+    // or a style that lost the source gets a fresh add of the same canvas.
     let addedTo: MaplibreMap | null = null;
     let removed = false;
 
@@ -65,8 +65,8 @@ export const canvasStampView: StampViewFactory = (mapService, id, size, corners)
     const lats = corners.map(c => c[1]);
     const bbox = { west: Math.min(...lngs), east: Math.max(...lngs), south: Math.min(...lats), north: Math.max(...lats) };
 
-    const ensureOnMap = (map: MaplibreMap): boolean => {
-        if (addedTo === map && map.getSource(id)) return false;
+    const ensureOnMap = (map: MaplibreMap): void => {
+        if (addedTo === map && map.getSource(id)) return;
         if (map.getLayer(id)) map.removeLayer(id);
         if (map.getSource(id)) map.removeSource(id);
         map.addSource(id, { type: 'canvas', canvas, coordinates: corners, animate: false });
@@ -75,7 +75,6 @@ export const canvasStampView: StampViewFactory = (mapService, id, size, corners)
             map.getLayer(STAMP_VIEW_BEFORE_ID) ? STAMP_VIEW_BEFORE_ID : undefined,
         );
         addedTo = map;
-        return true;
     };
 
     const freeDrapeUnderSurface = (map: MaplibreMap): void => {
@@ -103,17 +102,17 @@ export const canvasStampView: StampViewFactory = (mapService, id, size, corners)
     };
 
     return {
-        draw(pixels, rect) {
+        put(patch, x, y, w, h) {
             if (removed) return;
+            // The canvas is the block's picture: keep it current even while
+            // the map is away, so a re-add shows everything.
+            if (g && w > 0 && h > 0) {
+                g.putImageData(new ImageData(patch as Uint8ClampedArray<ArrayBuffer>, w, h), x, y);
+            }
             const map = mapService.map.peek();
             if (!map || !mapService.ready.peek()) return;
             try {
-                const fresh = ensureOnMap(map);
-                const r = fresh || !rect ? { x0: 0, y0: 0, x1: size, y1: size } : rect;
-                if (g && r.x1 > r.x0 && r.y1 > r.y0) {
-                    const image = new ImageData(pixels as Uint8ClampedArray<ArrayBuffer>, size, size);
-                    g.putImageData(image, 0, 0, r.x0, r.y0, r.x1 - r.x0, r.y1 - r.y0);
-                }
+                ensureOnMap(map);
                 // play() + pause() is CanvasSource's one-shot upload: pause
                 // runs prepare() while playing, which re-uploads the canvas.
                 const source = map.getSource(id) as PlayableCanvasSource | undefined;

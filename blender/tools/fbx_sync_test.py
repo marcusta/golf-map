@@ -26,6 +26,10 @@ compare = argv[argv.index("--compare") + 1] if "--compare" in argv else None
 ctx = bpy.context
 folder = tempfile.mkdtemp(prefix="fbx_sync_test_")
 
+# Also runnable on factory startup, without reading a course or saving a blend.
+while sum(o.type == "MESH" for o in ctx.visible_objects) < 5:
+    bpy.ops.mesh.primitive_cube_add(location=(len(bpy.data.objects)*3,0,0))
+
 meshes = sorted((o for o in ctx.visible_objects if o.type == "MESH" and not o.name.startswith("Gap_Issue")), key=lambda o: len(o.data.vertices))
 keep = meshes[:5]
 for o in ctx.visible_objects:
@@ -72,6 +76,17 @@ if compare:
 before = mtimes()
 r = run()
 check("unchanged: nothing exported", r["export"] == {} and mtimes() == before)
+
+marker_object=keep[0]
+old_marker=marker_object.get('golfmap_path_transition')
+marker_object['golfmap_path_transition']='fingerprint-marker-only-test'
+r=run()
+check('marker only addition re-exports exactly its mesh',r['export']=={names[0]:'changed'})
+del marker_object['golfmap_path_transition']
+if old_marker is not None: marker_object['golfmap_path_transition']=old_marker
+r=run()
+check('marker only removal/restoration re-exports exactly its mesh',r['export']=={names[0]:'changed'})
+before=mtimes()
 
 a, b = keep[0], keep[1]
 a.data.vertices[0].co.z += 0.05

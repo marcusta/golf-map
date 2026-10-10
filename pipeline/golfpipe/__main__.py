@@ -17,10 +17,11 @@ Commands:
   detect-trees      Lidar nDSM tree-canopy polygons -> typed GeoJSON (trees)
   detect-water      Lidar class-9 presence polygons -> typed GeoJSON (water)
   clean-ortho       LaMa-inpaint canopy+shadows out of the playable corridor (+ --woodland: forest floor) -> .clean.tif
-  bake-ortho-patch  Windowed bake of logged entries (--seq repeatable: LaMa masks + clone-stamp strokes) into the working .patched.tif + one union-subtree retile
-  apply-ortho-patches  Full replay: re-bake every logged entry onto the pristine ortho + retile the affected subtree
-  export-ortho-square  Cleaned photo -> one square PNG/JPEG on the site's fixed frame (sim-frame.json) + world file + export.json
-  import-ortho-square  Edited export -> the changed pixels as one raster patch PNG (diff against the export) + the log entry fields as JSON
+  cleaned-init      Ortho GeoTIFF -> the site's cleaned photo: one square 8192 px RGB GeoTIFF on the inner terrain square
+  cleaned-bake      A batch of Clean-tool edits (LaMa masks, clone-stamp strokes) written into the cleaned photo + retile under them
+  cleaned-replace   Any image of the cleaned photo's pixel size (or an undo snapshot) -> the cleaned photo + retile under what changed
+  cleaned-patch     Rectangles of finished pixels (the Clean tool's strokes) written into the cleaned photo + retile under them
+  cleaned-export    The cleaned photo -> PNG, JPEG or raw RGB bytes
   tile-ortho        GeoTIFF -> WebP XYZ tile pyramid
   tile-terrain      GeoTIFF (DEM) -> Terrain-RGB PNG XYZ tile pyramid
   canopy            Lidar -> canopy / canopy-color / surface tile pyramids + manifest update (--trees-out: tree polygons too)
@@ -45,6 +46,7 @@ from pathlib import Path
 from golfpipe import buildings
 from golfpipe.sculpt import SculptError
 from golfpipe import clean_ortho
+from golfpipe import cleaned
 from golfpipe import commands
 from golfpipe import dem_analysis
 from golfpipe import dem_edit
@@ -53,7 +55,6 @@ from golfpipe import detect_water
 from golfpipe import grid_dem as grid_dem_mod
 from golfpipe import hydro
 from golfpipe import sources
-from golfpipe import square_frame
 from golfpipe import trees_stems
 from golfpipe import osm
 from golfpipe import patches
@@ -337,67 +338,52 @@ def build_parser() -> argparse.ArgumentParser:
     )
     p.add_argument("--seed", type=int, default=0, help="forest-floor noise seed (default 0)")
 
-    p = sub.add_parser(
-        "apply-ortho-patches",
-        help="Full replay: re-inpaint every logged mask onto the pristine ortho and retile the affected pyramid subtree",
-    )
-    p.add_argument("--ortho", required=True, help="PRISTINE source ortho GeoTIFF (EPSG:3006) — never modified")
-    p.add_argument("--patches-dir", dest="patches_dir", required=True, help="directory with patches.json + <n>.png mask files (see golfpipe/patches.py)")
-    p.add_argument("--out", help="output patched GeoTIFF (default: <ortho stem>.patched.tif alongside the source; must differ from --ortho)")
-    p.add_argument("--tiles-out", dest="tiles_out", help="ortho tile tree to rewrite affected tiles in (the sparse ortho-sim overlay under the dual-photo-state model; omit to skip retiling)")
-    p.add_argument("--pristine-tiles", dest="pristine_tiles", help="read-only pristine flat ortho tree — lower-zoom parents read missing children from it when --tiles-out is a sparse sim overlay")
-    p.add_argument("--minzoom", type=int, default=commands.DEFAULT_ORTHO_MINZOOM)
-    p.add_argument("--maxzoom", type=int, default=commands.DEFAULT_ORTHO_MAXZOOM)
-    p.add_argument(
-        "--extra-bounds", dest="extra_bounds", action="append", default=[],
-        help="extra west,south,east,north EPSG:3857 bounds to retile (repeatable) — pass a reverted patch's bounds so its tiles rewrite too",
-    )
-    p.add_argument("--webp-quality", type=int, default=80)
-    p.add_argument("--weights", help="LaMa TorchScript checkpoint path (default: $GOLFPIPE_LAMA_WEIGHTS; unused when the log is empty)")
-    p.add_argument("--device", help="torch device (default: auto — mps if available, else cuda, else cpu)")
+    def _cleaned_tile_args(p):
+        p.add_argument("--tiles-out", dest="tiles_out", help="the sparse ortho-sim tile tree to rewrite the changed tiles in (omit to skip retiling)")
+        p.add_argument("--pristine-tiles", dest="pristine_tiles", help="read-only pristine ortho tile tree: lower-zoom parents read the children the sim tree lacks from it")
+        p.add_argument("--minzoom", type=int, default=commands.DEFAULT_ORTHO_MINZOOM)
+        p.add_argument("--maxzoom", type=int, default=commands.DEFAULT_ORTHO_MAXZOOM)
+        p.add_argument("--webp-quality", type=int, default=80)
 
     p = sub.add_parser(
-        "bake-ortho-patch",
-        help="Incremental accept: windowed bake of the given logged entries (LaMa for masks, brush engine for stamp strokes) into the working .patched.tif + one retile of their union subtree",
+        "cleaned-init",
+        help="Create the site's cleaned photo (golfpipe/cleaned.py) from an ortho GeoTIFF; prints what it wrote as JSON",
     )
-    p.add_argument("--ortho", required=True, help="PRISTINE source ortho GeoTIFF (EPSG:3006) — never modified")
-    p.add_argument("--patches-dir", dest="patches_dir", required=True, help="directory with patches.json + <n>.png mask files (see golfpipe/patches.py)")
-    p.add_argument("--seq", type=int, action="append", default=None,
-                   help="log seq to bake (repeatable — a batch bakes in seq order with ONE retile pass; default: the last entry)")
-    p.add_argument("--out", help="working patched GeoTIFF (default: <ortho stem>.patched.tif; created by full replay when missing/stale)")
-    p.add_argument("--tiles-out", dest="tiles_out", help="ortho tile tree to rewrite affected tiles in (the sparse ortho-sim overlay under the dual-photo-state model; omit to skip retiling)")
-    p.add_argument("--pristine-tiles", dest="pristine_tiles", help="read-only pristine flat ortho tree — lower-zoom parents read missing children from it when --tiles-out is a sparse sim overlay")
-    p.add_argument("--minzoom", type=int, default=commands.DEFAULT_ORTHO_MINZOOM)
-    p.add_argument("--maxzoom", type=int, default=commands.DEFAULT_ORTHO_MAXZOOM)
-    p.add_argument("--webp-quality", type=int, default=80)
-    p.add_argument("--weights", help="LaMa TorchScript checkpoint path (default: $GOLFPIPE_LAMA_WEIGHTS)")
-    p.add_argument("--device", help="torch device (default: auto — mps if available, else cuda, else cpu)")
+    p.add_argument("--ortho", required=True, help="source ortho GeoTIFF: the pristine photo, or a working raster to carry its edits over; never modified")
+    p.add_argument("--square-3006", dest="square_3006", required=True, help="x0,y0,x1,y1 in EPSG:3006 metres: the inner terrain square")
+    p.add_argument("--out", required=True, help="the cleaned photo to write (ortho-<collection>.cleaned.tif); must not exist")
+    p.add_argument("--size", type=int, default=cleaned.CLEANED_SIZE, help=f"pixels per side (default {cleaned.CLEANED_SIZE})")
 
     p = sub.add_parser(
-        "export-ortho-square",
-        help="Export the cleaned photo as one square image on the site's fixed frame, for an external image editor; prints export.json",
+        "cleaned-bake",
+        help="Write a batch of Clean-tool edits into the cleaned photo, in seq order, and retile under them; prints counts as JSON",
     )
-    p.add_argument("--ortho", required=True, help="the working .patched.tif, brought up to date first (the pristine ortho for a site never patched)")
-    p.add_argument("--frame", required=True, help="the site's sim-frame.json; created from --bounds-wgs84 when missing, never changed")
-    p.add_argument("--out-dir", dest="out_dir", required=True, help="this export's own directory (exports/<n>); must not hold an export yet")
-    p.add_argument("--seq", type=int, required=True, help="export number <n>, names ortho-sim-<n>.png")
-    p.add_argument("--log-seq", dest="log_seq", type=int, required=True, help="highest patch-log seq the raster contains (0 = empty log); recorded in export.json")
-    p.add_argument("--size", type=int, help=f"pixels per side when the frame is created (default {square_frame.DEFAULT_SIZE}); must match an existing frame")
-    p.add_argument("--format", dest="format", choices=("png", "jpg"), default="png", help="png (lossless, the editing format; default) or jpg (q95, a Unity texture)")
-    p.add_argument("--bounds-wgs84", dest="bounds_wgs84", help="west,south,east,north in WGS84 degrees: squared into the frame when --frame does not exist yet")
+    p.add_argument("--cleaned", required=True, help="the cleaned photo, changed in place")
+    p.add_argument("--edits-dir", dest="edits_dir", required=True, help="directory with this batch: patches.json (mask and stamp entries) + its mask PNGs")
+    _cleaned_tile_args(p)
+    p.add_argument("--weights", help="LaMa TorchScript checkpoint path (default: $GOLFPIPE_LAMA_WEIGHTS; unused without mask edits)")
+    p.add_argument("--device", help="torch device (default: auto)")
 
     p = sub.add_parser(
-        "import-ortho-square",
-        help="Diff an edited export against the export it came from and write the changed pixels as one raster patch PNG; prints the log entry fields",
+        "cleaned-replace",
+        help="Make the cleaned photo show an image of the same pixel size (PNG/JPEG/TIFF, transparent parts keep the photo) and retile under what changed; prints the change as JSON",
     )
-    p.add_argument("--ortho", required=True, help="the working .patched.tif (read for its extent only)")
-    p.add_argument("--patches-dir", dest="patches_dir", required=True, help="directory with patches.json; <seq>.png is written here")
-    p.add_argument("--export-dir", dest="export_dir", required=True, help="the export the image was edited from (exports/<n>, with export.json)")
-    p.add_argument("--image", required=True, help="the edited image, same pixel size as the export")
-    p.add_argument("--seq", type=int, required=True, help="the new patch-log seq; names <seq>.png")
-    p.add_argument("--tolerance", type=int, help=f"largest per-channel difference (0..254) still unchanged (default {commands.DEFAULT_IMPORT_TOLERANCE}); required for JPEG/WebP")
-    p.add_argument("--min-area-px", dest="min_area_px", type=int, default=commands.DEFAULT_IMPORT_MIN_AREA_PX,
-                   help=f"drop changed regions smaller than this many frame pixels (default {commands.DEFAULT_IMPORT_MIN_AREA_PX})")
+    p.add_argument("--cleaned", required=True, help="the cleaned photo, changed in place")
+    p.add_argument("--image", required=True, help="the image to take; read, never changed")
+    _cleaned_tile_args(p)
+
+    p = sub.add_parser(
+        "cleaned-patch",
+        help="Write rectangles of raw RGBA pixels into the cleaned photo and retile under them; prints counts as JSON",
+    )
+    p.add_argument("--cleaned", required=True, help="the cleaned photo, changed in place")
+    p.add_argument("--patches-dir", dest="patches_dir", required=True, help="directory with patches.json ([{x, y, w, h, file}]) and the raw RGBA files it names")
+    _cleaned_tile_args(p)
+
+    p = sub.add_parser("cleaned-export", help="Write the cleaned photo as a PNG, a JPEG or raw RGB bytes; prints the file as JSON")
+    p.add_argument("--cleaned", required=True, help="the cleaned photo")
+    p.add_argument("--out", required=True, help="the image file to write")
+    p.add_argument("--format", dest="format", choices=cleaned.EXPORT_FORMATS, default="png", help="png (lossless; default), jpg (q95) or rgb (raw bytes, 3 per pixel)")
 
     p = sub.add_parser("tile-ortho", help="Tile an orthophoto GeoTIFF into an XYZ WebP pyramid")
     p.add_argument("--input", required=True, help="input orthophoto GeoTIFF (any CRS)")
@@ -877,56 +863,42 @@ def main(argv: list[str] | None = None) -> int:
                 seed=args.seed,
             )
 
-        elif args.command == "apply-ortho-patches":
-            extra_bounds = []
-            for raw in args.extra_bounds:
-                parts = tuple(float(v) for v in raw.split(","))
-                if len(parts) != 4:
-                    parser.error("--extra-bounds must be west,south,east,north in EPSG:3857 metres")
-                extra_bounds.append(parts)
-            commands.cmd_apply_ortho_patches(
-                Path(args.ortho), Path(args.patches_dir),
-                out=Path(args.out) if args.out else None,
+        elif args.command == "cleaned-init":
+            try:
+                square = tuple(float(v) for v in args.square_3006.split(","))
+            except ValueError:
+                square = ()
+            if len(square) != 4:
+                parser.error("--square-3006 must be x0,y0,x1,y1 in EPSG:3006 metres")
+            cleaned.cmd_cleaned_init(Path(args.ortho), square, Path(args.out), size=args.size)
+
+        elif args.command == "cleaned-bake":
+            cleaned.cmd_cleaned_bake(
+                Path(args.cleaned), Path(args.edits_dir),
                 tiles_out=Path(args.tiles_out) if args.tiles_out else None,
-                minzoom=args.minzoom, maxzoom=args.maxzoom,
-                extra_bounds_3857=extra_bounds,
-                webp_quality=args.webp_quality,
-                weights=args.weights, device=args.device,
                 pristine_tiles=Path(args.pristine_tiles) if args.pristine_tiles else None,
+                minzoom=args.minzoom, maxzoom=args.maxzoom, webp_quality=args.webp_quality,
+                weights=args.weights, device=args.device,
             )
 
-        elif args.command == "bake-ortho-patch":
-            commands.cmd_bake_ortho_patch(
-                Path(args.ortho), Path(args.patches_dir),
-                seqs=args.seq,
-                out=Path(args.out) if args.out else None,
+        elif args.command == "cleaned-replace":
+            cleaned.cmd_cleaned_replace(
+                Path(args.cleaned), Path(args.image),
                 tiles_out=Path(args.tiles_out) if args.tiles_out else None,
-                minzoom=args.minzoom, maxzoom=args.maxzoom,
-                webp_quality=args.webp_quality,
-                weights=args.weights, device=args.device,
                 pristine_tiles=Path(args.pristine_tiles) if args.pristine_tiles else None,
+                minzoom=args.minzoom, maxzoom=args.maxzoom, webp_quality=args.webp_quality,
             )
 
-        elif args.command == "export-ortho-square":
-            bounds_wgs84 = None
-            if args.bounds_wgs84:
-                try:
-                    bounds_wgs84 = tuple(float(v) for v in args.bounds_wgs84.split(","))
-                except ValueError:
-                    bounds_wgs84 = ()
-                if len(bounds_wgs84) != 4:
-                    parser.error("--bounds-wgs84 must be west,south,east,north in WGS84 degrees")
-            commands.cmd_export_ortho_square(
-                Path(args.ortho), Path(args.frame), Path(args.out_dir),
-                seq=args.seq, log_seq=args.log_seq, size=args.size, fmt=args.format,
-                bounds_wgs84=bounds_wgs84,
+        elif args.command == "cleaned-patch":
+            cleaned.cmd_cleaned_patch(
+                Path(args.cleaned), Path(args.patches_dir),
+                tiles_out=Path(args.tiles_out) if args.tiles_out else None,
+                pristine_tiles=Path(args.pristine_tiles) if args.pristine_tiles else None,
+                minzoom=args.minzoom, maxzoom=args.maxzoom, webp_quality=args.webp_quality,
             )
 
-        elif args.command == "import-ortho-square":
-            commands.cmd_import_ortho_square(
-                Path(args.ortho), Path(args.patches_dir), Path(args.export_dir), Path(args.image),
-                seq=args.seq, tolerance=args.tolerance, min_area_px=args.min_area_px,
-            )
+        elif args.command == "cleaned-export":
+            cleaned.cmd_cleaned_export(Path(args.cleaned), Path(args.out), fmt=args.format)
 
         elif args.command == "tile-ortho":
             commands.cmd_tile_ortho(

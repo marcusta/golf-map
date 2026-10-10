@@ -42,7 +42,7 @@ export function isBuilderRoute(route: string): boolean {
  *   draw / furniture  — author course geometry and furniture
  *   sam               — SAM segmentation assist (models live on the builder)
  *   terrain-edit      — DEM smooth/flatten (terrain-edits API + a re-terrain job)
- *   clean             — ortho patching (ortho-patches API + LaMa)
+ *   clean             — photo cleaning (cleaned-photo API + LaMa)
  *
  * Measure and green analysis survive: they only read tiles and the DEM, which
  * is exactly what the VPS ships.

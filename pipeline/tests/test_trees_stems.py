@@ -308,3 +308,33 @@ def test_low_lobe_splits_off_a_tall_segment_but_a_sloping_skirt_does_not():
     # Lobes below the height floor are not split (a 3 m top has nothing under 0.6 * 3 m to give).
     low = np.where(raw > 0, 3.0, 0).astype(np.float32)
     assert split_low_lobes(low, segments, peaks, 1.0)[1] == peaks
+
+
+def test_a_solid_pale_low_object_is_a_rock_candidate_not_a_bush():
+    """A boulder and a bush of the same size and height: the boulder returns every pulse once
+    and is pale grey in the leaf-off photo, so it is left out and reported; the bush (split
+    pulses, brown twigs) stays, and so does a tall pale single-return crown (a dead tree)."""
+    from golfpipe.trees_stems import SolidObject
+    h = np.zeros((40, 60)); ground = np.full(h.shape, 60.0); transform = from_origin(0, 40, 1, 1)
+    h[10:13, 10:13] = 1.6; h[11, 11] = 1.9          # boulder, 9 m2
+    h[10:13, 30:33] = 1.6; h[11, 31] = 1.9          # bush, 9 m2
+    h[25:30, 45:50] = 12.0                          # tall, 25 m2
+    returns = np.full(h.shape, 2.0)
+    multi = np.zeros(h.shape); multi[10:13, 30:33] = 1.0          # half the bush's returns are from split pulses
+    rgb = np.full(h.shape + (3,), 120.0, dtype=np.float32)        # pale grey everywhere ...
+    rgb[10:13, 30:33] = (70.0, 55.0, 40.0)                        # ... but for the bush's brown twigs
+    solid: list[SolidObject] = []
+
+    stems = stems_from_ndsm(h, ground, transform, leaf_off_rgb=rgb, surface_count=returns, multi_count=multi, solid_objects=solid)
+
+    assert sorted((s.x, round(s.height_m, 1)) for s in stems) == [(31.5, 1.9), (47.5, 12.0)]
+    assert [o.row() for o in solid] == [[11.5, 28.5, 1.9, 9.0]]
+    # each signal alone is not enough: a pale bush, a solid dark object, and no ortho or no counts at all
+    pale = stems_from_ndsm(h, ground, transform, leaf_off_rgb=np.full_like(rgb, 120.0), surface_count=returns, multi_count=multi)
+    assert sorted(s.x for s in pale) == [31.5, 47.5]         # the pale bush stays: its pulses split
+    dark = stems_from_ndsm(h, ground, transform, leaf_off_rgb=np.full_like(rgb, 60.0), surface_count=returns, multi_count=np.zeros(h.shape))
+    assert len(dark) == 3
+    assert len(stems_from_ndsm(h, ground, transform, surface_count=returns, multi_count=multi)) == 3
+    assert len(stems_from_ndsm(h, ground, transform, leaf_off_rgb=rgb)) == 3
+    with pytest.raises(ValueError):
+        stems_from_ndsm(h, ground, transform, leaf_off_rgb=rgb, surface_count=returns[:5], multi_count=multi)

@@ -8,6 +8,7 @@
         "demo": "bun run demo/serve.ts",
         "check:client": "tsc --noEmit",
         "check:test": "tsc -p tsconfig.test.json --noEmit",
+        "retouch:build": "bun retouch-wasm/build.ts",
         "test": "bun ../scripts/assert-not-linked.ts && bun test"
     },
     "dependencies": {

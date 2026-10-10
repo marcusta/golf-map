@@ -243,6 +243,32 @@ Open items:
   (`FoliageTrialV2/...`, `Looks/birch/darker/...`). A new course needs its own SWAPS
   rows, or the planter needs to pick the CTI materials for Forst prefabs itself.
 
+## Black speckles flashing on far CTI trees (2026-10-09)
+
+**The live test was confirmed by Marcus in the Unity Scene view. The shader fix built from it is
+not yet confirmed by eye, and GSPro/GreenKeeper is unchecked.**
+
+Symptom: on birches at LOD2 (from about 37-58 m, out to the tree distance), black speckles in a
+random pattern that show for a few milliseconds, often, all over the crown.
+
+Cause: VSP's `CTIShaderController` has `LODFadeCrossfade = true`, so VSP enables
+`LOD_FADE_CROSSFADE` on the material copies of the last mesh LOD only (LOD0/1 get
+`LOD_FADE_PERCENTAGE`). The CTI shaders compile a dither crossfade for that keyword, and it cut
+random pixels out for single frames. Why the fade value is wrong there is not established.
+Not the cause: leaf turbulence (`_LeafTurbulence` 0) and advanced edge flutter, both tried first.
+Switching the keyword off on VSP's LOD2 copies removed the speckles.
+
+Fix: the stock-named shader copies in `Assets/GolfMap/CTI/Shaders/` no longer compile the variant
+(`dithercrossfade` dropped from the three surface pragmas, `LOD_FADE_CROSSFADE` dropped from the
+bark shaders' `multi_compile`). VSP still sets the keyword; the shaders ignore it. Shader names are
+unchanged. `prepare-cti-trial.py` writes the copies this way (`no_dither_crossfade`), but it only
+writes missing files, so the existing project copies were edited in place. Cost: CTI trees pop at
+the tree distance instead of dithering out over its last 10 m. Applies to the oaks too.
+
+Probe used: `golfmap.vegperf.materials item=<glob> [lod] [on/off keywords] [floats] [vectors]`
+reads and changes the material copies VSP actually draws, per LOD. Runtime only; a VSP refresh
+puts the assets' values back, so read the keywords back before trusting a test.
+
 ## Recurring pitfalls and diagnosis
 
 ### One-click comparisons in Unity

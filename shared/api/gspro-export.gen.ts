@@ -17,7 +17,7 @@ export interface CourseTerrain {
 export interface GsproOrthoSource {
     source: string;
     collection: string;
-    patched: boolean;
+    cleaned: boolean;
     active: boolean;
 }
 

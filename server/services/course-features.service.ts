@@ -8,9 +8,11 @@ import { resolveSurfaceStack } from '../../shared/render/resolved-surface-stack'
 import { ROUGHS_LAYER, isRoughsLayerType, stackKey, type FeatureLayer } from '../../shared/render/stack-key';
 import { PATH_SURFACE_ATTRIBUTE, PATH_SURFACES, isPathSurface } from '../../shared/features/path-surface';
 import { centerlineError, centerlineGeometry } from '../../shared/features/centerline';
+import { pathTransitionsError, type PathTransition } from '../../shared/features/path-transitions';
 import { bankVegProblem, takesBankVeg } from '../../shared/features/creek-vegetation';
 import { ZONE_BLENDS, ZONE_BLEND_ATTRIBUTE, ZONE_EXTRA_PALETTES_ATTRIBUTE, parseZonePalettes } from '../../shared/features/zone-layers';
 import { TREE_AREA_TYPE, treeAreaProblem } from '../../shared/features/tree-areas';
+import { ROCK_SLAB_TYPE, rockSlabProblem } from '../../shared/features/rock-slab';
 import { KERB_FILLETS_ATTRIBUTE, ROAD_JUNCTIONS_SOURCE, junctionFillets, kerbFilletsOn } from '../../shared/features/road-junctions';
 import type { FeatureCollection } from 'geojson';
 
@@ -40,6 +42,12 @@ export const FEATURE_TYPES = [
     // Tree species area (shared/features/tree-areas.ts): an overlay area whose
     // species mix the Unity tree planter uses for the survey stems inside it.
     'tree_area',
+    // Rock slab (shared/features/rock-slab.ts): a drawn surface that is no OPCD
+    // shape; shaping-global turns it into a Blender cut-out.
+    'rock_slab',
+    // Power line (shared/features/power-line.ts): a centerline with a corridor;
+    // no surface. The trees export leaves out the survey stems inside it.
+    'power_line',
 ] as const;
 
 export type FeatureType = (typeof FEATURE_TYPES)[number];
@@ -68,6 +76,7 @@ const TYPE_Z_ORDER: readonly string[] = [
     'fairway',
     'tee',
     'green',
+    'rock_slab',
     'vegetation_zone',
     'tree_area',
     'trees',
@@ -78,6 +87,7 @@ const TYPE_Z_ORDER: readonly string[] = [
     'penalty_red',
     'oob',
     'path',
+    'power_line',
 ];
 
 function typeRank(type: string): number {
@@ -144,7 +154,7 @@ export interface CourseFeature {
     version: number;
 }
 
-export type FeatureAttributes = Record<string, number | string | boolean>;
+export type FeatureAttributes = Record<string, number | string | boolean | PathTransition[]>;
 
 /** One (source, type) group of a course's imported features. */
 export interface ImportedFeatureCount {
@@ -340,6 +350,7 @@ function assertValidAttributes(attributes: unknown): void {
         throw new InvalidFeatureError(`attributes may have at most ${MAX_ATTRIBUTE_KEYS} keys (got ${entries.length})`);
     }
     for (const [key, value] of entries) {
+        if (key === 'pathTransitions' && Array.isArray(value)) continue;
         if (!isScalar(value)) {
             throw new InvalidFeatureError(`attributes.${key} must be a finite number, string or boolean`);
         }
@@ -435,6 +446,15 @@ function assertValidPathAttributes(attributes: FeatureAttributes | null | undefi
  */
 function assertValidBankVegAttributes(attributes: FeatureAttributes | null | undefined): void {
     const problem = bankVegProblem(attributes);
+    if (problem) throw new InvalidFeatureError(problem);
+}
+
+/**
+ * `rock_slab` attributes: `marginM` (0..5) and `uvM` (> 0), when present
+ * (shared/features/rock-slab.ts). Every other key is free.
+ */
+function assertValidRockSlabAttributes(attributes: FeatureAttributes | null | undefined): void {
+    const problem = rockSlabProblem(attributes);
     if (problem) throw new InvalidFeatureError(problem);
 }
 
@@ -650,9 +670,13 @@ function assertValidCreate(input: CreateFeatureInput): void {
     assertValidType(input.type);
     assertValidGeometry(deriveCenterlineRings(input.geometry));
     assertValidAttributes(input.attributes);
+    const transitionProblem = pathTransitionsError(input.attributes?.pathTransitions, input.geometry.centerline, input.type, input.attributes?.surface);
+    if (transitionProblem) throw new InvalidFeatureError(transitionProblem);
+    if (Array.isArray(input.attributes?.pathTransitions) && input.attributes.pathTransitions.length && input.geometry.crs !== 'EPSG:3006') throw new InvalidFeatureError('pathTransitions requires EPSG:3006 geometry');
     if (input.type === 'vegetation_zone') assertValidVegetationZoneAttributes(input.attributes);
     if (input.type === TREE_AREA_TYPE) assertValidTreeAreaAttributes(input.attributes);
     if (input.type === 'path') assertValidPathAttributes(input.attributes);
+    if (input.type === ROCK_SLAB_TYPE) assertValidRockSlabAttributes(input.attributes);
     if (takesBankVeg(input.type)) assertValidBankVegAttributes(input.attributes);
     assertValidLayer(input.layer ?? null, input.holeId ?? null, input.type);
 }
@@ -958,6 +982,11 @@ export class CourseFeaturesService {
 
         const dbInput: Record<string, unknown> = {};
         const nextType = input.type ?? row.type;
+        const nextAttributes = input.attributes === undefined ? parseAttributes(row.attributes_json) : input.attributes;
+        const nextGeometry = geometry ?? JSON.parse(row.geometry_json);
+        const transitionProblem = pathTransitionsError(nextAttributes?.pathTransitions, nextGeometry.centerline, nextType, nextAttributes?.surface);
+        if (transitionProblem) throw new InvalidFeatureError(transitionProblem);
+        if (Array.isArray(nextAttributes?.pathTransitions) && nextAttributes.pathTransitions.length && nextGeometry.crs !== 'EPSG:3006') throw new InvalidFeatureError('pathTransitions requires EPSG:3006 geometry');
         const currentLayer = toLayer(row.layer);
         let nextLayer: FeatureLayer;
         let nextHoleId = input.holeId !== undefined ? input.holeId : row.hole_id;
@@ -979,6 +1008,7 @@ export class CourseFeaturesService {
         }
         if (nextType === TREE_AREA_TYPE && input.attributes !== undefined) assertValidTreeAreaAttributes(input.attributes);
         if (nextType === 'path' && input.attributes !== undefined) assertValidPathAttributes(input.attributes);
+        if (nextType === ROCK_SLAB_TYPE && input.attributes !== undefined) assertValidRockSlabAttributes(input.attributes);
         if (takesBankVeg(nextType) && input.attributes !== undefined) assertValidBankVegAttributes(input.attributes);
         if (movingGroups) {
             dbInput.hole_id = nextHoleId;
@@ -1288,7 +1318,18 @@ export class CourseFeaturesService {
             throw new InvalidFeatureError(`Invalid layer scope: ${layer}`);
         }
         await this.db.transaction().execute(async (trx) => {
-            const existing = await this.byGroup(courseId, holeId, toLayer(layer), trx).execute();
+            const group = await this.byGroup(courseId, holeId, toLayer(layer), trx).execute();
+            // Stored kerb fillets never reach the client (it draws its own),
+            // so they are no part of orderedIds: each one rides along behind
+            // the row it sat above.
+            const junctionIds = new Set((await trx
+                .selectFrom('course_features')
+                .select('id')
+                .where('course_id', '=', courseId)
+                .where('source', '=', ROAD_JUNCTIONS_SOURCE)
+                .where('generated', '=', 1)
+                .execute()).map((row) => row.id));
+            const existing = group.filter((row) => !junctionIds.has(row.id));
 
             const existingIds = new Set(existing.map((row) => row.id));
             const incomingIds = new Set(orderedIds);
@@ -1300,8 +1341,21 @@ export class CourseFeaturesService {
                 );
             }
 
-            for (let i = 0; i < orderedIds.length; i++) {
-                await this.updateById(orderedIds[i], trx)
+            const bottom: string[] = [];
+            const riders = new Map<string, string[]>();
+            let anchor: string | null = null;
+            for (const row of group) {
+                if (!junctionIds.has(row.id)) { anchor = row.id; continue; }
+                if (anchor === null) bottom.push(row.id);
+                else riders.set(anchor, [...(riders.get(anchor) ?? []), row.id]);
+            }
+            const nextOrder = [...bottom, ...orderedIds.flatMap((id) => [id, ...(riders.get(id) ?? [])])];
+
+            // A one-step move in a group of a thousand rows changes two of them.
+            const current = new Map(group.map((row) => [row.id, row.sort_order]));
+            for (let i = 0; i < nextOrder.length; i++) {
+                if (current.get(nextOrder[i]) === i) continue;
+                await this.updateById(nextOrder[i], trx)
                     .set({ sort_order: i, updated_at: sql`(datetime('now'))` })
                     .execute();
             }

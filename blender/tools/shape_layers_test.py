@@ -222,6 +222,22 @@ class LayerTest(unittest.TestCase):
         ])
         self.assertEqual(sl.validate_layer(ok), [])
 
+    def test_cut_out_validation(self):
+        ring = [[530110.1, 6487074.8], [530112.0, 6487075.2], [530111.3, 6487067.2]]
+        ok = layer([{"id": "hall", "op": "golfmap.cut_out", "name": "hall_h11_north", "outline3006": ring,
+                     "surface": "Rock", "sliverM": 0.05, "weld": True, "protect": ["green"]}])
+        self.assertEqual(sl.validate_layer(ok), [])
+        bad = layer([
+            {"id": "a", "op": "golfmap.cut_out", "name": "Hall North", "outline3006": ring[:2], "weld": "yes"},
+            {"id": "b", "op": "golfmap.cut_out", "name": "rough_rock", "outline3006": ring, "surface": "rock"},
+            {"id": "c", "op": "golfmap.cut_out", "name": "hall", "outline3006": ring, "select": {"type": "rough"}},
+            {"id": "d", "op": "golfmap.cut_out", "outline3006": ring},
+        ])
+        msg = "\n".join(sl.validate_layer(bad))
+        for part in ("name must be lower-case", "outline3006 must be", "weld must be", "golf surface word",
+                     "surface must be one capitalised word", "takes no select", "missing 'name'"):
+            self.assertIn(part, msg)
+
     def test_split_surfaces_validation(self):
         ok = layer([{"id": "paths-surfaces", "op": "golfmap.split_surfaces", "select": {"shape": ["roads_124"]},
                      "fadeM": 0.5, "minPartM2": 1, "junctionTie": 0.15, "slitM": 0.8, "sliverM": 0.05, "weld": True,

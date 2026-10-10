@@ -107,6 +107,7 @@ const zone3Tpl = template(`
         <input bind="pathWidth" type="number" class="cmdbar__path-width" min="0.5" step="0.5" aria-label="Path width (m)" data-testid="path-width-input">
         <select bind="pathSurface" class="cmdbar__path-width cmdbar__path-surface" aria-label="Path surface" data-testid="path-surface-default"></select>
         <button bind="boxSelect" type="button" class="cmdbar__box"></button>
+        <button bind="generatedBtn" type="button" class="cmdbar__plant" data-testid="generated-vegetation-btn"></button>
         <button bind="plantBtn" type="button" class="cmdbar__plant" data-testid="plant-vegetation-btn"></button>
         <button bind="updateZonesBtn" type="button" class="cmdbar__plant" data-testid="update-zones-btn"></button>
         <button bind="updatePathsBtn" type="button" class="cmdbar__plant" data-testid="update-paths-btn"></button>
@@ -886,8 +887,17 @@ export class CommandBarComponent extends Component<{ mode: CommandBarMode }> {
                 'data-testid': 'box-select-btn',
                 onclick: () => this.tool.state.toggleBoxSelect(),
             },
-            // Vegetation mode: plant everything the zones and marked creeks
-            // describe, right through to the open Unity project.
+            // Vegetation mode: the generated zones (tall rough, creek banks, woodland floor) on or
+            // off, to see only what was drawn by hand.
+            generatedBtn: {
+                'data-off': () => String(!this.isVegetationSubmode() || this.features.generatedVegetationSources.get().length === 0),
+                innerHTML: () => `${icon(this.features.generatedVegetationShown.get() ? 'eye' : 'eye-off', 16)}<span>Generated</span>`,
+                title: () => this.features.generatedVegetationShown.get()
+                    ? 'Hide the generated vegetation (tall rough, creek banks, woodland floor): only the zones drawn by hand stay'
+                    : 'Show the generated vegetation again',
+                'aria-pressed': () => String(this.features.generatedVegetationShown.get()),
+                onclick: () => this.features.setGeneratedVegetationShown(!this.features.generatedVegetationShown.peek()),
+            },
             plantBtn: {
                 'data-off': () => String(!this.isVegetationSubmode()),
                 innerHTML: () => `${icon('sprout', 16)}<span>${this.plant.runningKind.get() === 'vegetation' ? 'Planting…' : 'Plant vegetation'}</span>`,

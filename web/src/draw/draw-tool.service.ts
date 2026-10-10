@@ -14,6 +14,7 @@ import { ScreenPointCache } from './screen-cache';
 import { fitClosedBspline } from '../geo/spline-fit';
 import { PATH_SURFACE_ATTRIBUTE, isPathSurface, type PathSurface } from '../../../shared/features/path-surface';
 import { TREE_AREA_SPECIES_ATTRIBUTE, TREE_AREA_TYPE, hasSpeciesMix } from '../../../shared/features/tree-areas';
+import { DEFAULT_POWER_LINE_WIDTH_M, POWER_LINE_TYPE } from '../../../shared/features/power-line';
 import {
     DrawState,
     MIN_RING_POINTS,
@@ -377,10 +378,12 @@ export class DrawToolService {
     /**
      * Arm centerline drawing: the next Enter commits the draft as a
      * centerline feature — a `path`, or a creek when Creek is the chosen draw
-     * type (its line is what the creek digs and the R.A.M. export follow).
+     * type (its line is what the creek digs and the R.A.M. export follow), or
+     * a power line when that is (one point per pole).
      */
     armPath(): void {
-        if (this.drawType.peek() !== 'water_creek') this.drawType.set('path');
+        const type = this.drawType.peek();
+        if (type !== 'water_creek' && type !== POWER_LINE_TYPE) this.drawType.set('path');
         this.pathMode.set(true);
         this.state.arm();
     }
@@ -890,11 +893,12 @@ export class DrawToolService {
      */
     commitCenterline(points: AnchorPoint[], widthM: number): boolean {
         if (this.state.mode.peek() !== 'draw' || !this.features) return false;
-        const geometry = draftCenterlineGeometry(points, widthM);
+        const type = this.drawType.peek();
+        // A power line's corridor is its own width, not the last road's.
+        const geometry = draftCenterlineGeometry(points, type === POWER_LINE_TYPE ? DEFAULT_POWER_LINE_WIDTH_M : widthM);
         if (!geometry) return false;
         this.cursor.set(null);
         this.state.disarm();
-        const type = this.drawType.peek();
         void this.features.create({
             type,
             holeId: this.drawHoleId.peek(),
@@ -1318,6 +1322,15 @@ export class DrawToolService {
      * local patch, autosave. THE mutation funnel for click-sized edits
      * (drag commits build their entries from the drag's start snapshot).
      */
+    commitAttributes(id: string, attributes: FeatureAttributesPatch | null): void {
+        const features = this.features;
+        const current = features?.store.items.peek().find(f => f.id === id);
+        if (!current) return;
+        this.record([{ featureId: id, before: { ...snapshotOf(current), attributes: attributesPatchOf(current.attributes) },
+            after: { ...snapshotOf(current), attributes }, beforeVersion: current.version }]);
+        void features!.updateMany([{id, patch: {attributes}}], {local: true});
+    }
+
     private commitGeometry(id: string, geometry: FeatureGeometry): void {
         if (!this.features) return;
         const current = this.features.store.items.peek().find(f => f.id === id);

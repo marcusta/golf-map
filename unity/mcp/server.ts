@@ -148,7 +148,7 @@ const tools: Tool[] = [
     name: "unity_screenshot",
     description:
       "Screenshot of the Scene view camera, rendered offscreen at width x height (includes VSP vegetation; works while Unity is unfocused or covered). " +
-      "Optionally place the view first: from + at (world points, e.g. a tee and a green) or pivot/rotation/size. The view stays where it was moved.",
+      "Optionally place the view first: from + at (world points, e.g. a tee and a green) or pivot/rotation/size. The view stays where it was moved unless restore=true puts it back after the capture.",
     inputSchema: {
       type: "object",
       properties: {
@@ -164,6 +164,7 @@ const tools: Tool[] = [
         eye: { type: "number", description: "With from/at: stand this many metres above the terrain under `from` and look at 0.5 m above the terrain under `at` (their y values are ignored)." },
         hide: { type: "array", items: { type: "string" }, description: "Object paths whose renderers are switched off for this capture only (see what is under a mesh)." },
         warmup: { type: "number", default: 12, description: "Editor frames pumped before the capture so VSP spawns/loads cells while Unity is unfocused; raise it (60+) after a VSP refresh." },
+        restore: { type: "boolean", default: false, description: "Put the Scene view back to the pose (pivot, rotation, size) it had before the call, once the image is captured." },
       },
     },
     async handler(a) {

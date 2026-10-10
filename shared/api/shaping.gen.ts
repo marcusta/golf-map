@@ -6,7 +6,7 @@ export interface ShapingRecipe {
     name: string;
     file: string;
     author: string;
-    surfaces: ('path' | 'bunker' | 'lake' | 'creek')[];
+    surfaces: ('bunker' | 'lake' | 'creek' | 'path')[];
     default?: boolean;
     notes?: string;
     params: RecipeParam[];
@@ -16,7 +16,7 @@ export interface ShapingJob {
     id: string;
     courseId: string;
     status: 'running' | 'succeeded' | 'failed';
-    phase: null | 'layers' | 'worker' | 'blender' | 'unity';
+    phase: null | 'vegetation' | 'layers' | 'worker' | 'blender' | 'unity';
     step: string;
     phases: ShapingPhase[];
     dryRun: boolean;
@@ -43,7 +43,7 @@ export interface RecipeParam {
 }
 
 export interface ShapingPhase {
-    id: 'layers' | 'worker' | 'blender' | 'unity';
+    id: 'vegetation' | 'layers' | 'worker' | 'blender' | 'unity';
     label: string;
     status: 'done' | 'running' | 'failed' | 'pending' | 'skipped';
     detail: null | string;
@@ -62,6 +62,7 @@ export interface ShapingApplyResult {
     pathMaterials: unknown;
     unitySteps: ShapingUnityStep[];
     unityError: null | string;
+    vegetation: string[];
     layers: string[];
     blend: string;
     layersDir: string;
@@ -91,7 +92,7 @@ export interface ShapingUnityStep {
 }
 
 export interface ShapingApi {
-    recipes(input: { surface?: 'path' | 'bunker' | 'lake' | 'creek' }): Promise<ShapingRecipe[]>;
+    recipes(input: { surface?: 'bunker' | 'lake' | 'creek' | 'path' }): Promise<ShapingRecipe[]>;
     apply(input: { dryRun?: boolean; skipUnity?: boolean; paths?: boolean; courseId: string }): Promise<ShapingJob>;
     status(input: { courseId: string }): Promise<ShapingStatus>;
     job(input: { jobId: string }): Promise<ShapingJob>;

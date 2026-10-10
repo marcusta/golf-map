@@ -1,88 +1,64 @@
-"""Replayable orthophoto patch log (T55 interactive photo cleaning).
+"""Clean-tool edit entries and the primitives that bake them into a raster.
 
-The web editor's "Clean photo" tool lets the user mask a blemish (player,
-cart, shadow, stray object) on a 512 px ortho-tile crop and previews a
-locally-inpainted result. On accept, the server stores the MASK — not fill
-pixels — as a patch: a grayscale/alpha PNG (white/opaque = pixel to inpaint)
-plus a JSON log entry carrying its exact georeferencing. The fill itself is
-computed HERE, by running LaMa (golfpipe.inpaint) on a context window of the
-current patched raster — so the inpaint sees pristine source pixels, not the
-WebP-lossy, mercator-resampled tile pixels the client previews with. That is
-what keeps baked patches seam-free: fill and surroundings share provenance.
+The web editor's "Clean photo" tool produces two kinds of edit. The server
+(CleanedPhotoService.applyEdits) hands a batch of them to `cleaned-bake`
+(golfpipe.cleaned) in a temporary edits dir:
 
-The pristine source ortho is NEVER modified — mirroring the terrain-edit
-plan's edits-as-replayable-log philosophy — so this module can always rebuild
-the patched raster from scratch:
+    <edits dir>/
+        patches.json     {"version": 2, "patches": [entry, ...]}
+        1.png, 2.png, …  one mask PNG per mask entry
 
-    data/sources/<mapKey>/patches/
-        patches.json     the ordered log (written by the server, read here)
-        1.png, 2.png, …  mask PNGs, luminance/alpha > 127 = pixel to inpaint
-                         (a raster entry's <seq>.png is its RGBA pixels)
+The dir is a hand-over, not a log: it is read once, baked in `seq` order into
+the cleaned photo, and thrown away. This module reads it (load_patch_log) and
+bakes one entry at a time into a rasterio dataset opened "r+"
+(bake_entry_into). Each bake reads and writes only a window round the edit.
 
-Log format is VERSIONED: this module reads version 2 (mask payloads).
-Version 1 stored pre-rendered RGBA fill pixels (the seam-y design); a
-non-empty version-1 log is refused with a clear error instead of being
-misread as masks.
+The two entry kinds (`kind`, absent = "mask"):
 
-Version 2 carries THREE entry kinds (`kind`, absent = "mask"):
-
-  * mask  — a mask PNG; the fill is LaMa-inpainted (torch needed).
+  * mask  — a grayscale/alpha PNG (`file`), white/opaque = pixel to fill, on
+    the axis-aligned EPSG:3857 rectangle `bounds3857`. The server sends the
+    MASK, not fill pixels: the fill is computed here by running LaMa
+    (golfpipe.inpaint) on a context window of the raster being edited, so
+    the inpaint sees the raster's own pixels and not the WebP-lossy,
+    mercator-resampled tile pixels the client previews with. Fill and
+    surroundings share provenance, which is what keeps a fill seam-free.
+    Needs torch and the LaMa weights; the fill depends on the weights and
+    the torch device, so the same mask baked twice gives fills that are
+    visually equivalent, not byte-identical.
   * stamp — a clone-stamp STROKE: brush params (sizeM/opacity/flow/
     hardness), a source→dest offset in EPSG:3006 metres, the dest polyline
     (EPSG:3006), and the aligned/tone-match capture state. The stroke is
-    re-rendered here with the pure numpy brush engine (golfpipe.stamp) —
-    source pixels read from the CURRENT patched raster shifted by the
-    offset — so stamp entries need NO torch and replay byte-identically.
-  * raster — externally edited PIXELS (docs/feature-ortho-export-import.md):
-    an RGBA PNG holding only what changed between a square export and the
-    image the user edited from it (`import-ortho-square` writes it), alpha
-    255 on changed pixels and 0 elsewhere, cropped to the change. Its frame
-    is the axis-aligned EPSG:3006 rectangle `bounds3006` (west/south/east/
-    north, row 0 = north edge) — the export grid is EPSG:3006, so here 3006
-    is the exact frame and `bounds3857` is only its envelope, for retiling.
-    Replay reprojects colour and alpha bilinearly onto the ortho grid and
-    composites `out = src*a + dst*(1-a)`; the alpha ramp that resampling
-    leaves at the mask edge, one export pixel wide, is the seam treatment.
-    NO torch, byte-identical on replay. `exportSeq` and `changedPixels` are
-    carried for the UI, not used here.
+    rendered here with the pure numpy brush engine (golfpipe.stamp), its
+    source pixels read from the raster as it is at that point in the batch,
+    shifted by the offset. NO torch, and byte-reproducible: the same stroke
+    on the same raster gives the same bytes.
 
-A log without mask entries is therefore fully bakeable without LaMa weights
-or torch; the inpaint_fn is only required when mask entries exist.
+A batch without mask entries therefore bakes without LaMa weights or torch
+(needs_inpaint); the inpaint_fn is only required when a mask entry exists.
 
-Two bake paths (commands.py):
-
-  * `bake-ortho-patch` — incremental accept: ONE windowed inpaint into the
-    existing `<stem>.patched.tif` (created lazily from the pristine source on
-    first patch) + affected-subtree retile. No full-raster rewrite.
-  * `apply-ortho-patches` — full replay from pristine, iterating masks →
-    windowed inpaints in log order. Used for revert and for rebuilding after
-    vintage changes.
-
-Determinism: a replay re-RUNS LaMa, so the regenerated fills depend on the
-model weights and torch device. A revert-replay therefore reproduces fills
-that are visually equivalent, not byte-identical, to the originally accepted
-bake — accepted by design (the mask log, not the fill bytes, is the source
-of truth).
+Every entry carries `bounds3857`, the frame the caller retiles under
+(affected_tiles).
 
 Georeferencing: masks are drawn on Web-Mercator XYZ tile crops, so their
-native, exact frame is an axis-aligned EPSG:3857 rectangle (`bounds3857` in
-the log). The mask is reprojected onto the ortho's own grid (EPSG:3006)
-before inpainting — using 3006 bounds instead would silently ignore the
-~0.5° meridian-convergence rotation between the two frames and shift mask
-edges by decimetres.
+native, exact frame is an axis-aligned EPSG:3857 rectangle. The mask is
+reprojected onto the raster's own grid (EPSG:3006) before inpainting — using
+3006 bounds instead would silently ignore the ~0.5° meridian-convergence
+rotation between the two frames and shift mask edges by decimetres.
+
+`patches.json` is VERSIONED: version 2 is the format above. Version 1 held
+pre-rendered RGBA fill pixels; a non-empty version-1 file is refused with a
+clear error instead of being misread as masks.
 """
 
 from __future__ import annotations
 
 import json
 import math
-import shutil
 from dataclasses import dataclass
 from pathlib import Path
 
 import mercantile
 import numpy as np
-import rasterio
 from rasterio.crs import CRS
 from rasterio.enums import Resampling
 from rasterio.transform import Affine, from_bounds
@@ -139,45 +115,25 @@ class StampEntry:
     path: tuple[tuple[float, float], ...]
     """Dest polyline, EPSG:3006 metres (easting, northing)."""
     aligned: bool
-    """Aligned-clone flag state at capture (informational for replay —
+    """Aligned-clone flag state at capture (informational for the bake —
     the offset above is already resolved per stroke)."""
     tone_match: bool
     tool: str
     created_at: str
 
 
-@dataclass(frozen=True)
-class RasterEntry:
-    """One externally edited pixel patch (see the module header): an RGBA
-    PNG on an axis-aligned EPSG:3006 frame, alpha = where it applies."""
-
-    seq: int
-    file: str
-    """RGBA PNG file name relative to the patches dir."""
-    bounds3006: tuple[float, float, float, float]
-    """(west, south, east, north) in EPSG:3006 metres — the PNG's frame."""
-    bounds3857: tuple[float, float, float, float]
-    """EPSG:3857 envelope of `bounds3006` — the retile frame."""
-    export_seq: int | None
-    """The export the image was edited from (informational)."""
-    changed_pixels: int | None
-    """Opaque pixels in the PNG (informational)."""
-    tool: str
-    created_at: str
+LogEntry = PatchEntry | StampEntry
 
 
-LogEntry = PatchEntry | StampEntry | RasterEntry
-
-
-def _parse_bounds(raw: object, context: str, name: str = "bounds3857") -> tuple[float, float, float, float]:
+def _parse_bounds(raw: object, context: str) -> tuple[float, float, float, float]:
     if not isinstance(raw, dict):
-        raise PatchError(f"{context}: {name} must be an object with west/south/east/north")
+        raise PatchError(f"{context}: bounds3857 must be an object with west/south/east/north")
     try:
         w, s, e, n = (float(raw[k]) for k in ("west", "south", "east", "north"))
     except (KeyError, TypeError, ValueError) as exc:
-        raise PatchError(f"{context}: {name} must carry numeric west/south/east/north") from exc
+        raise PatchError(f"{context}: bounds3857 must carry numeric west/south/east/north") from exc
     if not all(math.isfinite(v) for v in (w, s, e, n)) or w >= e or s >= n:
-        raise PatchError(f"{context}: degenerate {name} ({w}, {s}, {e}, {n})")
+        raise PatchError(f"{context}: degenerate bounds3857 ({w}, {s}, {e}, {n})")
     return (w, s, e, n)
 
 
@@ -197,35 +153,6 @@ def _parse_file_name(raw: dict, context: str) -> tuple[int, str]:
     if "/" in file or "\\" in file or file.startswith("."):
         raise PatchError(f"{context}: patch file name {file!r} must be a plain name")
     return seq, file
-
-
-def _parse_optional_int(raw: dict, key: str, context: str) -> int | None:
-    value = raw.get(key)
-    if value is None:
-        return None
-    if isinstance(value, bool) or not isinstance(value, int):
-        raise PatchError(f"{context}: {key} must be an integer")
-    return value
-
-
-def _parse_raster(raw: dict, context: str) -> RasterEntry:
-    seq, file = _parse_file_name(raw, context)
-    bounds3006 = _parse_bounds(raw.get("bounds3006"), context, "bounds3006")
-    # bounds3857 is derived data: a log written without it still replays.
-    bounds3857 = (
-        _parse_bounds(raw["bounds3857"], context) if raw.get("bounds3857") is not None
-        else bounds3006_to_3857(bounds3006)
-    )
-    return RasterEntry(
-        seq=seq,
-        file=file,
-        bounds3006=bounds3006,
-        bounds3857=bounds3857,
-        export_seq=_parse_optional_int(raw, "exportSeq", context),
-        changed_pixels=_parse_optional_int(raw, "changedPixels", context),
-        tool=str(raw.get("tool", "external")),
-        created_at=str(raw.get("createdAt", "")),
-    )
 
 
 def _parse_stamp(raw: dict, context: str) -> StampEntry:
@@ -285,12 +212,11 @@ def _parse_stamp(raw: dict, context: str) -> StampEntry:
 
 
 def load_patch_log(patches_dir: Path) -> list[LogEntry]:
-    """Reads and validates `patches.json` from a patches dir, sorted by seq.
-    A missing file (course never patched) is an empty log, not an error.
-    A NON-empty version-1 log (pre-rendered fill pixels, the retired format)
-    is refused: its payloads are not masks and must not be baked as such.
-    Entries are mask entries unless `kind` is "stamp" or "raster" (see the
-    module header).
+    """Reads and validates `patches.json` from an edits dir, sorted by seq.
+    A missing file is an empty list, not an error. A NON-empty version-1
+    file (pre-rendered fill pixels, the retired format) is refused: its
+    payloads are not masks and must not be baked as such. Entries are mask
+    entries unless `kind` is "stamp" (see the module header).
     """
     log_path = patches_dir / PATCH_LOG_NAME
     if not log_path.is_file():
@@ -324,9 +250,6 @@ def load_patch_log(patches_dir: Path) -> list[LogEntry]:
             except (KeyError, TypeError, ValueError) as exc:
                 raise PatchError(f"{context}: needs an integer `seq`") from exc
             entries.append(_parse_stamp(raw, context))
-            continue
-        if kind == "raster":
-            entries.append(_parse_raster(raw, context))
             continue
         if kind != "mask":
             raise PatchError(f"{context}: unknown entry kind {kind!r}")
@@ -481,8 +404,8 @@ def stamp_entry_into(dataset, entry: StampEntry) -> bool:
     composites), runs the pure numpy brush engine (golfpipe.stamp), and
     writes the dest window back. Pixels whose shifted source falls off the
     raster are left untouched. Returns False (writing nothing) when the
-    stroke misses the raster entirely. Deterministic — byte-reproducible on
-    replay, no torch involved.
+    stroke misses the raster entirely. Deterministic — the same stroke on the
+    same raster gives the same bytes, no torch involved.
     """
     xs = [p[0] for p in entry.path]
     ys = [p[1] for p in entry.path]
@@ -534,98 +457,6 @@ def stamp_entry_into(dataset, entry: StampEntry) -> bool:
     return True
 
 
-def load_raster_patch(patches_dir: Path, entry: RasterEntry) -> np.ndarray:
-    """Reads a raster entry's PNG as an (H, W, 4) uint8 RGBA array."""
-    from PIL import Image
-
-    path = patches_dir / entry.file
-    if not path.is_file():
-        raise PatchError(f"raster patch file missing: {path} (log entry seq {entry.seq})")
-    with Image.open(path) as img:
-        return np.array(img.convert("RGBA"))
-
-
-def composite_rgba_window(
-    rgba: np.ndarray,
-    src_transform: Affine,
-    src_crs: CRS,
-    dest: np.ndarray,
-    window_transform: Affine,
-    crs: CRS,
-) -> np.ndarray:
-    """Composites an (H, W, 4) uint8 RGBA image framed by `src_transform`/
-    `src_crs` over `dest` ((rows, cols, 3) uint8 on the `window_transform`/
-    `crs` grid) and returns the result; `dest` is not modified.
-
-    Colour and alpha are reprojected bilinearly, each as its own band, then
-    `out = src*a + dst*(1-a)` rounded with np.rint. Where the resampled
-    alpha is 0 — including everything the image does not cover — the result
-    is `dest` byte for byte. Colour is NOT premultiplied: the transparent
-    pixels next to an opaque one must carry real neighbouring colour
-    (`import-ortho-square` keeps it two pixels out), or the edge ramp
-    darkens.
-    """
-    shape = dest.shape[:2]
-    warped = np.zeros((4, *shape), dtype=np.float32)
-    for band in range(4):
-        reproject(
-            source=np.ascontiguousarray(rgba[..., band]).astype(np.float32),
-            destination=warped[band],
-            src_transform=src_transform,
-            src_crs=src_crs,
-            dst_transform=window_transform,
-            dst_crs=crs,
-            resampling=Resampling.bilinear,
-        )
-    alpha = np.clip(warped[3] / 255.0, 0.0, 1.0)[..., None]
-    src = np.moveaxis(warped[:3], 0, -1)
-    blended = np.rint(src * alpha + dest.astype(np.float32) * (1.0 - alpha))
-    out = np.clip(blended, 0, 255).astype(np.uint8)
-    # Where nothing applies the float round trip is exact already; copying
-    # the bytes makes "outside the mask is untouched" hold by construction.
-    untouched = alpha[..., 0] <= 0.0
-    out[untouched] = dest[untouched]
-    return out
-
-
-def raster_entry_into(dataset, patches_dir: Path, entry: RasterEntry) -> bool:
-    """Windowed in-place composite of one raster entry into `dataset` (a
-    rasterio dataset opened "r+"): reads the ortho window under the entry's
-    `bounds3006`, composites the RGBA PNG over it (composite_rgba_window)
-    and writes the window back. The part of the patch off the raster is
-    cropped away. Returns False (writing nothing) when the patch misses the
-    raster or changes no pixel. Deterministic — byte-reproducible on replay,
-    no torch involved.
-    """
-    rgba = load_raster_patch(patches_dir, entry)
-    if not rgba[..., 3].any():
-        return False
-    ph, pw = rgba.shape[:2]
-    src_transform = from_bounds(*entry.bounds3006, pw, ph)
-
-    bounds = entry.bounds3006
-    if dataset.crs != SWEREF99_TM:
-        bounds = transform_bounds(SWEREF99_TM, dataset.crs, *bounds)
-    inv = ~dataset.transform
-    c0f, r0f = inv * (bounds[0], bounds[3])
-    c1f, r1f = inv * (bounds[2], bounds[1])
-    r0 = max(0, math.floor(min(r0f, r1f)))
-    c0 = max(0, math.floor(min(c0f, c1f)))
-    r1 = min(dataset.height, math.ceil(max(r0f, r1f)))
-    c1 = min(dataset.width, math.ceil(max(c0f, c1f)))
-    if r1 <= r0 or c1 <= c0:
-        return False
-
-    window = Window(c0, r0, c1 - c0, r1 - r0)
-    window_transform = dataset.transform * Affine.translation(c0, r0)
-    dest = np.moveaxis(dataset.read([1, 2, 3], window=window), 0, -1)
-    result = composite_rgba_window(rgba, src_transform, SWEREF99_TM, dest, window_transform, dataset.crs)
-    if np.array_equal(result, dest):
-        return False
-    dataset.write(np.moveaxis(result, -1, 0), window=window, indexes=[1, 2, 3])
-    return True
-
-
 def bake_entry_into(
     dataset,
     patches_dir: Path,
@@ -633,11 +464,9 @@ def bake_entry_into(
     inpaint_fn: InpaintFn | None,
     context_px: int = DEFAULT_CONTEXT_PX,
 ) -> bool:
-    """Bakes ONE log entry (mask, stamp or raster) into an open "r+" dataset."""
+    """Bakes ONE entry (mask or stamp) into an open "r+" dataset."""
     if isinstance(entry, StampEntry):
         return stamp_entry_into(dataset, entry)
-    if isinstance(entry, RasterEntry):
-        return raster_entry_into(dataset, patches_dir, entry)
     if inpaint_fn is None:
         raise PatchError(f"baking mask entry seq {entry.seq} needs an inpaint_fn (LaMa)")
     mask = load_patch_mask(patches_dir, entry)
@@ -645,47 +474,9 @@ def bake_entry_into(
 
 
 def needs_inpaint(entries: list[LogEntry]) -> bool:
-    """True when any entry is a mask (LaMa/torch required); a log of stamp
-    and raster entries only is fully bakeable without torch."""
+    """True when any entry is a mask (LaMa/torch required); a batch of stamp
+    entries only is fully bakeable without torch."""
     return any(isinstance(e, PatchEntry) for e in entries)
-
-
-def apply_patches_to_ortho(
-    ortho_path: Path,
-    patches_dir: Path,
-    entries: list[LogEntry],
-    out_path: Path,
-    inpaint_fn: InpaintFn | None = None,
-    context_px: int = DEFAULT_CONTEXT_PX,
-) -> None:
-    """Full replay: copies the pristine ortho at `ortho_path` to `out_path`
-    and windowed-bakes every entry (in seq order) into the copy — masks are
-    LaMa-inpainted, stamp strokes are re-rendered by the brush engine,
-    raster patches are composited. The pristine source is never modified. A
-    log without mask entries needs no `inpaint_fn` (those paths stay
-    torch-free).
-
-    Mask fills are regenerated by the model, so two replays of a mask-bearing
-    log are visually equivalent but not guaranteed byte-identical; stamp
-    strokes and raster patches replay byte-identically (see the module
-    header).
-    """
-    if out_path.resolve() == ortho_path.resolve():
-        raise PatchError(f"refusing to overwrite the source ortho ({ortho_path}) — pass a different --out")
-    if needs_inpaint(entries) and inpaint_fn is None:
-        raise PatchError("replaying a patch log with mask entries needs an inpaint_fn (LaMa)")
-
-    with rasterio.open(ortho_path) as src:
-        if src.count < 3:
-            raise PatchError(f"{ortho_path} has {src.count} band(s); ortho patching needs an RGB ortho")
-
-    out_path.parent.mkdir(parents=True, exist_ok=True)
-    shutil.copyfile(ortho_path, out_path)
-    if not entries:
-        return
-    with rasterio.open(out_path, "r+") as dst:
-        for entry in entries:
-            bake_entry_into(dst, patches_dir, entry, inpaint_fn, context_px=context_px)
 
 
 def affected_tiles(

@@ -8,6 +8,8 @@ import { Signal } from '@basics/core/client/core';
 import type { CourseFeature, CourseFeaturesApi } from '../../shared/api/course-features.gen';
 import { withBatchEndpoints, recordRequests } from './fake-feature-api';
 import type { FeatureGeometry } from '../src/geo/bezier';
+import { pathTransitionDefaults } from '../../shared/features/path-transitions';
+import { attributesPatchOf } from '../src/draw/features.service';
 
 afterEach(() => _reset());
 
@@ -58,6 +60,7 @@ function fakeApi(initial: CourseFeature[] = []) {
             if (input.holeId !== undefined) row.holeId = input.holeId;
             if (input.layer !== undefined) row.layer = input.layer;
             if (input.geometry !== undefined) row.geometry = structuredClone(input.geometry);
+            if (input.attributes !== undefined) row.attributes = structuredClone(input.attributes);
             row.version = input.version + 1;
             return structuredClone(row);
         },
@@ -100,6 +103,18 @@ function updateDiff(f: CourseFeature, after: Partial<{ geometry: FeatureGeometry
 }
 
 describe('push / canUndo / canRedo', () => {
+    test('transition attributes undo and redo persist through the service save queue', async () => {
+        const {svc, rows} = await makeService([{...feature('road', 'path'), attributes: {surface: 'gravel'}}]);
+        const history = new EditHistory();
+        const before = svc.store.items.peek()[0];
+        const attributes = attributesPatchOf({surface: 'gravel', pathTransitions: [{...pathTransitionDefaults('wheel-tracks'), id: 't1'}]});
+        history.push([{featureId: before.id, before: {...snapshotOf(before), attributes: attributesPatchOf(before.attributes)}, after: {...snapshotOf(before), attributes}, beforeVersion: before.version}]);
+        await svc.update(before.id, {attributes});
+        expect(await history.undo(svc)).toBe(true);
+        expect(rows.get(before.id)?.attributes).toEqual({surface: 'gravel'});
+        expect(await history.redo(svc)).toBe(true);
+        expect(rows.get(before.id)?.attributes).toEqual(attributes);
+    });
     test('push enables undo and clears the redo stack', async () => {
         const { svc } = await makeService([feature('a')]);
         const history = new EditHistory();

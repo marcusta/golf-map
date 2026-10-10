@@ -25,6 +25,16 @@
 // runs `golfmap.paths.materials` over the course's path meshes, also when
 // Blender changed nothing (a whole road given another surface).
 //
+// A rock slab among the changed objects (`Spline_<name>_Rock_-_Mesh`, the
+// Blender op `golfmap.cut_out`) adds the `vegetation` phase after the refresh:
+// the surface map is exported in Unity (`golfmap.surfaces.export` inner, unless
+// the refresh's own `surfaces.export` step already did) and the lower
+// vegetation is planted again (GsproExportService.plantVegetation, what
+// `bun run grass:zones` and the web "Plant vegetation" button run), so the tall
+// grass leaves the rock. Skipped when no slab changed, on a dry run and when
+// Unity was not refreshed; a failure there fails the job. The CLI:
+// scripts/shaping-apply.ts (`bun run shaping`).
+//
 // The worker speaks JSON over HTTP on GOLFMAP_SHAPING_URL (default
 // http://127.0.0.1:8766): `GET /status`, `POST /load {blend?, layersDir?,
 // fbxFolder?}`, `POST /sync {dryRun?}` (contract in the plan). One worker for
@@ -113,6 +123,8 @@ export interface ShapingApplyResult {
     /** The refresh's steps with their seconds (from `unityReport`); [] when Unity was not refreshed. */
     unitySteps: ShapingUnityStep[];
     unityError: string | null;
+    /** A rock slab changed: the report lines of the vegetation planting that followed; [] otherwise. */
+    vegetation: string[];
     /** shaping-global's report lines. */
     layers: string[];
     blend: string;
@@ -125,12 +137,12 @@ export interface ShapingApplyResult {
 export type ShapingJobStatus = 'running' | 'succeeded' | 'failed';
 
 /** The job's phases, in order. */
-export type ShapingPhaseId = 'layers' | 'worker' | 'blender' | 'unity';
+export type ShapingPhaseId = 'layers' | 'worker' | 'blender' | 'unity' | 'vegetation';
 export type ShapingPhaseStatus = 'pending' | 'running' | 'done' | 'skipped' | 'failed';
 
 export interface ShapingPhase {
     id: ShapingPhaseId;
-    /** "Generating layers", "Starting the shaping worker", "Blender sync", "Unity refresh". */
+    /** "Generating layers", "Starting the shaping worker", "Blender sync", "Unity refresh", "Surface map and grass". */
     label: string;
     status: ShapingPhaseStatus;
     /** What it is doing now, or what it did / why it was skipped or failed. */
@@ -194,7 +206,7 @@ export const DEFAULT_SHAPING_TIMEOUTS: ShapingTimeouts = {
 export interface ShapingDeps {
     courses: Pick<CoursesService, 'get'>;
     /** The course's export folder (where its .blend lives). */
-    exportSettings: Pick<GsproExportService, 'settings' | 'svgCommand'>;
+    exportSettings: Pick<GsproExportService, 'settings' | 'svgCommand' | 'plantVegetation'>;
     /** Where the worker's log goes (`<dataDir>/shaping-worker.log`). */
     dataDir: string;
     pipelineDir?: string;
@@ -234,7 +246,7 @@ interface SyncAnswer {
 
 export class ShapingService {
     private readonly courses: Pick<CoursesService, 'get'>;
-    private readonly exportSettings: Pick<GsproExportService, 'settings' | 'svgCommand'>;
+    private readonly exportSettings: Pick<GsproExportService, 'settings' | 'svgCommand' | 'plantVegetation'>;
     private readonly dataDir: string;
     private readonly pipelineDir: string;
     private readonly runner: ExportRunner;
@@ -415,10 +427,11 @@ export class ShapingService {
             skip('Unity refresh skipped (skipUnity)');
         } else if (!editor) {
             skip(`Unity not refreshed: no open Unity editor imports from ${exportDir}${seen.length ? ` (${seen.join('; ')})` : ''}`);
-        } else if (unityObjects.length === 0 && !dryRun && !opts.paths) {
+        } else if (unityObjects.length === 0 && !opts.paths) {
+            // also on a dry run: `only=` with no name is an error in Unity ("only= names no object")
             skip('Unity not refreshed: no object changed');
         } else {
-            const refresh = unityObjects.length > 0 || dryRun;
+            const refresh = unityObjects.length > 0;
             beginPhase(rec, 'unity', refresh ? `refreshing ${unityObjects.length} object(s) in ${editor.projectName}` : `path materials in ${editor.projectName}`);
             try {
                 // With `paths` the look goes on every path mesh afterwards, so the refresh leaves its own (named meshes only) out.
@@ -436,6 +449,7 @@ export class ShapingService {
                 endPhase(rec, 'unity', 'failed', unityError);
             }
         }
+        const vegetation = await this.vegetationPhase(rec, { editor, unityObjects, unityReport, dryRun, warnings });
         return {
             changedObjects,
             exported,
@@ -448,6 +462,7 @@ export class ShapingService {
             pathMaterials,
             unitySteps: unitySteps(unityReport),
             unityError,
+            vegetation,
             layers,
             blend,
             layersDir,
@@ -455,6 +470,52 @@ export class ShapingService {
             dryRun,
             seconds: Math.round((Date.now() - t0) / 100) / 10,
         };
+    }
+
+    /**
+     * A rock slab changed: the surface map out of Unity (unless the refresh
+     * just did it), then the lower vegetation planted again so the grass leaves
+     * the rock. Skipped (with the reason) when none changed, on a dry run (the
+     * export and the planting write files) and when Unity was not refreshed.
+     * A failure ends the phase as failed and fails the job. Returns the
+     * planting's report lines.
+     */
+    private async vegetationPhase(rec: JobRecord, c: {
+        editor: UnityEditor | null; unityObjects: string[]; unityReport: unknown; dryRun: boolean; warnings: string[];
+    }): Promise<string[]> {
+        const slabs = c.unityObjects.filter(isRockSlab);
+        if (slabs.length === 0) {
+            skipPhase(rec, 'vegetation', 'no rock slab changed');
+            return [];
+        }
+        const names = `${slabs.length} rock slab(s): ${slabs.join(', ')}`;
+        if (c.dryRun) {
+            skipPhase(rec, 'vegetation', `dry run: the surface map and the grass would be redone for ${names}`);
+            return [];
+        }
+        if (!c.editor || c.unityReport === null) {
+            const why = `Surface map and grass not updated for ${names}: Unity was not refreshed`;
+            c.warnings.push(why);
+            skipPhase(rec, 'vegetation', why);
+            return [];
+        }
+        const editor = c.editor;
+        // The refresh re-exports the surface map itself when a slab is among its objects; its step says so.
+        const exported = unitySteps(c.unityReport).some(s => s.id === 'surfaces.export' && s.status === 'done');
+        let what = 'surface map export in Unity (golfmap.surfaces.export)';
+        beginPhase(rec, 'vegetation', exported ? `planting vegetation for ${names}` : `exporting the surface map for ${names}`);
+        try {
+            if (!exported) await editor.run('golfmap.surfaces.export', { terrain: 'inner' }, this.timeouts.unitySec);
+            what = 'vegetation planting';
+            notePhase(rec, `planting vegetation for ${names}`);
+            const planted = await this.exportSettings.plantVegetation(rec.job.courseId, 'inner', { dbPath: this.dbPath });
+            endPhase(rec, 'vegetation', 'done', `${slabs.length} rock slab(s): surface map ${exported ? 'from the refresh' : 'exported'}, grass planted in ${editor.projectName}`);
+            return planted.report;
+        } catch (e) {
+            const message = `Rock slab(s) changed (${slabs.join(', ')}) but the ${what} failed: ${(e as Error).message.split('\n')[0]}`;
+            endPhase(rec, 'vegetation', 'failed', message);
+            throw new ConflictError(message);
+        }
     }
 
     /**
@@ -707,6 +768,7 @@ const PHASES: ReadonlyArray<readonly [ShapingPhaseId, string]> = [
     ['worker', 'Starting the shaping worker'],
     ['blender', 'Blender sync'],
     ['unity', 'Unity refresh'],
+    ['vegetation', 'Surface map and grass'],
 ];
 
 const secs = (ms: number) => Math.round(ms / 100) / 10;
@@ -783,6 +845,11 @@ function holds(st: ShapingWorkerStatus, target: WorkerTarget): boolean {
 /** An FBX file name (or path) as its object name: `x/Spline_hole_1_1c_Bunker_-_Blend.fbx` -> `Spline_hole_1_1c_Bunker_-_Blend`. */
 export function objectName(fbx: string): string {
     return (fbx.split(/[\\/]/).pop() ?? fbx).replace(/\.fbx$/i, '');
+}
+
+/** A rock slab cut out of the ground by `golfmap.cut_out`: `Spline_hall_h11_north_Rock_-_Mesh`. */
+export function isRockSlab(object: string): boolean {
+    return object.endsWith('_Rock_-_Mesh');
 }
 
 function strings(v: unknown): string[] {

@@ -13,6 +13,8 @@ import {
     PATH_SURFACE_ATTRIBUTE, PATH_SURFACE_LABELS, PATH_SURFACES, pathSurfaceOf, type PathSurface,
 } from '../../../shared/features/path-surface';
 import { KERB_FILLETS_ATTRIBUTE, kerbFilletsOn } from '../../../shared/features/road-junctions';
+import { MapService } from '../map/map.service';
+import { mountPathTransitions } from './path-transitions-panel';
 import {
     BANK_VEG_ATTRIBUTE, BANK_VEG_COVER_ATTRIBUTE, BANK_VEG_DEFAULT, CREEK_BANK_ZONE_TYPE, bankVegCoverOf, bankVegOf, isWetBankVariant,
     takesBankVeg, bankVegNumberOf, BANK_VEG_MAX_ATTRIBUTE, BANK_VEG_WET_ATTRIBUTE, DEFAULT_BANK_VEG_MAX_M, DEFAULT_BANK_VEG_WET_M,
@@ -23,6 +25,9 @@ import {
     SUGGESTED_TREE_SPECIES, TREE_AREA_IGNORE_KIND_ATTRIBUTE, TREE_AREA_NAME_ATTRIBUTE, TREE_AREA_SPECIES_ATTRIBUTE, TREE_AREA_TYPE,
     formatSpeciesMix, speciesMixOf, treeAreaIgnoresKind, treeAreaNameOf, type TreeSpeciesShare,
 } from '../../../shared/features/tree-areas';
+import {
+    ROCK_SLAB_MARGIN_ATTRIBUTE, ROCK_SLAB_MARGIN_RANGE_M, ROCK_SLAB_TILE_ATTRIBUTE, ROCK_SLAB_TYPE, rockSlabMarginOf, rockSlabTileOf,
+} from '../../../shared/features/rock-slab';
 
 /** The `<datalist>` of species suggestions the mix rows' inputs share (one per page). */
 const TREE_SPECIES_LIST_ID = 'tree-area-species-options';
@@ -127,6 +132,16 @@ const tpl = template(`
                 Round kerbs at junctions
             </label>
         </div>
+        <div bind="rockSection" class="zone-section" data-testid="rock-slab-section">
+            <h4 class="section-title">Rock slab (berghäll)</h4>
+            <label class="zone-field" title="How far the cut-out reaches beyond the outline you drew, metres. An outline traced tight to the rock in the photo reads too small in game.">Margin (m)
+                <input bind="rockMargin" type="number" min="0" max="5" step="0.1" data-testid="rock-slab-margin" />
+            </label>
+            <label class="zone-field" title="Metres per texture tile on the slab">Texture tile (m)
+                <input bind="rockTile" type="number" min="0.5" step="0.5" data-testid="rock-slab-tile" />
+            </label>
+            <div class="tree-area-hint">Not in the SVG: Terrain editor, Apply to meshes cuts it out of the course meshes in Blender.</div>
+        </div>
         <div bind="creekSection" class="zone-section" data-testid="creek-bank-section">
             <h4 bind="creekTitle" class="section-title"></h4>
             <label class="zone-field">Palette
@@ -167,6 +182,14 @@ const presetBtnTpl = template(`<button bind="button" type="button" class="preset
  */
 export class SelectionPanelComponent extends Component {
     static styles = `
+        .path-transitions {
+            display: flex; flex-direction: column; gap: ${s('xs')};
+            & [hidden] { display: none; }
+            & p { margin: 0; font-size: 0.72rem; color: ${t('color-text-secondary')}; }
+            & .transition-button { ${btn(t('radius-sm'))} padding: ${s('xs')} ${s('sm')}; font-size: 0.75rem; }
+            & details { display: flex; flex-direction: column; gap: ${s('xs')}; }
+        }
+        .path-transitions[hidden] { display: none; }
         .sel-panel {
             display: none;
             flex-direction: column;
@@ -397,6 +420,9 @@ export class SelectionPanelComponent extends Component {
     private courseDetail = this.inject(CourseDetailService);
     private zoneTypes = this.inject(ZoneTypesService);
     private moveSelect!: HTMLSelectElement;
+    private transitionMap = this.inject(MapService);
+    private transitionHost?: HTMLElement;
+    private pathSurfaceSelect?: HTMLSelectElement;
 
     render(): DocumentFragment {
         const frag = this.wire(tpl, {
@@ -545,6 +571,21 @@ export class SelectionPanelComponent extends Component {
                 const n = this.pathSelection().length;
                 return n > 1 ? `Path surface (${n} paths)` : 'Path surface';
             },
+            // Rock slab (shared/features/rock-slab.ts): how far the cut-out
+            // grows past the outline and the texture tile size — every
+            // selected slab at once.
+            rockSection: {
+                className: () => this.rockSelection().length > 0 ? 'zone-section show' : 'zone-section',
+            },
+            rockMargin: {
+                value: () => this.sharedRockNumber(rockSlabMarginOf),
+                onchange: (e: Event) => this.saveRockNumber(
+                    e, ROCK_SLAB_MARGIN_ATTRIBUTE, ROCK_SLAB_MARGIN_RANGE_M.min, ROCK_SLAB_MARGIN_RANGE_M.max),
+            },
+            rockTile: {
+                value: () => this.sharedRockNumber(rockSlabTileOf),
+                onchange: (e: Event) => this.saveRockNumber(e, ROCK_SLAB_TILE_ATTRIBUTE, 0.5, Infinity),
+            },
             // Creek bank vegetation (shared/features/creek-vegetation.ts):
             // which creek_bank palette plants the banks, and how much of the
             // water it covers — every selected creek and water at once.
@@ -684,8 +725,16 @@ export class SelectionPanelComponent extends Component {
             }
         }
 
+        const transitionHost = document.createElement('div');
+        transitionHost.dataset.testid = 'path-transitions';
+        transitionHost.className = 'path-transitions';
+        this.transitionHost = transitionHost;
+        this.ref(frag, 'pathSection').after(transitionHost);
+        this.track(mountPathTransitions(transitionHost, this.features, this.tool, this.transitionMap));
+
         // Surface picker: fixed options; Mixed only while the selected paths disagree.
         const surfaceSelect = this.ref(frag, 'pathSurface') as HTMLSelectElement;
+        this.pathSurfaceSelect = surfaceSelect;
         surfaceSelect.addEventListener('change', () => {
             if (surfaceSelect.value !== MIXED_SURFACE) this.savePathSurface(surfaceSelect.value as PathSurface | '');
         });
@@ -1117,11 +1166,52 @@ export class SelectionPanelComponent extends Component {
      * along unchanged; a path already on that surface is not written.
      */
     private savePathSurface(surface: PathSurface | ''): void {
+        const invalid = surface !== 'gravel' && surface !== 'dirt' && this.pathSelection().some(f => {
+            const transitions = (f.attributes as unknown as {pathTransitions?: unknown[]})?.pathTransitions;
+            return Array.isArray(transitions) && transitions.length > 0;
+        });
+        if (invalid) {
+            const host = this.transitionHost;
+            const warning = document.createElement('p'); warning.textContent = 'Remove transitions before changing to this surface.';
+            host?.append(warning);
+            const select = this.pathSurfaceSelect;
+            if (select) select.value = this.pathSurfaceValue();
+            return;
+        }
         for (const f of this.pathSelection()) {
             if ((pathSurfaceOf(f.attributes) ?? '') === surface) continue;
             const attributes: Record<string, number | string | boolean> = { ...(f.attributes ?? {}) };
             if (surface) attributes[PATH_SURFACE_ATTRIBUTE] = surface;
             else delete attributes[PATH_SURFACE_ATTRIBUTE];
+            void this.features.update(f.id, { attributes: Object.keys(attributes).length > 0 ? attributes : null });
+        }
+    }
+
+    /** The editable rock slabs in the selection (others in a mixed selection are left alone). */
+    private rockSelection(): CourseFeature[] {
+        return this.features.editableSelectedFeatures.get().filter(f => f.type === ROCK_SLAB_TYPE);
+    }
+
+    /** The selected slabs' shared value of a numeric setting, the default when unset ('' while they differ). */
+    private sharedRockNumber(read: (attributes: CourseFeature['attributes']) => number): string {
+        const values = new Set(this.rockSelection().map(f => read(f.attributes)));
+        return values.size === 1 ? String([...values][0]) : '';
+    }
+
+    /**
+     * Set a numeric setting on every selected slab from a number input; cleared
+     * drops the key (the default). A value outside min..max is clamped. `attributes`
+     * replaces the whole object server-side, so each slab's other keys go along
+     * unchanged.
+     */
+    private saveRockNumber(e: Event, key: string, min: number, max: number): void {
+        const raw = (e.target as HTMLInputElement).value.trim();
+        const value = raw === '' ? null : Math.min(max, Math.max(min, Number(raw)));
+        for (const f of this.rockSelection()) {
+            const attributes: Record<string, number | string | boolean> = { ...(f.attributes ?? {}) };
+            if (value === null) delete attributes[key];
+            else attributes[key] = value;
+            if (JSON.stringify(attributes) === JSON.stringify(f.attributes ?? {})) continue;
             void this.features.update(f.id, { attributes: Object.keys(attributes).length > 0 ? attributes : null });
         }
     }

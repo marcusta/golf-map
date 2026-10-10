@@ -388,6 +388,20 @@ namespace GolfMap.Editor
             }
         }
 
+        // The bridge's way in (golfmap.trees.plant): the panel's 'Load and check', or its 'Plant' without the
+        // replace question (nobody can answer a modal dialog over the bridge; the planting backup is written as ever).
+        bool unattended;
+        internal string RunFromBridge(bool plant)
+        {
+            var problem = SyncRole();
+            if (!string.IsNullOrEmpty(problem)) return "Not planted: " + problem;
+            if (terrain == null || string.IsNullOrEmpty(filePath)) return "Not planted: the " + RoleKey + " panel has no terrain or trees file.";
+            unattended = true;
+            try { if (plant) Plant(); else Check(); }
+            finally { unattended = false; }
+            return status;
+        }
+
         // Load the survey and match it against the saved palette, without planting.
         internal void Check()
         {

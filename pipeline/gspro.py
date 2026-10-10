@@ -931,9 +931,97 @@ def _move_stems_off_paths(trees: list[dict], paths: list, e0: float, n0: float,
     return moved, longest
 
 
+# What the lidar reads as a tree but is not one. The detector takes anything standing 1 m or more
+# over the ground model as a crown, and the ground model has filtered out boulders and never had
+# the wires: a 1.5 m rock comes out as a 1.5 m bush, a power line as a row of tall thin trees.
+# - `power_line` features (shared/features/power-line.ts, drawn as a centerline with a width): every
+#   stem inside the corridor is dropped, whatever its height (the wires hang over cleared ground).
+# - `rock_slab` features and the course's placed rocks (`--rocks`: a golfmap-walls-v1 stone-walls.json,
+#   its `boulders` with e/n/lengthM): stems under TREE_ROCK_MAX_HEIGHT_M standing on one are dropped.
+#   A taller one is a real tree beside or over the rock and stays.
+POWER_LINE_FEATURE_TYPE = "power_line"
+# The corridor is drawn about as wide as the wires hang (8 m by default); the keep-out reaches this far
+# beyond it on both sides, so no crown is planted into the outer wires.
+TREE_POWER_LINE_CLEARANCE_M = 3.0
+TREE_ROCK_MAX_HEIGHT_M = 6.0
+TREE_ROCK_SLAB_MARGIN_M = 0.5          # the detector's cells are 1 m: a stem this far off a slab's edge is the slab
+TREE_ROCK_BOULDER_RADIUS_FRACTION = 0.5   # of lengthM: a boulder's keep-out is the circle round its long side
+
+
+def _load_feature_geometries(db_path: Path, course_ident: str, feature_type: str) -> list:
+    """The course's features of one type as valid shapely geometries in EPSG:3006 metres."""
+    from shapely import make_valid
+    conn = _open_course_db(db_path)
+    course = _resolve_course(conn, course_ident)
+    rows = conn.execute("SELECT geometry_json FROM course_features WHERE course_id = ? AND type = ?",
+                        (course["id"], feature_type)).fetchall()
+    conn.close()
+    geoms = (_zone_geometry_m(json.loads(r["geometry_json"])) for r in rows)
+    return [make_valid(g) for g in geoms if g is not None and not g.is_empty]
+
+
+def _load_placed_rocks(rocks_path: Path) -> list:
+    """The single rocks of a golfmap-walls-v1 spec (`boulders`: e, n, lengthM) as circles in EPSG:3006 metres."""
+    from shapely.geometry import Point
+    spec = json.loads(rocks_path.read_text(encoding="utf-8"))
+    out = []
+    for b in spec.get("boulders") or []:
+        try:
+            e, n, length = float(b["e"]), float(b["n"]), float(b.get("lengthM", 1.0))
+        except (KeyError, TypeError, ValueError):
+            continue
+        out.append(Point(e, n).buffer(max(length * TREE_ROCK_BOULDER_RADIUS_FRACTION, 0.5), quad_segs=6))
+    return out
+
+
+def _drop_stems_on_rocks_and_power_lines(trees: list[dict], rocks: list, power_lines: list,
+                                         e0: float, n0: float) -> tuple[list[dict], int, int]:
+    """`trees` without the stems that are a rock or a power line (see above): (kept, dropped as rock,
+    dropped as power line)."""
+    from shapely import contains_xy
+    from shapely.ops import unary_union
+    if not trees or not (rocks or power_lines):
+        return trees, 0, 0
+    xs = np.array([t["x"] + e0 for t in trees], dtype=np.float64)
+    ys = np.array([t["z"] + n0 for t in trees], dtype=np.float64)
+    wire = contains_xy(unary_union(power_lines), xs, ys) if power_lines else np.zeros(len(trees), dtype=bool)
+    rock = np.zeros(len(trees), dtype=bool)
+    if rocks:
+        low = np.array([t["h"] < TREE_ROCK_MAX_HEIGHT_M for t in trees], dtype=bool)
+        rock = contains_xy(unary_union(rocks), xs, ys) & low & ~wire
+    drop = wire | rock
+    return [t for t, d in zip(trees, drop) if not d], int(rock.sum()), int(wire.sum())
+
+
+POWER_LINES_FORMAT = "golfmap-power-lines-v1"
+
+
+def cmd_power_lines(course_ident: str, out: Path, db_path: Path | None = None) -> None:
+    """Write the course's `power_line` features for Unity's golfmap.powerlines.build: each line's
+    points (one per pole, EPSG:3006) under `power_line_<feature number in hex>`."""
+    conn = _open_course_db(db_path or DEFAULT_DB)
+    course = _resolve_course(conn, course_ident)
+    rows = conn.execute("SELECT id, feature_no, geometry_json FROM course_features WHERE course_id = ? AND type = ? "
+                        "ORDER BY feature_no IS NULL, feature_no, id", (course["id"], POWER_LINE_FEATURE_TYPE)).fetchall()
+    conn.close()
+    lines = []
+    for r in rows:
+        points = ((json.loads(r["geometry_json"]).get("centerline") or {}).get("points")) or []
+        if len(points) < 2:
+            print(f"  warning: power line {r['id']} has no centerline of two or more points; skipped")
+            continue
+        part = f"{r['feature_no']:x}" if r["feature_no"] is not None else f"{_id_seed(r['id']):x}"
+        lines.append({"id": str(r["id"]), "name": f"power_line_{part}",
+                      "points": [[round(float(p["x"]), 2), round(float(p["y"]), 2)] for p in points]})
+    out.parent.mkdir(parents=True, exist_ok=True)
+    out.write_text(json.dumps({"format": POWER_LINES_FORMAT, "crs": "EPSG:3006", "lines": lines}, indent=1) + "\n", encoding="utf-8")
+    print(f"Wrote {out}")
+    print(f"  {len(lines)} power line(s), {sum(len(l['points']) for l in lines)} pole position(s)")
+
+
 def cmd_trees(bbox, stems_path: Path, sidecar_path: Path, out: Path, terrain: str | None = None,
               exclude: Extent | None = None, extent: Extent | None = None,
-              db_path: Path | None = None, course: str | None = None) -> None:
+              db_path: Path | None = None, course: str | None = None, rocks_path: Path | None = None) -> None:
     """Write a unity-trees-v1 file for one terrain: every stem inside the
     square (and outside `exclude`, the inner square when this is the outer)
     as x/z metres from the square's south-west corner, with the plot's
@@ -941,7 +1029,9 @@ def cmd_trees(bbox, stems_path: Path, sidecar_path: Path, out: Path, terrain: st
     ground check and the terrain agree to the centimetre. With `course`, the
     course's tree species areas (read from `db_path`) go into `areas` and each
     stem inside one names it in `area`, and stems standing on the course's
-    paths are moved to just beside them (_move_stems_off_paths)."""
+    paths are moved to just beside them (_move_stems_off_paths), and stems that
+    are really a power line or a rock (the course's `power_line` and `rock_slab`
+    features, and the placed rocks of `rocks_path`) are left out."""
     if not stems_path.is_file():
         raise SystemExit(f"error: no such tree-stems asset: {stems_path}")
     if not sidecar_path.is_file():
@@ -988,6 +1078,15 @@ def cmd_trees(bbox, stems_path: Path, sidecar_path: Path, out: Path, terrain: st
             "bush": r > BUSH_RADIUS_FRACTION * h,
         })
 
+    rocks = _load_placed_rocks(rocks_path) if rocks_path is not None and rocks_path.is_file() else []
+    wires = []
+    if course is not None:
+        rocks += [g.buffer(TREE_ROCK_SLAB_MARGIN_M, quad_segs=4)
+                  for g in _load_feature_geometries(db_path or DEFAULT_DB, course, ROCK_SLAB_TYPE)]
+        wires = [g.buffer(TREE_POWER_LINE_CLEARANCE_M, quad_segs=4)
+                 for g in _load_feature_geometries(db_path or DEFAULT_DB, course, POWER_LINE_FEATURE_TYPE)]
+    trees, as_rock, as_wire = _drop_stems_on_rocks_and_power_lines(trees, rocks, wires, e0, n0)
+
     doc = {
         "format": UNITY_TREES_FORMAT,
         "plot": {
@@ -1015,6 +1114,9 @@ def cmd_trees(bbox, stems_path: Path, sidecar_path: Path, out: Path, terrain: st
           f"{sum(1 for t in trees if t['bush'])} bushes); {outside} outside the square"
           + (f", {excluded} left to the inner terrain" if exclude is not None else "")
           + (f", {duplicates} duplicate position(s) merged" if duplicates else ""))
+    if as_rock or as_wire:
+        print(f"  left out: {as_rock} stem(s) under {TREE_ROCK_MAX_HEIGHT_M:g} m on a rock slab or placed rock, "
+              f"{as_wire} in a power line's corridor")
     if moved:
         print(f"  {moved} stem(s) on a road or path moved to {TREE_PATH_CLEARANCE_M:g} m beside it (longest move {longest:.1f} m)")
     print(f"  plot origin {e0:.0f},{n0:.0f} (EPSG:3006), height range {doc['plot']['minM']:.2f}..{doc['plot']['maxM']:.2f} m from {sidecar_path.name}")
@@ -2160,6 +2262,105 @@ def path_surfaces_file(svg: Path) -> Path:
     return svg.with_name(f"{svg.stem}-paths.json")
 
 
+def _transition_centerline(centerline: dict) -> list:
+    """Same chord-scaled Catmull-Rom and 5 cm recursive flatten as shared/centerline.ts."""
+    pts = []
+    for p in centerline.get("points", []):
+        if not pts or math.hypot(p["x"] - pts[-1]["x"], p["y"] - pts[-1]["y"]) > 1e-6:
+            pts.append(p)
+    line = [(p["x"], p["y"]) for p in pts]
+    if len(line) < 2:
+        return []
+    lengths = [math.dist(a, b) for a, b in zip(line, line[1:])]
+    def handle(i, chord, span):
+        if i == 0 or i == len(line) - 1 or pts[i].get("corner"):
+            return (chord[0] * span / 3, chord[1] * span / 3)
+        dx, dy = line[i + 1][0] - line[i - 1][0], line[i + 1][1] - line[i - 1][1]
+        norm = math.hypot(dx, dy)
+        if norm < 1e-9:
+            return (chord[0] * span / 3, chord[1] * span / 3)
+        reach = min(lengths[i - 1], lengths[i]) / 3
+        return dx / norm * reach, dy / norm * reach
+    out = [line[0]]
+    def flatten(c, depth=0):
+        a, b, c2, d = c
+        dx, dy = d[0] - a[0], d[1] - a[1]
+        chord = math.hypot(dx, dy)
+        def off(p):
+            return abs((p[0] - a[0]) * dy - (p[1] - a[1]) * dx) / chord if chord > 1e-9 else math.dist(p, a)
+        if depth >= 12 or max(off(b), off(c2)) <= .05:
+            out.append(d)
+            return
+        mid = lambda p, q: ((p[0] + q[0]) / 2, (p[1] + q[1]) / 2)
+        ab, bc, cd = mid(a, b), mid(b, c2), mid(c2, d)
+        abc, bcd = mid(ab, bc), mid(bc, cd)
+        m = mid(abc, bcd)
+        flatten((a, ab, abc, m), depth + 1)
+        flatten((m, bcd, cd, d), depth + 1)
+    for i, (a, b) in enumerate(zip(line, line[1:])):
+        chord = ((b[0] - a[0]) / lengths[i], (b[1] - a[1]) / lengths[i])
+        ha, hb = handle(i, chord, lengths[i]), handle(i + 1, chord, lengths[i])
+        flatten((a, (a[0] + ha[0], a[1] + ha[1]), (b[0] - hb[0], b[1] - hb[1]), b))
+    return out
+
+
+def _path_transition_entries(rows: list, feature_shapes: dict) -> list:
+    entries = []
+    for row in rows:
+        surface = _row_surface(row)
+        if row["type"] != "path" or surface not in ("gravel", "dirt"):
+            continue
+        attrs = json.loads(row["attributes_json"] or "{}")
+        transitions = attrs.get("pathTransitions")
+        geometry = json.loads(row["geometry_json"])
+        centerline = geometry.get("centerline")
+        if geometry.get("crs") != "EPSG:3006":
+            continue
+        if not isinstance(transitions, list) or not transitions or not centerline:
+            continue
+        line = _transition_centerline(centerline)
+        length = sum(math.dist(a, b) for a, b in zip(line, line[1:]))
+        valid = []
+        occupied = []
+        ids = set()
+        for t in transitions:
+            if not isinstance(t, dict) or t.get("pattern") not in ("soft-fade", "overgrown-gravel", "wheel-tracks"):
+                continue
+            try:
+                numeric = ("startM", "transitionLengthM", "holdLengthM", "fadeLengthM", "centerGrassReachM", "trackWidthM", "trackSpacingM", "edgeIrregularity", "dirtAmount", "variation", "seed")
+                if any(isinstance(t[k], bool) or not isinstance(t[k], (int, float)) or not math.isfinite(t[k]) or t[k] < 0 for k in numeric):
+                    continue
+                if not isinstance(t.get("id"), str) or not t["id"].strip() or t["id"] in ids:
+                    continue
+                if t.get("placement") not in ("start", "end", "section") or t.get("ending") not in ("grass", "continue") or t.get("direction") not in (-1, 1):
+                    continue
+                if any(t[k] > 1 for k in ("edgeIrregularity", "dirtAmount", "variation")) or t["seed"] != int(t["seed"]) or t["seed"] > 9007199254740991:
+                    continue
+                if min(t[k] for k in ("transitionLengthM", "trackWidthM", "trackSpacingM")) <= 0 or t["trackSpacingM"] + t["trackWidthM"] > centerline["widthM"]:
+                    continue
+                total = sum(t[k] for k in ("transitionLengthM", "holdLengthM", "fadeLengthM"))
+                direction = -1 if t["placement"] == "start" else 1 if t["placement"] == "end" else t["direction"]
+                start = total if t["placement"] == "start" else length - total if t["placement"] == "end" else t["startM"]
+                end = start + direction * total
+                lo, hi = sorted((start - direction * t["centerGrassReachM"], end))
+                if direction not in (-1, 1) or not all(math.isfinite(v) for v in (total, start, end)) or total <= 0 or lo < -1e-6 or hi > length + 1e-6:
+                    continue
+                lo, hi = sorted((start - direction * t["centerGrassReachM"], length if direction == 1 else 0))
+                if any(min(hi, b) - max(lo, a) > 1e-6 for a, b in occupied):
+                    continue
+                occupied.append((lo, hi))
+                ids.add(t["id"])
+                valid.append({**t, "startM": start, "direction": direction})
+            except (KeyError, TypeError, ValueError):
+                continue
+        for shape in sorted(feature_shapes.get(row["id"], [])):
+            if valid:
+                entries.append({"featureId": row["id"], "shape": shape, "surface": surface,
+                                "widthM": centerline["widthM"], "lengthM": length,
+                                "centerline3006": [list(p) for p in line], "transitions": valid})
+    return sorted(entries, key=lambda e: (e["shape"], e["featureId"]))
+
+
 def _road_regions(roads: list[MergedRoad], names: list[str], rows: list, tol: float, to_svg) -> dict:
     """The sidecar's content: per road shape its dominant surface (by the
     area of the pieces that carry one) and every piece in it - id, feature
@@ -2194,7 +2395,15 @@ def _road_regions(roads: list[MergedRoad], names: list[str], rows: list, tol: fl
         if dominant:
             shapes[name] = dominant
         regions[name] = {"surface": dominant, "mixed": len(area) > 1, "pieces": pieces}
-    return {"shapes": dict(sorted(shapes.items())), "regions": regions}
+    result = {"shapes": dict(sorted(shapes.items())), "regions": regions}
+    feature_shapes = {}
+    for road, name in zip(roads, names):
+        for fid in road.ids:
+            feature_shapes.setdefault(fid, []).append(name)
+    transitions = _path_transition_entries(rows, feature_shapes)
+    if transitions:
+        result["transitions"] = transitions
+    return result
 
 
 def _write_path_surfaces(svg: Path, regions: dict) -> Path:
@@ -2239,6 +2448,8 @@ def _path_surface_changes(old: dict | None, new: dict) -> tuple[list[str], list[
         if was[0] == name and was[1].get("rings") != p.get("rings"):
             moved.add(name)
     lines = []
+    if old.get("transitions", []) != new.get("transitions", []):
+        lines.append("path transitions changed; reapply Blender shaping and refresh Unity")
     for name in sorted(surfaced):
         region = new["regions"][name]
         state = "mixed" if region["mixed"] else (region["surface"] or "no surface")
@@ -2613,6 +2824,7 @@ def cmd_svg(bbox, out: Path, db_path: Path, course_ident: str,
     layers: dict[str, list[str]] = {}
     written: dict[str, int] = {}
     skipped: dict[str, int] = {}
+    slabs = 0
     # Nothing may reach past the terrain square: Blender cuts the meshes out
     # of the terrain, and a shape overhanging its edge breaks the build. A
     # shape that does is cut to the square (and written flattened); one
@@ -2651,7 +2863,12 @@ def cmd_svg(bbox, out: Path, db_path: Path, course_ident: str,
         kind = row["type"]
         fill = fills.get(kind)
         if not fill:
-            skipped[kind] = skipped.get(kind, 0) + 1
+            if kind == ROCK_SLAB_TYPE:   # no OPCD surface by design: shaping-global cuts it out of the meshes
+                slabs += 1
+            elif kind == POWER_LINE_FEATURE_TYPE:   # overhead, no surface: only the trees export reads it
+                pass
+            else:
+                skipped[kind] = skipped.get(kind, 0) + 1
             continue
 
         geom = json.loads(row["geometry_json"])
@@ -2771,6 +2988,8 @@ def cmd_svg(bbox, out: Path, db_path: Path, course_ident: str,
     if unknown_ids:
         print(f"  warning: {len(unknown_ids)} excluded id(s) are not features of this course "
               f"(deleted since?): {', '.join(unknown_ids[:5])}{' …' if len(unknown_ids) > 5 else ''}")
+    if slabs:
+        print(f"  rock slabs left out (cut out of the meshes in Blender by the shaping layer, not an OPCD surface): {slabs} feature(s)")
     if skipped:
         detail = ", ".join(f"{k} {v}" for k, v in sorted(skipped.items()))
         print(f"  skipped (no OPCD surface): {detail}; add one with e.g. --map trees=pinestraw")
@@ -2847,9 +3066,9 @@ SHAPING_COORD_DECIMALS = 2
 SHAPING_SIMPLIFY_M = 0.02
 
 
-def _shaping_ring(poly) -> list[list[float]]:
-    """A polygon's outer ring as [[x, y], ...] (open, cm), simplified a hair."""
-    pts = list(poly.simplify(SHAPING_SIMPLIFY_M).exterior.coords)[:-1]
+def _shaping_ring(poly, tol: float = SHAPING_SIMPLIFY_M) -> list[list[float]]:
+    """A polygon's outer ring as [[x, y], ...] (open, cm), simplified within `tol` (a hair by default)."""
+    pts = list(poly.simplify(tol).exterior.coords)[:-1]
     return [[round(x, SHAPING_COORD_DECIMALS), round(y, SHAPING_COORD_DECIMALS)] for x, y in pts]
 
 
@@ -2923,7 +3142,7 @@ def shaping_global(db_path: Path, course_ident: str) -> tuple[dict, dict]:
     shapes_oldest = sorted((r for r in rows if r["type"] in fills), key=lambda r: (r["created_at"] or "", r["id"]))
     shape_ids = _shape_ids(shapes_oldest)
     course_ids = {r["id"] for r in rows}
-    stats: dict[str, int] = {}
+    stats: dict = {}
     ops: list[dict] = []
 
     tees = [r for r in rows if r["type"] == SHAPING_TEE_TYPE]
@@ -3020,6 +3239,14 @@ def shaping_global(db_path: Path, course_ident: str) -> tuple[dict, dict]:
     if soft:
         ops.append({"id": SHAPING_EDGE_FADE_ID, "op": "golfmap.path_edge_fade", "select": {"type": "path"}})
 
+    if _path_transition_entries(rows, {r["id"]: ["eligible"] for r in paths}):
+        ops.append({"id": "paths-transitions", "op": "golfmap.path_transition", "select": {"type": "path"}})
+
+    # After every op that moves or cuts meshes: a slab is cut out of the final surface, whatever lies under it.
+    slab_ops, slab_stats = _rock_slab_ops(rows)
+    ops += slab_ops
+    stats.update(slab_stats)
+
     doc = {
         "format": SHAPING_LAYER_FORMAT,
         "id": SHAPING_GLOBAL_ID,
@@ -3034,6 +3261,124 @@ def shaping_global(db_path: Path, course_ident: str) -> tuple[dict, dict]:
 SHAPING_SPLIT_ID = "paths-surfaces"
 SHAPING_EDGE_FADE_ID = "paths-edge-fade"
 SHAPING_EDGE_FADE_SURFACES = ("gravel", "dirt")   # shape_edgefade.SURFACES
+
+# --- Rock slabs ----------------------------------------------------------------
+# A `rock_slab` feature (shared/features/rock-slab.ts, Swedish "berghäll") is no
+# OPCD surface: the SVG leaves it out and its mesh comes from a `golfmap.cut_out`
+# op (blender/README.md "Shaping: cut-outs"), one per slab, last in the global
+# layer. Its outline is the drawn polygon grown by the feature's `marginM` (a
+# slab traced tight to the rock in the photo reads too small in game; the
+# Vreta ones were grown 1.5 m by hand), lightly simplified, and kept
+# SHAPING_SLAB_GAP_M off every earlier slab's.
+ROCK_SLAB_TYPE = "rock_slab"
+SHAPING_SLAB_PREFIX = "hall"               # Spline_hall_<feature number in hex>_Rock_-_Mesh
+SHAPING_SLAB_MARGIN_ATTRIBUTE, SHAPING_SLAB_TILE_ATTRIBUTE = "marginM", "uvM"
+SHAPING_SLAB_MARGIN_M = 1.5                # the default margin; attribute marginM takes 0..5
+SHAPING_SLAB_MARGIN_MAX_M = 5.0
+SHAPING_SLAB_UV_M = 4.0                    # shape_apply CUT_OUT_UV_M: written only when a slab differs
+SHAPING_SLAB_FLATTEN_M = 0.05              # the drawn curve flattened within this
+SHAPING_SLAB_SIMPLIFY_M = 0.15             # the grown outline, lightly simplified
+SHAPING_SLAB_GAP_M = 0.8                   # least distance between two slabs' outlines
+# The keep-out round an earlier slab is its outline buffered by the gap plus 1 cm: the later outline's
+# vertices are rounded to cm (SHAPING_COORD_DECIMALS, up to 7 mm each) and the buffer's chords cut in
+# by about 1 mm, so the written outlines stay at least SHAPING_SLAB_GAP_M apart.
+SHAPING_SLAB_KEEPOUT_M = SHAPING_SLAB_GAP_M + 0.01
+SHAPING_SLAB_CRUMB_M2 = 0.01               # a trimmed slab's leftover piece under this is rounding dust
+
+
+def _slab_number(attrs: dict, key: str, default: float, valid, rule: str, name: str, warnings: list[str]) -> float:
+    """A slab's numeric attribute, `default` when unset; an invalid one (the server refuses those) also falls
+    back, with a warning."""
+    value = attrs.get(key)
+    if value is None:
+        return default
+    if isinstance(value, bool) or not isinstance(value, (int, float)) or not math.isfinite(value) or not valid(value):
+        warnings.append(f"rock slab {name}: {key} {value!r} is not {rule}; the default {default:g} is used")
+        return default
+    return float(value)
+
+
+def _slab_names(slabs: list) -> dict[str, str]:
+    """`hall_<feature number in hex>` per slab (`slabs` in feature-number order: a numbered feature never
+    changes name). A slab without a number takes a hash of its id; a name already taken gets `_2`, `_3`..."""
+    names: dict[str, str] = {}
+    taken: set[str] = set()
+    for r in slabs:
+        part = f"{r['feature_no']:x}" if r["feature_no"] is not None else f"{_id_seed(r['id']):x}"
+        name, k = f"{SHAPING_SLAB_PREFIX}_{part}", 2
+        while name in taken:
+            name, k = f"{SHAPING_SLAB_PREFIX}_{part}_{k}", k + 1
+        taken.add(name)
+        names[r["id"]] = name
+    return names
+
+
+def _rock_slab_ops(rows: list) -> tuple[list[dict], dict]:
+    """One `golfmap.cut_out` op per `rock_slab` feature, and counts for the report (`rock_slabs` written,
+    `rock_slabs_skipped`, `rock_slabs_trimmed`, `rock_slab_warnings` lines). Slabs go in feature-number order;
+    a later slab whose grown outline comes within SHAPING_SLAB_GAP_M of an earlier one's written outline loses
+    the part inside that outline buffered by the gap, and is skipped (with a warning) when that leaves no
+    single polygon."""
+    from shapely.geometry import Polygon
+
+    slabs = sorted((r for r in rows if r["type"] == ROCK_SLAB_TYPE),
+                   key=lambda r: (r["feature_no"] is None, r["feature_no"] or 0, r["created_at"] or "", r["id"]))
+    names = _slab_names(slabs)
+    warnings: list[str] = []
+    ops: list[dict] = []
+    written: list = []   # the slabs' polygons as written, so far
+    trimmed = 0
+    for r in slabs:
+        name = names[r["id"]]
+        try:
+            attrs = json.loads(r["attributes_json"]) if r["attributes_json"] else {}
+        except ValueError:
+            attrs = {}
+        attrs = attrs if isinstance(attrs, dict) else {}
+        margin = _slab_number(attrs, SHAPING_SLAB_MARGIN_ATTRIBUTE, SHAPING_SLAB_MARGIN_M,
+                              lambda v: 0 <= v <= SHAPING_SLAB_MARGIN_MAX_M, f"between 0 and {SHAPING_SLAB_MARGIN_MAX_M:g} m",
+                              name, warnings)
+        uv = _slab_number(attrs, SHAPING_SLAB_TILE_ATTRIBUTE, SHAPING_SLAB_UV_M, lambda v: v > 0, "above 0", name, warnings)
+
+        pieces = _polygons(_feature_shape(json.loads(r["geometry_json"]), SHAPING_SLAB_FLATTEN_M))
+        drawn = max(pieces, key=lambda p: p.area) if pieces else None
+        if drawn is None or drawn.area < MIN_SHAPE_AREA_M2:
+            warnings.append(f"rock slab {name} ({r['id']}) is under {MIN_SHAPE_AREA_M2:g} m2 (drawn by mistake? delete it); skipped")
+            continue
+        if len(pieces) > 1:
+            warnings.append(f"rock slab {name} ({r['id']}) is drawn as {len(pieces)} separate pieces; only the largest is cut out")
+        grown = Polygon(drawn.exterior).buffer(margin, quad_segs=8).simplify(SHAPING_SLAB_SIMPLIFY_M)
+
+        cut = False
+        for polygon in written:
+            keepout = polygon.buffer(SHAPING_SLAB_KEEPOUT_M, quad_segs=16)
+            if grown.intersects(keepout):
+                grown, cut = grown.difference(keepout), True
+        parts = [p for p in _polygons(grown) if p.area >= SHAPING_SLAB_CRUMB_M2]
+        if len(parts) != 1 or parts[0].interiors or parts[0].area < MIN_SHAPE_AREA_M2:
+            why = ("nothing is left of it" if not parts else
+                   "it would surround a slab and leave a hole" if len(parts) == 1 and parts[0].interiors else
+                   "only a sliver is left" if len(parts) == 1 else f"it would be split in {len(parts)}")
+            warnings.append(f"rock slab {name} ({r['id']}) skipped: kept {SHAPING_SLAB_GAP_M:g} m off the slab(s) before it, "
+                            f"{why}")
+            continue
+        trimmed += cut
+        ring = _shaping_ring(parts[0], 0.0)
+        ring = [p for i, p in enumerate(ring) if p != ring[i - 1]]   # rounding to cm can merge neighbours
+        if len(ring) < 3:
+            warnings.append(f"rock slab {name} ({r['id']}) skipped: its outline collapsed")
+            continue
+        op = {"id": name.replace("_", "-"), "op": "golfmap.cut_out", "name": name, "outline3006": ring,
+              "featureId": r["id"], "origin": ROCK_SLAB_TYPE,
+              "note": f"rock slab {name.split('_', 1)[1]}: the drawn outline grown {margin:g} m"
+                      + (f", trimmed to keep {SHAPING_SLAB_GAP_M:g} m off the slab before it" if cut else "")}
+        if uv != SHAPING_SLAB_UV_M:
+            op["uvM"] = uv
+        ops.append(op)
+        polygon = Polygon(ring)
+        written.append(polygon if polygon.is_valid else polygon.buffer(0))
+    return ops, {"rock_slabs": len(ops), "rock_slabs_skipped": len(slabs) - len(ops), "rock_slabs_trimmed": trimmed,
+                 "rock_slab_warnings": warnings}
 
 
 def _mixed_road_shapes(rows: list) -> list[str]:
@@ -3094,6 +3439,12 @@ def cmd_shaping_global(db_path: Path, course_ident: str, out: Path | None = None
               f"course's) skipped")
     if stats["bad_edits"]:
         print(f"  warning: {stats['bad_edits']} plane edit(s) with unreadable rings skipped")
+    if stats["rock_slabs"] or stats["rock_slabs_skipped"]:
+        print(f"  {stats['rock_slabs']} rock slab(s) cut out of the meshes in Blender (outline grown by its margin, "
+              f"{SHAPING_SLAB_GAP_M:g} m kept between slabs; {stats['rock_slabs_trimmed']} trimmed to that)"
+              + (f", {stats['rock_slabs_skipped']} skipped" if stats["rock_slabs_skipped"] else ""))
+        for line in stats["rock_slab_warnings"]:
+            print(f"  warning: {line}")
 
     features_doc, fstats, warnings = shaping_features(db_path, course_ident, library)
     features_out = out.parent / SHAPING_FEATURES_FILE
@@ -5334,8 +5685,15 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--terrain", choices=["inner", "outer"], help="which GSPro terrain (default: the sidecar's)")
     p.add_argument("--exclude-square", dest="exclude_square",
                    help="x0,y0,x1,y1 in EPSG:3006 to leave out — the inner square when writing the outer's trees")
-    p.add_argument("--course", help="course id or name substring: add its tree species areas (and each stem's area)")
+    p.add_argument("--course", help="course id or name substring: add its tree species areas (and each stem's area), "
+                                    "leave out the stems on its rock slabs and in its power lines' corridors")
+    p.add_argument("--rocks", help="a golfmap-walls-v1 stone-walls.json: low stems on its placed rocks are left out")
     p.add_argument("--db", default=str(DEFAULT_DB), help=f"app database for --course (default {DEFAULT_DB})")
+
+    p = sub.add_parser("power-lines", help="write the course's power_line features for Unity's golfmap.powerlines.build")
+    p.add_argument("--course", required=True, help="course id or name substring")
+    p.add_argument("--out", required=True, help="output golfmap-power-lines-v1 JSON path (<export folder>/<prefix>-power-lines.json)")
+    p.add_argument("--db", default=str(DEFAULT_DB), help=f"app database (default {DEFAULT_DB})")
 
     p = sub.add_parser("buildings", help="write the unity-buildings-v1 file for one terrain from a fetch-buildings survey")
     _add_area(p)
@@ -5472,6 +5830,9 @@ def main(argv: list[str] | None = None) -> int:
         cmd_shaping_global(Path(args.db), args.course, Path(args.out) if args.out else None,
                            Path(args.out_dir) if args.out_dir else None, Path(args.library) if args.library else None)
         return 0
+    if args.command == "power-lines":
+        cmd_power_lines(args.course, Path(args.out), Path(args.db))
+        return 0
     bbox, extent = _resolve_area(args)
 
     if args.command == "ortho":
@@ -5506,7 +5867,8 @@ def main(argv: list[str] | None = None) -> int:
     elif args.command == "trees":
         cmd_trees(bbox, Path(args.stems), Path(args.sidecar), Path(args.out), args.terrain,
                   _parse_square(args.exclude_square) if args.exclude_square else None, extent=extent,
-                  db_path=Path(args.db), course=args.course)
+                  db_path=Path(args.db), course=args.course,
+                  rocks_path=Path(args.rocks) if args.rocks else None)
     elif args.command == "buildings":
         cmd_buildings(bbox, Path(args.survey), Path(args.sidecar), Path(args.out), args.terrain,
                       _parse_square(args.exclude_square) if args.exclude_square else None, extent=extent)

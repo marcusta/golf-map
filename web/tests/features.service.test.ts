@@ -1730,6 +1730,33 @@ describe('visibility keys (review item 27)', () => {
         expect(localStorage.getItem(hiddenTypesKey('c1'))).toBeNull();
     });
 
+    test('the Generated toggle hides every generated vegetation source and leaves the drawn zones', async () => {
+        const zone = (id: string, source: string | null): CourseFeature => ({
+            ...feature(id, 'vegetation_zone'), source, generated: source !== null, attributes: { zoneType: 'rough_tall' },
+        });
+        const tree: CourseFeature = { ...feature('t1', 'tree'), source: 'lidar-canopy', generated: true };
+        const { api } = fakeApi([zone('h1', null), zone('g1', 'tall-grass'), zone('g2', 'creek-bank'), tree]);
+        const svc = new FeaturesService(api);
+        await svc.load('c1');
+        svc.modeHiddenTypes.set(new Set());   // as Vegetation mode does
+        expect(svc.generatedVegetationSources.get()).toEqual(['creek-bank', 'tall-grass']);
+        expect(svc.generatedVegetationShown.get()).toBe(true);
+
+        svc.selectedIds.set(new Set(['h1', 'g1']));
+        svc.setGeneratedVegetationShown(false);
+        expect(svc.generatedVegetationShown.get()).toBe(false);
+        expect(svc.geojson.get().features.map(f => f.id)).toEqual(['h1']);
+        expect(svc.generatedGeojson.get().features.map(f => f.id)).toEqual(['t1']);   // other generated features stay
+        expect([...svc.selectedIds.get()]).toEqual(['h1']);
+
+        // one source back by its stack-panel eye: the toggle reads as shown again
+        svc.toggleSourceVisibility('creek-bank');
+        expect(svc.generatedVegetationShown.get()).toBe(true);
+        svc.setGeneratedVegetationShown(true);
+        expect(svc.hiddenSources.get().size).toBe(0);
+        expect(svc.generatedGeojson.get().features.map(f => f.id).sort()).toEqual(['g1', 'g2', 't1']);
+    });
+
     test('hideSelected with nothing selected changes nothing', async () => {
         const { api } = fakeApi([feature('a')]);
         const svc = new FeaturesService(api);

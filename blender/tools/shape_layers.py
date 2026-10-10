@@ -52,6 +52,7 @@ OPS = {
     },
     # Widens the fringe strips of gravel / dirt paths into the path and paints them as a noisy red (grass) to
     # green (path) ramp (shape_apply "golfmap.path_edge_fade", maths in shape_edgefade.py). After split_surfaces.
+    "golfmap.path_transition": {"params": {}, "keys": {"paths", "maxEdgeM"}},
     "golfmap.path_edge_fade": {
         "params": {},
         "keys": {"widthM", "maxEdgeM", "amplitude", "surfaces", "weld", "paths"},
@@ -62,7 +63,19 @@ OPS = {
         "required": {"footprint3006"},
         "noSelect": True,
     },
+    # Cuts an EPSG:3006 outline into every Spline mesh under it and lifts the inside out as one new object
+    # Spline_<name>_<surface>_-_Mesh (shape_apply "golfmap.cut_out"): a rock slab that is no drawn feature.
+    "golfmap.cut_out": {
+        "params": {},
+        "keys": {"name", "outline3006", "surface", "sliverM", "weld", "protect", "uvM"},
+        "required": {"name", "outline3006"},
+        "noSelect": True,
+    },
 }
+CUT_OUT_NAME = re.compile(r"^[a-z0-9]+(_[a-z0-9]+)*$")
+CUT_OUT_SURFACE = re.compile(r"^[A-Z][A-Za-z]*$")
+# A cut-out's name or surface may not read as a golf surface: Unity classes course meshes by these words in the name.
+SURFACE_WORDS = ("water", "creek", "lake", "deep", "semi", "rough", "fairway", "green", "tee", "bunker")
 # Provenance keys a generator may add (gspro.py shaping-global: the feature or terrain edit behind an op).
 OP_KEYS = {"id", "op", "select", "params", "seed", "note", "enabled", "featureId", "origin", "originRef", "maxDzWarnM"}
 # golfmap.flatten_footprint never moves these types (and their blends); see footprint_moves.
@@ -166,7 +179,7 @@ def validate_op(op):
     select = op.get("select")
     if spec.get("noSelect"):
         if select is not None:
-            errors.append(f"{name} takes no select (it works on every Spline mesh under the footprint)")
+            errors.append(f"{name} takes no select (it works on every Spline mesh under its outline)")
     elif not isinstance(select, dict) or not select:
         errors.append("select must be a non-empty object")
     else:
@@ -196,6 +209,27 @@ def validate_op(op):
             errors.append("protect must be a list of golf-map types")
         if "protectBandM" in op and not (_is_type(op["protectBandM"], float) and op["protectBandM"] > 0):
             errors.append("protectBandM must be a number > 0")
+    if name == "golfmap.cut_out":
+        fp = op.get("outline3006")
+        if not (isinstance(fp, list) and len(fp) >= 3 and all(
+                isinstance(p, list) and len(p) == 2 and all(_is_type(c, float) for c in p) for p in fp)):
+            errors.append("outline3006 must be a list of >= 3 [E, N] pairs")
+        label = "%s %s" % (op.get("name"), op.get("surface", "Rock"))
+        if not (isinstance(op.get("name"), str) and CUT_OUT_NAME.match(op["name"])):
+            errors.append("name must be lower-case words joined by _ (it names the object Spline_<name>_<surface>_-_Mesh)")
+        if not (isinstance(op.get("surface", "Rock"), str) and CUT_OUT_SURFACE.match(op.get("surface", "Rock"))):
+            errors.append("surface must be one capitalised word (default Rock)")
+        if any(w in label.lower() for w in SURFACE_WORDS) or "_b_" in label.lower():
+            errors.append(f"name and surface may not contain a golf surface word ({', '.join(SURFACE_WORDS)}) or _b_")
+        if "sliverM" in op and not (_is_type(op["sliverM"], float) and op["sliverM"] >= 0):
+            errors.append("sliverM must be a number >= 0")
+        if "uvM" in op and not (_is_type(op["uvM"], float) and op["uvM"] > 0):
+            errors.append("uvM must be a number > 0")
+        if "weld" in op and not isinstance(op["weld"], bool):
+            errors.append("weld must be true/false")
+        pr = op.get("protect", [])
+        if not (isinstance(pr, list) and all(isinstance(t, str) for t in pr)):
+            errors.append("protect must be a list of golf-map types")
     if name == "golfmap.split_surfaces":
         for k, lo in (("fadeM", 0.0), ("minPartM2", 0.0), ("sliverM", 0.0), ("slitM", 0.0)):
             if k in op and not (_is_type(op[k], float) and op[k] >= lo):
@@ -206,6 +240,11 @@ def validate_op(op):
             errors.append("paths must be a sidecar file name or path")
         if "weld" in op and not isinstance(op["weld"], bool):
             errors.append("weld must be true/false")
+    if name == "golfmap.path_transition":
+        if "maxEdgeM" in op and not (_is_type(op["maxEdgeM"], float) and .05 <= op["maxEdgeM"] <= 2):
+            errors.append("maxEdgeM must be a number in [0.05, 2]")
+        if "paths" in op and not (isinstance(op["paths"], str) and op["paths"]):
+            errors.append("paths must be a sidecar file name or path")
     if name == "golfmap.path_edge_fade":
         import sys
         here = os.path.dirname(os.path.abspath(__file__))

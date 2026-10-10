@@ -24,6 +24,37 @@ The same features carry the width tapers where a road ends in a narrower one
 
 ### `attributes` on features
 
+### Drawable path transitions
+
+`attributes.pathTransitions` is an optional array (unset or empty means the existing path).
+It is supported on gravel/dirt centerline paths. Grass tracks must first become a hard
+path surface and be rebuilt through SVG/OPCD. Each entry has a stable `id`, `pattern`
+(`soft-fade`, `overgrown-gravel`, `wheel-tracks`), `placement` (`start`, `end`, `section`),
+`startM`, `direction` (1/-1), `transitionLengthM`, `holdLengthM`, `fadeLengthM`, `ending`
+(`grass`, `continue`), `edgeIrregularity`, `dirtAmount`, `centerGrassReachM`, `trackWidthM`,
+`trackSpacingM`, `variation`, and integer `seed`. Fractions are 0..1; track dimensions
+fit the path width. The server checks the merged feature on every update, including
+geometry-only edits. A shortened path cannot silently strand a transition beyond its end.
+
+Stations measure the flattened Catmull-Rom spline in physical metres, tolerance 5 cm,
+from its first control point. `section` begins at `startM` and progresses in `direction`.
+The total extent is transition + hold + fade. `end` anchors the extent to the last point
+and progresses forward; `start` anchors to the first point and progresses backward.
+Endpoint placement resolves its start station automatically. `centerGrassReachM` extends
+the central grass tongue longitudinally before that start, toward the solid-road side,
+without moving the main transition start. Its extent must fit the path too. Overlapping
+entries (including tongues and the remainder to the directional endpoint) are refused.
+`ending: grass` completes the final fade at marker 3 and leaves the remainder of that
+path grass. `ending: continue` holds the established pattern through the endpoint and
+does not apply a final fade. The stored marker span still fits the centerline in either
+case; the effective paint footprint extends to its directional endpoint. Seeds and
+stable IDs make exports and paint reproducible.
+
+Implementation: shared station/projection/default/validation helpers, structured API
+attributes, an additive road sidecar entry, and `golfmap.path_transition` after the
+normal path edge fade. Changes use the existing path-sidecar/shaping/Unity refresh chain;
+no new geometry or terrain edit is persisted by export.
+
 ## Web
 
 A `path` drawn in path mode (`P`) or imported from Fetch roads is a

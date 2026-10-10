@@ -5,16 +5,16 @@
 // writes the layer files gspro.py shaping-global would.
 import * as path from 'node:path';
 import * as os from 'node:os';
-import { mkdtemp, readdir, utimes, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, readdir, utimes, writeFile } from 'node:fs/promises';
 import { writeFileSync } from 'node:fs';
 import { test, expect, afterEach } from 'bun:test';
 import { ConflictError, NotFoundError } from '@basics/core/server/auth';
 import { createTestDb } from '../testing/db';
 import { seedCourse, TEST_COURSE_ID } from '../db/seeds/course';
 import { startFakeShapingWorker, type FakeShapingWorker } from '../testing/fake-shaping-worker';
-import { ShapingService, objectName } from './shaping.service';
+import { ShapingService, objectName, isRockSlab } from './shaping.service';
 import { defaultUnityBridge } from './unity-bridge';
-import type { ExportRunner } from './gspro-export.service';
+import { GsproExportService, type ExportRunner } from './gspro-export.service';
 
 const cleanup: Array<() => void | Promise<void>> = [];
 afterEach(async () => {
@@ -49,8 +49,42 @@ const TEES = { id: 'tees', op: 'afrod.flattentees', select: { type: 'tee' } };
 const recipe = (no: string, file = 'cesimgolf-Conway_Bunker_Standard.json') =>
     ({ id: `recipe-${no}`, op: 'afrod.recipe', select: { feature: `f-${no}` }, recipe: file, seed: parseInt(no, 16) });
 
+/**
+ * A rock slab op as the hand layer 20-rocks.json has it (the worker's stand-in
+ * names its object `Spline_<id>`); `golfmap.cut_out` names the mesh `..._Rock_-_Mesh`.
+ */
+const SLAB = { id: 'hall_h11_north_Rock_-_Mesh', op: 'golfmap.cut_out', name: 'hall_h11_north', outline3006: [[530110.5, 6487074.6], [530112, 6487075.2], [530114.2, 6487074.9]] };
+const SLAB_OBJECT = 'Spline_hall_h11_north_Rock_-_Mesh';
+
+/**
+ * The runner behind the planting (GsproExportService.plantVegetation): the
+ * tall-rough generator writes one zone, `gspro.py zones` its file. Every run
+ * lands in `events` as `plant:<script>`, in order with the Unity commands.
+ */
+function plantingRunner(events: string[], fail: boolean): ExportRunner {
+    return async (args) => {
+        const script = path.basename(args[0]!);
+        events.push(`plant:${script}${args[1] === 'zones' ? ' zones' : ''}`);
+        const out = args[args.indexOf('--out') + 1]!;
+        if (script === 'grass_zones.py') {
+            if (fail) return { code: 1, stdout: '', stderr: 'Traceback\nSystemExit: error: boom, no surface map' };
+            await writeFile(out, JSON.stringify({
+                type: 'FeatureCollection',
+                features: [{
+                    type: 'Feature',
+                    geometry: { type: 'Polygon', coordinates: [[[529500, 6487500], [529510, 6487500], [529510, 6487510], [529500, 6487500]]] },
+                    properties: { type: 'vegetation_zone', source: 'tall-grass', zoneType: 'rough_tall', weight: 1, feather: 1, noise: 0 },
+                }],
+            }));
+            return { code: 0, stdout: '  grass_zones.py: 1 zones\n', stderr: '' };
+        }
+        await writeFile(out, '{}');
+        return { code: 0, stdout: '  wrote zones\n', stderr: '' };
+    };
+}
+
 /** A Unity editor whose active course exports to `exportFolder`, on the bridge protocol. */
-function fakeEditor(exportFolder: string, opts: { rejectOnly?: boolean; refreshMs?: number; steps?: object[] } = {}) {
+function fakeEditor(exportFolder: string, opts: { rejectOnly?: boolean; refreshMs?: number; steps?: object[]; events?: string[]; failSurfaces?: boolean } = {}) {
     const calls: Array<{ command: string; args: any }> = [];
     const server = Bun.serve({
         port: 0,
@@ -59,6 +93,13 @@ function fakeEditor(exportFolder: string, opts: { rejectOnly?: boolean; refreshM
             const command = decodeURIComponent(new URL(req.url).pathname.replace('/cmd/', ''));
             const args = await req.json();
             calls.push({ command, args });
+            if (command !== 'golfmap.course') opts.events?.push(`unity:${command}`);
+            if (command === 'golfmap.surfaces.export') {
+                if (opts.failSurfaces) return Response.json({ ok: false, error: 'no terrain named Inner in the scene' });
+                return Response.json({ ok: true, result: { terrain: args.terrain, cell: 0.5 } });
+            }
+            if (command === 'golfmap.zones.import') return Response.json({ ok: true, result: { status: 'Imported 1 zone groups' } });
+            if (command === 'golfmap.grass.apply') return Response.json({ ok: true, result: { system: 'Inner VSP', items: [{}], log: [] } });
             if (command === 'golfmap.course') return Response.json({ ok: true, result: { active: { name: 'Linkan', exportFolder } } });
             if (command === 'golfmap.course.refresh') {
                 if (opts.rejectOnly && 'only' in args) return Response.json({ ok: false, error: "unknown argument 'only' for golfmap.course.refresh" });
@@ -77,16 +118,18 @@ function fakeEditor(exportFolder: string, opts: { rejectOnly?: boolean; refreshM
 
 async function setup(opts: {
     worker?: FakeShapingWorker; workerUrl?: string; workerLauncher?: string[]; unity?: 'ours' | 'none' | 'reject-only';
-    library?: unknown; runner?: ExportRunner; editor?: { refreshMs?: number; steps?: object[] };
+    library?: unknown; runner?: ExportRunner; editor?: { refreshMs?: number; steps?: object[]; failSurfaces?: boolean }; plantFails?: boolean;
 } = {}) {
     const ctx = await createTestDb(seedCourse);
     const exportDir = await tmp('shaping-export-');
     await ctx.gsproExportService.setDir(TEST_COURSE_ID, exportDir);
     const project = await tmp('unity-proj-');
     const discovery = await tmp('bridges-');
+    /** Unity commands (except the course probe) and planting runs, in the order they happened. */
+    const events: string[] = [];
     let editor: ReturnType<typeof fakeEditor> | null = null;
     if (opts.unity !== 'none') {
-        editor = fakeEditor(path.relative(path.join(project, 'Assets'), exportDir), { rejectOnly: opts.unity === 'reject-only', ...opts.editor });
+        editor = fakeEditor(path.relative(path.join(project, 'Assets'), exportDir), { rejectOnly: opts.unity === 'reject-only', events, ...opts.editor });
         writeFileSync(path.join(discovery, 'bridge-1.json'), JSON.stringify({
             pid: process.pid, port: editor.server.port, token: 'tok', projectPath: project, projectName: 'linkan_v4', unityVersion: '2018.2.8f1', started: '',
         }));
@@ -97,15 +140,27 @@ async function setup(opts: {
     if (opts.library !== undefined) await writeFile(recipeLibrary, JSON.stringify(opts.library));
     const layers = layersRunner({ global: [TEES], features: [recipe('10'), recipe('11')] });
     const dataDir = await tmp('shaping-data-');
+    // The export service the planting runs through: its runner is the vegetation generators' stand-in, its Unity bridge the same editor.
+    const exporter = new GsproExportService({
+        db: ctx.db, courses: ctx.coursesService, assets: ctx.assetsService, dataDir, terrainEdits: ctx.terrainEditsService,
+        pipelineDir: '/pipeline', runner: plantingRunner(events, opts.plantFails === true), unityBridge: defaultUnityBridge(discovery),
+    });
     const svc = new ShapingService({
-        courses: ctx.coursesService, exportSettings: ctx.gsproExportService, dataDir,
+        courses: ctx.coursesService, exportSettings: exporter, dataDir,
         pipelineDir: '/pipeline', runner: opts.runner ?? layers.runner, unityBridge: defaultUnityBridge(discovery),
         workerUrl: opts.worker?.url ?? opts.workerUrl ?? 'http://127.0.0.1:9', workerLauncher: opts.workerLauncher,
         layersRoot, recipeLibrary, dbPath: '/data/app.sqlite',
         timeouts: { pollMs: 25, startMs: 20_000, loadMs: 20_000, syncMs: 20_000, unitySec: 30 },
     });
     cleanup.push(() => svc.stopWorker());
-    return { ctx, svc, exportDir, project, layersRoot, recipeLibrary, layers, editor, dataDir };
+    return { ctx, svc, exportDir, project, layersRoot, recipeLibrary, layers, editor, dataDir, events };
+}
+
+/** What the planting needs of the course: its square (georeference) and the inner heightmap's sidecar in the export folder. */
+async function plantable(t: Awaited<ReturnType<typeof setup>>) {
+    await t.ctx.db.updateTable('courses').set({ georeference_json: JSON.stringify({ bbox: [529028, 6486667, 531082, 6488721] }) })
+        .where('id', '=', TEST_COURSE_ID).execute();
+    await writeFile(path.join(t.exportDir, 'linkan-inner-dem-2050m.tif.json'), '{}');
 }
 
 /** Three .blend files: an old source, its conformed cache, and a newer source not prepared yet. */
@@ -220,7 +275,7 @@ test('the job reports its phases live — layers, the cold start with its second
 
     // What a client polling the job sees, change by change.
     const started = await t.svc.apply(TEST_COURSE_ID);
-    expect(started.phases.map(p => [p.id, p.status])).toEqual([['layers', 'running'], ['worker', 'pending'], ['blender', 'pending'], ['unity', 'pending']]);
+    expect(started.phases.map(p => [p.id, p.status])).toEqual([['layers', 'running'], ['worker', 'pending'], ['blender', 'pending'], ['unity', 'pending'], ['vegetation', 'pending']]);
     const seen: string[] = [];
     const seconds: number[] = [];
     let job = started;
@@ -241,10 +296,11 @@ test('the job reports its phases live — layers, the cold start with its second
     expect(job.status).toBe('succeeded');
     expect(job.step).toBe('done');
     expect(job.phase).toBeNull();
-    expect(job.phases.map(p => [p.id, p.status])).toEqual([['layers', 'done'], ['worker', 'done'], ['blender', 'done'], ['unity', 'done']]);
+    expect(job.phases.map(p => [p.id, p.status])).toEqual([['layers', 'done'], ['worker', 'done'], ['blender', 'done'], ['unity', 'done'], ['vegetation', 'skipped']]);
     expect(job.phases[1]!.detail).toBe('cold start: Blender started and loaded linkan_svg_1.conformed.blend');
     expect(job.phases[2]!.detail).toBe('3 object(s) re-shaped, 3 FBX exported');
-    expect(job.phases.every(p => typeof p.seconds === 'number')).toBe(true);
+    expect(job.phases[4]!.detail).toBe('no rock slab changed');
+    expect(job.phases.filter(p => p.status !== 'skipped').every(p => typeof p.seconds === 'number')).toBe(true);
     expect(job.phases[1]!.seconds!).toBeGreaterThanOrEqual(0.5);
     expect(job.phases[3]!.seconds!).toBeGreaterThanOrEqual(0.3);
     expect(job.seconds).toBeGreaterThanOrEqual(job.phases[1]!.seconds! + job.phases[3]!.seconds!);
@@ -253,7 +309,7 @@ test('the job reports its phases live — layers, the cold start with its second
 
     // Warm: the worker holds the course; nothing changed, so Unity is skipped (and says why).
     const again = await run(t.svc);
-    expect(again.phases.map(p => [p.id, p.status])).toEqual([['layers', 'done'], ['worker', 'done'], ['blender', 'done'], ['unity', 'skipped']]);
+    expect(again.phases.map(p => [p.id, p.status])).toEqual([['layers', 'done'], ['worker', 'done'], ['blender', 'done'], ['unity', 'skipped'], ['vegetation', 'skipped']]);
     expect(again.phases[1]!.detail).toBe('already loaded (linkan_svg_1.conformed.blend)');
     expect(again.phases[3]!.detail).toBe('Unity not refreshed: no object changed');
     expect(again.phases[3]!.seconds).toBeNull();
@@ -268,7 +324,7 @@ test('a failed phase is marked failed with the error; the later ones stay pendin
     const job = await run(t.svc); // no .blend
     expect(job.status).toBe('failed');
     expect(job.phase).toBe('worker');
-    expect(job.phases.map(p => p.status)).toEqual(['done', 'failed', 'pending', 'pending']);
+    expect(job.phases.map(p => p.status)).toEqual(['done', 'failed', 'pending', 'pending', 'pending']);
     expect(job.phases[1]!.detail).toMatch(/No \.blend in the export folder/);
     expect(job.step).toMatch(/^failed \(starting the shaping worker\): No \.blend/);
 });
@@ -345,6 +401,128 @@ test('paths: the surfaces file is rewritten before the layers, and Unity gets th
     expect(t.editor!.calls.filter(c => c.command !== 'golfmap.course')).toEqual([]);
     expect(plain.result!.pathSurfaces).toEqual([]);
     expect(plain.result!.pathMaterials).toBeNull();
+});
+
+test('a changed rock slab: after the Unity refresh the surface map is exported, then the vegetation is planted again; a run without one skips the phase', async () => {
+    const worker = startFakeShapingWorker();
+    cleanup.push(() => worker.stop());
+    const t = await setup({ worker });
+    await blends(t.exportDir);
+    await plantable(t);
+
+    // No slab among the changes: nothing for the grass.
+    const plain = await run(t.svc);
+    expect(plain.error).toBeNull();
+    expect(plain.phases.find(p => p.id === 'vegetation')).toMatchObject({ status: 'skipped', detail: 'no rock slab changed', seconds: null });
+    expect(plain.result!.vegetation).toEqual([]);
+    expect(t.events).toEqual(['unity:golfmap.course.refresh']);
+
+    // A slab joins: the refresh (its own report has no surface map step), then golfmap.surfaces.export, then the planting.
+    t.events.length = 0;
+    t.layers.layers.features = [recipe('10'), recipe('11'), SLAB];
+    const job = await run(t.svc);
+    expect(job.error).toBeNull();
+    expect(job.status).toBe('succeeded');
+    expect(job.result!.changedObjects).toEqual([SLAB_OBJECT]);
+    expect(t.events).toEqual([
+        'unity:golfmap.course.refresh', 'unity:golfmap.surfaces.export',
+        'plant:grass_zones.py', 'plant:gspro.py zones', 'unity:golfmap.zones.import', 'unity:golfmap.grass.apply',
+    ]);
+    expect(t.editor!.calls.find(c => c.command === 'golfmap.surfaces.export')!.args).toEqual({ terrain: 'inner' });
+    expect(t.editor!.calls.find(c => c.command === 'golfmap.course.refresh' && c.args.only === SLAB_OBJECT)).toBeDefined();
+    expect(job.phases.map(p => [p.id, p.status])).toEqual([['layers', 'done'], ['worker', 'done'], ['blender', 'done'], ['unity', 'done'], ['vegetation', 'done']]);
+    expect(job.phases[4]!.detail).toBe(`1 rock slab(s): surface map exported, grass planted in linkan_v4`);
+    expect(job.phases[4]!.seconds).toBeGreaterThanOrEqual(0);
+    expect(job.result!.vegetation).toContain('Unity (linkan_v4): grass palettes applied (1 items on Inner VSP)');
+    expect(job.result!.vegetation.at(-1)).toBe('Save the scene in Unity to keep it.');
+    expect(job.result!.warnings.filter(w => w.startsWith('Surface map and grass'))).toEqual([]);
+    expect(isRockSlab(SLAB_OBJECT)).toBe(true);
+    expect(isRockSlab('Spline_hall_1_Rock_-_Blend')).toBe(false);
+});
+
+test('a changed rock slab whose refresh already exported the surface map is not exported twice', async () => {
+    const worker = startFakeShapingWorker();
+    cleanup.push(() => worker.stop());
+    const t = await setup({ worker, editor: { steps: [{ id: 'meshes.sync', status: 'done' }, { id: 'surfaces.export', status: 'done', seconds: 4.2 }] } });
+    await blends(t.exportDir);
+    await plantable(t);
+    t.layers.layers.global = [];
+    t.layers.layers.features = [SLAB];
+
+    const job = await run(t.svc);
+    expect(job.error).toBeNull();
+    expect(t.events).toEqual(['unity:golfmap.course.refresh', 'plant:grass_zones.py', 'plant:gspro.py zones', 'unity:golfmap.zones.import', 'unity:golfmap.grass.apply']);
+    expect(job.phases[4]!.detail).toBe('1 rock slab(s): surface map from the refresh, grass planted in linkan_v4');
+
+    // A surface map the refresh left pending (status is not done) is exported here.
+    const pending = await setup({ worker, editor: { steps: [{ id: 'surfaces.export', status: 'pending' }] } });
+    await blends(pending.exportDir);
+    await plantable(pending);
+    pending.layers.layers.global = [];
+    pending.layers.layers.features = [SLAB];
+    await run(pending.svc);
+    expect(pending.events.slice(0, 2)).toEqual(['unity:golfmap.course.refresh', 'unity:golfmap.surfaces.export']);
+});
+
+test('a failing planting fails the job with a clear message (so does a failing surface map export, which stops before the planting)', async () => {
+    const worker = startFakeShapingWorker();
+    cleanup.push(() => worker.stop());
+    const t = await setup({ worker, plantFails: true });
+    await blends(t.exportDir);
+    await plantable(t);
+    t.layers.layers.features = [recipe('10'), SLAB];
+
+    const job = await run(t.svc);
+    expect(job.status).toBe('failed');
+    expect(job.phase).toBe('vegetation');
+    expect(job.phases.map(p => p.status)).toEqual(['done', 'done', 'done', 'done', 'failed']);
+    expect(job.error).toMatch(new RegExp(`^Rock slab\\(s\\) changed \\(${SLAB_OBJECT}\\) but the vegetation planting failed: .*boom, no surface map`));
+    expect(job.phases[4]!.detail).toBe(job.error);
+    expect(job.step).toMatch(/^failed \(surface map and grass\): Rock slab/);
+    expect(job.result).toBeNull();
+    expect(t.events).toEqual(['unity:golfmap.course.refresh', 'unity:golfmap.surfaces.export', 'plant:grass_zones.py']);
+
+    const broken = await setup({ worker, editor: { failSurfaces: true } });
+    await blends(broken.exportDir);
+    await plantable(broken);
+    broken.layers.layers.features = [SLAB];
+    const failed = await run(broken.svc);
+    expect(failed.status).toBe('failed');
+    expect(failed.error).toMatch(/but the surface map export in Unity \(golfmap\.surfaces\.export\) failed: .*no terrain named Inner/);
+    expect(broken.events).toEqual(['unity:golfmap.course.refresh', 'unity:golfmap.surfaces.export']);
+});
+
+test('a changed rock slab with Unity closed or on a dry run: the phase is skipped and says why, nothing is exported or planted', async () => {
+    const worker = startFakeShapingWorker();
+    cleanup.push(() => worker.stop());
+    const closed = await setup({ worker, unity: 'none' });
+    await blends(closed.exportDir);
+    await plantable(closed);
+    closed.layers.layers.global = [];
+    closed.layers.layers.features = [SLAB];
+    // Loaded earlier (while Unity was open), as in the test above.
+    const layersDir = path.join(closed.layersRoot, 'linkan', 'shaping');
+    await mkdir(layersDir, { recursive: true });
+    await fetch(`${worker.url}/load`, { method: 'POST', body: JSON.stringify({ blend: path.join(closed.exportDir, 'linkan_svg_1.conformed.blend'), layersDir, fbxFolder: await tmp('fbx-') }) });
+
+    const job = await run(closed.svc);
+    expect(job.error).toBeNull();
+    expect(job.phases.map(p => p.status)).toEqual(['done', 'done', 'done', 'skipped', 'skipped']);
+    const why = `Surface map and grass not updated for 1 rock slab(s): ${SLAB_OBJECT}: Unity was not refreshed`;
+    expect(job.phases[4]!.detail).toBe(why);
+    expect(job.result!.warnings).toContain(why);
+    expect(job.result!.warnings.some(w => w.startsWith('Unity not refreshed: no open Unity editor imports from'))).toBe(true);
+    expect(closed.events).toEqual([]);
+
+    const dry = await setup({ worker });
+    await blends(dry.exportDir);
+    await plantable(dry);
+    dry.layers.layers.features = [SLAB];
+    const planned = await run(dry.svc, { dryRun: true });
+    expect(planned.error).toBeNull();
+    expect(planned.phases[4]).toMatchObject({ status: 'skipped', detail: `dry run: the surface map and the grass would be redone for 1 rock slab(s): ${SLAB_OBJECT}` });
+    expect(dry.events).toEqual(['unity:golfmap.course.refresh']);
+    expect(planned.result!.vegetation).toEqual([]);
 });
 
 test('dry run: the worker and Unity plan only', async () => {

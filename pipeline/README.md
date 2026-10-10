@@ -513,60 +513,42 @@ which needs torch's MPS FFT support, torch ≥ 2.1). The reusable seam lives
 in `golfpipe/inpaint.py` (`inpaint_tiled(image, mask, inpaint_fn)`), kept
 CLI-free so interactive editor cleaning can consume it directly.
 
-### `export-ortho-square` / `import-ortho-square` — cleaned photo to an external editor and back
+### `cleaned-init` / `cleaned-patch` / `cleaned-replace` / `cleaned-export` — the cleaned photo
 
-The web Clean tool's **External edit** section runs these (operator steps:
-`docs/workflows.md` section 6; design: `docs/feature-ortho-export-import.md`).
-Without the server, from the repo root (paths are relative to `pipeline/`):
+A site's cleaned photo is ONE file, `ortho-<vintage>.cleaned.tif`: 8192 x 8192 px RGB in
+EPSG:3006 on the inner terrain square (`golfpipe/cleaned.py`). The web Clean tool and its
+server service (`CleanedPhotoService`) run these; operator steps:
+[docs/workflows.md](../docs/workflows.md) section 6. Each prints one JSON line on stdout, last.
 
 ```sh
-# 1. Export. --ortho is the replayed .patched.tif (the pristine ortho for a site never patched);
-#    --log-seq is the highest patch seq it contains (0 = empty log); --seq numbers the export.
-bun run py -m golfpipe export-ortho-square \
-    --ortho ../data/sources/<siteId>/ortho-<vintage>.patched.tif \
-    --frame ../data/sources/<siteId>/sim-frame.json \
-    --out-dir ../data/sources/<siteId>/exports/1 --seq 1 --log-seq 24 \
-    --bounds-wgs84 west,south,east,north        # only while sim-frame.json does not exist
+# Make it (once): cubic resample of the pristine photo onto the square. Refuses to replace one.
+bun run py -m golfpipe cleaned-init \
+    --ortho ../data/sources/<siteId>/ortho-<vintage>.tif \
+    --square-3006 x0,y0,x1,y1 \
+    --out ../data/sources/<siteId>/ortho-<vintage>.cleaned.tif
 
-# 2. Edit exports/1/ortho-sim-1.png elsewhere; save a copy as PNG at the same size.
+# Write rectangles of finished pixels into it: the Clean tool's strokes, painted in the browser.
+# <dir>/patches.json is [{x, y, w, h, file}]; each file is w*h*4 raw RGBA bytes (alpha ignored).
+bun run py -m golfpipe cleaned-patch --cleaned <cleaned.tif> --patches-dir <dir> \
+    --tiles-out ../data/tiles/<siteId>/ortho-sim --pristine-tiles ../data/tiles/<siteId>/ortho
 
-# 3. Import: diffs the copy against export 1 and writes patches/25.png.
-bun run py -m golfpipe import-ortho-square \
-    --ortho ../data/sources/<siteId>/ortho-<vintage>.patched.tif \
-    --patches-dir ../data/sources/<siteId>/patches \
-    --export-dir ../data/sources/<siteId>/exports/1 \
-    --image edited.png --seq 25 [--tolerance 2] [--min-area-px 4]
+# Make it show any image of the same pixel size (PNG/JPEG/TIFF, or an undo snapshot .tif).
+bun run py -m golfpipe cleaned-replace --cleaned <cleaned.tif> --image edited.png \
+    --tiles-out ../data/tiles/<siteId>/ortho-sim --pristine-tiles ../data/tiles/<siteId>/ortho
+
+# Write it out.
+bun run py -m golfpipe cleaned-export --cleaned <cleaned.tif> --out cleaned.png [--format jpg|rgb]
 ```
 
-`export-ortho-square` resamples bands 1 to 3 bilinearly into the site's frame
-(`sim-frame.json`: `{"extent3006": [e0, n0, e1, n1], "size": n}`, a square in
-EPSG:3006, `golfpipe/square_frame.py`) and writes `ortho-sim-<seq>.png` (or
-`.jpg` at q95 with `--format jpg`, for a Unity texture), the world file
-(`.pgw`/`.jgw`) and `export.json` (`exportSeq`, `extent3006`, `size`, `logSeq`,
-`sha256`, `createdAt`, `file`, `format`, `bytes`), which it prints as one JSON
-line. A missing frame is created from `--bounds-wgs84` (squared like
-`gspro.py ortho`, 8192 px unless `--size`); an existing one is never changed
-and a different `--size` or bounds is refused. To use a frame other than the
-bounds' square, write `sim-frame.json` first. An export directory is
-immutable: an existing `export.json` there is refused.
-
-`import-ortho-square` marks the pixels that differ from the export by more than
-`--tolerance` (0 to 254, default 2) in any channel, drops 8-connected regions
-under `--min-area-px` (default 4), dilates the rest 1 px and writes the bounding
-box as an RGBA PNG (alpha 255 on the change, edited colour kept 2 px beyond it).
-It refuses an export whose hash no longer matches `export.json`, an image of
-another size, and a JPEG/WebP image or JPEG export unless `--tolerance` is
-given. It prints one JSON line (`changed`, `kind`, `file`, `bounds3006`,
-`bounds3857`, `changedPixels`, `regions`, ...); `changed: false` with a
-`reason` (`identical`, `below-min-area`, `outside-ortho`) writes nothing. It
-does **not** touch `patches.json` or the raster: the server appends the entry
-and bakes it. By hand, add to `patches.json` (version 2)
-`{"seq": 25, "kind": "raster", "file": "25.png", "bounds3006": {...},
-"bounds3857": {...}, "exportSeq": 1, "changedPixels": n, "tool": "external",
-"createdAt": "<ISO>"}` from that output, then run `bake-ortho-patch --seq 25`
-(`--ortho` the pristine tif, `--patches-dir`, `--out` the `.patched.tif`,
-`--tiles-out` / `--pristine-tiles` for the sim tiles). Raster entries replay
-without torch and byte-identically.
+`cleaned-replace` takes the image whatever it shows: only another pixel size is refused. A
+partly transparent image is laid over the photo. It writes only the bounding box of the pixels
+that differ and retiles under the 256 px cells that hold one, so two edits at opposite ends
+of the photo cost their own tiles; an identical image changes nothing (`changed: false`).
+`cleaned-patch` computes nothing: it writes the bytes and retiles under them, per 256 px cell
+like `cleaned-replace`. `--format rgb` is the raw pixels (3 bytes each, row by row) the Clean
+tool loads. `cleaned-bake` (mask and stamp entries replayed in Python) is the retired queue
+model's command; the web tool no longer calls it. Without
+`--tiles-out` no tile is touched. The pristine ortho is never modified.
 
 ### `tile-ortho` — orthophoto GeoTIFF → JPEG XYZ pyramid
 

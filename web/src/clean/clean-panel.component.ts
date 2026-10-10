@@ -2,128 +2,112 @@ import { Component, effect, template } from '@basics/core/client/core';
 import { t } from '../theme';
 import { s } from '../css';
 import { dockBody, sectionTitle, statusRow, smallBtn, panelInput, busyAndNotice, hintsFooter } from '../editor/panel-recipes.css';
-import { API_BASE } from '../api';
 import { CleanToolService, type CleanMode } from './clean-tool.service';
-
-/** `ortho-sim-3.png` from whatever path the server reports. */
-const fileName = (path: string) => path.split(/[\\/]/).pop() ?? path;
-
-const formatBytes = (bytes: number) =>
-    bytes >= 1024 * 1024 ? `${(bytes / (1024 * 1024)).toFixed(0)} MB` : `${Math.max(1, Math.round(bytes / 1024))} kB`;
-
-/** Local `YYYY-MM-DD HH:mm` of an ISO time. */
-function formatTime(iso: string): string {
-    const d = new Date(iso);
-    if (Number.isNaN(d.getTime())) return iso;
-    const p = (n: number) => String(n).padStart(2, '0');
-    return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())} ${p(d.getHours())}:${p(d.getMinutes())}`;
-}
 
 const tpl = template(`
     <div class="clean-panel" bind="root" data-testid="clean-panel">
         <div class="status-row">
             <span bind="statusDot" class="status-dot"></span>
-            <span bind="statusText" class="status-text"></span>
+            <span bind="statusText" class="status-text" data-testid="clean-status"></span>
             <button bind="retryBtn" type="button" class="small-btn">Retry</button>
         </div>
+        <progress bind="loadBar" class="ext-progress" max="1" data-testid="load-progress"></progress>
         <div class="mode-section">
-            <h4 class="section-title">Mode</h4>
+            <h4 class="section-title">Tool</h4>
             <div class="mode-row">
-                <button bind="clickModeBtn" type="button" class="mode-btn">Click</button>
-                <button bind="ellipseModeBtn" type="button" class="mode-btn">Ellipse</button>
-                <button bind="stampModeBtn" type="button" class="mode-btn" data-testid="stamp-mode-btn">Stamp</button>
+                <button bind="cloneModeBtn" type="button" class="mode-btn" data-testid="clone-mode-btn">Clone</button>
+                <button bind="healModeBtn" type="button" class="mode-btn" data-testid="heal-mode-btn">Heal</button>
+                <button bind="spotModeBtn" type="button" class="mode-btn" data-testid="spot-mode-btn">Spot</button>
+                <button bind="removeModeBtn" type="button" class="mode-btn" data-testid="remove-mode-btn">Remove</button>
+                <button bind="areasModeBtn" type="button" class="mode-btn" data-testid="cleanup-areas-mode">Areas</button>
             </div>
             <div bind="modeHint" class="mode-hint"></div>
         </div>
-        <div bind="stampSection" class="stamp-section" data-testid="stamp-controls">
+        <div bind="areasSection" class="stamp-section" data-testid="cleanup-areas-controls">
+            <h4 class="section-title">Cleanup areas</h4>
+            <div bind="areaDrawingHint" class="mode-hint" role="status" data-testid="cleanup-area-drawing-hint"></div>
+            <div class="mode-hint">Green: eligible for cleanup where a tee, fairway, rough or green is mapped. Purple: cleaned whatever is mapped there, or nothing. Orange: keep unchanged, even inside green or purple. These boundaries guide external cleanup; they do not restrict the stamp or manual mask tools.</div>
+            <div class="mode-row">
+                <button bind="includeAreaBtn" type="button" class="small-btn" data-testid="cleanup-area-include">Area to clean</button>
+                <button bind="forceAreaBtn" type="button" class="small-btn" data-testid="cleanup-area-force" title="Clean all ground here, regardless of course features">Clean everything</button>
+                <button bind="excludeAreaBtn" type="button" class="small-btn" data-testid="cleanup-area-exclude">Keep unchanged</button>
+            </div>
+            <label class="check-row"><input bind="areaPreviewCheck" type="checkbox" data-testid="cleanup-area-preview"> Show cleanup preview</label>
+            <label class="area-field">Saved areas<select bind="areaSelect" data-testid="cleanup-area-select" aria-label="Saved cleanup areas"></select></label>
+            <label class="area-field">Name<input bind="areaName" maxlength="100" data-testid="cleanup-area-name" aria-label="Cleanup area name"></label>
+            <div bind="areaDraftActions" class="mode-row">
+                <button bind="finishAreaBtn" type="button" class="small-btn" data-testid="cleanup-area-finish">Finish area</button>
+                <button bind="backAreaBtn" type="button" class="small-btn">Remove corner</button>
+                <button bind="cancelAreaBtn" type="button" class="small-btn">Cancel</button>
+            </div>
+            <div bind="areaEditActions" class="mode-row">
+                <button bind="renameAreaBtn" type="button" class="small-btn">Rename</button>
+                <button bind="redrawAreaBtn" type="button" class="small-btn" data-testid="cleanup-area-redraw">Redraw</button>
+                <button bind="deleteAreaBtn" type="button" class="small-btn" data-testid="cleanup-area-delete">Delete</button>
+            </div>
+            <div class="mode-row">
+                <button bind="undoAreaBtn" type="button" class="small-btn" data-testid="cleanup-area-undo">Undo area change</button>
+                <button bind="reloadAreasBtn" type="button" class="small-btn">Reload areas</button>
+            </div>
+            <button bind="exportAreasBtn" type="button" class="small-btn" data-testid="cleanup-area-export">Download cleanup boundary</button>
+            <div bind="areaMessage" class="mode-hint" role="status" data-testid="cleanup-area-status"></div>
+        </div>
+        <div bind="brushSection" class="stamp-section" data-testid="brush-controls">
             <label class="slider-row">Size <span bind="sizeVal" class="slider-val"></span>
                 <input bind="sizeSlider" type="range" min="0.5" max="30" step="0.5">
-            </label>
-            <label class="slider-row">Opacity <span bind="opacityVal" class="slider-val"></span>
-                <input bind="opacitySlider" type="range" min="0.05" max="1" step="0.05">
-            </label>
-            <label class="slider-row">Flow <span bind="flowVal" class="slider-val"></span>
-                <input bind="flowSlider" type="range" min="0.05" max="1" step="0.05">
             </label>
             <label class="slider-row">Hardness <span bind="hardnessVal" class="slider-val"></span>
                 <input bind="hardnessSlider" type="range" min="0" max="1" step="0.05">
             </label>
-            <label class="check-row"><input bind="alignedCheck" type="checkbox"> Aligned</label>
-            <label class="check-row"><input bind="toneMatchCheck" type="checkbox"> Tone-match</label>
+            <label bind="opacityRow" class="slider-row">Opacity <span bind="opacityVal" class="slider-val"></span>
+                <input bind="opacitySlider" type="range" min="0.05" max="1" step="0.05">
+            </label>
+            <label bind="flowRow" class="slider-row">Flow <span bind="flowVal" class="slider-val"></span>
+                <input bind="flowSlider" type="range" min="0.05" max="1" step="0.05">
+            </label>
+            <label bind="alignedRow" class="check-row"><input bind="alignedCheck" type="checkbox"> Aligned</label>
+        </div>
+        <div class="preview-actions">
+            <button bind="undoStrokeBtn" type="button" class="small-btn" data-testid="undo-stroke-btn">Undo</button>
+            <button bind="redoStrokeBtn" type="button" class="small-btn" data-testid="redo-stroke-btn">Redo</button>
         </div>
         <label class="check-row photo-toggle"><input bind="cleanedCheck" type="checkbox" data-testid="cleaned-photo-toggle"> Show cleaned photo</label>
-        <div bind="bakeNotice" class="bake-notice"></div>
         <div bind="busyLine" class="busy-line"></div>
-        <div bind="previewSection" class="preview-section">
-            <div class="preview-label">Preview on the map — queue it?</div>
-            <div class="preview-actions">
-                <button bind="acceptBtn" type="button" class="accept-btn">Accept</button>
-                <button bind="discardBtn" type="button" class="small-btn">Discard</button>
-            </div>
-        </div>
-        <div bind="pendingSection" class="pending-section" data-testid="pending-section">
-            <div bind="pendingLabel" class="pending-label"></div>
-            <div class="preview-actions">
-                <button bind="bakeBtn" type="button" class="accept-btn" data-testid="bake-btn"></button>
-                <button bind="discardLastBtn" type="button" class="small-btn">Discard last</button>
-            </div>
-        </div>
         <div class="patches-row">
-            <span bind="patchCount" class="patch-count"></span>
-            <button bind="revertBtn" type="button" class="small-btn">Revert last patch</button>
+            <span bind="undoCount" class="patch-count" data-testid="undo-count"></span>
+            <button bind="undoBtn" type="button" class="small-btn" data-testid="undo-btn">Undo last session</button>
         </div>
         <div class="preview-actions">
             <button bind="unityBtn" type="button" class="accept-btn" data-testid="unity-apply-btn"></button>
         </div>
         <div bind="unityMessage" class="ext-message" data-testid="unity-message"></div>
         <div class="external-section" data-testid="external-edit">
-            <h4 class="section-title">External edit</h4>
-            <div bind="frameLine" class="ext-line" data-testid="ext-frame-line"></div>
-            <div bind="pendingNote" class="ext-line"></div>
+            <h4 class="section-title">Edit in an image editor</h4>
+            <div class="ext-line">The cleaned photo is one 8192 × 8192 px image. Download it, edit it, and import the result: any image of that size becomes the cleaned photo.</div>
             <div class="preview-actions">
-                <button bind="exportBtn" type="button" class="accept-btn" data-testid="export-btn"></button>
+                <a bind="exportLink" class="accept-btn ext-download" data-testid="export-link">Download photo (PNG)</a>
                 <button bind="refreshBtn" type="button" class="small-btn" data-testid="ext-refresh-btn">Refresh</button>
             </div>
-            <div bind="exportResult" class="ext-result" data-testid="export-result">
-                <span bind="exportResultText"></span>
-                <a bind="exportResultLink" class="ext-link" data-testid="export-result-link">Download</a>
-            </div>
-            <ul bind="exportList" class="export-list" data-testid="export-list"></ul>
-            <h5 class="ext-sub">Import edited photo</h5>
-            <label class="ext-field">Edited from
-                <select bind="exportPicker" data-testid="import-export-picker"></select>
-            </label>
-            <input bind="importFile" type="file" accept="image/png,.png" class="ext-file" data-testid="import-file">
-            <details class="ext-advanced">
-                <summary>Advanced</summary>
-                <label class="ext-field">Tolerance (0 to 254)
-                    <input bind="toleranceInput" type="number" min="0" max="254" step="1" placeholder="server default" data-testid="import-tolerance">
-                </label>
-                <div class="ext-line">Raise it only for a JPEG or a photo saved with a colour-profile change. Empty uses the server default.</div>
-            </details>
+            <h5 class="ext-sub">Import a photo</h5>
+            <input bind="importFile" type="file" accept="image/png,image/jpeg,image/tiff,.png,.jpg,.jpeg,.tif,.tiff" class="ext-file" data-testid="import-file">
             <progress bind="uploadBar" class="ext-progress" max="1" data-testid="upload-progress"></progress>
-            <div bind="importSummary" class="ext-summary" data-testid="import-summary">
-                <div bind="summaryHead" class="ext-summary__head"></div>
-                <div bind="summaryDetail" class="ext-summary__detail"></div>
-                <div bind="summaryBoxNote" class="ext-line"></div>
-                <div bind="summaryWarning" class="ext-warning" data-testid="import-warning"></div>
-            </div>
+            <div bind="importSummary" class="ext-summary" data-testid="import-summary"></div>
             <div bind="extMessage" class="ext-message" data-testid="ext-message"></div>
         </div>
         <div bind="notice" class="notice"></div>
         <div class="clean-panel__hints">
             <div bind="hintBlock"></div>
-            <div>Edits queue up and bake in ONE batch into the <b>cleaned (sim) photo</b> — the planning photo and iOS bundles always keep the original.</div>
+            <div>Every stroke changes the <b>cleaned photo</b> and is saved at once. The planning photo and iOS bundles always keep the original.</div>
         </div>
     </div>
 `);
 
 /**
- * Side panel for the Clean-photo tool: sidecar/inpaint health gate (mask
- * modes; stamping never needs the sidecar), mode picker with clone-stamp
- * brush controls, the dual-photo-state toggle, candidate-preview
- * accept/discard, the pending-edit queue with batch "Bake N edits", and the
- * baked-patch count with revert-last. Shares the CleanToolService DI
+ * Side panel for the Clean-photo tool: the photo's load and save status, the
+ * tool picker (PhotoCraft's Clone Stamp, Healing Brush, Spot Healing and
+ * Remove, plus the cleanup Areas), brush controls, stroke undo/redo, the
+ * cleaned/original toggle, the server-side "undo last session", Apply in
+ * Unity and the image-editor round trip. Shares the CleanToolService DI
  * singleton with the tool descriptor.
  */
 export class CleanPanelComponent extends Component {
@@ -145,7 +129,16 @@ export class CleanPanelComponent extends Component {
 
             & .mode-row {
                 display: flex;
+                flex-wrap: wrap;
                 gap: ${s('xs')};
+            }
+
+            & .area-field {
+                display: flex;
+                flex-direction: column;
+                gap: ${s('xs')};
+                font-size: 0.75rem;
+                & input, & select { width: 100%; min-width: 0; ${panelInput()} }
             }
 
             & .mode-btn {
@@ -303,6 +296,12 @@ export class CleanPanelComponent extends Component {
                 &.show { display: block; }
             }
 
+            & .ext-download {
+                display: inline-block;
+                text-decoration: none;
+                text-align: center;
+            }
+
             & .ext-link {
                 color: ${t('color-accent-primary')};
                 text-decoration: underline;
@@ -371,164 +370,168 @@ export class CleanPanelComponent extends Component {
     private tool = this.inject(CleanToolService);
 
     render(): DocumentFragment {
-        const stampHint = 'Alt-click picks the clone source; drag paints. Shift-click draws a line from the last dab; [ ] resize the brush.';
+        const areas = this.tool.areas;
+        const areaLocked = () => areas.busy.get() || !!areas.kind.get() || !areas.document.get();
+        const noSelection = () => areaLocked() || !areas.selected.get();
+        const modeLocked = () => areas.busy.get() || !!areas.kind.get() || this.tool.phase.get() !== 'idle';
+        const tool = this.tool;
+        const isLive = () => tool.mode.get() === 'clone' || tool.mode.get() === 'heal';
+        const modeBtn = (mode: CleanMode) => ({
+            onclick: () => tool.setMode(mode), disabled: modeLocked,
+            className: () => `mode-btn${tool.mode.get() === mode ? ' active' : ''}`,
+        });
+        const HINTS: Record<CleanMode, string> = {
+            clone: 'Clone Stamp: Alt-click picks the source, drag paints a copy of it.',
+            heal: 'Healing Brush: Alt-click picks the source, drag paints; on release the copy blends into its surroundings.',
+            spot: 'Spot Healing: paint over a blemish. It is filled from what is around it.',
+            remove: 'Remove: paint over an object, or draw a loop around it. It is filled from its surroundings (a few seconds for a large one).',
+            areas: 'Define and save the boundary for image cleanup. Your photo stays unchanged.',
+        };
         const frag = this.wire(tpl, {
+            areasModeBtn: {
+                onclick: () => this.tool.setMode('areas'), disabled: modeLocked,
+                className: () => `mode-btn${this.tool.mode.get() === 'areas' ? ' active' : ''}`,
+            },
+            areasSection: { className: () => this.tool.mode.get() === 'areas' ? 'stamp-section show' : 'stamp-section' },
+            areaDrawingHint: { textContent: () => areas.kind.get()
+                ? `Drawing ${{ include: 'an area to clean', force: 'an area to clean regardless of course features', exclude: 'a protected area' }[areas.kind.get()!]}: drag to trace, or click corners. ${areas.draft.get().length} corners placed. Finish area saves the outline.`
+                : 'Choose Area to clean, Clean everything or Keep unchanged to start drawing.' },
+            includeAreaBtn: { onclick: () => areas.begin('include'), disabled: areaLocked },
+            forceAreaBtn: { onclick: () => areas.begin('force'), disabled: areaLocked },
+            excludeAreaBtn: { onclick: () => areas.begin('exclude'), disabled: areaLocked },
+            areaPreviewCheck: { checked: () => areas.show.get(), onchange: (e: Event) => areas.show.set((e.target as HTMLInputElement).checked) },
+            areaSelect: { disabled: areaLocked, onchange: (e: Event) => areas.select((e.target as HTMLSelectElement).value) },
+            areaName: { value: () => areas.name.get(), disabled: () => areas.busy.get() || (!areas.kind.get() && !areas.selected.get()), oninput: (e: Event) => areas.name.set((e.target as HTMLInputElement).value) },
+            areaDraftActions: { style: () => areas.kind.get() ? '' : 'display:none' },
+            areaEditActions: { style: () => areas.kind.get() ? 'display:none' : '' },
+            finishAreaBtn: { onclick: () => void areas.finish(), disabled: () => areas.busy.get() || areas.draft.get().length < 3 },
+            backAreaBtn: { onclick: () => areas.back(), disabled: () => areas.busy.get() || !areas.draft.get().length },
+            cancelAreaBtn: { onclick: () => areas.cancel(), disabled: () => areas.busy.get() },
+            renameAreaBtn: { onclick: () => void areas.rename(), disabled: noSelection },
+            redrawAreaBtn: { onclick: () => areas.begin('include', true), disabled: noSelection },
+            deleteAreaBtn: { onclick: () => void areas.remove(), disabled: noSelection },
+            undoAreaBtn: { onclick: () => void areas.undo(), disabled: () => areaLocked() || !areas.canUndo.get() },
+            reloadAreasBtn: { onclick: () => void areas.reload(), disabled: () => areas.busy.get() || !!areas.kind.get() },
+            exportAreasBtn: { onclick: () => areas.download(), disabled: () => !areas.canExport() },
+            areaMessage: { textContent: () => areas.message.get() },
             statusDot: {
                 className: () => {
-                    if (this.tool.mode.get() === 'stamp') return 'status-dot online';
-                    const health = this.tool.health.get();
-                    if (health === 'checking') return 'status-dot';
-                    if (health === 'offline') return 'status-dot offline';
-                    return this.tool.inpaintReady.get() ? 'status-dot online' : 'status-dot degraded';
+                    if (tool.mode.get() === 'areas') return 'status-dot online';
+                    const photo = tool.photo.get();
+                    if (photo === 'error' || tool.saveState.get() === 'error') return 'status-dot offline';
+                    if (photo !== 'ready' || tool.saveState.get() === 'saving') return 'status-dot';
+                    return 'status-dot online';
                 },
             },
             statusText: {
                 textContent: () => {
-                    if (this.tool.mode.get() === 'stamp') return 'Clone stamp — no sidecar needed';
-                    const health = this.tool.health.get();
-                    if (health === 'checking') return 'Checking assist sidecar…';
-                    if (health === 'offline') return 'Sidecar offline — mask modes are disabled';
-                    if (!this.tool.inpaintReady.get()) {
-                        const detail = this.tool.healthDetail.get();
-                        return `Inpainting unavailable${detail ? ` — ${detail}` : ''}`;
-                    }
-                    return 'Inpaint sidecar ready';
+                    if (tool.mode.get() === 'areas') return 'Cleanup boundaries';
+                    const photo = tool.photo.get();
+                    if (photo === 'error') return tool.loadError.get() ?? 'The photo could not be loaded';
+                    if (photo !== 'ready') return `Loading the photo… ${Math.round(tool.loadProgress.get() * 100)} %`;
+                    const save = tool.saveState.get();
+                    if (save === 'error') return tool.saveError.get() ?? 'Saving failed';
+                    return save === 'saving' ? 'Saving…' : 'All changes saved';
                 },
             },
             retryBtn: {
-                onclick: () => void this.tool.checkHealth(),
-                className: () => this.tool.mode.get() === 'stamp'
-                    || (this.tool.health.get() === 'online' && this.tool.inpaintReady.get())
-                    ? 'small-btn hidden'
-                    : 'small-btn',
+                onclick: () => (tool.photo.get() === 'error' ? void tool.retryLoad() : tool.retrySave()),
+                className: () => tool.mode.get() !== 'areas' && (tool.photo.get() === 'error' || tool.saveState.get() === 'error')
+                    ? 'small-btn'
+                    : 'small-btn hidden',
             },
-            clickModeBtn: {
-                onclick: () => this.tool.mode.set('click' as CleanMode),
-                className: () => `mode-btn${this.tool.mode.get() === 'click' ? ' active' : ''}`,
+            loadBar: {
+                className: () => tool.mode.get() !== 'areas' && tool.photo.get() === 'loading' ? 'ext-progress show' : 'ext-progress',
+                value: () => tool.loadProgress.get(),
             },
-            ellipseModeBtn: {
-                onclick: () => this.tool.mode.set('ellipse' as CleanMode),
-                className: () => `mode-btn${this.tool.mode.get() === 'ellipse' ? ' active' : ''}`,
-            },
-            stampModeBtn: {
-                onclick: () => this.tool.mode.set('stamp' as CleanMode),
-                className: () => `mode-btn${this.tool.mode.get() === 'stamp' ? ' active' : ''}`,
-            },
+            cloneModeBtn: modeBtn('clone'),
+            healModeBtn: modeBtn('heal'),
+            spotModeBtn: modeBtn('spot'),
+            removeModeBtn: modeBtn('remove'),
             modeHint: {
                 textContent: () => {
-                    const mode = this.tool.mode.get();
-                    if (mode === 'click') return 'Click a blemish on the photo — SAM traces its outline.';
-                    if (mode === 'ellipse') return 'Press and drag a box — the inscribed ellipse becomes the mask.';
-                    return this.tool.hasStampSource.get()
-                        ? stampHint
-                        : 'Alt-click the photo to pick the clone source, then drag to paint.';
+                    const mode = tool.mode.get();
+                    if ((mode === 'clone' || mode === 'heal') && !tool.hasSource.get()) return `${HINTS[mode]} Pick a source to start.`;
+                    return HINTS[mode];
                 },
             },
-            stampSection: {
-                className: () => this.tool.mode.get() === 'stamp' ? 'stamp-section show' : 'stamp-section',
+            brushSection: {
+                className: () => tool.mode.get() === 'areas' ? 'stamp-section' : 'stamp-section show',
             },
+            opacityRow: { style: () => isLive() ? '' : 'display:none' },
+            flowRow: { style: () => isLive() ? '' : 'display:none' },
+            alignedRow: { style: () => isLive() ? '' : 'display:none' },
             sizeSlider: {
-                value: () => String(this.tool.stampSizeM.get()),
-                oninput: (e: Event) => this.tool.stampSizeM.set(Number((e.target as HTMLInputElement).value)),
+                value: () => String(tool.brushSizeM.get()),
+                oninput: (e: Event) => tool.brushSizeM.set(Number((e.target as HTMLInputElement).value)),
             },
-            sizeVal: { textContent: () => `${this.tool.stampSizeM.get().toFixed(1)} m` },
+            sizeVal: { textContent: () => `${tool.brushSizeM.get().toFixed(1)} m` },
             opacitySlider: {
-                value: () => String(this.tool.stampOpacity.get()),
-                oninput: (e: Event) => this.tool.stampOpacity.set(Number((e.target as HTMLInputElement).value)),
+                value: () => String(tool.brushOpacity.get()),
+                oninput: (e: Event) => tool.brushOpacity.set(Number((e.target as HTMLInputElement).value)),
             },
-            opacityVal: { textContent: () => this.tool.stampOpacity.get().toFixed(2) },
+            opacityVal: { textContent: () => tool.brushOpacity.get().toFixed(2) },
             flowSlider: {
-                value: () => String(this.tool.stampFlow.get()),
-                oninput: (e: Event) => this.tool.stampFlow.set(Number((e.target as HTMLInputElement).value)),
+                value: () => String(tool.brushFlow.get()),
+                oninput: (e: Event) => tool.brushFlow.set(Number((e.target as HTMLInputElement).value)),
             },
-            flowVal: { textContent: () => this.tool.stampFlow.get().toFixed(2) },
+            flowVal: { textContent: () => tool.brushFlow.get().toFixed(2) },
             hardnessSlider: {
-                value: () => String(this.tool.stampHardness.get()),
-                oninput: (e: Event) => this.tool.stampHardness.set(Number((e.target as HTMLInputElement).value)),
+                value: () => String(tool.brushHardness.get()),
+                oninput: (e: Event) => tool.brushHardness.set(Number((e.target as HTMLInputElement).value)),
             },
-            hardnessVal: { textContent: () => this.tool.stampHardness.get().toFixed(2) },
+            hardnessVal: { textContent: () => tool.brushHardness.get().toFixed(2) },
             alignedCheck: {
-                checked: () => this.tool.stampAligned.get(),
-                onchange: (e: Event) => this.tool.stampAligned.set((e.target as HTMLInputElement).checked),
+                checked: () => tool.cloneAligned.get(),
+                onchange: (e: Event) => tool.cloneAligned.set((e.target as HTMLInputElement).checked),
             },
-            toneMatchCheck: {
-                checked: () => this.tool.stampToneMatch.get(),
-                onchange: (e: Event) => this.tool.stampToneMatch.set((e.target as HTMLInputElement).checked),
+            undoStrokeBtn: {
+                title: () => 'Ctrl+Z',
+                onclick: () => void tool.undoStroke(),
+                disabled: () => tool.undoSteps.get() === 0 || tool.working.get() || tool.phase.get() !== 'idle',
+            },
+            redoStrokeBtn: {
+                title: () => 'Ctrl+Shift+Z',
+                onclick: () => void tool.redoStroke(),
+                disabled: () => tool.redoSteps.get() === 0 || tool.working.get() || tool.phase.get() !== 'idle',
             },
             cleanedCheck: {
                 checked: () => this.tool.showCleaned.get(),
                 onchange: (e: Event) => this.tool.setShowCleaned((e.target as HTMLInputElement).checked),
             },
-            bakeNotice: {
-                textContent: () => this.tool.bakeReason.get()
-                    ?? "Preview only — this course's map must be rebuilt before edits can bake.",
-                className: () => {
-                    // Surface the pre-flight block that matters for the mode:
-                    // stamps only need the source; masks also need LaMa deps.
-                    const blocked = this.tool.mode.get() === 'stamp'
-                        ? !this.tool.stampBakeable.get()
-                        : !this.tool.bakeable.get();
-                    return blocked ? 'bake-notice show' : 'bake-notice';
-                },
-            },
             busyLine: {
                 textContent: () => {
-                    if (this.tool.phase.get() !== 'applying') return 'Inpainting… (a few seconds on CPU)';
-                    const busy = this.tool.externalBusy.get();
-                    if (busy === 'export') return 'Exporting the cleaned photo… (up to a minute, longer if patches must be replayed first)';
+                    if (tool.working.get()) return 'Filling… (a large area takes a few seconds)';
+                    const busy = tool.externalBusy.get();
                     if (busy === 'unity') return 'Rendering the mesh texture and putting it into Unity… (about a minute)';
+                    if (busy === 'undo') return 'Putting the earlier photo back…';
                     if (busy === 'import') {
-                        const p = this.tool.uploadProgress.get();
+                        const p = tool.uploadProgress.get();
                         return p !== null && p < 1
                             ? `Uploading… ${Math.round(p * 100)} %`
-                            : 'Upload done — the server is comparing, baking and retiling…';
+                            : 'Upload done. The server is writing the photo and its map tiles…';
                     }
-                    return 'Baking into the cleaned photo…';
+                    return '';
                 },
-                className: () => this.tool.phase.get() === 'working' || this.tool.phase.get() === 'applying'
-                    ? 'busy-line show'
-                    : 'busy-line',
+                className: () => tool.working.get() || tool.phase.get() === 'applying' ? 'busy-line show' : 'busy-line',
             },
-            previewSection: {
-                className: () => this.tool.phase.get() === 'preview' ? 'preview-section show' : 'preview-section',
-            },
-            acceptBtn: { onclick: () => this.tool.accept() },
-            discardBtn: { onclick: () => this.tool.discard() },
-            pendingSection: {
-                className: () => this.tool.pendingCount.get() > 0 ? 'pending-section show' : 'pending-section',
-            },
-            pendingLabel: {
+            undoCount: {
                 textContent: () => {
-                    const n = this.tool.pendingCount.get();
-                    return `${n} pending edit${n === 1 ? '' : 's'} (not baked yet)`;
+                    const n = this.tool.undoDepth.get();
+                    return n === 0 ? 'No earlier photo kept' : `${n} earlier photo${n === 1 ? '' : 's'} kept`;
                 },
             },
-            bakeBtn: {
-                textContent: () => `Bake ${this.tool.pendingCount.get()} edit${this.tool.pendingCount.get() === 1 ? '' : 's'}`,
-                onclick: () => void this.tool.bakeAll(),
-                disabled: () => this.tool.phase.get() !== 'idle' || !this.tool.stampBakeable.get(),
-            },
-            discardLastBtn: { onclick: () => this.tool.discardLastPending() },
-            patchCount: {
-                textContent: () => {
-                    const n = this.tool.patchCount.get();
-                    return n === 0 ? 'No baked patches' : `${n} baked patch${n === 1 ? '' : 'es'}`;
-                },
-            },
-            revertBtn: {
-                onclick: () => void this.tool.revertLast(),
-                disabled: () => this.tool.patchCount.get() === 0 || this.tool.phase.get() !== 'idle',
+            undoBtn: {
+                title: () => 'Puts back the cleaned photo from before the last editing session or import.',
+                onclick: () => void this.tool.undoLast(),
+                disabled: () => this.tool.undoDepth.get() === 0 || this.tool.phase.get() !== 'idle',
             },
             unityBtn: {
-                textContent: () => {
-                    if (this.tool.externalBusy.get() === 'unity') return 'Applying in Unity…';
-                    return this.tool.pendingCount.get() > 0 ? 'Bake and apply in Unity' : 'Apply in Unity';
-                },
+                textContent: () => tool.externalBusy.get() === 'unity' ? 'Applying in Unity…' : 'Apply in Unity',
                 title: () => 'Puts the cleaned photo onto the course meshes in the open Unity project: the darkened, '
-                    + 'green-tinted mesh texture. Pending edits are baked first. The old texture is backed up in Unity.',
-                onclick: () => void this.tool.applyInUnity(),
-                disabled: () => this.tool.phase.get() !== 'idle'
-                    || (this.tool.patchCount.get() === 0 && this.tool.pendingCount.get() === 0),
+                    + 'green-tinted mesh texture. The old texture is backed up in Unity.',
+                onclick: () => void tool.applyInUnity(),
+                disabled: () => tool.phase.get() !== 'idle' || !tool.photoExists.get(),
             },
             unityMessage: {
                 textContent: () => this.tool.unityMessage.get()?.text ?? '',
@@ -537,72 +540,26 @@ export class CleanPanelComponent extends Component {
                     return m ? `ext-message show${m.kind === 'error' ? ' error' : ''}` : 'ext-message';
                 },
             },
-            frameLine: {
-                textContent: () => {
-                    const frame = this.tool.exportFrame.get();
-                    const n = this.tool.exports.get().length;
-                    const count = n === 0 ? 'no exports yet' : `${n} export${n === 1 ? '' : 's'}`;
-                    return frame
-                        ? `Frame ${frame.size} × ${frame.size} px, fixed for this course · ${count}`
-                        : `The first export fixes the frame (a square image) · ${count}`;
-                },
-            },
-            pendingNote: {
-                textContent: () => {
-                    const n = this.tool.pendingCount.get();
-                    return n > 0 ? `${n} pending edit${n === 1 ? ' is' : 's are'} not baked yet and not in the export.` : '';
-                },
-            },
-            exportBtn: {
-                textContent: () => this.tool.externalBusy.get() === 'export' ? 'Exporting…' : 'Export cleaned photo (PNG)',
-                onclick: () => void this.tool.exportPhoto(),
-                disabled: () => this.tool.phase.get() !== 'idle',
+            exportLink: {
+                // A plain download: the server encodes the PNG on demand (about ten seconds).
+                href: () => { this.tool.phase.get(); return this.tool.exportUrl() ?? ''; },
             },
             refreshBtn: {
                 onclick: () => void this.tool.refreshInfo({ resync: true }),
                 disabled: () => this.tool.phase.get() !== 'idle',
             },
-            exportResult: {
-                className: () => this.tool.lastExport.get() ? 'ext-result show' : 'ext-result',
-            },
-            exportResultText: {
-                textContent: () => {
-                    const r = this.tool.lastExport.get();
-                    if (!r) return '';
-                    return `Exported ${fileName(r.file)} (${formatBytes(r.bytes)}, ${r.size} px, patches through ${r.logSeq}). `;
-                },
-            },
-            exportResultLink: {
-                href: () => {
-                    const r = this.tool.lastExport.get();
-                    return r ? API_BASE + r.downloadPath : '';
-                },
-                download: () => {
-                    const r = this.tool.lastExport.get();
-                    return r ? fileName(r.file) : '';
-                },
-            },
-            exportPicker: {
-                disabled: () => this.tool.exports.get().length === 0 || this.tool.phase.get() !== 'idle',
-                onchange: (e: Event) => this.tool.pickedExportSeq.set(Number((e.target as HTMLSelectElement).value)),
-            },
             importFile: {
-                disabled: () => this.tool.exports.get().length === 0 || this.tool.phase.get() !== 'idle',
+                disabled: () => this.tool.phase.get() !== 'idle',
                 onchange: (e: Event) => {
                     const input = e.target as HTMLInputElement;
                     const file = input.files?.[0];
                     if (!file) return;
-                    const seq = this.tool.effectiveExportSeq();
-                    const tolerance = input.closest('.external-section')
-                        ?.querySelector<HTMLInputElement>('[data-testid="import-tolerance"]');
-                    const raw = tolerance?.value.trim() ?? '';
                     try {
                         input.value = ''; // so the same file can be picked again
                     } catch {
                         // Some environments refuse to reset a file input.
                     }
-                    if (seq === null) return;
-                    void this.tool.importPhoto(file, seq, raw === '' ? null : Number(raw));
+                    void this.tool.importPhoto(file);
                 },
             },
             uploadBar: {
@@ -610,14 +567,8 @@ export class CleanPanelComponent extends Component {
                 value: () => this.tool.uploadProgress.get() ?? 0,
             },
             importSummary: {
+                textContent: () => this.tool.importSummary.get() ?? '',
                 className: () => this.tool.importSummary.get() ? 'ext-summary show' : 'ext-summary',
-            },
-            summaryHead: { textContent: () => this.tool.importSummary.get()?.headline ?? '' },
-            summaryDetail: { textContent: () => this.tool.importSummary.get()?.details.join('\n') ?? '' },
-            summaryBoxNote: { textContent: () => this.tool.importSummary.get()?.boxNote ?? '' },
-            summaryWarning: {
-                textContent: () => this.tool.importSummary.get()?.warning ?? '',
-                className: () => this.tool.importSummary.get()?.warning ? 'ext-warning show' : 'ext-warning',
             },
             extMessage: {
                 textContent: () => this.tool.externalMessage.get()?.text ?? '',
@@ -631,52 +582,27 @@ export class CleanPanelComponent extends Component {
                 className: () => this.tool.notice.get() ? 'notice show' : 'notice',
             },
             hintBlock: {
-                textContent: () => this.tool.mode.get() === 'stamp'
-                    ? stampHint
-                    : 'Click (SAM) or drag an ellipse to mask a blemish; LaMa fills it with ground. Accept queues the edit.',
+                textContent: () => tool.mode.get() === 'areas'
+                    ? 'Drag to trace, or click corners. Finish area / Enter saves; Ctrl/Cmd-drag pans; Escape cancels. Keep unchanged always wins.'
+                    : 'Ctrl+Z undoes a stroke, Ctrl+Shift+Z redoes it. Shift-click draws a straight stroke from the last one; [ ] resize the brush; Ctrl/Cmd-drag pans.',
             },
         });
 
-        // Existing exports, newest first, each with its download link.
-        this.$each(
-            this.ref(frag, 'exportList'),
-            () => [...this.tool.exports.get()].reverse(),
-            exp => {
-                const li = document.createElement('li');
-                const label = document.createElement('span');
-                label.textContent = `#${exp.seq} · ${formatTime(exp.createdAt)} · ${formatBytes(exp.bytes)} · patches through ${exp.logSeq}`;
-                const link = document.createElement('a');
-                link.className = 'ext-link';
-                link.textContent = 'Download';
-                link.href = API_BASE + exp.downloadPath;
-                link.download = `ortho-sim-${exp.seq}.${exp.format}`;
-                li.append(label, link);
-                return li;
-            },
-            exp => exp.seq,
-        );
-
-        // Import picker: one option per export, the latest unless picked.
-        const picker = this.ref(frag, 'exportPicker') as HTMLSelectElement;
-        this.$each(
-            picker,
-            () => [...this.tool.exports.get()].reverse(),
-            exp => {
-                const option = document.createElement('option');
-                option.value = String(exp.seq);
-                option.textContent = `Export ${exp.seq} (${formatTime(exp.createdAt)})`;
-                return option;
-            },
-            exp => exp.seq,
-        );
-        // Registered after the $each so it runs once the options exist.
+        const select = frag.querySelector<HTMLSelectElement>('[data-testid="cleanup-area-select"]')!;
         this.track(effect(() => {
-            const seq = this.tool.effectiveExportSeq();
-            this.tool.exports.get();
-            if (seq !== null) picker.value = String(seq);
+            const doc = areas.document.get();
+            const selected = areas.selected.get();
+            const option = (label: string, value: string) => {
+                const el = document.createElement('option');
+                el.textContent = label; el.value = value;
+                return el;
+            };
+            select.replaceChildren(option('Select an area', ''));
+            for (const a of doc?.areas ?? []) select.append(option(`${{ include: 'Clean', force: 'Clean everything', exclude: 'Keep' }[a.kind]}: ${a.name}`, a.id));
+            select.value = selected;
         }));
 
-        // Keep the patch count fresh when the panel (re)opens.
+        // Keep the undo row fresh when the panel (re)opens.
         this.track(effect(() => {
             // Touch phase so a bake/revert re-render keeps the row live.
             this.tool.phase.get();

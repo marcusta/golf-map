@@ -13,7 +13,8 @@ import { createGamePlansClient } from '../../shared/api/game-plans.gen';
 import { createRoundsClient } from '../../shared/api/rounds.gen';
 import { createAssetsClient } from '../../shared/api/assets.gen';
 import { createMapBuildClient } from '../../shared/api/map-build.gen';
-import { createOrthoPatchesClient } from '../../shared/api/ortho-patches.gen';
+import { createCleanedPhotoClient } from '../../shared/api/cleaned-photo.gen';
+import { createCleanupAreasClient } from '../../shared/api/cleanup-areas.gen';
 import { createHydroClient } from '../../shared/api/hydro.gen';
 import { createOsmClient } from '../../shared/api/osm.gen';
 import { createTerrainEditsClient } from '../../shared/api/terrain-edits.gen';
@@ -51,7 +52,8 @@ export const api = {
     rounds: createRoundsClient(API_BASE),
     assets: createAssetsClient(API_BASE),
     mapBuild: createMapBuildClient(API_BASE),
-    orthoPatches: createOrthoPatchesClient(API_BASE),
+    cleanedPhoto: createCleanedPhotoClient(API_BASE),
+    cleanupAreas: createCleanupAreasClient(API_BASE),
     hydro: createHydroClient(API_BASE),
     osm: createOsmClient(API_BASE),
     terrainEdits: createTerrainEditsClient(API_BASE),

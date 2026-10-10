@@ -1,0 +1,33 @@
+{
+  "format": "golfmap-shaping-layer-v1",
+  "id": "rocks",
+  "note": "Hand layer: rock slabs (berghällar) cut out of the course meshes into their own objects, outlines traced off the 2025 ortho (EPSG:3006). Each becomes Spline_<name>_Rock_-_Mesh.",
+  "ops": [
+    {
+      "id": "hall-h11-north",
+      "op": "golfmap.cut_out",
+      "name": "hall_h11_north",
+      "outline3006": [
+        [530109.09, 6487075.12], [530109.95, 6487076.0], [530112.17, 6487076.68], [530114.4, 6487076.42],
+        [530115.23, 6487076.05], [530116.2, 6487075.19], [530116.69, 6487074.25], [530116.89, 6487072.24],
+        [530116.07, 6487066.16], [530115.56, 6487065.31], [530113.92, 6487064.09], [530111.82, 6487064.22],
+        [530111.13, 6487064.48], [530109.92, 6487066.53], [530109.44, 6487069.02], [530108.65, 6487071.14],
+        [530108.47, 6487072.99]
+      ],
+      "note": "North slab on the knoll east of hole 11's green: the rock seen in the ortho (about 5 x 9 m) grown 1.5 m all round (Marcus, 2026-10-08: the traced size read too small)."
+    },
+    {
+      "id": "hall-h11-south",
+      "op": "golfmap.cut_out",
+      "name": "hall_h11_south",
+      "outline3006": [
+        [530105.58, 6487068.48], [530108.7, 6487068.59], [530109.2, 6487066.18], [530109.94, 6487064.69],
+        [530110.84, 6487063.77], [530110.59, 6487060.14], [530109.94, 6487059.09], [530107.17, 6487057.45],
+        [530105.61, 6487055.83], [530103.11, 6487054.74], [530102.45, 6487054.88], [530101.92, 6487055.3],
+        [530100.88, 6487056.6], [530100.55, 6487057.61], [530100.66, 6487059.84], [530101.48, 6487062.47],
+        [530102.56, 6487064.66], [530103.6, 6487066.3]
+      ],
+      "note": "South slab, the ortho's rock (about 6 x 10 m) grown 1.5 m, kept 0.8 m off the north slab; its west edge is the steep lip (40-55 degrees in the lidar)."
+    }
+  ]
+}

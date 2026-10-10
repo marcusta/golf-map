@@ -290,6 +290,45 @@ on OPCD's meshes: `golfmap.split_surfaces` (`tools/shape_apply.py`; the geometry
   whole layer they differ by up to 3.8 deg at the seam (as at any boundary between two OPCD meshes, whose custom
   normals each follow their own faces; not measured there).
 
+## Shaping: cut-outs (rock slabs)
+
+Something that is no drawn feature but needs its own mesh, e.g. a rock slab in the rough that gets a rock material
+and the `GSPstone` physics material in Unity. `golfmap.cut_out` (`tools/shape_apply.py`) cuts an outline into the
+course meshes and lifts the inside out as one new object. Hand layer, one op per outline
+(`docs/gspro/<course>/shaping/20-rocks.json`):
+
+```json
+{ "id": "hall-h11-north", "op": "golfmap.cut_out", "name": "hall_h11_north",
+  "outline3006": [[530110.5, 6487074.6], [530112.0, 6487075.19], [530114.23, 6487074.93]] }
+```
+
+- **Cut**: every visible Spline mesh under the outline (meshes and blends, any surface) gets the outline as an exact
+  edge chain (`insert_polyline`, as `split_surfaces`; the ring goes in twice from opposite starts so it closes), then
+  the cut's slivers collapse (`sliverM`, 0.05 m) and `weld_tjunctions` runs on the cut meshes (`weld`, default on).
+  An outline that covers a vertex of a `protect` type (default green, bunker, water) cancels the op with a warning.
+- **Separate**: the faces inside leave their meshes, which keep their names, ids, materials and paint. They are
+  joined into `Spline_<name>_<surface>_-_Mesh` (`surface` default `Rock`), welded along the old mesh borders inside
+  the outline. Props: `opcd_kind` mesh, `opcd_shape_id` = `name`, `golfmap_surface`, `golfmap_cut_from`. The new
+  object carries the first source's material until Unity gives it its own.
+- **UVs**: the new object gets planar UVs, one tile per `uvM` metres (default 4): OPCD's meshes have none, and
+  the rock material Unity puts on a slab needs them. Unity: `golfmap.slabs.materials` (`GolfMapRockSlabs.cs`) gives
+  every `*_Rock_-_Mesh` the material and physics material of `<course>/rock-slabs.json`; `golfmap.course.refresh`
+  runs it after the mesh sync (step `slabs.materials`), so a re-synced slab keeps its rock look and `GSPstone`.
+- **Border**: both sides share the cut's vertices, so there is no gap and no T-junction; custom normals come from the
+  smooth normals before the cut on both sides. Run `border` = `{vertices, unmatched, maxAbsDz}` (0 unmatched
+  expected), `areaCheckM2` (area before - inside - outside, 0 expected), `sources[]` (per source mesh: faces and area
+  taken, the cut's stats).
+- **Names**: `name` is lower-case words joined by `_`; neither it nor `surface` may contain a golf surface word
+  (deep, rough, semi, fairway, green, tee, bunker, water, creek, lake): Unity's `GolfMapSurfaces.Classify` reads the
+  class off the name, and a rock must come out as Other (vegetation keeps off it).
+- **Keep the outline off other meshes' edges**: a corner that pokes 1 cm into the next mesh takes a sliver of it
+  (report `sources[]` with a tiny `areaOutM2`). Move the corner.
+- **Reach** (`plan_units`): one unit per op; reads = every Spline mesh within 1 m of the outline's box.
+- **Vreta** (`vreta_svg_1985`, two slabs east of hole 11's green, out of `Spline_Outer_Deep_Sat_3_5_piece2_-_Mesh`):
+  41.6 m² / 92 faces and 54.2 m² / 115 faces, border 57 and 61 vertices with 0 unmatched, 0 new seam gaps and 0
+  T-junctions over the course, 1.9 s each, op-cache replay 0.1 s with the fresh apply's all-mesh hash. The op only
+  cuts: the faces keep the source's ~1.2 m triangles and heights.
+
 ## Shaping: path edge fade
 
 A gravel or dirt path meets the grass along a fringe strip (`Spline_<shape>_<surface>_B_..._Blend`) one quad wide
@@ -343,6 +382,63 @@ heights):
   that `split_surfaces` painted on it); a strip whose inner edge does not sit on a piece's boundary (an unsplit mixed shape) is left alone; there
   is no face budget beyond `maxEdgeM`. `edge_fade_core(pieces, blends, ...)` takes the objects, so a quick check on
   imported FBX needs no replay (Vreta `roads_124`: 70 s).
+
+## Shaping: path transitions
+
+`golfmap.path_transition` runs after path surface splitting and edge fade. Worker sync
+diffs the sidecar's transition content as well as the generated op, so edits and
+removals replay this paint operation even when the generated op itself is unchanged.
+Other sidecar metadata does not trigger this replay. The worker clears cached
+sidecar documents before planning. `shape_worker_transition_test.py` verifies actual
+isolated worker load/sync/edit/removal, unchanged skips and baseline restoration.
+It reads the
+`transitions` entries in `<svg stem>-paths.json`: each entry supplies its merged SVG
+`shape`, source `featureId`, `widthM`, sampled `centerline3006`, and transition specs.
+`centerGrassReachM` extends a centre-only grass tongue longitudinally before the
+resolved start station, toward `startM - direction * centerGrassReachM`; the main
+transition start does not move. Zero (the default) disables that extension.
+Nearest centreline segment projection supplies station and signed lateral distance;
+curved paths therefore follow the exported curve, without a principal-axis estimate.
+
+The generated op selects path shapes; optional `paths` overrides the sidecar and
+`maxEdgeM` (default 0.3 m, allowed 0.05–2 m) controls local interior triangle refinement.
+Patterns are `soft-fade`, `overgrown-gravel` and `wheel-tracks`. The main length
+establishes the pattern, the hold retains it, and the final fade completes an ending
+of `grass`. Grass remains grass through the source feature end; `continue` retains
+the established pattern through that end. Paint is R grass,
+G path surface, B brown dirt, quantized to RGB bytes whose sum is 255. Both path
+and fringe are painted in place. An affected path piece's whole remaining surface
+becomes G path (Unity's existing path material maps all its old channels to that
+same surface); unaffected pieces retain their original paint and material. Shared
+vertices copy the path's actual bytes;
+the fringe otherwise retains its transverse grass ramp. No faces transfer between
+objects and no original vertex moves. Existing UVs, corner colours, material indices,
+smooth flags and source corner normals interpolate onto new triangles.
+
+Refinement bisects shared interior edges instead of using bmesh n-gon triangulation,
+avoiding new collinear slivers. Existing object boundaries remain unchanged, so their
+paint resolution depends on their original vertices. Zero-area source triangles
+and float-precision output slivers of cross-product area at most 1e-9 m² are omitted.
+At most twelve refinement passes run; highly coarse input or very long
+boundary triangles may remain coarser than `maxEdgeM`. Other custom mesh attributes
+are not transferred. Overlapping transitions use sidecar order, first match wins.
+Only vertices within half the path width plus 0.25 metres and the longitudinal span
+are sampled (including the tongue's longitudinal extension and the ending's
+continuation to the source feature end). Coincident seam paint
+uses a 1 mm spatial tolerance, accommodating FBX coordinate roundoff. A shape unit
+declares all its meshes and fringes as reads; its cache key
+includes the transition sidecar content and the transition/noise module sources.
+Identical direct replay skips objects carrying the same transition hash; changed
+specs are replayed from the shaping engine's prior snapshot.
+
+Validation: `blender -b --factory-startup --python blender/tools/shape_transition_test.py`
+creates synthetic meshes and scratch FBX under `data/path-transition-fixture`, checks
+the actual edge-fade-to-transition chain from original red path paint, curved
+projection, pattern/seed differences, unchanged original positions, outside surface
+convention, nearby parallel path exclusion, submillimetre seam bytes, triangle area,
+finite unit normals and direct replay idempotence. It also renders three top-down
+emission views of the resulting vertex colours.
+It never opens or saves a course `.blend`.
 
 ## Recipe library
 
@@ -445,6 +541,15 @@ formats, validation, params, colour translation; tests `python blender/tools/sha
   faceSteepness 1.3 + highSideStrength 1.6 on hole_18_1c): refused, feature unchanged, warning.
 
 ## Shaping worker
+
+Path transition sync also compares the SVG sidecar's `transitions` content, so
+sidecar-only edits/removals replay the transition op. Other sidecar metadata does
+not trigger that replay. Regression (temporary synthetic fixture, automatically
+removed):
+
+```powershell
+& 'C:/Program Files/Blender Foundation/Blender 4.5/blender.exe' -b --factory-startup --python-exit-code 1 --python blender/tools/shape_worker_transition_test.py
+```
 
 `tools/shape_worker.py` keeps a course shaped in a long-running headless Blender so the Terrain editor's edits
 reach the meshes in seconds ([SHAPING-PLAN.md](SHAPING-PLAN.md), "Terrain editor -> Blender"). JSON over HTTP on

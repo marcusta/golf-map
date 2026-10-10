@@ -2465,16 +2465,6 @@
  ],
  "boulders": [
   {
-   "id": "h13-ivy-boulder",
-   "asset": "boulder_ivy",
-   "e": 529941.6,
-   "n": 6487472.6,
-   "yawDeg": 135,
-   "lengthM": 9.5,
-   "topM": 0.7,
-   "note": "Ivy-covered boulder across the path from the middle tee, the hole 13 sign in front of it (photo cddccbea: ~9 m across, 4-5 m high). The round ivy mass behind the middle tee in photos e77aaa87 (bearing 224 deg) and ab05c8a4. The edited DEM has it as the knoll SW of the path (top 89.1 m at 529941, 6487469, ~5 m over the path); the ortho shows its pale NE part under the trees."
-  },
-  {
    "id": "h13-middle-tee-east-boulder",
    "asset": "boulder_big",
    "e": 529980.0,
@@ -2512,6 +2502,1416 @@
    "topM": 0.2
   },
   {
+   "id": "path-klippa-east",
+   "e": 529539.5,
+   "n": 6487736.9,
+   "yawDeg": 135,
+   "lengthM": 7.5,
+   "topM": 1.4,
+   "note": "At the path's west edge: about 5 x 7 m, long side NW-SE; lidar top 89.9 m, highest ground under it 88.5 m.",
+   "prefab": "Assets/NatureManufacture Assets/Meadow Environment Dynamic Nature/Rocks/Rocks/Prefabs/prefab_Rock_01.prefab",
+   "tint": [
+    0.66,
+    0.67,
+    0.7
+   ],
+   "materialFloats": {
+    "_SmoothnessPower": 0.35,
+    "_MetallicPower": 0.0
+   }
+  },
+  {
+   "id": "path-klippa-west",
+   "e": 529533.5,
+   "n": 6487736.1,
+   "yawDeg": 80,
+   "lengthM": 5.2,
+   "topM": 0.65,
+   "note": "Its neighbour 1 m to the west: about 4 x 5 m; lidar top 88.4 m, highest ground under it 87.7 m (2 m lower downhill).",
+   "prefab": "Assets/NatureManufacture Assets/Meadow Environment Dynamic Nature/Rocks/Rocks/Prefabs/prefab_Rock_03.prefab",
+   "tint": [
+    0.66,
+    0.67,
+    0.7
+   ],
+   "materialFloats": {
+    "_SmoothnessPower": 0.35,
+    "_MetallicPower": 0.0
+   }
+  },
+  {
+   "id": "path-klippa-south",
+   "e": 529579.0,
+   "n": 6487693.8,
+   "yawDeg": 10,
+   "lengthM": 3.5,
+   "topM": 0.4,
+   "note": "Single pale stone in the open grass 60 m to the SE, about 3 x 3.5 m in the 2023 ortho; low: the lidar's top points are 0.15 m over the highest ground under it, on a slope.",
+   "prefab": "Assets/NatureManufacture Assets/Meadow Environment Dynamic Nature/Rocks/Rocks/Prefabs/prefab_Rock_01_cut.prefab",
+   "tint": [
+    0.66,
+    0.67,
+    0.7
+   ],
+   "materialFloats": {
+    "_SmoothnessPower": 0.35,
+    "_MetallicPower": 0.0
+   }
+  },
+  {
+   "id": "h6-tee-klippa-a",
+   "e": 529798.4,
+   "n": 6488555.6,
+   "yawDeg": 20,
+   "lengthM": 4.5,
+   "topM": 1.6,
+   "note": "The biggest, westmost: about 4 x 4.5 m, lidar top 84.5 m over ground at 82.8 m.",
+   "prefab": "Assets/NatureManufacture Assets/Meadow Environment Dynamic Nature/Rocks/Rocks/Prefabs/prefab_Rock_01.prefab",
+   "tint": [
+    0.66,
+    0.67,
+    0.7
+   ],
+   "materialFloats": {
+    "_SmoothnessPower": 0.35,
+    "_MetallicPower": 0.0
+   }
+  },
+  {
+   "id": "h6-tee-klippa-b1",
+   "e": 529800.5,
+   "n": 6488556.8,
+   "yawDeg": 0,
+   "lengthM": 2.0,
+   "topM": 0.6,
+   "note": "Small stone against A's east side.",
+   "prefab": "Assets/NatureManufacture Assets/Meadow Environment Dynamic Nature/Rocks/Rocks/Prefabs/prefab_Rock_04.prefab",
+   "tint": [
+    0.66,
+    0.67,
+    0.7
+   ],
+   "materialFloats": {
+    "_SmoothnessPower": 0.35,
+    "_MetallicPower": 0.0
+   }
+  },
+  {
+   "id": "h6-tee-klippa-b2",
+   "e": 529803.3,
+   "n": 6488557.0,
+   "yawDeg": 100,
+   "lengthM": 2.4,
+   "topM": 0.9,
+   "note": "East of A: lidar top 83.5 m over ground at 82.6 m.",
+   "prefab": "Assets/NatureManufacture Assets/Meadow Environment Dynamic Nature/Rocks/Rocks/Prefabs/prefab_Rock_03_cut.prefab",
+   "tint": [
+    0.66,
+    0.67,
+    0.7
+   ],
+   "materialFloats": {
+    "_SmoothnessPower": 0.35,
+    "_MetallicPower": 0.0
+   }
+  },
+  {
+   "id": "h6-tee-klippa-c",
+   "e": 529806.8,
+   "n": 6488550.6,
+   "yawDeg": 70,
+   "lengthM": 3.4,
+   "topM": 0.75,
+   "note": "About 3.3 x 2.8 m: lidar top 82.9 m, highest ground under it 82.2 m (1 m lower downhill).",
+   "prefab": "Assets/NatureManufacture Assets/Meadow Environment Dynamic Nature/Rocks/Rocks/Prefabs/prefab_Rock_03.prefab",
+   "tint": [
+    0.66,
+    0.67,
+    0.7
+   ],
+   "materialFloats": {
+    "_SmoothnessPower": 0.35,
+    "_MetallicPower": 0.0
+   }
+  },
+  {
+   "id": "h6-tee-klippa-d",
+   "e": 529812.3,
+   "n": 6488552.1,
+   "yawDeg": 20,
+   "lengthM": 4.6,
+   "topM": 0.8,
+   "note": "Eastmost, nearest the forward tee: about 3.7 x 4.4 m, lidar top 83.3 m, highest ground under it 82.5 m.",
+   "prefab": "Assets/NatureManufacture Assets/Meadow Environment Dynamic Nature/Rocks/Rocks/Prefabs/prefab_Rock_05_cut.prefab",
+   "tint": [
+    0.66,
+    0.67,
+    0.7
+   ],
+   "materialFloats": {
+    "_SmoothnessPower": 0.35,
+    "_MetallicPower": 0.0
+   }
+  },
+  {
+   "id": "h6-tee-klippa-s1",
+   "e": 529794.2,
+   "n": 6488560.4,
+   "yawDeg": 60,
+   "lengthM": 1.6,
+   "topM": 0.4,
+   "note": "Small stone 5 m NW of A.",
+   "prefab": "Assets/NatureManufacture Assets/Meadow Environment Dynamic Nature/Rocks/Rocks/Prefabs/prefab_Rock_06.prefab",
+   "tint": [
+    0.66,
+    0.67,
+    0.7
+   ],
+   "materialFloats": {
+    "_SmoothnessPower": 0.35,
+    "_MetallicPower": 0.0
+   }
+  },
+  {
+   "id": "h6-tee-klippa-s2",
+   "e": 529803.2,
+   "n": 6488550.3,
+   "yawDeg": 120,
+   "lengthM": 2.4,
+   "topM": 0.5,
+   "note": "Low stone SW of C.",
+   "prefab": "Assets/NatureManufacture Assets/Meadow Environment Dynamic Nature/Rocks/Rocks/Prefabs/prefab_Rock_07.prefab",
+   "tint": [
+    0.66,
+    0.67,
+    0.7
+   ],
+   "materialFloats": {
+    "_SmoothnessPower": 0.35,
+    "_MetallicPower": 0.0
+   }
+  },
+  {
+   "id": "h6-tee-klippa-s3",
+   "e": 529809.6,
+   "n": 6488549.6,
+   "yawDeg": 40,
+   "lengthM": 1.8,
+   "topM": 0.5,
+   "note": "Small stone between C and D.",
+   "prefab": "Assets/NatureManufacture Assets/Meadow Environment Dynamic Nature/Rocks/Rocks/Prefabs/prefab_Rock_04.prefab",
+   "tint": [
+    0.66,
+    0.67,
+    0.7
+   ],
+   "materialFloats": {
+    "_SmoothnessPower": 0.35,
+    "_MetallicPower": 0.0
+   }
+  },
+  {
+   "id": "h1-tree-stone-01",
+   "e": 529944.8,
+   "n": 6487696.3,
+   "yawDeg": 0,
+   "lengthM": 2.6,
+   "topM": 1.04,
+   "prefab": "Assets/NatureManufacture Assets/Meadow Environment Dynamic Nature/Rocks/Rocks/Prefabs/prefab_Rock_06.prefab",
+   "tint": [
+    0.66,
+    0.67,
+    0.7
+   ],
+   "materialFloats": {
+    "_SmoothnessPower": 0.35,
+    "_MetallicPower": 0.0
+   }
+  },
+  {
+   "id": "h1-tree-stone-02",
+   "e": 529937.5,
+   "n": 6487704.5,
+   "yawDeg": 137,
+   "lengthM": 1.4,
+   "topM": 0.56,
+   "prefab": "Assets/NatureManufacture Assets/Meadow Environment Dynamic Nature/Rocks/Rocks/Prefabs/prefab_m_rock_01.prefab",
+   "tint": [
+    0.66,
+    0.67,
+    0.7
+   ],
+   "materialFloats": {
+    "_SmoothnessPower": 0.35,
+    "_MetallicPower": 0.0
+   }
+  },
+  {
+   "id": "h1-tree-stone-03",
+   "e": 529932.5,
+   "n": 6487707.3,
+   "yawDeg": 274,
+   "lengthM": 1.5,
+   "topM": 0.6,
+   "prefab": "Assets/NatureManufacture Assets/Meadow Environment Dynamic Nature/Rocks/Rocks/Prefabs/prefab_m_rock_02.prefab",
+   "tint": [
+    0.66,
+    0.67,
+    0.7
+   ],
+   "materialFloats": {
+    "_SmoothnessPower": 0.35,
+    "_MetallicPower": 0.0
+   }
+  },
+  {
+   "id": "h1-tree-stone-04",
+   "e": 529939.7,
+   "n": 6487704.3,
+   "yawDeg": 51,
+   "lengthM": 0.7,
+   "topM": 0.28,
+   "prefab": "Assets/NatureManufacture Assets/Meadow Environment Dynamic Nature/Rocks/Rocks/Prefabs/prefab_s_rock_01.prefab",
+   "tint": [
+    0.66,
+    0.67,
+    0.7
+   ],
+   "materialFloats": {
+    "_SmoothnessPower": 0.35,
+    "_MetallicPower": 0.0
+   }
+  },
+  {
+   "id": "h1-tree-stone-05",
+   "e": 529940.0,
+   "n": 6487708.8,
+   "yawDeg": 188,
+   "lengthM": 0.6,
+   "topM": 0.24,
+   "prefab": "Assets/NatureManufacture Assets/Meadow Environment Dynamic Nature/Rocks/Rocks/Prefabs/prefab_s_rock_02.prefab",
+   "tint": [
+    0.66,
+    0.67,
+    0.7
+   ],
+   "materialFloats": {
+    "_SmoothnessPower": 0.35,
+    "_MetallicPower": 0.0
+   }
+  },
+  {
+   "id": "h1-tree-stone-06",
+   "e": 529928.7,
+   "n": 6487721.2,
+   "yawDeg": 325,
+   "lengthM": 1.4,
+   "topM": 0.56,
+   "prefab": "Assets/NatureManufacture Assets/Meadow Environment Dynamic Nature/Rocks/Rocks/Prefabs/prefab_m_rock_03.prefab",
+   "tint": [
+    0.66,
+    0.67,
+    0.7
+   ],
+   "materialFloats": {
+    "_SmoothnessPower": 0.35,
+    "_MetallicPower": 0.0
+   }
+  },
+  {
+   "id": "h1-tree-stone-07",
+   "e": 529928.8,
+   "n": 6487717.7,
+   "yawDeg": 102,
+   "lengthM": 1.6,
+   "topM": 0.64,
+   "prefab": "Assets/NatureManufacture Assets/Meadow Environment Dynamic Nature/Rocks/Rocks/Prefabs/prefab_Rock_04.prefab",
+   "tint": [
+    0.66,
+    0.67,
+    0.7
+   ],
+   "materialFloats": {
+    "_SmoothnessPower": 0.35,
+    "_MetallicPower": 0.0
+   }
+  },
+  {
+   "id": "h1-tree-stone-08",
+   "e": 529935.5,
+   "n": 6487717.7,
+   "yawDeg": 239,
+   "lengthM": 1.0,
+   "topM": 0.4,
+   "prefab": "Assets/NatureManufacture Assets/Meadow Environment Dynamic Nature/Rocks/Rocks/Prefabs/prefab_s_rock_03.prefab",
+   "tint": [
+    0.66,
+    0.67,
+    0.7
+   ],
+   "materialFloats": {
+    "_SmoothnessPower": 0.35,
+    "_MetallicPower": 0.0
+   }
+  },
+  {
+   "id": "h1-tree-stone-09",
+   "e": 529938.7,
+   "n": 6487718.3,
+   "yawDeg": 16,
+   "lengthM": 0.7,
+   "topM": 0.28,
+   "prefab": "Assets/NatureManufacture Assets/Meadow Environment Dynamic Nature/Rocks/Rocks/Prefabs/prefab_s_rock_04.prefab",
+   "tint": [
+    0.66,
+    0.67,
+    0.7
+   ],
+   "materialFloats": {
+    "_SmoothnessPower": 0.35,
+    "_MetallicPower": 0.0
+   }
+  },
+  {
+   "id": "h1-tree-stone-10",
+   "e": 529934.7,
+   "n": 6487715.2,
+   "yawDeg": 153,
+   "lengthM": 0.6,
+   "topM": 0.24,
+   "prefab": "Assets/NatureManufacture Assets/Meadow Environment Dynamic Nature/Rocks/Rocks/Prefabs/prefab_s_rock_05.prefab",
+   "tint": [
+    0.66,
+    0.67,
+    0.7
+   ],
+   "materialFloats": {
+    "_SmoothnessPower": 0.35,
+    "_MetallicPower": 0.0
+   }
+  },
+  {
+   "id": "h1-tree-stone-11",
+   "e": 529931.2,
+   "n": 6487711.3,
+   "yawDeg": 290,
+   "lengthM": 0.6,
+   "topM": 0.24,
+   "prefab": "Assets/NatureManufacture Assets/Meadow Environment Dynamic Nature/Rocks/Rocks/Prefabs/prefab_s_rock_06.prefab",
+   "tint": [
+    0.66,
+    0.67,
+    0.7
+   ],
+   "materialFloats": {
+    "_SmoothnessPower": 0.35,
+    "_MetallicPower": 0.0
+   }
+  },
+  {
+   "id": "h1-tree-stone-12",
+   "e": 529932.7,
+   "n": 6487702.0,
+   "yawDeg": 67,
+   "lengthM": 0.8,
+   "topM": 0.32,
+   "prefab": "Assets/NatureManufacture Assets/Meadow Environment Dynamic Nature/Rocks/Rocks/Prefabs/prefab_s_rock_01.prefab",
+   "tint": [
+    0.66,
+    0.67,
+    0.7
+   ],
+   "materialFloats": {
+    "_SmoothnessPower": 0.35,
+    "_MetallicPower": 0.0
+   }
+  },
+  {
+   "id": "h1-tree-stone-13",
+   "e": 529923.2,
+   "n": 6487721.0,
+   "yawDeg": 204,
+   "lengthM": 1.5,
+   "topM": 0.6,
+   "prefab": "Assets/NatureManufacture Assets/Meadow Environment Dynamic Nature/Rocks/Rocks/Prefabs/prefab_m_rock_01.prefab",
+   "tint": [
+    0.66,
+    0.67,
+    0.7
+   ],
+   "materialFloats": {
+    "_SmoothnessPower": 0.35,
+    "_MetallicPower": 0.0
+   }
+  },
+  {
+   "id": "h1-tree-stone-14",
+   "e": 529917.5,
+   "n": 6487710.1,
+   "yawDeg": 341,
+   "lengthM": 1.2,
+   "topM": 0.48,
+   "prefab": "Assets/NatureManufacture Assets/Meadow Environment Dynamic Nature/Rocks/Rocks/Prefabs/prefab_m_rock_02.prefab",
+   "tint": [
+    0.66,
+    0.67,
+    0.7
+   ],
+   "materialFloats": {
+    "_SmoothnessPower": 0.35,
+    "_MetallicPower": 0.0
+   }
+  },
+  {
+   "id": "h1-tree-stone-15",
+   "e": 529913.7,
+   "n": 6487726.5,
+   "yawDeg": 118,
+   "lengthM": 1.0,
+   "topM": 0.4,
+   "prefab": "Assets/NatureManufacture Assets/Meadow Environment Dynamic Nature/Rocks/Rocks/Prefabs/prefab_s_rock_02.prefab",
+   "tint": [
+    0.66,
+    0.67,
+    0.7
+   ],
+   "materialFloats": {
+    "_SmoothnessPower": 0.35,
+    "_MetallicPower": 0.0
+   }
+  },
+  {
+   "id": "h1-tree-stone-16",
+   "e": 529916.0,
+   "n": 6487744.2,
+   "yawDeg": 255,
+   "lengthM": 2.2,
+   "topM": 0.88,
+   "prefab": "Assets/NatureManufacture Assets/Meadow Environment Dynamic Nature/Rocks/Rocks/Prefabs/prefab_Rock_07.prefab",
+   "tint": [
+    0.66,
+    0.67,
+    0.7
+   ],
+   "materialFloats": {
+    "_SmoothnessPower": 0.35,
+    "_MetallicPower": 0.0
+   }
+  },
+  {
+   "id": "h1-tree-stone-17",
+   "e": 529921.05,
+   "n": 6487738.5,
+   "yawDeg": 32,
+   "lengthM": 2.6,
+   "topM": 1.04,
+   "prefab": "Assets/NatureManufacture Assets/Meadow Environment Dynamic Nature/Rocks/Rocks/Prefabs/prefab_Rock_04.prefab",
+   "tint": [
+    0.66,
+    0.67,
+    0.7
+   ],
+   "materialFloats": {
+    "_SmoothnessPower": 0.35,
+    "_MetallicPower": 0.0
+   }
+  },
+  {
+   "id": "h1-tree-stone-18",
+   "e": 529906.2,
+   "n": 6487755.6,
+   "yawDeg": 169,
+   "lengthM": 3.2,
+   "topM": 1.28,
+   "prefab": "Assets/NatureManufacture Assets/Meadow Environment Dynamic Nature/Rocks/Rocks/Prefabs/prefab_Rock_03_cut.prefab",
+   "tint": [
+    0.66,
+    0.67,
+    0.7
+   ],
+   "materialFloats": {
+    "_SmoothnessPower": 0.35,
+    "_MetallicPower": 0.0
+   }
+  },
+  {
+   "id": "h1-tree-stone-19",
+   "e": 529904.3,
+   "n": 6487752.4,
+   "yawDeg": 306,
+   "lengthM": 1.6,
+   "topM": 0.64,
+   "prefab": "Assets/NatureManufacture Assets/Meadow Environment Dynamic Nature/Rocks/Rocks/Prefabs/prefab_m_rock_03.prefab",
+   "tint": [
+    0.66,
+    0.67,
+    0.7
+   ],
+   "materialFloats": {
+    "_SmoothnessPower": 0.35,
+    "_MetallicPower": 0.0
+   }
+  },
+  {
+   "id": "h1-tree-stone-20",
+   "e": 529928.2,
+   "n": 6487753.1,
+   "yawDeg": 83,
+   "lengthM": 1.0,
+   "topM": 0.4,
+   "prefab": "Assets/NatureManufacture Assets/Meadow Environment Dynamic Nature/Rocks/Rocks/Prefabs/prefab_s_rock_03.prefab",
+   "tint": [
+    0.66,
+    0.67,
+    0.7
+   ],
+   "materialFloats": {
+    "_SmoothnessPower": 0.35,
+    "_MetallicPower": 0.0
+   }
+  },
+  {
+   "id": "h1-tree-stone-21",
+   "e": 529927.2,
+   "n": 6487741.4,
+   "yawDeg": 220,
+   "lengthM": 1.4,
+   "topM": 0.56,
+   "prefab": "Assets/NatureManufacture Assets/Meadow Environment Dynamic Nature/Rocks/Rocks/Prefabs/prefab_m_rock_01.prefab",
+   "tint": [
+    0.66,
+    0.67,
+    0.7
+   ],
+   "materialFloats": {
+    "_SmoothnessPower": 0.35,
+    "_MetallicPower": 0.0
+   }
+  },
+  {
+   "id": "h1-tree-stone-22",
+   "e": 529935.3,
+   "n": 6487748.8,
+   "yawDeg": 357,
+   "lengthM": 1.0,
+   "topM": 0.4,
+   "prefab": "Assets/NatureManufacture Assets/Meadow Environment Dynamic Nature/Rocks/Rocks/Prefabs/prefab_s_rock_04.prefab",
+   "tint": [
+    0.66,
+    0.67,
+    0.7
+   ],
+   "materialFloats": {
+    "_SmoothnessPower": 0.35,
+    "_MetallicPower": 0.0
+   }
+  },
+  {
+   "id": "h1-tree-stone-23",
+   "e": 529936.6,
+   "n": 6487750.7,
+   "yawDeg": 134,
+   "lengthM": 1.3,
+   "topM": 0.52,
+   "prefab": "Assets/NatureManufacture Assets/Meadow Environment Dynamic Nature/Rocks/Rocks/Prefabs/prefab_m_rock_02.prefab",
+   "tint": [
+    0.66,
+    0.67,
+    0.7
+   ],
+   "materialFloats": {
+    "_SmoothnessPower": 0.35,
+    "_MetallicPower": 0.0
+   }
+  },
+  {
+   "id": "h1-tree-stone-24",
+   "e": 529936.9,
+   "n": 6487747.2,
+   "yawDeg": 271,
+   "lengthM": 1.0,
+   "topM": 0.4,
+   "prefab": "Assets/NatureManufacture Assets/Meadow Environment Dynamic Nature/Rocks/Rocks/Prefabs/prefab_s_rock_05.prefab",
+   "tint": [
+    0.66,
+    0.67,
+    0.7
+   ],
+   "materialFloats": {
+    "_SmoothnessPower": 0.35,
+    "_MetallicPower": 0.0
+   }
+  },
+  {
+   "id": "h12-stone-01",
+   "e": 529979.9,
+   "n": 6487163.0,
+   "yawDeg": 30,
+   "lengthM": 3.5,
+   "topM": 1.4,
+   "prefab": "Assets/NatureManufacture Assets/Meadow Environment Dynamic Nature/Rocks/Rocks/Prefabs/prefab_Rock_01_cut.prefab",
+   "tint": [
+    0.66,
+    0.67,
+    0.7
+   ],
+   "materialFloats": {
+    "_SmoothnessPower": 0.35,
+    "_MetallicPower": 0.0
+   }
+  },
+  {
+   "id": "h12-stone-02",
+   "e": 529966.5,
+   "n": 6487374.7,
+   "yawDeg": 80,
+   "lengthM": 2.0,
+   "topM": 0.8,
+   "prefab": "Assets/NatureManufacture Assets/Meadow Environment Dynamic Nature/Rocks/Rocks/Prefabs/prefab_Rock_06.prefab",
+   "tint": [
+    0.66,
+    0.67,
+    0.7
+   ],
+   "materialFloats": {
+    "_SmoothnessPower": 0.35,
+    "_MetallicPower": 0.0
+   }
+  },
+  {
+   "id": "h12-stone-03",
+   "e": 529963.8,
+   "n": 6487375.3,
+   "yawDeg": 10,
+   "lengthM": 1.0,
+   "topM": 0.4,
+   "prefab": "Assets/NatureManufacture Assets/Meadow Environment Dynamic Nature/Rocks/Rocks/Prefabs/prefab_s_rock_01.prefab",
+   "tint": [
+    0.66,
+    0.67,
+    0.7
+   ],
+   "materialFloats": {
+    "_SmoothnessPower": 0.35,
+    "_MetallicPower": 0.0
+   }
+  },
+  {
+   "id": "h12-stone-04",
+   "e": 530035.8,
+   "n": 6487351.6,
+   "yawDeg": 50,
+   "lengthM": 1.5,
+   "topM": 0.6,
+   "prefab": "Assets/NatureManufacture Assets/Meadow Environment Dynamic Nature/Rocks/Rocks/Prefabs/prefab_m_rock_01.prefab",
+   "tint": [
+    0.66,
+    0.67,
+    0.7
+   ],
+   "materialFloats": {
+    "_SmoothnessPower": 0.35,
+    "_MetallicPower": 0.0
+   }
+  },
+  {
+   "id": "h12-stone-05",
+   "e": 530038.9,
+   "n": 6487350.0,
+   "yawDeg": 120,
+   "lengthM": 1.3,
+   "topM": 0.5,
+   "prefab": "Assets/NatureManufacture Assets/Meadow Environment Dynamic Nature/Rocks/Rocks/Prefabs/prefab_m_rock_02.prefab",
+   "tint": [
+    0.66,
+    0.67,
+    0.7
+   ],
+   "materialFloats": {
+    "_SmoothnessPower": 0.35,
+    "_MetallicPower": 0.0
+   }
+  },
+  {
+   "id": "h12-stone-06",
+   "e": 530037.4,
+   "n": 6487349.0,
+   "yawDeg": 200,
+   "lengthM": 1.2,
+   "topM": 0.5,
+   "prefab": "Assets/NatureManufacture Assets/Meadow Environment Dynamic Nature/Rocks/Rocks/Prefabs/prefab_s_rock_03.prefab",
+   "tint": [
+    0.66,
+    0.67,
+    0.7
+   ],
+   "materialFloats": {
+    "_SmoothnessPower": 0.35,
+    "_MetallicPower": 0.0
+   }
+  },
+  {
+   "id": "h12-stone-07",
+   "e": 529937.6,
+   "n": 6487339.6,
+   "yawDeg": 140,
+   "lengthM": 2.0,
+   "topM": 0.8,
+   "prefab": "Assets/NatureManufacture Assets/Meadow Environment Dynamic Nature/Rocks/Rocks/Prefabs/prefab_Rock_07.prefab",
+   "tint": [
+    0.66,
+    0.67,
+    0.7
+   ],
+   "materialFloats": {
+    "_SmoothnessPower": 0.35,
+    "_MetallicPower": 0.0
+   }
+  },
+  {
+   "id": "h12-stone-08",
+   "e": 530042.6,
+   "n": 6487417.2,
+   "yawDeg": 20,
+   "lengthM": 1.5,
+   "topM": 0.6,
+   "prefab": "Assets/NatureManufacture Assets/Meadow Environment Dynamic Nature/Rocks/Rocks/Prefabs/prefab_m_rock_03.prefab",
+   "tint": [
+    0.66,
+    0.67,
+    0.7
+   ],
+   "materialFloats": {
+    "_SmoothnessPower": 0.35,
+    "_MetallicPower": 0.0
+   }
+  },
+  {
+   "id": "h12-stone-09",
+   "e": 530043.6,
+   "n": 6487415.7,
+   "yawDeg": 100,
+   "lengthM": 1.2,
+   "topM": 0.5,
+   "prefab": "Assets/NatureManufacture Assets/Meadow Environment Dynamic Nature/Rocks/Rocks/Prefabs/prefab_s_rock_02.prefab",
+   "tint": [
+    0.66,
+    0.67,
+    0.7
+   ],
+   "materialFloats": {
+    "_SmoothnessPower": 0.35,
+    "_MetallicPower": 0.0
+   }
+  },
+  {
+   "id": "h12-stone-10",
+   "e": 530043.1,
+   "n": 6487429.3,
+   "yawDeg": 160,
+   "lengthM": 1.5,
+   "topM": 0.6,
+   "prefab": "Assets/NatureManufacture Assets/Meadow Environment Dynamic Nature/Rocks/Rocks/Prefabs/prefab_m_rock_01.prefab",
+   "tint": [
+    0.66,
+    0.67,
+    0.7
+   ],
+   "materialFloats": {
+    "_SmoothnessPower": 0.35,
+    "_MetallicPower": 0.0
+   }
+  },
+  {
+   "id": "h12-stone-11",
+   "e": 530031.0,
+   "n": 6487414.1,
+   "yawDeg": 60,
+   "lengthM": 1.0,
+   "topM": 0.4,
+   "prefab": "Assets/NatureManufacture Assets/Meadow Environment Dynamic Nature/Rocks/Rocks/Prefabs/prefab_s_rock_04.prefab",
+   "tint": [
+    0.66,
+    0.67,
+    0.7
+   ],
+   "materialFloats": {
+    "_SmoothnessPower": 0.35,
+    "_MetallicPower": 0.0
+   }
+  },
+  {
+   "id": "h12-stone-12",
+   "e": 530046.8,
+   "n": 6487401.0,
+   "yawDeg": 300,
+   "lengthM": 1.2,
+   "topM": 0.5,
+   "prefab": "Assets/NatureManufacture Assets/Meadow Environment Dynamic Nature/Rocks/Rocks/Prefabs/prefab_s_rock_05.prefab",
+   "tint": [
+    0.66,
+    0.67,
+    0.7
+   ],
+   "materialFloats": {
+    "_SmoothnessPower": 0.35,
+    "_MetallicPower": 0.0
+   }
+  },
+  {
+   "id": "h12-stone-13",
+   "e": 530045.7,
+   "n": 6487396.8,
+   "yawDeg": 240,
+   "lengthM": 1.0,
+   "topM": 0.4,
+   "prefab": "Assets/NatureManufacture Assets/Meadow Environment Dynamic Nature/Rocks/Rocks/Prefabs/prefab_s_rock_06.prefab",
+   "tint": [
+    0.66,
+    0.67,
+    0.7
+   ],
+   "materialFloats": {
+    "_SmoothnessPower": 0.35,
+    "_MetallicPower": 0.0
+   }
+  },
+  {
+   "id": "h12-stone-14",
+   "e": 530013.8,
+   "n": 6487254.5,
+   "yawDeg": 90,
+   "lengthM": 1.5,
+   "topM": 0.6,
+   "prefab": "Assets/NatureManufacture Assets/Meadow Environment Dynamic Nature/Rocks/Rocks/Prefabs/prefab_m_rock_02.prefab",
+   "tint": [
+    0.66,
+    0.67,
+    0.7
+   ],
+   "materialFloats": {
+    "_SmoothnessPower": 0.35,
+    "_MetallicPower": 0.0
+   }
+  },
+  {
+   "id": "h12-stone-15",
+   "e": 530038.1,
+   "n": 6487211.1,
+   "yawDeg": 30,
+   "lengthM": 1.5,
+   "topM": 0.6,
+   "prefab": "Assets/NatureManufacture Assets/Meadow Environment Dynamic Nature/Rocks/Rocks/Prefabs/prefab_m_rock_03.prefab",
+   "tint": [
+    0.66,
+    0.67,
+    0.7
+   ],
+   "materialFloats": {
+    "_SmoothnessPower": 0.35,
+    "_MetallicPower": 0.0
+   }
+  },
+  {
+   "id": "h4-tee-stone-01",
+   "e": 529747.0,
+   "n": 6487834.5,
+   "yawDeg": 45,
+   "lengthM": 8.5,
+   "topM": 2.0,
+   "prefab": "Assets/NatureManufacture Assets/Meadow Environment Dynamic Nature/Rocks/Rocks/Prefabs/prefab_Rock_01.prefab",
+   "tint": [
+    0.66,
+    0.67,
+    0.7
+   ],
+   "materialFloats": {
+    "_SmoothnessPower": 0.35,
+    "_MetallicPower": 0.0
+   }
+  },
+  {
+   "id": "h4-tee-stone-02",
+   "e": 529754.25,
+   "n": 6487837.75,
+   "yawDeg": 80,
+   "lengthM": 5.5,
+   "topM": 1.6,
+   "prefab": "Assets/NatureManufacture Assets/Meadow Environment Dynamic Nature/Rocks/Rocks/Prefabs/prefab_Rock_03.prefab",
+   "tint": [
+    0.66,
+    0.67,
+    0.7
+   ],
+   "materialFloats": {
+    "_SmoothnessPower": 0.35,
+    "_MetallicPower": 0.0
+   }
+  },
+  {
+   "id": "h4-tee-stone-03",
+   "e": 529756.0,
+   "n": 6487844.75,
+   "yawDeg": 0,
+   "lengthM": 1.6,
+   "topM": 0.6,
+   "prefab": "Assets/NatureManufacture Assets/Meadow Environment Dynamic Nature/Rocks/Rocks/Prefabs/prefab_m_rock_01.prefab",
+   "tint": [
+    0.66,
+    0.67,
+    0.7
+   ],
+   "materialFloats": {
+    "_SmoothnessPower": 0.35,
+    "_MetallicPower": 0.0
+   }
+  },
+  {
+   "id": "h4-tee-stone-04",
+   "e": 529741.75,
+   "n": 6487846.75,
+   "yawDeg": 130,
+   "lengthM": 1.5,
+   "topM": 0.6,
+   "prefab": "Assets/NatureManufacture Assets/Meadow Environment Dynamic Nature/Rocks/Rocks/Prefabs/prefab_m_rock_02.prefab",
+   "tint": [
+    0.66,
+    0.67,
+    0.7
+   ],
+   "materialFloats": {
+    "_SmoothnessPower": 0.35,
+    "_MetallicPower": 0.0
+   }
+  },
+  {
+   "id": "h4-tee-stone-05",
+   "e": 529743.5,
+   "n": 6487844.25,
+   "yawDeg": 40,
+   "lengthM": 1.2,
+   "topM": 0.5,
+   "prefab": "Assets/NatureManufacture Assets/Meadow Environment Dynamic Nature/Rocks/Rocks/Prefabs/prefab_s_rock_01.prefab",
+   "tint": [
+    0.66,
+    0.67,
+    0.7
+   ],
+   "materialFloats": {
+    "_SmoothnessPower": 0.35,
+    "_MetallicPower": 0.0
+   }
+  },
+  {
+   "id": "h4-tee-stone-06",
+   "e": 529741.5,
+   "n": 6487852.75,
+   "yawDeg": 100,
+   "lengthM": 2.2,
+   "topM": 0.8,
+   "prefab": "Assets/NatureManufacture Assets/Meadow Environment Dynamic Nature/Rocks/Rocks/Prefabs/prefab_Rock_04.prefab",
+   "tint": [
+    0.66,
+    0.67,
+    0.7
+   ],
+   "materialFloats": {
+    "_SmoothnessPower": 0.35,
+    "_MetallicPower": 0.0
+   }
+  },
+  {
+   "id": "h4-tee-stone-07",
+   "e": 529735.5,
+   "n": 6487828.0,
+   "yawDeg": 70,
+   "lengthM": 2.2,
+   "topM": 0.9,
+   "prefab": "Assets/NatureManufacture Assets/Meadow Environment Dynamic Nature/Rocks/Rocks/Prefabs/prefab_Rock_06.prefab",
+   "tint": [
+    0.66,
+    0.67,
+    0.7
+   ],
+   "materialFloats": {
+    "_SmoothnessPower": 0.35,
+    "_MetallicPower": 0.0
+   }
+  },
+  {
+   "id": "h4-tee-stone-08",
+   "e": 529733.0,
+   "n": 6487828.0,
+   "yawDeg": 0,
+   "lengthM": 1.0,
+   "topM": 0.4,
+   "prefab": "Assets/NatureManufacture Assets/Meadow Environment Dynamic Nature/Rocks/Rocks/Prefabs/prefab_s_rock_02.prefab",
+   "tint": [
+    0.66,
+    0.67,
+    0.7
+   ],
+   "materialFloats": {
+    "_SmoothnessPower": 0.35,
+    "_MetallicPower": 0.0
+   }
+  },
+  {
+   "id": "h4-tee-stone-09",
+   "e": 529731.25,
+   "n": 6487841.75,
+   "yawDeg": 20,
+   "lengthM": 1.3,
+   "topM": 0.5,
+   "prefab": "Assets/NatureManufacture Assets/Meadow Environment Dynamic Nature/Rocks/Rocks/Prefabs/prefab_s_rock_03.prefab",
+   "tint": [
+    0.66,
+    0.67,
+    0.7
+   ],
+   "materialFloats": {
+    "_SmoothnessPower": 0.35,
+    "_MetallicPower": 0.0
+   }
+  },
+  {
+   "id": "h4-tee-stone-10",
+   "e": 529732.5,
+   "n": 6487832.5,
+   "yawDeg": 200,
+   "lengthM": 1.0,
+   "topM": 0.4,
+   "prefab": "Assets/NatureManufacture Assets/Meadow Environment Dynamic Nature/Rocks/Rocks/Prefabs/prefab_s_rock_04.prefab",
+   "tint": [
+    0.66,
+    0.67,
+    0.7
+   ],
+   "materialFloats": {
+    "_SmoothnessPower": 0.35,
+    "_MetallicPower": 0.0
+   }
+  },
+  {
+   "id": "h10-heap-stone-01",
+   "e": 530257.5,
+   "n": 6487344.5,
+   "yawDeg": 10,
+   "lengthM": 2.4,
+   "topM": 0.9,
+   "prefab": "Assets/NatureManufacture Assets/Meadow Environment Dynamic Nature/Rocks/Rocks/Prefabs/prefab_Rock_04.prefab",
+   "tint": [
+    0.66,
+    0.67,
+    0.7
+   ],
+   "materialFloats": {
+    "_SmoothnessPower": 0.35,
+    "_MetallicPower": 0.0
+   }
+  },
+  {
+   "id": "h10-heap-stone-02",
+   "e": 530259.25,
+   "n": 6487345.5,
+   "yawDeg": 120,
+   "lengthM": 2.0,
+   "topM": 0.8,
+   "prefab": "Assets/NatureManufacture Assets/Meadow Environment Dynamic Nature/Rocks/Rocks/Prefabs/prefab_Rock_06.prefab",
+   "tint": [
+    0.66,
+    0.67,
+    0.7
+   ],
+   "materialFloats": {
+    "_SmoothnessPower": 0.35,
+    "_MetallicPower": 0.0
+   }
+  },
+  {
+   "id": "h10-heap-stone-03",
+   "e": 530257.0,
+   "n": 6487342.25,
+   "yawDeg": 60,
+   "lengthM": 1.8,
+   "topM": 0.8,
+   "prefab": "Assets/NatureManufacture Assets/Meadow Environment Dynamic Nature/Rocks/Rocks/Prefabs/prefab_m_rock_01.prefab",
+   "tint": [
+    0.66,
+    0.67,
+    0.7
+   ],
+   "materialFloats": {
+    "_SmoothnessPower": 0.35,
+    "_MetallicPower": 0.0
+   }
+  },
+  {
+   "id": "h10-heap-stone-04",
+   "e": 530259.5,
+   "n": 6487342.5,
+   "yawDeg": 200,
+   "lengthM": 2.6,
+   "topM": 1.0,
+   "prefab": "Assets/NatureManufacture Assets/Meadow Environment Dynamic Nature/Rocks/Rocks/Prefabs/prefab_Rock_07.prefab",
+   "tint": [
+    0.66,
+    0.67,
+    0.7
+   ],
+   "materialFloats": {
+    "_SmoothnessPower": 0.35,
+    "_MetallicPower": 0.0
+   }
+  },
+  {
+   "id": "h10-heap-stone-05",
+   "e": 530258.0,
+   "n": 6487340.25,
+   "yawDeg": 150,
+   "lengthM": 2.2,
+   "topM": 1.1,
+   "prefab": "Assets/NatureManufacture Assets/Meadow Environment Dynamic Nature/Rocks/Rocks/Prefabs/prefab_Rock_04.prefab",
+   "tint": [
+    0.66,
+    0.67,
+    0.7
+   ],
+   "materialFloats": {
+    "_SmoothnessPower": 0.35,
+    "_MetallicPower": 0.0
+   }
+  },
+  {
+   "id": "h10-heap-stone-06",
+   "e": 530260.0,
+   "n": 6487339.5,
+   "yawDeg": 300,
+   "lengthM": 1.8,
+   "topM": 0.8,
+   "prefab": "Assets/NatureManufacture Assets/Meadow Environment Dynamic Nature/Rocks/Rocks/Prefabs/prefab_m_rock_02.prefab",
+   "tint": [
+    0.66,
+    0.67,
+    0.7
+   ],
+   "materialFloats": {
+    "_SmoothnessPower": 0.35,
+    "_MetallicPower": 0.0
+   }
+  },
+  {
+   "id": "h10-heap-stone-07",
+   "e": 530257.0,
+   "n": 6487338.0,
+   "yawDeg": 90,
+   "lengthM": 2.0,
+   "topM": 0.9,
+   "prefab": "Assets/NatureManufacture Assets/Meadow Environment Dynamic Nature/Rocks/Rocks/Prefabs/prefab_Rock_06.prefab",
+   "tint": [
+    0.66,
+    0.67,
+    0.7
+   ],
+   "materialFloats": {
+    "_SmoothnessPower": 0.35,
+    "_MetallicPower": 0.0
+   }
+  },
+  {
+   "id": "h10-heap-stone-08",
+   "e": 530259.25,
+   "n": 6487337.0,
+   "yawDeg": 30,
+   "lengthM": 2.4,
+   "topM": 1.1,
+   "prefab": "Assets/NatureManufacture Assets/Meadow Environment Dynamic Nature/Rocks/Rocks/Prefabs/prefab_Rock_07.prefab",
+   "tint": [
+    0.66,
+    0.67,
+    0.7
+   ],
+   "materialFloats": {
+    "_SmoothnessPower": 0.35,
+    "_MetallicPower": 0.0
+   }
+  },
+  {
+   "id": "h10-heap-stone-09",
+   "e": 530261.25,
+   "n": 6487336.5,
+   "yawDeg": 250,
+   "lengthM": 1.6,
+   "topM": 0.6,
+   "prefab": "Assets/NatureManufacture Assets/Meadow Environment Dynamic Nature/Rocks/Rocks/Prefabs/prefab_m_rock_03.prefab",
+   "tint": [
+    0.66,
+    0.67,
+    0.7
+   ],
+   "materialFloats": {
+    "_SmoothnessPower": 0.35,
+    "_MetallicPower": 0.0
+   }
+  },
+  {
+   "id": "h10-heap-stone-10",
+   "e": 530258.0,
+   "n": 6487335.0,
+   "yawDeg": 170,
+   "lengthM": 2.0,
+   "topM": 0.8,
+   "prefab": "Assets/NatureManufacture Assets/Meadow Environment Dynamic Nature/Rocks/Rocks/Prefabs/prefab_Rock_04.prefab",
+   "tint": [
+    0.66,
+    0.67,
+    0.7
+   ],
+   "materialFloats": {
+    "_SmoothnessPower": 0.35,
+    "_MetallicPower": 0.0
+   }
+  },
+  {
+   "id": "h10-heap-stone-11",
+   "e": 530260.0,
+   "n": 6487334.0,
+   "yawDeg": 70,
+   "lengthM": 1.8,
+   "topM": 0.7,
+   "prefab": "Assets/NatureManufacture Assets/Meadow Environment Dynamic Nature/Rocks/Rocks/Prefabs/prefab_m_rock_01.prefab",
+   "tint": [
+    0.66,
+    0.67,
+    0.7
+   ],
+   "materialFloats": {
+    "_SmoothnessPower": 0.35,
+    "_MetallicPower": 0.0
+   }
+  },
+  {
+   "id": "h10-heap-stone-12",
+   "e": 530258.5,
+   "n": 6487331.75,
+   "yawDeg": 320,
+   "lengthM": 1.6,
+   "topM": 0.6,
+   "prefab": "Assets/NatureManufacture Assets/Meadow Environment Dynamic Nature/Rocks/Rocks/Prefabs/prefab_m_rock_02.prefab",
+   "tint": [
+    0.66,
+    0.67,
+    0.7
+   ],
+   "materialFloats": {
+    "_SmoothnessPower": 0.35,
+    "_MetallicPower": 0.0
+   }
+  },
+  {
+   "id": "h10-heap-stone-13",
+   "e": 530256.0,
+   "n": 6487340.5,
+   "yawDeg": 220,
+   "lengthM": 1.4,
+   "topM": 0.5,
+   "prefab": "Assets/NatureManufacture Assets/Meadow Environment Dynamic Nature/Rocks/Rocks/Prefabs/prefab_m_rock_03.prefab",
+   "tint": [
+    0.66,
+    0.67,
+    0.7
+   ],
+   "materialFloats": {
+    "_SmoothnessPower": 0.35,
+    "_MetallicPower": 0.0
+   }
+  },
+  {
+   "id": "se-stone-01",
+   "e": 530290.75,
+   "n": 6486961.75,
+   "yawDeg": 40,
+   "lengthM": 3.0,
+   "topM": 1.2,
+   "prefab": "Assets/NatureManufacture Assets/Meadow Environment Dynamic Nature/Rocks/Rocks/Prefabs/prefab_Rock_03_cut.prefab",
+   "tint": [
+    0.66,
+    0.67,
+    0.7
+   ],
+   "materialFloats": {
+    "_SmoothnessPower": 0.35,
+    "_MetallicPower": 0.0
+   }
+  },
+  {
+   "id": "se-stone-02",
+   "e": 530188.75,
+   "n": 6486919.75,
+   "yawDeg": 110,
+   "lengthM": 2.5,
+   "topM": 1.0,
+   "prefab": "Assets/NatureManufacture Assets/Meadow Environment Dynamic Nature/Rocks/Rocks/Prefabs/prefab_Rock_01_cut.prefab",
+   "tint": [
+    0.66,
+    0.67,
+    0.7
+   ],
+   "materialFloats": {
+    "_SmoothnessPower": 0.35,
+    "_MetallicPower": 0.0
+   }
+  },
+  {
+   "id": "se-stone-03",
+   "e": 530179.7,
+   "n": 6486890.8,
+   "yawDeg": 20,
+   "lengthM": 2.5,
+   "topM": 1.0,
+   "prefab": "Assets/NatureManufacture Assets/Meadow Environment Dynamic Nature/Rocks/Rocks/Prefabs/prefab_Rock_06.prefab",
+   "tint": [
+    0.66,
+    0.67,
+    0.7
+   ],
+   "materialFloats": {
+    "_SmoothnessPower": 0.35,
+    "_MetallicPower": 0.0
+   }
+  },
+  {
+   "id": "h13-ivy-boulder",
+   "prefab": "Assets/NatureManufacture Assets/Meadow Environment Dynamic Nature/Rocks/Rocks/Prefabs/prefab_Rock_01.prefab",
+   "tint": [
+    0.66,
+    0.67,
+    0.7
+   ],
+   "materialFloats": {
+    "_SmoothnessPower": 0.35,
+    "_MetallicPower": 0.0
+   },
+   "e": 529942.77,
+   "n": 6487472.81,
+   "yawDeg": 135,
+   "lengthM": 15.0,
+   "topM": -0.3,
+   "pose": {
+    "dy": -5.19,
+    "euler": [
+     0,
+     135,
+     0
+    ],
+    "scale": [
+     5.9415,
+     5.9415,
+     5.9415
+    ]
+   }
+  },
+  {
    "id": "h4-klippa-a-top-07",
    "e": 529587.47,
    "n": 6488088.66,
@@ -2520,10 +3920,14 @@
    "topM": 0.55,
    "prefab": "Assets/NatureManufacture Assets/Meadow Environment Dynamic Nature/Rocks/Rocks/Prefabs/prefab_Rock_03.prefab",
    "tint": [
-    0.57,
-    0.58,
-    0.61
-   ]
+    0.66,
+    0.67,
+    0.7
+   ],
+   "materialFloats": {
+    "_SmoothnessPower": 0.35,
+    "_MetallicPower": 0.0
+   }
   },
   {
    "id": "h4-klippa-a-top-08",
@@ -2534,10 +3938,14 @@
    "topM": 0.5,
    "prefab": "Assets/NatureManufacture Assets/Meadow Environment Dynamic Nature/Rocks/Rocks/Prefabs/prefab_Rock_01_cut.prefab",
    "tint": [
-    0.57,
-    0.58,
-    0.61
-   ]
+    0.66,
+    0.67,
+    0.7
+   ],
+   "materialFloats": {
+    "_SmoothnessPower": 0.35,
+    "_MetallicPower": 0.0
+   }
   },
   {
    "id": "h4-klippa-a-top-09",
@@ -2548,10 +3956,14 @@
    "topM": 0.6,
    "prefab": "Assets/NatureManufacture Assets/Meadow Environment Dynamic Nature/Rocks/Rocks/Prefabs/prefab_Rock_01.prefab",
    "tint": [
-    0.57,
-    0.58,
-    0.61
-   ]
+    0.66,
+    0.67,
+    0.7
+   ],
+   "materialFloats": {
+    "_SmoothnessPower": 0.35,
+    "_MetallicPower": 0.0
+   }
   },
   {
    "id": "h4-stone-01",
@@ -3076,10 +4488,14 @@
    "id": "h4-klippa-a-top-01",
    "prefab": "Assets/NatureManufacture Assets/Meadow Environment Dynamic Nature/Rocks/Rocks/Prefabs/prefab_Rock_01.prefab",
    "tint": [
-    0.57,
-    0.58,
-    0.61
+    0.66,
+    0.67,
+    0.7
    ],
+   "materialFloats": {
+    "_SmoothnessPower": 0.35,
+    "_MetallicPower": 0.0
+   },
    "e": 529567.35,
    "n": 6488106.53,
    "yawDeg": 148.8,
@@ -3104,10 +4520,14 @@
    "id": "h4-klippa-a-top-02",
    "prefab": "Assets/NatureManufacture Assets/Meadow Environment Dynamic Nature/Rocks/Rocks/Prefabs/prefab_Rock_03.prefab",
    "tint": [
-    0.57,
-    0.58,
-    0.61
+    0.66,
+    0.67,
+    0.7
    ],
+   "materialFloats": {
+    "_SmoothnessPower": 0.35,
+    "_MetallicPower": 0.0
+   },
    "e": 529567.16,
    "n": 6488110.19,
    "yawDeg": 161.1,
@@ -3132,10 +4552,14 @@
    "id": "h4-klippa-a-top-03",
    "prefab": "Assets/NatureManufacture Assets/Meadow Environment Dynamic Nature/Rocks/Rocks/Prefabs/prefab_Rock_01_cut.prefab",
    "tint": [
-    0.57,
-    0.58,
-    0.61
+    0.66,
+    0.67,
+    0.7
    ],
+   "materialFloats": {
+    "_SmoothnessPower": 0.35,
+    "_MetallicPower": 0.0
+   },
    "e": 529573.68,
    "n": 6488104.68,
    "yawDeg": 138.0,
@@ -3160,10 +4584,14 @@
    "id": "h4-klippa-a-top-04",
    "prefab": "Assets/NatureManufacture Assets/Meadow Environment Dynamic Nature/Rocks/Rocks/Prefabs/prefab_Rock_03_cut.prefab",
    "tint": [
-    0.57,
-    0.58,
-    0.61
+    0.66,
+    0.67,
+    0.7
    ],
+   "materialFloats": {
+    "_SmoothnessPower": 0.35,
+    "_MetallicPower": 0.0
+   },
    "e": 529572.47,
    "n": 6488109.95,
    "yawDeg": 147.7,
@@ -3188,10 +4616,14 @@
    "id": "h4-klippa-a-top-05",
    "prefab": "Assets/NatureManufacture Assets/Meadow Environment Dynamic Nature/Rocks/Rocks/Prefabs/prefab_Rock_01.prefab",
    "tint": [
-    0.57,
-    0.58,
-    0.61
+    0.66,
+    0.67,
+    0.7
    ],
+   "materialFloats": {
+    "_SmoothnessPower": 0.35,
+    "_MetallicPower": 0.0
+   },
    "e": 529579.85,
    "n": 6488095.76,
    "yawDeg": 124.2,
@@ -3216,10 +4648,14 @@
    "id": "h4-klippa-a-top-06",
    "prefab": "Assets/NatureManufacture Assets/Meadow Environment Dynamic Nature/Rocks/Rocks/Prefabs/prefab_Rock_03.prefab",
    "tint": [
-    0.57,
-    0.58,
-    0.61
+    0.66,
+    0.67,
+    0.7
    ],
+   "materialFloats": {
+    "_SmoothnessPower": 0.35,
+    "_MetallicPower": 0.0
+   },
    "e": 529584.56,
    "n": 6488093.23,
    "yawDeg": 164.3,

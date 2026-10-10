@@ -17,6 +17,10 @@
 // Rock: a course mesh the stone walls' ground reshaped draws its stone channel with a copy of its material under
 // <course>/Walls/ (GolfMapWallGround); its triangles painted mostly in that channel (blue) are Rock, not the mesh's
 // own class, so tall grass keeps off klippor and tee-wall faces.
+//
+// Slab: a rock slab cut out of the course meshes into its own object (Blender shaping golfmap.cut_out,
+// Spline_<name>_Rock_-_Mesh). pipeline/grass_zones.py keeps the tall grass off it but for a ragged fringe over its
+// edge and scattered patches.
 using System;
 using System.Collections;
 using System.Collections.Generic;
@@ -34,7 +38,7 @@ namespace GolfMap.Editor
         public const string Format = "golfmap-surfaces-v1";
 
         // Codes are the file format; append, never renumber.
-        public enum Surface : byte { None = 0, Deep = 1, Rough = 2, Semi = 3, Fairway = 4, Green = 5, Tee = 6, Bunker = 7, Water = 8, Blend = 9, Other = 10, Rock = 11 }
+        public enum Surface : byte { None = 0, Deep = 1, Rough = 2, Semi = 3, Fairway = 4, Green = 5, Tee = 6, Bunker = 7, Water = 8, Blend = 9, Other = 10, Rock = 11, Slab = 12 }
 
         // Tie-break rank: higher keeps vegetation out and wins a near tie.
         static int Rank(Surface s)
@@ -54,6 +58,7 @@ namespace GolfMap.Editor
         {
             if (name.StartsWith("Gap_Issue", StringComparison.Ordinal)) return Surface.Blend;
             if (name.Contains("_-_Blend") || name.Contains("_B_")) return Surface.Blend;
+            if (name.Contains("_Rock_-_")) return Surface.Slab;
             if (name.Contains("Water") || name.Contains("Creek") || name.Contains("Lake")) return Surface.Water;
             if (name.Contains("Deep")) return Surface.Deep;
             if (name.Contains("Semi")) return Surface.Semi;
@@ -233,6 +238,7 @@ namespace GolfMap.Editor
             new Color32(200, 0, 200, 255),      // blend
             new Color32(255, 120, 0, 255),      // other
             new Color32(128, 128, 128, 255),    // rock
+            new Color32(190, 190, 200, 255),    // slab
         };
 
         static void WritePreview(byte[] cls, int w, int h, string path)

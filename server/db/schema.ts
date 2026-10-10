@@ -1,6 +1,7 @@
 import type { Generated } from 'kysely';
 
 export interface Database {
+    cleanup_areas: { site_id: string; version: number; areas_json: string };
     users: UsersTable;
     sites: SitesTable;
     courses: CoursesTable;

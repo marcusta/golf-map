@@ -83,6 +83,18 @@ def guid_index():
     return found
 
 
+def no_dither_crossfade(text, src):
+    """Compile the LOD_FADE_CROSSFADE variant out. VSP switches that keyword on for the last mesh
+    LOD (CTIShaderController.LODFadeCrossfade), and there the dither cut random pixels out of the
+    crowns for single frames (black speckles, 2026-10-09; gone with the keyword off). GSPro's VSP
+    sets the keyword itself, so the shader has to ignore it. The trees then pop at the tree
+    distance instead of dithering out over its last 10 m."""
+    text, n = re.subn(r"^(\s*#pragma surface .*?)\s+dithercrossfade\b", r"\1", text, flags=re.M)
+    if n != 1:
+        raise SystemExit("%s: expected one surface pragma with dithercrossfade, found %d" % (src, n))
+    return re.sub(r"^(\s*#pragma multi_compile\s+LOD_FADE_PERCENTAGE)\s+LOD_FADE_CROSSFADE\s*$", r"\1", text, flags=re.M)
+
+
 writes = {}  # project-relative path -> bytes
 
 # Shaders: the project's copy of Forst's CTI runtime (it came with the Birch package).
@@ -102,7 +114,7 @@ for guid, (name, stock) in SHADER_COPIES.items():
                           r"\1 exclude_path:deferred exclude_path:prepass", text, flags=re.M)
         if n != 1:
             raise SystemExit("%s: expected one StandardTranslucent surface pragma, found %d" % (src, n))
-    writes["%s/%s" % (SHADERS, name)] = text.encode("utf-8")
+    writes["%s/%s" % (SHADERS, name)] = no_dither_crossfade(text, src).encode("utf-8")
 
 for inc in sorted((source_dir / "Includes").glob("*.cginc")):
     writes["%s/Includes/%s" % (SHADERS, inc.name)] = inc.read_bytes()

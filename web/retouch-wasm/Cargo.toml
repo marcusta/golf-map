@@ -1,0 +1,33 @@
+[package]
+name = "golfmap-retouch"
+description = "PhotoCraft's retouching tools on the cleaned photo, for the Clean tool (wasm)"
+version = "0.1.0"
+edition = "2024"
+publish = false
+
+# Its own workspace: PhotoCraft is a path dependency, not a parent.
+[workspace]
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+# The PhotoCraft checkout (https://github.com/storytold/photocraft, MIT OR Apache-2.0).
+# `bun run retouch:build` (web/) rebuilds src/clean/retouch-pkg from it.
+photocraft-engine = { path = "../../../crafts/photocraft/crates/engine" }
+photocraft-doc = { path = "../../../crafts/photocraft/crates/doc" }
+photocraft-raster = { path = "../../../crafts/photocraft/crates/raster" }
+photocraft-geom = { path = "../../../crafts/photocraft/crates/geom" }
+photocraft-color = { path = "../../../crafts/photocraft/crates/color" }
+photocraft-paint = { path = "../../../crafts/photocraft/crates/paint" }
+serde_json = "1"
+
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+wasm-bindgen = "=0.2.129"
+
+[profile.release]
+opt-level = "s"
+lto = true
+codegen-units = 1
+panic = "abort"
+strip = true

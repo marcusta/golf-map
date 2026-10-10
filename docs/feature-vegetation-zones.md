@@ -555,6 +555,15 @@ out `modeBackdropTypes` (no handles, move, duplicate, retype), and delete and
 stack reorder skip it, so the selection panel shows only "Bank vegetation"
 and a hint that the shape is Draw's.
 
+The command bar's **Generated** toggle (`generated-vegetation-btn`, Vegetation
+mode only, shown when the course has generated zones) hides or shows every
+generated vegetation source at once (`FeaturesService.setGeneratedVegetationShown`:
+tall rough, creek banks, lidar woodland floor), leaving the zones drawn by
+hand. It is the same `hiddenSources` state as the stack panel's group-row
+eyes. Why: drawn zones add up with each other (D-VZ14), and an old hand-drawn
+tall-rough zone under a new wispy one was invisible among the generated bands
+(Vreta, 2026-10-10).
+
 The command bar's **Plant vegetation** (Vegetation mode only) runs the
 server's `vegetation` export job through `zones/plant-vegetation.service.ts`
 (start, or follow the planting already running; poll to the end): every

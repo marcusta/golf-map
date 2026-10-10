@@ -54,7 +54,7 @@ MANIFEST = ".golfmap-fbx-sync.json"
 DEFAULT_EXCLUDE = "Gap_Issue"
 FORMAT = "golfmap-fbx-sync-v1"
 # Bump when the exporter call below changes: every fingerprint then reads as changed.
-EXPORT_SETTINGS = "export_scene.fbx(use_selection=True, bake_space_transform=True)"
+EXPORT_SETTINGS = "export_scene.fbx(use_selection=True, bake_space_transform=True, use_custom_props=True)"
 
 # (foreach_get key, numpy dtype, values per element) by attribute data type.
 ATTRIBUTE_READ = {
@@ -112,6 +112,10 @@ def is_excluded(name, prefixes):
 def fingerprint(obj, depsgraph):
     h = hashlib.sha1()
     h.update(EXPORT_SETTINGS.encode())
+    # This exported convention determines Unity's channel interpretation even
+    # when a fully grass-painted piece has identical geometry and colour bytes.
+    h.update(json.dumps({"golfmap_path_transition": obj.get("golfmap_path_transition")},
+                        sort_keys=True, separators=(",", ":")).encode())
     h.update(np.array(obj.matrix_world, dtype=np.float64).tobytes())
     h.update("|".join(s.material.name if s.material else "" for s in obj.material_slots).encode())
     evaluated = obj.evaluated_get(depsgraph)
@@ -215,7 +219,7 @@ def export_objects(context, folder, names, objects):
             obj = objects[name]
             obj.select_set(True)
             view_layer.objects.active = obj
-            bpy.ops.export_scene.fbx(filepath=os.path.join(folder, name + ".fbx"), use_selection=True, bake_space_transform=True)
+            bpy.ops.export_scene.fbx(filepath=os.path.join(folder, name + ".fbx"), use_selection=True, bake_space_transform=True, use_custom_props=True)
             obj.select_set(False)
     finally:
         for o in selected:

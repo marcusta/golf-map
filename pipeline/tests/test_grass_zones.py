@@ -124,6 +124,50 @@ def test_grass_grows_up_to_the_rough_and_spills_a_foot_in():
     assert 0.3 < (first == 1).mean() < 0.95 and ((first == 0) | (first == 1)).all()   # here and there
 
 
+def test_a_rock_slab_is_bare_but_for_a_fringe_over_its_edge_and_patches():
+    """A slab cut out of the deep rough: the grass around it is full up to it, most of its edge
+    cells are under grass (no mesh edge shows), the inside is mostly bare with a few patches,
+    and the patches survive the minimum zone area."""
+    import numpy as np
+    cls = np.full((200, 200), gz.S_DEEP, dtype=np.uint8)
+    cls[:, 0:4] = gz.S_ROUGH                                    # play nearby (reach)
+    cls[60:100, 80:120] = gz.S_SLAB                             # 20 x 20 m at 0.5 m cells
+    w = gz.weight_field(cls, 0.5, None, gz.Rules(min_area=1, simplify=0))
+    on = w[60:100, 80:120]
+    assert ((on == 0) | (on == 1)).all()
+    ring =np.zeros_like(cls, dtype=bool)
+    ring[58:102, 78:122] = True
+    ring[60:100, 80:120] = False
+    assert (w[ring] == 1).all()                                 # the ground around: no clearance
+    edge = np.zeros_like(ring)
+    edge[60:100, 80:120] = True
+    edge[61:99, 81:119] = False
+    assert (w[edge] == 1).mean() > 0.65                         # most of the edge is under grass (the rest: blades leaning in)
+    core = w[64:96, 84:116]                                     # 2 m in from the edge: patches only
+    assert 0.05 < (core == 1).mean() < 0.3
+    r = gz.tall_grass_from_surfaces(cls, 0.5, 0.0, 100.0, [], [], gz.Rules(min_area=25, simplify=0))
+    inner = box(42, 52, 58, 68)                                 # the core in world metres (north = 100)
+    assert 0.05 < r.bands[-1][1].intersection(inner).area / inner.area < 0.3
+    # no slab on a map without one: the rule changes nothing
+    assert gz.slab_grass(np.full((40, 40), gz.S_DEEP, dtype=np.uint8), 0.5) is None
+
+
+def test_a_rock_slab_in_mown_rough_gets_a_ragged_skirt_of_grass_outside_its_edge():
+    """A slab lying in mown rough: tufts grow against the rock on the rough side too (most of the
+    first cells outside its edge), and none of it further out than twice SLAB_SKIRT_M."""
+    import numpy as np
+    cls = np.full((200, 200), gz.S_ROUGH, dtype=np.uint8)
+    cls[60:100, 80:120] = gz.S_SLAB                             # 20 x 20 m at 0.5 m cells
+    w = gz.weight_field(cls, 0.5, None, gz.Rules(min_area=1, simplify=0))
+    ring = np.zeros_like(cls, dtype=bool)
+    ring[59:101, 79:121] = True
+    ring[60:100, 80:120] = False
+    assert 0.65 < (w[ring] == 1).mean() < 1                     # most of it, not a solid line
+    far = np.ones_like(ring)
+    far[57:103, 77:123] = False                                 # 1.5 m and more outside the slab
+    assert (w[far] == 0).all()
+
+
 def test_a_tee_without_rough_around_it_keeps_its_clearance_next_to_one_with():
     import numpy as np
     cls = np.full((100, 100), gz.S_DEEP, dtype=np.uint8)

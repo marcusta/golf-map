@@ -25,7 +25,7 @@
 
 import { Signal, Computed } from '@basics/core/client/core';
 import type { FeatureGeometry } from '../geo/bezier';
-import { batched, type FeaturesService } from './features.service';
+import { batched, type FeaturesService, type FeatureAttributesPatch } from './features.service';
 import type { CourseFeature } from '../../../shared/api/course-features.gen';
 import { isRoughsLayerType, type FeatureLayer } from '../../../shared/render/stack-key';
 
@@ -39,6 +39,8 @@ interface FeatureSnapshot {
      * update then leaves the feature's layer alone.
      */
     layer?: FeatureLayer;
+    /** Opt-in attribute snapshots for edits that restore their settings. */
+    attributes?: FeatureAttributesPatch | null;
 }
 
 /**
@@ -163,6 +165,7 @@ export class EditHistory {
                     holeId: c.target.holeId,
                     layer: layerOf(c.target),
                     geometry: c.target.geometry,
+                    attributes: c.target.attributes,
                 })));
                 if (!created) return this.dropOnConflict();
                 // The server assigns fresh ids: rename across both stacks AND

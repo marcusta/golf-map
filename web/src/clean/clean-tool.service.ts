@@ -1,79 +1,57 @@
-// "Clean photo" tool — interactive ortho blemish removal for GOLF-SIMULATOR
-// EXPORT. Three mask/stroke modes, a pending-edit queue, and batch baking
-// into a parallel "sim" photo state:
+// "Clean photo" tool: retouching the cleaned photo's own pixels, for
+// GOLF-SIMULATOR EXPORT.
 //
-// ## Dual photo state
+// ## Two photos
 //
-// Cleaning NEVER touches the planning/playing imagery: bakes write a sparse
-// copy-on-write overlay (`tiles/<mapKey>/ortho-sim/`, served with per-tile
-// pristine fallback and its own `?v=` stamp) and the working `.patched.tif`
-// (the Unity/GSPro export source of truth). While this tool is active the
-// live map's flat ortho source points at the sim layer (panel toggle flips
-// back for comparison); deactivating always restores the pristine photo.
-// The web planner and iOS bundles only ever see the pristine tree.
+// Cleaning NEVER touches the planning/playing imagery. The cleaned photo is
+// one 8192 px image per site (server CleanedPhotoService). While this tool is
+// active the live map's flat ortho source points at its tile layer
+// (`tiles/<mapKey>/ortho-sim/`, served with per-tile pristine fallback and
+// its own `?v=` stamp); the panel toggle flips back for comparison and
+// deactivating always restores the pristine photo. The web planner and iOS
+// bundles only ever see the pristine tree.
 //
-// ## Modes
+// ## Working on the pixels
 //
-//   click  → planCrop → compose crop (tiles, never the MapLibre canvas)
-//          → /segment → largestPolygon → fillPolygonMask + dilate
-//          → /inpaint(crop, mask) → candidate preview → accept queues it
-//   ellipse→ drag defines the mask directly (works without SAM weights)
-//   stamp  → clone-stamp brush (NO sidecar needed): Alt-click picks the
-//          source, drag paints (live local preview by cloning tile pixels
-//          on the preview surface — clean-stamp.ts, the client mirror of
-//          golfpipe/stamp.py), each finished stroke queues directly.
-//          The live stroke paints dabs incrementally (IncrementalStampStroke)
-//          at most once per animation frame into the surface's persistent
-//          canvas, which the map reads through a CanvasSource
-//          (stamp-canvas-view.ts). No PNG encode, no overlay re-add per move.
-//          Aligned ON: the source offset persists across strokes; OFF:
-//          every stroke restarts from the picked source. Single clicks
-//          stamp one dab; Shift-click extends a straight line from the
-//          last dab; [ / ] resize the brush.
+// Entering the tool loads the photo's pixels into the pixel engine
+// (retouch-engine.ts): PhotoCraft's retouching, compiled to WebAssembly,
+// running in a worker. Every stroke changes those pixels directly:
 //
-// ## Pending queue + batch bake
+//   clone   Clone Stamp: Alt-click picks the source, drag paints a copy.
+//   heal    Healing Brush: like the stamp, blended into its surroundings
+//           on release.
+//   spot    Spot Healing: paint over a blemish, no source.
+//   remove  Remove: paint over (or around) an object; it is filled from its
+//           surroundings.
 //
-// Accepted edits (mask candidates AND stamp strokes) accumulate as PENDING —
-// preview overlays stay on the map, nothing is sent. "Bake N edits" submits
-// the whole ordered queue in ONE applyOrthoEdits call; the server appends
-// them all to the log, bakes them in order against the evolving patched
-// raster, retiles the union subtree once into the sim overlay, and bumps the
-// sim version once — then the map refreshes the sim source in place (never
-// the pristine one). Mask fills bake seam-free server-side (LaMa on source
-// pixels); stamp strokes re-render byte-reproducibly (pure pixel math, no
-// torch — a stamp-only queue bakes even without LaMa weights).
+// Clone and heal preview live while the stroke is drawn; spot and remove
+// show the stroke as a red band and compute on release. What an operation
+// changed comes back as a rectangle of pixels. It goes two ways at once:
 //
-// Preview fidelity note: local previews are composed from served tiles
-// (WebP-lossy, mercator-resampled) while bakes execute on source pixels —
-// visually near-identical, seam-free at bake by construction. Overlapping
-// pending edits preview independently; the bake applies them in order.
+//   - onto the map, through canvas layers of 512 photo pixels each
+//     (stamp-canvas-view.ts) that are transparent wherever the photo is as
+//     it was loaded, so untouched ground stays the map's own tiles;
+//   - to the server (`PUT /cleaned-photo/:id/pixels`), which writes it into
+//     the photo file and rewrites the tiles under it. Saves run one at a
+//     time in the background, in order. There is nothing to bake.
 //
-// ## External edit (export / import loop)
+// Ctrl+Z / Ctrl+Shift+Z step through the engine's history; the restored
+// pixels are saved like a stroke. The first save after a load asks the
+// server to keep the photo from before, so the panel's "Undo last change"
+// steps back a whole editing session (or an import).
 //
-// exportPhoto() asks the server for the cleaned photo as one fixed square PNG;
-// the builder edits it in an image editor; importPhoto() uploads it back and
-// the server stores only the changed pixels as ONE raster entry in the patch
-// log, baking it like any other edit. Revert-last therefore covers an import.
-// The server bakes inside the import request, so a "this changes 40 % of the
-// frame, continue?" prompt cannot come first; the summary warns afterwards.
-// Export/import hold the same 'applying' phase as a bake (nothing else runs
-// beside them) and `externalBusy` says which one it is. Plan:
-// docs/feature-ortho-export-import.md.
+// ## Areas, image editor, Unity
 //
-// Parked v2 ideas (deliberately NOT implemented): stamp source rotation,
-// cross-vintage donor sources (cloning from another year's flight).
+// `areas` mode draws the cleanup boundaries (cleanup-areas.controller.ts)
+// and changes no pixels. `exportUrl()` downloads the photo as a PNG and
+// `importPhoto()` uploads any image of its size to become the photo;
+// `applyInUnity()` waits for the saves, then runs the server's `unity-ortho`
+// export job (docs/gspro/export.md). An import or a server-side undo reloads
+// the pixels.
 //
-// ## Apply in Unity
-//
-// applyInUnity() bakes whatever is pending, then starts the server's
-// `unity-ortho` export job on the patched photo and follows it: the server
-// renders the darkened, green-tinted -meshes texture and the open Unity
-// editor puts it onto the course meshes (docs/gspro/export.md). Holds the
-// 'applying' phase like a bake, with `externalBusy` 'unity'.
-//
-// All I/O sits behind constructor seams (sidecar clients' fetch, the
-// imaging canvas work, the patches API, confirm dialogs) so the whole state
-// machine runs under bun test.
+// All I/O sits behind constructor seams (the engine, the pixel save, the
+// photo API, the map views, the frame clock) so the whole state machine runs
+// under bun test.
 
 import { Signal, effect } from '@basics/core/client/core';
 import type { Map as MaplibreMap, MapMouseEvent } from 'maplibre-gl';
@@ -82,91 +60,55 @@ import type { ToolContext } from '../editor/tool';
 import { bindDrag, type DragBinding } from '../editor/drag-binding';
 import { FEATURE_TYPES } from '../draw/feature-palette';
 import type { MapPointerEvent } from '../map/map.service';
-import { tileUrlTemplate } from '../map/map-style';
 import { deriveTileVersion } from '../map/tileset.service';
-import type {
-    OrthoExportResult,
-    OrthoExportSummary,
-    OrthoPatchesApi,
-    SimFrame,
-} from '../../../shared/api/ortho-patches.gen';
+import type { CleanedPhotoApi, CleanedPhotoResult } from '../../../shared/api/cleaned-photo.gen';
 import type { GsproExportApi, GsproExportJob } from '../../../shared/api/gspro-export.gen';
-import { ORTHO_IMPORT_MAX_BYTES } from '../../../shared/ortho-import';
-import { api } from '../api';
-import { lngLatToSweref99tm } from '../geo/transform';
-import { SamClient, largestPolygon, SAM_CROP_SIZE } from '../sam/sam-client';
-import { planCrop, cropPixelToLngLat, cropPixelToSweref, type CropPlan } from '../sam/sam-crop';
-import { canvasToBase64, composeCropCanvas, cropTiles, type CropTile } from '../imaging/crop-source';
-import { SidecarHealth, type SidecarStatus } from '../imaging/sidecar-health';
-import { CleanClient } from './clean-client';
-import {
-    OrthoImportClient,
-    OrthoImportError,
-    isRequestTimeout,
-    summarizeImport,
-    type ImportSummary,
-} from './clean-external';
-import {
-    dilateMask,
-    ellipseRingLngLat,
-    fillEllipseMask,
-    fillPolygonMask,
-    groundMetersPerPixel,
-    lngLatToMercator,
-    maskArea,
-    mercatorMetersPerPixel,
-    mercatorToCropPixel,
-    mercatorToLngLat,
-    planBounds3857,
-} from './clean-mask';
-import { IncrementalStampStroke, renderStampStroke, type PxPoint, type PxRect } from './clean-stamp';
+import { CLEANED_IMPORT_MAX_BYTES, CLEANED_PHOTO_SIZE } from '../../../shared/cleaned-photo';
+import { api, API_BASE } from '../api';
+import { lngLatToSweref99tm, sweref99tmToLngLat } from '../geo/transform';
+import { PhotoImportClient, PhotoImportError, cleanedPhotoExportUrl, importSummaryText } from './clean-external';
+import { workerRetouchEngine, type Changed, type RetouchEngine, type RetouchEngineFactory } from './retouch-engine';
 import { canvasStampView, type StampSurfaceView, type StampViewFactory } from './stamp-canvas-view';
+import { CleanupAreasController } from './cleanup-areas.controller';
+import { canvasCursor } from '../editor/canvas-cursor';
 
 /** Interaction-claim id for the Clean tool (also its registry id). */
 export const CLEAN_TOOL_ID = 'clean';
 
-/** SAM masks are dilated by this many ground meters — the blemish's soft
- * edge (anti-aliased rim, thin shadow fringe) must go with it or LaMa
- * plausibly continues it back into the hole (T54 learning). */
-export const CLEAN_DILATE_M = 0.5;
-/** Smallest drag-ellipse radius (ground meters) that counts as intentional. */
-export const CLEAN_MIN_ELLIPSE_M = 0.3;
-
-export const CLEAN_PREVIEW_OVERLAY_ID = 'clean-preview';
-export const CLEAN_ELLIPSE_OVERLAY_ID = 'clean-ellipse';
 export const CLEAN_SOURCE_OVERLAY_ID = 'clean-stamp-source';
+export const CLEAN_BRUSH_OVERLAY_ID = 'clean-stamp-brush';
+export const CLEAN_STROKE_OVERLAY_ID = 'clean-stroke';
 
-/** Minimum crop-pixel movement before a new stroke path point is recorded. */
-const STAMP_SAMPLE_PX = 2;
+/** Edge of one map layer of changed pixels, in photo pixels. */
+export const CLEAN_BLOCK_PX = 512;
+/** Minimum photo-pixel movement before a new stroke point is recorded. */
+const STROKE_SAMPLE_PX = 1;
 /** [ / ] brush resize factor. */
-const STAMP_SIZE_STEP = 1.25;
-export const STAMP_SIZE_MIN_M = 0.5;
-export const STAMP_SIZE_MAX_M = 30;
-/** Hard cap on recorded points per stroke (server rejects above 4000). */
-const STAMP_MAX_PATH_POINTS = 1500;
+const BRUSH_SIZE_STEP = 1.25;
+export const BRUSH_SIZE_MIN_M = 0.5;
+export const BRUSH_SIZE_MAX_M = 30;
 
-export type CleanMode = 'click' | 'ellipse' | 'stamp';
-export type CleanPhase = 'idle' | 'working' | 'preview' | 'applying';
-export type CleanHealth = SidecarStatus;
+/** The retouching tools, and `areas` (the cleanup boundaries). */
+export type CleanMode = 'clone' | 'heal' | 'spot' | 'remove' | 'areas';
+export type RetouchTool = Exclude<CleanMode, 'areas'>;
+/** `applying`: a server-side undo, an import or Apply in Unity is running. */
+export type CleanPhase = 'idle' | 'applying';
+/** Where the photo's pixels are: not asked for, on their way, in the engine, or failed. */
+export type PhotoLoad = 'none' | 'loading' | 'ready' | 'error';
+export type SaveState = 'saved' | 'saving' | 'error';
 
-/**
- * Browser-only imaging seam: crop composition and PNG encoding need canvas,
- * which bun test's happy-dom doesn't have — tests inject fakes and drive
- * the state machine with canned base64 strings / pixel buffers.
- */
-export interface CleanImaging {
-    /** Compose the ortho crop from tiles → base64 PNG (lossless — unmasked
-     * result pixels stay byte-identical through the sidecar round trip). */
-    composeCropPng(tiles: CropTile[], size: number): Promise<string>;
-    /** Mask bitmap → base64 PNG (white = inpaint) — sent to the sidecar for
-     * the preview AND to the server on bake (the mask-edit payload). */
-    encodeMaskPng(mask: Uint8Array, size: number): Promise<string>;
-    /** Compose the ortho crop from tiles → flat RGBA pixels (size×size×4) —
-     * the clone-stamp preview surface. */
-    composeCropPixels(tiles: CropTile[], size: number): Promise<Uint8ClampedArray>;
-}
+/** PhotoCraft's command for each tool. */
+const COMMAND: Record<RetouchTool, string> = {
+    clone: 'paint.cloneStamp',
+    heal: 'paint.healingBrush',
+    spot: 'paint.spotHealing',
+    remove: 'paint.remove',
+};
 
-/** Animation-frame seam: the live stroke paints at most once per frame. */
+/** Clone Stamp and Healing Brush: a source, and a live preview. */
+const isLive = (tool: CleanMode): tool is 'clone' | 'heal' => tool === 'clone' || tool === 'heal';
+
+/** Animation-frame seam: the live stroke sends points at most once per frame. */
 export interface FrameScheduler {
     request(cb: () => void): number;
     cancel(handle: number): void;
@@ -185,114 +127,67 @@ export const browserFrames: FrameScheduler = {
 /** What applyInUnity needs of the GSPro export API. */
 export type UnityOrthoApi = Pick<GsproExportApi, 'orthoSources' | 'start' | 'job'>;
 
-/** Live-stroke seams: the surface view (canvas source) and the frame clock. */
+/** Map-side seams: the block views (canvas sources) and the frame clock. */
 export interface CleanLiveSeams {
     views?: StampViewFactory;
     frames?: FrameScheduler;
 }
 
-/** Real canvas implementation of the imaging seam. */
-export const browserCleanImaging: CleanImaging = {
-    async composeCropPng(tiles, size) {
-        return canvasToBase64(await composeCropCanvas(tiles, size), 'image/png');
-    },
+/** Writes changed pixels into the photo file on the server. `snapshot` keeps
+ * the photo from before as an undo step. */
+export type PixelSaver = (courseId: string, changed: Changed, snapshot: boolean) => Promise<CleanedPhotoResult>;
 
-    async encodeMaskPng(mask, size) {
-        const canvas = new OffscreenCanvas(size, size);
-        const ctx = canvas.getContext('2d')!;
-        const img = ctx.createImageData(size, size);
-        for (let i = 0; i < mask.length; i++) {
-            const v = mask[i] ? 255 : 0;
-            img.data[i * 4] = v;
-            img.data[i * 4 + 1] = v;
-            img.data[i * 4 + 2] = v;
-            img.data[i * 4 + 3] = 255;
+export const fetchPixelSaver: PixelSaver = async (courseId, changed, snapshot) => {
+    const { x, y, w, h } = changed.rect;
+    const url = `${API_BASE}/cleaned-photo/${encodeURIComponent(courseId)}/pixels?x=${x}&y=${y}&w=${w}&h=${h}${snapshot ? '&snapshot=1' : ''}`;
+    const res = await fetch(url, {
+        method: 'PUT',
+        headers: { 'content-type': 'application/octet-stream' },
+        body: changed.rgba as Uint8ClampedArray<ArrayBuffer>,
+    });
+    if (!res.ok) {
+        let message = `HTTP ${res.status}`;
+        try {
+            message = ((await res.json()) as { error?: string }).error ?? message;
+        } catch {
+            // Not a JSON error body.
         }
-        ctx.putImageData(img, 0, 0);
-        return canvasToBase64(canvas, 'image/png');
-    },
-
-    async composeCropPixels(tiles, size) {
-        const canvas = await composeCropCanvas(tiles, size);
-        return canvas.getContext('2d')!.getImageData(0, 0, size, size).data;
-    },
+        throw new Error(message);
+    }
+    return (await res.json()) as CleanedPhotoResult;
 };
 
-interface PreviewState {
-    plan: CropPlan;
-    mask: Uint8Array;
-    /** The encoded mask png — the ONLY pixel payload the bake sends. */
-    maskPngBase64: string;
-    /** Sidecar inpaint of the tile crop — preview overlay only, never baked. */
-    resultBase64: string;
-    tool: string; // 'sam' | 'ellipse'
-    /** Ground m²-ish size of the mask, for the panel line. */
-    maskPixels: number;
+/** Where the photo's raw pixels load from. */
+export function cleanedPhotoPixelsUrl(courseId: string, baseUrl: string = API_BASE): string {
+    return `${baseUrl}/cleaned-photo/${encodeURIComponent(courseId)}/pixels.rgb`;
 }
 
-interface PendingMaskEdit {
-    kind: 'mask';
-    maskPngBase64: string;
-    bounds3857: { west: number; south: number; east: number; north: number };
-    boundsSweref: { west: number; south: number; east: number; north: number };
-    tool: string;
-    /** The kept preview overlay showing this pending edit on the map. */
-    overlayId: string;
+/** The photo on the ground: its north-west corner (EPSG:3006) and pixel size. */
+interface PhotoGeo {
+    west: number;
+    north: number;
+    /** Metres per pixel. */
+    res: number;
+    /** Pixels per side. */
+    size: number;
 }
 
-interface PendingStampEdit {
-    kind: 'stamp';
-    brush: { sizeM: number; opacity: number; flow: number; hardness: number };
-    offsetM: { dx: number; dy: number };
-    path: Array<{ x: number; y: number }>;
-    aligned: boolean;
-    toneMatch: boolean;
-    bounds3857: { west: number; south: number; east: number; north: number };
-    boundsSweref: { west: number; south: number; east: number; north: number };
-    /** Preview-replay data: which surface, and the stroke in surface px. */
-    surfaceId: string;
-    pathPx: PxPoint[];
-    offsetPx: { dx: number; dy: number };
-    radiusPx: number;
-}
-
-type PendingEdit = PendingMaskEdit | PendingStampEdit;
-
-/** One clone-stamp preview surface: a tile-composed crop the pending strokes
- * of that area render onto (shown below the feature fills, like the inpaint
- * preview, through a canvas-backed view). */
-interface StampSurface {
-    id: string;
-    plan: CropPlan;
-    /** Tile pixels as composed (no strokes). */
-    base: Uint8ClampedArray;
-    /** base + every pending stroke of this surface (+ the live stroke). */
-    work: Uint8ClampedArray;
-    /** Map view, created on the first draw. */
-    view: StampSurfaceView | null;
+interface Px {
+    x: number;
+    y: number;
 }
 
 interface ActiveStroke {
-    surface: StampSurface;
-    /** Surface content BEFORE this stroke — the render/cancel baseline. */
-    workBase: Uint8ClampedArray;
-    /** Incremental painter: base = workBase, out = surface.work. Holds the
-     * stroke's surface-px path. */
-    live: IncrementalStampStroke;
-    /** Points added since the last paint. */
-    dirty: boolean;
-    /** Source-ring center waiting for the next frame. */
-    ringMerc: { x: number; y: number } | null;
-    pathSweref: Array<{ x: number; y: number }>;
-    pathMerc: Array<{ x: number; y: number }>;
-    offsetM: { dx: number; dy: number };
-    offsetMerc: { dx: number; dy: number };
-    offsetPx: { dx: number; dy: number };
-    radiusPx: number;
-    lastLngLat: { lng: number; lat: number };
-    brush: { sizeM: number; opacity: number; flow: number; hardness: number };
-    toneMatch: boolean;
-    aligned: boolean;
+    tool: RetouchTool;
+    /** Every point so far, in photo pixels. */
+    points: Px[];
+    /** How many of them the engine has (live tools). */
+    sent: number;
+    /** Brush params as PhotoCraft takes them. */
+    params: Record<string, unknown>;
+    /** Path on the map, for the red band of spot / remove. */
+    lngLats: Array<[number, number]>;
+    last: { lng: number; lat: number };
 }
 
 /**
@@ -300,105 +195,110 @@ interface ActiveStroke {
  * (clean-panel.component.ts). See the module header for the flow.
  */
 export class CleanToolService {
-    /** Sidecar /health probe (imaging/sidecar-health.ts). */
-    readonly sidecar = new SidecarHealth(() => this.client.health());
-    /** Sidecar process reachability (mask modes only — stamping is local). */
-    readonly health: Signal<CleanHealth> = this.sidecar.status;
-    /** LaMa weights + torch ready on the sidecar (/health `inpaint`). */
-    readonly inpaintReady = this.sidecar.inpaintReady;
-    /** Sidecar's reason when inpaint is unavailable. */
-    readonly healthDetail = this.sidecar.detail;
-    /** Mode: click = SAM mask; ellipse = drag mask; stamp = clone brush. */
-    readonly mode = new Signal<CleanMode>('click');
+    readonly areas = new CleanupAreasController();
+
+    setMode(mode: CleanMode): void {
+        if (this.areas.kind.peek() || (this.mode.peek() === 'areas' && this.areas.busy.peek()) || this.phase.peek() !== 'idle') return;
+        if (this.stroke) return;
+        this.mode.set(mode);
+        if (mode === 'areas') {
+            this.removeRing(CLEAN_BRUSH_OVERLAY_ID);
+            this.removeRing(CLEAN_SOURCE_OVERLAY_ID);
+            if (!this.areas.document.peek()) void this.areas.reload();
+        } else {
+            this.updateRings();
+        }
+    }
+
+    readonly mode = new Signal<CleanMode>('clone');
     readonly phase = new Signal<CleanPhase>('idle');
     /** One-line panel notice (why the last action produced nothing). */
     readonly notice = new Signal<string | null>(null);
-    /** Baked patches on this course's map (server log length). */
-    readonly patchCount = new Signal(0);
-    /** Pending (accepted but unbaked) edits in the queue. */
-    readonly pendingCount = new Signal(0);
-    /** Pre-flight: can MASK edits bake (source + LaMa deps)? */
-    readonly bakeable = new Signal(true);
-    /** Pre-flight: can STAMP edits bake (source only — never needs torch)? */
-    readonly stampBakeable = new Signal(true);
-    /** Server's reason cleaning can only preview (present when !bakeable). */
-    readonly bakeReason = new Signal<string | null>(null);
-    /** Dual photo state: show the cleaned (sim) photo while the tool is
-     * active. Toggled from the panel for comparison; always restored to
-     * pristine on deactivate. */
+    /** The photo's pixels in the engine. */
+    readonly photo = new Signal<PhotoLoad>('none');
+    /** 0..1 while the pixels load. */
+    readonly loadProgress = new Signal(0);
+    /** Why the photo could not be loaded (state `error`). */
+    readonly loadError = new Signal<string | null>(null);
+    /** A spot heal or a removal is computing. */
+    readonly working = new Signal(false);
+    /** Whether everything painted has reached the photo file. */
+    readonly saveState = new Signal<SaveState>('saved');
+    readonly saveError = new Signal<string | null>(null);
+    /** Steps Ctrl+Z / Ctrl+Shift+Z can take in this session. */
+    readonly undoSteps = new Signal(0);
+    readonly redoSteps = new Signal(0);
+    /** Server-side undo steps: editing sessions and imports. */
+    readonly undoDepth = new Signal(0);
+    /** Whether the cleaned photo exists yet (the first load, save or import makes it). */
+    readonly photoExists = new Signal(false);
+    /** Dual photo state: show the cleaned photo while the tool is active.
+     * Toggled from the panel for comparison; always restored to pristine on
+     * deactivate. */
     readonly showCleaned = new Signal(true);
 
-    // External edit (export / import) state.
-    /** Existing exports, oldest first (server order). */
-    readonly exports = new Signal<OrthoExportSummary[]>([]);
-    /** The site's fixed export frame; null until the first export. */
-    readonly exportFrame = new Signal<SimFrame | null>(null);
-    /** Which external operation holds the 'applying' phase, if any. */
-    readonly externalBusy = new Signal<'export' | 'import' | 'unity' | null>(null);
+    // Import / Apply in Unity state.
+    /** Which long operation holds the 'applying' phase, if any. */
+    readonly externalBusy = new Signal<'import' | 'unity' | 'undo' | null>(null);
     /** Outcome of the last Apply in Unity: the error, or what Unity took. */
     readonly unityMessage = new Signal<{ kind: 'error' | 'info'; text: string } | null>(null);
     /** Upload progress 0..1 while importing; 1 means "sent, server working". */
     readonly uploadProgress = new Signal<number | null>(null);
-    /** The export this session just made (file name + download link). */
-    readonly lastExport = new Signal<OrthoExportResult | null>(null);
-    /** Change summary of the last import. */
-    readonly importSummary = new Signal<ImportSummary | null>(null);
-    /** One line for the External edit section: an error or a plain status. */
+    /** What the last import did, in one line. */
+    readonly importSummary = new Signal<string | null>(null);
+    /** One line for the import section: an error or a plain status. */
     readonly externalMessage = new Signal<{ kind: 'error' | 'info'; text: string } | null>(null);
-    /** Export picked for the import; null means the latest. */
-    readonly pickedExportSeq = new Signal<number | null>(null);
 
-    // Stamp brush state (right-sidebar controls).
-    readonly stampSizeM = new Signal(3);
-    readonly stampOpacity = new Signal(1);
-    readonly stampFlow = new Signal(0.7);
-    readonly stampHardness = new Signal(0.7);
-    readonly stampAligned = new Signal(true);
-    readonly stampToneMatch = new Signal(true);
+    // Brush (right-sidebar controls).
+    readonly brushSizeM = new Signal(3);
+    readonly brushOpacity = new Signal(1);
+    readonly brushFlow = new Signal(1);
+    readonly brushHardness = new Signal(0.7);
+    readonly cloneAligned = new Signal(true);
     /** A clone source has been picked (panel hint gating). */
-    readonly hasStampSource = new Signal(false);
+    readonly hasSource = new Signal(false);
 
     private ctx: ToolContext | null = null;
-    private preview: PreviewState | null = null;
-    private drag: { start: { lng: number; lat: number }; current: { lng: number; lat: number } } | null = null;
-    private ellipseOverlayLive = false;
-    /** Raw mousedown/up binding (editor/drag-binding.ts); null while inactive. */
+    /** Kept after deactivation: saves still in flight belong to it. */
+    private courseId: string | null = null;
     private dragBinding: DragBinding | null = null;
 
-    private pending: PendingEdit[] = [];
-    private surfaces: StampSurface[] = [];
-    private overlaySeq = 0;
-    /** The sim overlay's version stamp (null before the first bake ever). */
-    private simGeneratedAt: string | null = null;
+    private engine: RetouchEngine | null = null;
+    private geo: PhotoGeo | null = null;
+    /** Engine calls run one after another, in the order they were made. */
+    private ops: Promise<void> = Promise.resolve();
+    private readonly blocks = new Map<string, StampSurfaceView>();
+    /** Blocks a change of this load has reached. */
+    private readonly touched = new Set<string>();
 
-    // Stamp interaction state.
-    private source: { lngLat: { lng: number; lat: number }; sweref: { x: number; y: number }; merc: { x: number; y: number } } | null = null;
-    private alignedOffset: { m: { dx: number; dy: number }; merc: { dx: number; dy: number } } | null = null;
+    /** The tile version the map shows (null before the first change ever). */
+    private shownSimGeneratedAt: string | null = null;
+
+    private saves: Changed[] = [];
+    private saving: Promise<void> | null = null;
+    /** A save of this load has asked the server to keep the photo from before. */
+    private sessionSaved = false;
+
+    private source: Px | null = null;
+    /** Clone offset in photo pixels, once an aligned stroke has set it. */
+    private alignedOffset: [number, number] | null = null;
     private lastDab: { lng: number; lat: number } | null = null;
     private stroke: ActiveStroke | null = null;
-    private strokeInit: Promise<boolean> | null = null;
-    private sourceOverlayLive = false;
-    /**
-     * Monotonic stroke token. beginStroke and cancelStroke bump it; an async
-     * step (surface compose, the init await in endStroke) that resumes under
-     * an older value drops its result, so a slow earlier step never
-     * overwrites or commits over a later one.
-     */
-    private strokeSeq = 0;
-    /** Pending animation-frame handle for the live stroke paint. */
+    private pumping = false;
+    /** Last pointer position, in photo pixels: the brush ring. */
+    private hover: Px | null = null;
+    private readonly rings = new Set<string>();
+    private strokeOverlayLive = false;
     private frame: number | null = null;
     private readonly views: StampViewFactory;
     private readonly frames: FrameScheduler;
 
     constructor(
-        private client: CleanClient = new CleanClient(),
-        private sam: SamClient = new SamClient(),
-        private imaging: CleanImaging = browserCleanImaging,
-        private patchesApi: OrthoPatchesApi = api.orthoPatches,
-        private confirmFn: (message: string) => boolean =
-            message => (typeof confirm === 'function' ? confirm(message) : true),
+        private engines: RetouchEngineFactory = workerRetouchEngine,
+        private photoApi: CleanedPhotoApi = api.cleanedPhoto,
+        private savePixels: PixelSaver = fetchPixelSaver,
         live: CleanLiveSeams = {},
-        private importClient: OrthoImportClient = new OrthoImportClient(),
+        private importClient: PhotoImportClient = new PhotoImportClient(),
         private unityApi: UnityOrthoApi = api.gsproExport,
         private unityPollMs = 1500,
     ) {
@@ -410,22 +310,33 @@ export class CleanToolService {
 
     activate(ctx: ToolContext): void {
         this.ctx = ctx;
+        this.courseId = ctx.courseId;
+        this.areas.activate(ctx);
+        ctx.track(effect(() => this.areas.enabled.set(this.mode.get() === 'areas')));
+        ctx.track(canvasCursor(ctx.map, () =>
+            this.mode.get() === 'areas' && this.areas.kind.get() ? 'crosshair' : ''));
         this.notice.set(null);
-        void this.checkHealth();
-        void this.refreshInfo();
+        void this.open();
         // Cleaning works on the bare photo: every feature fill and outline
         // is off the map for the tool's span (restored in `deactivate`).
         ctx.features?.modeHiddenTypes.set(new Set(FEATURE_TYPES));
         ctx.track(ctx.map.onClick(e => this.onClick(e)));
         ctx.track(ctx.map.onMouseMove(e => this.onMouseMove(e)));
 
-        // Raw mousedown/mouseup (ellipse drags + stamp strokes) need the live
-        // map instance; the drag binding rebinds whenever a (re)created map
+        // Raw mousedown/mouseup (strokes, area tracing) need the live map
+        // instance; the drag binding rebinds whenever a (re)created map
         // turns ready.
         this.dragBinding = bindDrag(ctx, {
             toolId: CLEAN_TOOL_ID,
             onDown: (e, map) => this.onRawMouseDown(e, map),
-            onUp: (_e, map) => this.onRawMouseUp(map),
+            onUp: (e, map) => {
+                if (this.areas.pointerUp(e)) {
+                    this.dragBinding?.suppressNextClick();
+                    this.releasePan(map);
+                    return;
+                }
+                this.onRawMouseUp(map);
+            },
         });
         // Re-apply the photo state (sim vs pristine ortho source) whenever
         // a (re)created map turns ready.
@@ -434,7 +345,6 @@ export class CleanToolService {
             this.applyPhotoState();
         }));
 
-        // [ / ] resize the stamp brush (ignored while typing in inputs).
         const onKeyDown = (e: KeyboardEvent) => this.onKeyDown(e);
         window.addEventListener('keydown', onKeyDown);
         ctx.track(() => window.removeEventListener('keydown', onKeyDown));
@@ -442,33 +352,18 @@ export class CleanToolService {
 
     deactivate(): void {
         const ctx = this.ctx;
-        this.cancelDrag();
+        this.areas.deactivate();
         this.cancelStroke();
-        if (this.pending.length > 0 && ctx) {
-            // Tool switch with pending edits: prompt — OK bakes them (fire
-            // and forget; the server work continues past deactivation),
-            // Cancel discards. Overlays are cleaned up either way below.
-            const n = this.pending.length;
-            if (this.confirmFn(`${n} pending clean-photo edit${n === 1 ? '' : 's'} — bake ${n === 1 ? 'it' : 'them'} now? (Cancel discards.)`)) {
-                void this.bakeAll({ silent: true });
-            } else {
-                this.discardAllPending();
-            }
-        }
+        this.cancelFrame();
         ctx?.features?.resetModeView();
-        this.removePreviewOverlay();
-        this.removeSourceOverlay();
-        for (const edit of this.pending) {
-            if (edit.kind === 'mask') ctx?.map.removeOverlayLayer(edit.overlayId);
-        }
-        for (const surface of this.surfaces) surface.view?.remove();
-        this.surfaces = [];
-        this.preview = null;
+        this.removeRing(CLEAN_SOURCE_OVERLAY_ID);
+        this.removeRing(CLEAN_BRUSH_OVERLAY_ID);
+        this.hover = null;
+        this.closePhoto();
         this.phase.set('idle');
         this.notice.set(null);
         this.externalBusy.set(null);
         this.uploadProgress.set(null);
-        this.lastExport.set(null);
         this.importSummary.set(null);
         this.externalMessage.set(null);
         this.unityMessage.set(null);
@@ -477,73 +372,152 @@ export class CleanToolService {
         if (ctx && pristine) ctx.map.setOrthoPhotoState('ortho', pristine);
         this.dragBinding = null;
         this.ctx = null;
+        // Saves still in flight carry on; `courseId` stays for them.
     }
 
-    /** ESC: stroke/drag → cancel; candidate preview → discard; pending queue
-     * → prompt to discard all; else let the toolbar exit. */
+    /** ESC: a stroke or an area draft is cancelled; else the toolbar exits. */
     onEscape(): boolean {
-        if (this.drag) {
-            this.cancelDrag();
-            return true;
-        }
-        if (this.stroke || this.strokeInit) {
+        if (this.mode.peek() === 'areas' && this.areas.busy.peek()) return true;
+        if (this.areas.kind.peek()) { this.areas.cancel(); this.releasePan(); return true; }
+        if (this.stroke) {
             this.cancelStroke();
-            return true;
-        }
-        if (this.phase.peek() === 'preview') {
-            this.discard();
-            return true;
-        }
-        if (this.pending.length > 0) {
-            const n = this.pending.length;
-            if (this.confirmFn(`Discard ${n} pending clean-photo edit${n === 1 ? '' : 's'}?`)) {
-                this.discardAllPending();
-            }
             return true;
         }
         return false;
     }
 
-    /** Probe the sidecar's /health (activation + the panel's retry button). */
-    checkHealth(): Promise<void> {
-        return this.sidecar.check();
+    /** Settles when every engine call made so far has run and every change is saved (or a save failed). */
+    async settled(): Promise<void> {
+        await this.ops;
+        while (this.saving) await this.saving;
+        await this.ops;
+    }
+
+    // ── The photo: info, pixels, map layers ─────────────────────────────────
+
+    /** On activation: where the photo lies, then its pixels. */
+    private async open(): Promise<void> {
+        await this.refreshInfo();
+        await this.loadPhoto();
     }
 
     /**
-     * Refresh the baked-patch count, bake pre-flight and export list from the
-     * server. `resync` also refetches the sim tiles when the server's sim
-     * version moved (an export or import that outlived its request finished
-     * in the background).
+     * Refresh the undo count and the photo's place from the server. `resync`
+     * also loads the pixels and the tiles again (the panel's Refresh: an
+     * import that outlived its request finished in the background).
      */
     async refreshInfo(opts: { resync?: boolean } = {}): Promise<void> {
         const ctx = this.ctx;
         if (!ctx) return;
         try {
-            const info = await this.patchesApi.orthoPatchesInfo({ courseId: ctx.courseId });
-            const moved = info.patchesGeneratedAt !== this.simGeneratedAt;
-            this.patchCount.set(info.count);
-            this.bakeable.set(info.bakeable);
-            this.stampBakeable.set(info.stampBakeable);
-            this.bakeReason.set(info.reason ?? null);
-            this.simGeneratedAt = info.patchesGeneratedAt;
-            this.exports.set(info.exports ?? []);
-            this.exportFrame.set(info.frame ?? null);
-            this.applyPhotoState();
-            if (opts.resync && moved) await ctx.tileset.refreshTiles(ctx.courseId);
+            const info = await this.photoApi.cleanedPhotoInfo({ courseId: ctx.courseId });
+            if (this.ctx !== ctx) return;
+            this.undoDepth.set(info.undoDepth);
+            this.photoExists.set(info.exists);
+            const b = info.bounds3006;
+            this.geo = b ? { west: b.west, north: b.north, res: (b.east - b.west) / info.size, size: info.size } : null;
+            if (!b) {
+                this.photo.set('error');
+                this.loadError.set(info.reason ?? "This course's map must be built before its photo can be cleaned.");
+            }
+            if (opts.resync && b) {
+                await this.settled();
+                if (this.ctx === ctx) await this.reloadPhoto(info.patchesGeneratedAt);
+            } else if (!this.engine) {
+                this.shownSimGeneratedAt = info.patchesGeneratedAt;
+                this.applyPhotoState();
+            }
         } catch {
-            // Patch info is decorative; the tool works without it.
+            // The tool says what is wrong when the pixels fail to load.
         }
     }
 
-    // ── Dual photo state ────────────────────────────────────────────────────
+    /** Load the photo's pixels into a fresh engine. */
+    private async loadPhoto(): Promise<void> {
+        const ctx = this.ctx;
+        if (!ctx || !this.geo || this.engine) return;
+        const engine = this.engines();
+        this.engine = engine;
+        this.ops = Promise.resolve();
+        this.photo.set('loading');
+        this.loadProgress.set(0);
+        this.loadError.set(null);
+        this.undoSteps.set(0);
+        this.redoSteps.set(0);
+        this.sessionSaved = false;
+        try {
+            await engine.load(cleanedPhotoPixelsUrl(ctx.courseId), f => {
+                if (this.engine === engine) this.loadProgress.set(f);
+            });
+            if (this.engine !== engine) return;
+            this.photoExists.set(true);
+            this.photo.set('ready');
+        } catch (err) {
+            if (this.engine !== engine) return;
+            engine.dispose();
+            this.engine = null;
+            this.photo.set('error');
+            this.loadError.set(`The photo could not be loaded: ${err instanceof Error ? err.message : String(err)}`);
+        }
+    }
 
-    /** Panel toggle: cleaned (sim) vs original photo while the tool is active. */
+    /** Retry after a failed load (panel button). */
+    retryLoad(): Promise<void> {
+        return this.open();
+    }
+
+    /** Drop the engine and its map layers. */
+    private closePhoto(): void {
+        this.engine?.dispose();
+        this.engine = null;
+        this.ops = Promise.resolve();
+        for (const view of this.blocks.values()) view.remove();
+        this.blocks.clear();
+        this.touched.clear();
+        this.photo.set('none');
+        this.working.set(false);
+        this.undoSteps.set(0);
+        this.redoSteps.set(0);
+        this.alignedOffset = null;
+    }
+
+    /** The photo file changed under the engine (server undo, import): show
+     * the new tiles and load the pixels again. */
+    private async reloadPhoto(generatedAt: string | null): Promise<void> {
+        const ctx = this.ctx;
+        if (!ctx) return;
+        this.closePhoto();
+        this.shownSimGeneratedAt = generatedAt;
+        this.applyPhotoState();
+        await ctx.tileset.refreshTiles(ctx.courseId);
+        await this.loadPhoto();
+    }
+
+    /** Panel toggle: cleaned vs original photo while the tool is active. */
     setShowCleaned(value: boolean): void {
         this.showCleaned.set(value);
         this.applyPhotoState();
+        if (!value) {
+            for (const view of this.blocks.values()) view.remove();
+            this.blocks.clear();
+            return;
+        }
+        // Put the session's changes back on the map.
+        const engine = this.engine;
+        const geo = this.geo;
+        if (!engine || !geo) return;
+        const B = CLEAN_BLOCK_PX;
+        for (const key of this.touched) {
+            const [bx, by] = key.split('/').map(Number);
+            const rect = { x: bx * B, y: by * B, w: Math.min(B, geo.size - bx * B), h: Math.min(B, geo.size - by * B) };
+            void this.enqueue(async () => {
+                const rgba = await engine.read(rect);
+                if (this.engine === engine) this.show({ rect, rgba });
+            });
+        }
     }
 
-    /** Point the live flat ortho source at the sim overlay or the pristine
+    /** Point the live flat ortho source at the cleaned layer or the pristine
      * tree per the toggle. Presentation only — never touches the pristine
      * version guard (see MapService.setOrthoPhotoState). */
     private applyPhotoState(): void {
@@ -552,64 +526,123 @@ export class CleanToolService {
         const pristine = ctx.tileset.tileVersion.peek();
         if (!pristine) return;
         if (this.showCleaned.peek()) {
-            ctx.map.setOrthoPhotoState('ortho-sim', this.simTileVersion(pristine));
+            ctx.map.setOrthoPhotoState('ortho-sim', this.shownSimGeneratedAt ? deriveTileVersion(this.shownSimGeneratedAt) : pristine);
         } else {
             ctx.map.setOrthoPhotoState('ortho', pristine);
         }
     }
 
-    /** The ortho-sim `?v=` — its own stamp once anything ever baked, else the
-     * pristine version (the sim route falls back per-tile anyway). */
-    private simTileVersion(pristineVersion: string): string {
-        return this.simGeneratedAt ? deriveTileVersion(this.simGeneratedAt) : pristineVersion;
+    /** Draw changed pixels on the map, block by block. */
+    private show(changed: Changed | null): void {
+        const ctx = this.ctx;
+        const geo = this.geo;
+        if (!changed || !ctx || !geo) return;
+        const B = CLEAN_BLOCK_PX;
+        const { rect, rgba } = changed;
+        for (let by = Math.floor(rect.y / B); by * B < rect.y + rect.h; by++) {
+            for (let bx = Math.floor(rect.x / B); bx * B < rect.x + rect.w; bx++) {
+                const key = `${bx}/${by}`;
+                this.touched.add(key);
+                if (!this.showCleaned.peek()) continue;
+                const x0 = Math.max(rect.x, bx * B);
+                const x1 = Math.min(rect.x + rect.w, (bx + 1) * B);
+                const y0 = Math.max(rect.y, by * B);
+                const y1 = Math.min(rect.y + rect.h, (by + 1) * B);
+                const w = x1 - x0;
+                const h = y1 - y0;
+                const patch = new Uint8ClampedArray(w * h * 4);
+                let any = false;
+                for (let y = y0; y < y1; y++) {
+                    const from = ((y - rect.y) * rect.w + (x0 - rect.x)) * 4;
+                    const row = rgba.subarray(from, from + w * 4);
+                    patch.set(row, (y - y0) * w * 4);
+                    if (!any) for (let i = 3; i < row.length; i += 4) if (row[i]) { any = true; break; }
+                }
+                let view = this.blocks.get(key);
+                if (!view) {
+                    // Nothing to show and no layer yet: leave the map alone.
+                    if (!any) continue;
+                    const corner = (px: number, py: number): [number, number] => {
+                        const p = this.toLngLat({ x: px, y: py });
+                        return [p.lng, p.lat];
+                    };
+                    const x = bx * B;
+                    const y = by * B;
+                    view = this.views(ctx.map, `clean-photo-${bx}-${by}`, B,
+                        [corner(x, y), corner(x + B, y), corner(x + B, y + B), corner(x, y + B)]);
+                    this.blocks.set(key, view);
+                }
+                view.put(patch, x0 - bx * B, y0 - by * B, w, h);
+            }
+        }
     }
 
-    // ── Click mode (SAM mask) ───────────────────────────────────────────────
+    private toPx(lngLat: { lng: number; lat: number }): Px {
+        const geo = this.geo!;
+        const s = lngLatToSweref99tm(lngLat);
+        return { x: (s.x - geo.west) / geo.res, y: (geo.north - s.y) / geo.res };
+    }
+
+    private toLngLat(p: Px): { lng: number; lat: number } {
+        const geo = this.geo!;
+        return sweref99tmToLngLat(geo.west + p.x * geo.res, geo.north - p.y * geo.res);
+    }
+
+    /** Queue an engine call behind the ones already made. Never rejects. */
+    private enqueue(fn: () => Promise<void>): Promise<void> {
+        this.ops = this.ops.then(fn).catch(err => {
+            this.notice.set(err instanceof Error ? err.message : String(err));
+        });
+        return this.ops;
+    }
+
+    // ── Saving ──────────────────────────────────────────────────────────────
+
+    /** Queue changed pixels for the photo file and start saving. */
+    private save(changed: Changed | null): void {
+        if (!changed) return;
+        this.saves.push(changed);
+        this.startSaving();
+    }
+
+    private startSaving(): void {
+        if (this.saving || this.saves.length === 0) return;
+        const courseId = this.courseId;
+        if (!courseId) return;
+        this.saveState.set('saving');
+        this.saveError.set(null);
+        this.saving = (async () => {
+            try {
+                while (this.saves.length > 0) {
+                    const result = await this.savePixels(courseId, this.saves[0], !this.sessionSaved);
+                    this.sessionSaved = true;
+                    this.saves.shift();
+                    this.undoDepth.set(result.undoDepth);
+                }
+                this.saveState.set('saved');
+            } catch (err) {
+                // The queue stays: the next stroke, or Retry, sends it again.
+                this.saveState.set('error');
+                this.saveError.set(`Saving failed: ${err instanceof Error ? err.message : String(err)}`);
+            } finally {
+                this.saving = null;
+            }
+        })();
+    }
+
+    /** Send what a failed save left behind (panel button). */
+    retrySave(): void {
+        this.startSaving();
+    }
+
+    // ── Pointer plumbing ────────────────────────────────────────────────────
 
     private onClick(e: MapPointerEvent): void {
         if (this.ctx?.map.interactionMode.peek() !== CLEAN_TOOL_ID) return;
-        if (this.mode.peek() !== 'click') return;
-        void this.clickAt(e.lngLat);
+        if (this.mode.peek() !== 'areas') return;
+        if (this.dragBinding?.clickSuppressed) return;
+        if (!e.originalEvent.ctrlKey && !e.originalEvent.metaKey) this.areas.addPoint(e.lngLat);
     }
-
-    /**
-     * The full click pipeline (public test seam, like SAM's segmentAt):
-     * SAM mask at the click → dilate → inpaint → preview. Returns true when
-     * a preview was produced.
-     */
-    async clickAt(lngLat: { lng: number; lat: number }): Promise<boolean> {
-        const gate = this.gate();
-        if (!gate) return false;
-        const plan = planCrop(lngLat.lng, lngLat.lat, gate.zoom, SAM_CROP_SIZE);
-        if (!plan) {
-            this.notice.set('That click is outside the tiled area.');
-            return false;
-        }
-
-        this.phase.set('working');
-        this.notice.set(null);
-        try {
-            const crop = await this.composeCrop(gate, plan);
-            const seg = await this.sam.segmentPoint(crop);
-            const polygon = largestPolygon(seg.polygons);
-            if (!polygon) {
-                this.notice.set('SAM found no object there — try the ellipse mode.');
-                this.phase.set('idle');
-                return false;
-            }
-            let mask = fillPolygonMask(plan.size, polygon);
-            const dilatePx = Math.max(1, Math.round(CLEAN_DILATE_M / groundMetersPerPixel(plan.zoom, lngLat.lat)));
-            mask = dilateMask(mask, plan.size, dilatePx);
-            return await this.runInpaint(plan, crop, mask, 'sam');
-        } catch {
-            this.notice.set('Sidecar request failed — check tools/sam-server.');
-            void this.checkHealth();
-            this.phase.set('idle');
-            return false;
-        }
-    }
-
-    // ── Raw pointer plumbing (ellipse drags + stamp strokes) ────────────────
 
     /**
      * Left press under the clean claim. Cmd/Ctrl-drag stays the pan escape:
@@ -618,267 +651,146 @@ export class CleanToolService {
     private onRawMouseDown(e: MapMouseEvent, map: MaplibreMap): void {
         const mode = this.mode.peek();
         const p = { lng: e.lngLat.lng, lat: e.lngLat.lat };
-
-        if (mode === 'stamp') {
-            if (e.originalEvent.altKey) {
-                e.preventDefault();
-                this.pickSource(p);
-                return;
-            }
-            if (e.originalEvent.shiftKey && this.lastDab) {
-                e.preventDefault();
-                void this.strokeLine(this.lastDab, p);
-                return;
-            }
-            if (this.phase.peek() !== 'idle') return;
-            this.dragBinding?.claim(e, map);
-            this.strokeInit = this.beginStroke(p);
+        if (mode === 'areas') {
+            if (this.areas.pointerDown(e)) this.dragBinding?.claim(e, map);
             return;
         }
-
-        if (mode !== 'ellipse') return;
-        if (this.phase.peek() !== 'idle') return;
+        if (e.originalEvent.altKey && isLive(mode)) {
+            e.preventDefault();
+            this.pickSource(p);
+            return;
+        }
+        if (e.originalEvent.shiftKey && this.lastDab) {
+            e.preventDefault();
+            void this.strokeLine(this.lastDab, p);
+            return;
+        }
         this.dragBinding?.claim(e, map);
-        this.drag = { start: p, current: p };
+        this.beginStroke(p);
     }
 
     private onMouseMove(e: MapPointerEvent): void {
         if (this.ctx?.map.interactionMode.peek() !== CLEAN_TOOL_ID) return;
-        if (this.drag) {
-            this.drag.current = e.lngLat;
-            this.updateEllipseOverlay();
-            return;
-        }
+        if (this.mode.peek() === 'areas') { this.areas.pointerMove(e); return; }
+        if (!this.geo) return;
         if (this.stroke) this.extendStroke(e.lngLat);
+        this.hover = this.toPx(e.lngLat);
+        this.scheduleFrame();
     }
 
     private onRawMouseUp(map: MaplibreMap): void {
-        if (this.strokeInit || this.stroke) {
-            this.releasePan(map);
-            void this.endStroke();
-            return;
-        }
-        const drag = this.drag;
-        if (!drag) return;
-        this.drag = null;
+        if (this.mode.peek() === 'areas') return;
+        // Also a press that started no stroke (no source yet) claimed the pan.
         this.releasePan(map);
-        this.removeEllipseOverlay();
-        void this.finishEllipse(drag.start, drag.current);
-    }
-
-    private cancelDrag(): void {
-        if (!this.drag) return;
-        this.drag = null;
-        this.removeEllipseOverlay();
-        this.releasePan();
+        void this.endStroke();
     }
 
     private releasePan(map?: MaplibreMap): void {
         this.dragBinding?.release(map);
     }
 
-    // ── Ellipse mode (SAM-free mask) ────────────────────────────────────────
+    // ── Strokes ─────────────────────────────────────────────────────────────
 
-    /**
-     * Finish an ellipse drag `a`→`b` (opposite bbox corners): rasterize the
-     * ellipse into the crop mask and inpaint. Public test seam. Returns true
-     * when a preview was produced.
-     */
-    async finishEllipse(a: { lng: number; lat: number }, b: { lng: number; lat: number }): Promise<boolean> {
-        const gate = this.gate();
-        if (!gate) return false;
-
-        const ma = lngLatToMercator(a);
-        const mb = lngLatToMercator(b);
-        const cosLat = Math.cos((((a.lat + b.lat) / 2) * Math.PI) / 180);
-        const rxGround = (Math.abs(mb.x - ma.x) / 2) * cosLat;
-        const ryGround = (Math.abs(mb.y - ma.y) / 2) * cosLat;
-        if (rxGround < CLEAN_MIN_ELLIPSE_M || ryGround < CLEAN_MIN_ELLIPSE_M) {
-            return false; // accidental micro-drag — decay silently
-        }
-
-        const center = mercatorToLngLat((ma.x + mb.x) / 2, (ma.y + mb.y) / 2);
-        const plan = planCrop(center.lng, center.lat, gate.zoom, SAM_CROP_SIZE);
-        if (!plan) {
-            this.notice.set('That area is outside the tiled area.');
-            return false;
-        }
-        const mpp = mercatorMetersPerPixel(plan.zoom, plan.tileSize);
-        const c = mercatorToCropPixel(plan, (ma.x + mb.x) / 2, (ma.y + mb.y) / 2);
-        const rxPx = Math.min(plan.size / 2 - 1, Math.abs(mb.x - ma.x) / 2 / mpp);
-        const ryPx = Math.min(plan.size / 2 - 1, Math.abs(mb.y - ma.y) / 2 / mpp);
-        const mask = fillEllipseMask(plan.size, c.px, c.py, rxPx, ryPx);
-        if (maskArea(mask) === 0) return false;
-
-        this.phase.set('working');
-        this.notice.set(null);
-        try {
-            const crop = await this.composeCrop(gate, plan);
-            return await this.runInpaint(plan, crop, mask, 'ellipse');
-        } catch {
-            this.notice.set('Sidecar request failed — check tools/sam-server.');
-            void this.checkHealth();
-            this.phase.set('idle');
-            return false;
-        }
-    }
-
-    private updateEllipseOverlay(): void {
-        const ctx = this.ctx;
-        const drag = this.drag;
-        if (!ctx || !drag) return;
-        const ring = ellipseRingLngLat(drag.start, drag.current);
-        const data: GeoJSON = {
-            type: 'Feature',
-            properties: {},
-            geometry: { type: 'Polygon', coordinates: [ring] },
-        };
-        try {
-            if (this.ellipseOverlayLive) {
-                ctx.map.updateOverlayData(CLEAN_ELLIPSE_OVERLAY_ID, data);
-            } else {
-                ctx.map.addOverlayLayer(CLEAN_ELLIPSE_OVERLAY_ID, data, [{
-                    id: `${CLEAN_ELLIPSE_OVERLAY_ID}-line`,
-                    type: 'line',
-                    paint: { 'line-color': '#f5c542', 'line-width': 2, 'line-dasharray': [2, 2] },
-                }]);
-                this.ellipseOverlayLive = true;
-            }
-        } catch {
-            // Map mid-teardown — the outline is decorative.
-        }
-    }
-
-    private removeEllipseOverlay(): void {
-        if (!this.ellipseOverlayLive) return;
-        this.ellipseOverlayLive = false;
-        this.ctx?.map.removeOverlayLayer(CLEAN_ELLIPSE_OVERLAY_ID);
-    }
-
-    // ── Stamp mode (clone brush — no sidecar involved) ──────────────────────
-
-    /** Alt-click: pick the clone source. Resets any aligned offset — the
-     * next stroke re-establishes it from this source. Public test seam. */
+    /** Alt-click: pick the clone source. Resets the aligned offset: the
+     * next stroke sets it from this source. Public test seam. */
     pickSource(lngLat: { lng: number; lat: number }): void {
-        this.source = {
-            lngLat,
-            sweref: lngLatToSweref99tm(lngLat),
-            merc: lngLatToMercator(lngLat),
-        };
+        if (!this.geo) return;
+        this.source = this.toPx(lngLat);
         this.alignedOffset = null;
         this.lastDab = null;
-        this.hasStampSource.set(true);
+        this.hasSource.set(true);
         this.notice.set(null);
-        this.updateSourceOverlay(this.source.merc);
+        this.updateRings();
+    }
+
+    /** PhotoCraft's brush params for a stroke of `tool` starting at `start`. */
+    private brushParams(tool: RetouchTool, start: Px): Record<string, unknown> {
+        const geo = this.geo!;
+        const params: Record<string, unknown> = {
+            points: [[start.x, start.y]],
+            size: Math.max(1, Math.round(this.brushSizeM.peek() / geo.res)),
+            hardness: Math.round(this.brushHardness.peek() * 100),
+        };
+        if (!isLive(tool)) return params;
+        params.opacity = Math.max(1, Math.round(this.brushOpacity.peek() * 100));
+        params.flow = Math.max(1, Math.round(this.brushFlow.peek() * 100));
+        const aligned = this.cloneAligned.peek();
+        params.aligned = aligned;
+        if (aligned && this.alignedOffset) params.offset = this.alignedOffset;
+        else params.source = [this.source!.x, this.source!.y];
+        return params;
     }
 
     /**
-     * Start a clone stroke at `lngLat` (public test seam — the raw mousedown
-     * handler drives this). Establishes the stroke offset per the aligned
-     * semantics, finds/creates the preview surface (composing its tile crop
-     * on first use), and paints the first dab. Returns false (with a notice)
-     * when no source is picked or the spot is outside the tiled area.
+     * Start a stroke of the current tool at `lngLat` (public test seam: the
+     * raw mousedown handler drives this). Returns false, with a notice, when
+     * the photo is not ready, a fill is still computing, or the tool needs a
+     * source and none is picked.
      */
-    async beginStroke(lngLat: { lng: number; lat: number }): Promise<boolean> {
-        const token = ++this.strokeSeq;
-        const gate = this.stampGate();
-        if (!gate) return false;
-        if (!this.source) {
-            this.notice.set('Alt-click the photo to pick a clone source first.');
+    beginStroke(lngLat: { lng: number; lat: number }): boolean {
+        if (this.stroke) void this.endStroke();
+        const mode = this.mode.peek();
+        const engine = this.engine;
+        if (mode === 'areas' || !this.ctx) return false;
+        if (!engine || !this.geo || this.photo.peek() !== 'ready') {
+            this.notice.set(this.photo.peek() === 'loading' ? 'The photo is still loading.' : this.loadError.peek());
             return false;
         }
-        const destSweref = lngLatToSweref99tm(lngLat);
-        const destMerc = lngLatToMercator(lngLat);
-
-        let offsetM: { dx: number; dy: number };
-        let offsetMerc: { dx: number; dy: number };
-        if (this.stampAligned.peek() && this.alignedOffset) {
-            offsetM = this.alignedOffset.m;
-            offsetMerc = this.alignedOffset.merc;
-        } else {
-            offsetM = { dx: this.source.sweref.x - destSweref.x, dy: this.source.sweref.y - destSweref.y };
-            offsetMerc = { dx: this.source.merc.x - destMerc.x, dy: this.source.merc.y - destMerc.y };
-            if (this.stampAligned.peek()) this.alignedOffset = { m: offsetM, merc: offsetMerc };
+        if (this.phase.peek() !== 'idle' || this.working.peek()) return false;
+        if (isLive(mode) && !this.source) {
+            this.notice.set('Alt-click the photo to pick a source first.');
+            return false;
         }
-
-        const surface = await this.surfaceFor(destMerc, offsetMerc, gate.zoom, gate);
-        // A cancel or a newer stroke started while the crop composed.
-        if (token !== this.strokeSeq) return false;
-        if (!surface) return false;
-
-        const start = mercatorToCropPixel(surface.plan, destMerc.x, destMerc.y);
-        const mpp = mercatorMetersPerPixel(surface.plan.zoom, surface.plan.tileSize);
-        const radiusPx = (this.stampSizeM.peek() / 2) / groundMetersPerPixel(surface.plan.zoom, lngLat.lat);
-        const brush = {
-            sizeM: this.stampSizeM.peek(),
-            opacity: this.stampOpacity.peek(),
-            flow: this.stampFlow.peek(),
-            hardness: this.stampHardness.peek(),
+        const start = this.toPx(lngLat);
+        const stroke: ActiveStroke = {
+            tool: mode,
+            points: [start],
+            sent: 1,
+            params: this.brushParams(mode, start),
+            lngLats: [[lngLat.lng, lngLat.lat]],
+            last: lngLat,
         };
-        const toneMatch = this.stampToneMatch.peek();
-        // Screen y grows south; mercator y grows north.
-        const offsetPx = { dx: offsetMerc.dx / mpp, dy: -offsetMerc.dy / mpp };
-        const workBase = surface.work.slice();
-        const live = new IncrementalStampStroke(workBase, surface.work, surface.plan.size, {
-            offsetPx,
-            radiusPx,
-            opacity: brush.opacity,
-            flow: brush.flow,
-            hardness: brush.hardness,
-            toneMatch,
-        });
-        live.add({ x: start.px, y: start.py });
-        this.stroke = {
-            surface,
-            workBase,
-            live,
-            dirty: true,
-            ringMerc: null,
-            pathSweref: [destSweref],
-            pathMerc: [destMerc],
-            offsetM,
-            offsetMerc,
-            offsetPx,
-            radiusPx,
-            lastLngLat: lngLat,
-            brush,
-            toneMatch,
-            aligned: this.stampAligned.peek(),
-        };
+        this.stroke = stroke;
+        this.hover = start;
         this.notice.set(null);
-        // The first dab shows right away (a click is feedback); moves after
-        // it coalesce to one paint per frame.
-        this.paintLiveStroke();
+        if (isLive(mode)) {
+            // The first dab shows on the press.
+            void this.enqueue(async () => {
+                const changed = await engine.begin(COMMAND[mode], stroke.params);
+                if (this.engine === engine) this.show(changed);
+            });
+        } else {
+            this.updateStrokeOverlay(stroke);
+        }
+        this.updateRings();
         return true;
     }
 
-    /** Extend the live stroke to `lngLat` (mouse move / test seam). Points
-     * are sampled at a minimum surface-pixel spacing. */
+    /** Extend the live stroke to `lngLat` (mouse move / test seam). */
     extendStroke(lngLat: { lng: number; lat: number }): void {
         const stroke = this.stroke;
-        if (!stroke) return;
-        const points = stroke.live.points;
-        if (points.length >= STAMP_MAX_PATH_POINTS) return;
-        const merc = lngLatToMercator(lngLat);
-        const px = mercatorToCropPixel(stroke.surface.plan, merc.x, merc.y);
-        const last = points[points.length - 1];
-        if (Math.hypot(px.px - last.x, px.py - last.y) < STAMP_SAMPLE_PX) return;
-        stroke.live.add({ x: px.px, y: px.py });
-        stroke.pathSweref.push(lngLatToSweref99tm(lngLat));
-        stroke.pathMerc.push(merc);
-        stroke.lastLngLat = lngLat;
-        stroke.dirty = true;
-        // The source ring follows the brush at the stroke's offset.
-        stroke.ringMerc = { x: merc.x + stroke.offsetMerc.dx, y: merc.y + stroke.offsetMerc.dy };
+        if (!stroke || !this.geo) return;
+        const p = this.toPx(lngLat);
+        const last = stroke.points[stroke.points.length - 1];
+        if (Math.hypot(p.x - last.x, p.y - last.y) < STROKE_SAMPLE_PX) return;
+        stroke.points.push(p);
+        stroke.lngLats.push([lngLat.lng, lngLat.lat]);
+        stroke.last = lngLat;
+        this.hover = p;
         this.scheduleFrame();
     }
 
-    /** Ask for one paint on the next animation frame (no-op if pending). */
+    /** One update on the next animation frame (no-op if pending). */
     private scheduleFrame(): void {
         if (this.frame !== null) return;
         this.frame = this.frames.request(() => {
             this.frame = null;
-            this.paintLiveStroke();
+            const stroke = this.stroke;
+            if (stroke) {
+                if (isLive(stroke.tool)) this.pump(stroke);
+                else this.updateStrokeOverlay(stroke);
+            }
+            this.updateRings();
         });
     }
 
@@ -888,93 +800,78 @@ export class CleanToolService {
         this.frame = null;
     }
 
-    /** Paint the dabs added since the last paint and push the changed
-     * rectangle to the surface view; move the source ring. */
-    private paintLiveStroke(): void {
-        const stroke = this.stroke;
-        if (!stroke) return;
-        if (stroke.dirty) {
-            stroke.dirty = false;
-            const rect = stroke.live.flush();
-            if (rect) this.drawSurface(stroke.surface, rect);
-        }
-        if (stroke.ringMerc) {
-            this.updateSourceOverlay(stroke.ringMerc);
-            stroke.ringMerc = null;
-        }
+    /** Send the points the engine has not seen. One batch is on its way at
+     * a time; what arrives meanwhile goes in the next. */
+    private pump(stroke: ActiveStroke): void {
+        const engine = this.engine;
+        if (!engine || this.pumping || stroke.sent >= stroke.points.length) return;
+        const batch = stroke.points.slice(stroke.sent).map(p => [p.x, p.y]);
+        stroke.sent = stroke.points.length;
+        this.pumping = true;
+        void this.enqueue(async () => {
+            try {
+                const changed = await engine.push(batch);
+                if (this.engine === engine) this.show(changed);
+            } finally {
+                this.pumping = false;
+            }
+            if (this.stroke === stroke) this.pump(stroke);
+        });
     }
 
     /**
-     * Finish the live stroke: it becomes a PENDING edit (queued for the next
-     * batch bake) and its render is committed to the surface. Public seam.
-     * A stroke that never moved is a single dab. Returns true when an edit
-     * was queued.
+     * Finish the stroke: the engine commits it as one undo step and the
+     * changed pixels go to the photo file. Public seam. Resolves true when
+     * the stroke changed the photo.
      */
     async endStroke(): Promise<boolean> {
-        if (this.strokeInit) {
-            const init = this.strokeInit;
-            const token = this.strokeSeq;
-            this.strokeInit = null;
-            if (!(await init)) return false;
-            // Cancelled or superseded while the init was in flight.
-            if (token !== this.strokeSeq) return false;
-        }
         const stroke = this.stroke;
-        if (!stroke) return false;
-        // Paint whatever the pending frame would have, synchronously: the
-        // committed surface must carry the whole stroke.
-        this.cancelFrame();
-        this.paintLiveStroke();
+        const engine = this.engine;
+        if (!stroke || !engine) return false;
         this.stroke = null;
-        const pathPx = stroke.live.points.slice();
+        this.cancelFrame();
+        this.lastDab = stroke.last;
+        const tool = stroke.tool;
+        let done = false;
+        if (isLive(tool)) {
+            const rest = stroke.points.slice(stroke.sent).map(p => [p.x, p.y]);
+            stroke.sent = stroke.points.length;
+            await this.enqueue(async () => {
+                if (rest.length > 0) await engine.push(rest);
+                const out = await engine.end();
+                if (this.engine !== engine) return;
+                if (this.cloneAligned.peek() && out.offset) this.alignedOffset = out.offset;
+                done = this.committed(out.changed);
+            });
+        } else {
+            this.working.set(true);
+            await this.enqueue(async () => {
+                try {
+                    const out = await engine.run(COMMAND[tool], { ...stroke.params, points: stroke.points.map(p => [p.x, p.y]) });
+                    if (this.engine === engine) done = this.committed(out.changed);
+                } finally {
+                    this.working.set(false);
+                    this.removeStrokeOverlay();
+                }
+            });
+        }
+        this.updateRings();
+        return done;
+    }
 
-        const rM = stroke.brush.sizeM / 2;
-        const lat = stroke.lastLngLat.lat;
-        const rMerc = rM / Math.cos((lat * Math.PI) / 180);
-        const xs = stroke.pathMerc.map(p => p.x);
-        const ys = stroke.pathMerc.map(p => p.y);
-        const sx = stroke.pathSweref.map(p => p.x);
-        const sy = stroke.pathSweref.map(p => p.y);
-        const edit: PendingStampEdit = {
-            kind: 'stamp',
-            brush: stroke.brush,
-            offsetM: stroke.offsetM,
-            path: stroke.pathSweref,
-            aligned: stroke.aligned,
-            toneMatch: stroke.toneMatch,
-            bounds3857: {
-                west: Math.min(...xs) - rMerc,
-                south: Math.min(...ys) - rMerc,
-                east: Math.max(...xs) + rMerc,
-                north: Math.max(...ys) + rMerc,
-            },
-            boundsSweref: {
-                west: Math.min(...sx) - rM,
-                south: Math.min(...sy) - rM,
-                east: Math.max(...sx) + rM,
-                north: Math.max(...sy) + rM,
-            },
-            surfaceId: stroke.surface.id,
-            pathPx,
-            offsetPx: stroke.offsetPx,
-            radiusPx: stroke.radiusPx,
-        };
-        this.pending.push(edit);
-        this.pendingCount.set(this.pending.length);
-        this.lastDab = stroke.lastLngLat;
-        // surface.work already carries the stroke (the live painter writes
-        // it in place). Rest the source ring per the aligned semantics.
-        const rest = stroke.aligned
-            ? { x: lngLatToMercator(stroke.lastLngLat).x + stroke.offsetMerc.dx, y: lngLatToMercator(stroke.lastLngLat).y + stroke.offsetMerc.dy }
-            : this.source?.merc;
-        if (rest) this.updateSourceOverlay(rest);
+    /** A command went into the history: show it, count it, save it. */
+    private committed(changed: Changed | null): boolean {
+        this.show(changed);
+        if (!changed) return false;
+        this.undoSteps.set(this.undoSteps.peek() + 1);
+        this.redoSteps.set(0);
+        this.save(changed);
         return true;
     }
 
-    /** Shift-click: one straight-line stroke from the last dab to `to`. */
+    /** Shift-click: one straight stroke from the last dab to `to`. */
     async strokeLine(from: { lng: number; lat: number }, to: { lng: number; lat: number }): Promise<boolean> {
-        if (!(await this.beginStroke(from))) return false;
-        // Sample the straight segment densely enough for the px sampler.
+        if (!this.beginStroke(from)) return false;
         const steps = 64;
         for (let i = 1; i <= steps; i++) {
             this.extendStroke({
@@ -985,414 +882,185 @@ export class CleanToolService {
         return this.endStroke();
     }
 
-    /** Cancel the live stroke (ESC / teardown): restore the surface. */
+    /** Cancel the stroke being drawn (ESC / teardown): nothing changes. */
     private cancelStroke(): void {
-        // Invalidate any in-flight beginStroke / endStroke await.
-        this.strokeSeq++;
-        this.strokeInit = null;
-        this.cancelFrame();
         const stroke = this.stroke;
         if (!stroke) return;
         this.stroke = null;
-        stroke.surface.work = stroke.workBase;
-        this.drawSurface(stroke.surface, null);
+        this.cancelFrame();
+        this.removeStrokeOverlay();
         this.releasePan();
-        if (this.source) this.updateSourceOverlay(this.source.merc);
+        const engine = this.engine;
+        if (engine && isLive(stroke.tool)) {
+            void this.enqueue(async () => {
+                const changed = await engine.cancel();
+                if (this.engine === engine) this.show(changed);
+            });
+        }
+        this.updateRings();
     }
 
-    /** [ / ] brush resize. */
+    /** Step back in this session's strokes (Ctrl+Z). */
+    undoStroke(): Promise<void> {
+        return this.step('undo');
+    }
+
+    /** Step forward again (Ctrl+Shift+Z). */
+    redoStroke(): Promise<void> {
+        return this.step('redo');
+    }
+
+    private step(dir: 'undo' | 'redo'): Promise<void> {
+        const engine = this.engine;
+        const steps = dir === 'undo' ? this.undoSteps : this.redoSteps;
+        const other = dir === 'undo' ? this.redoSteps : this.undoSteps;
+        if (!engine || this.stroke || this.working.peek() || this.phase.peek() !== 'idle' || steps.peek() === 0) return Promise.resolve();
+        // Counted now, so a second Ctrl+Z before the first returns still works.
+        steps.set(steps.peek() - 1);
+        other.set(other.peek() + 1);
+        return this.enqueue(async () => {
+            const changed = dir === 'undo' ? await engine.undo() : await engine.redo();
+            if (this.engine !== engine) return;
+            this.show(changed);
+            this.save(changed);
+        });
+    }
+
     private onKeyDown(e: KeyboardEvent): void {
-        if (this.mode.peek() !== 'stamp') return;
-        const target = e.target as HTMLElement | null;
-        if (target && /^(INPUT|TEXTAREA|SELECT)$/.test(target.tagName)) return;
+        const typing = e.target as HTMLElement | null;
+        if (typing && (typing.isContentEditable || /^(INPUT|TEXTAREA|SELECT|BUTTON)$/.test(typing.tagName))) return;
+        if (this.mode.peek() === 'areas') {
+            if (!this.areas.kind.peek()) return;
+            if (e.key === 'Enter') { e.preventDefault(); void this.areas.finish(); }
+            if (e.key === 'Backspace') { e.preventDefault(); this.areas.back(); }
+            return;
+        }
+        if ((e.ctrlKey || e.metaKey) && !e.altKey && (e.key === 'z' || e.key === 'Z' || e.key === 'y')) {
+            e.preventDefault();
+            e.stopPropagation();
+            void (e.key === 'y' || e.shiftKey ? this.redoStroke() : this.undoStroke());
+            return;
+        }
         if (e.key !== '[' && e.key !== ']') return;
         e.preventDefault();
-        const factor = e.key === ']' ? STAMP_SIZE_STEP : 1 / STAMP_SIZE_STEP;
-        this.stampSizeM.set(Math.min(STAMP_SIZE_MAX_M, Math.max(STAMP_SIZE_MIN_M, this.stampSizeM.peek() * factor)));
+        const factor = e.key === ']' ? BRUSH_SIZE_STEP : 1 / BRUSH_SIZE_STEP;
+        this.brushSizeM.set(Math.min(BRUSH_SIZE_MAX_M, Math.max(BRUSH_SIZE_MIN_M, this.brushSizeM.peek() * factor)));
+        this.updateRings();
     }
 
-    /** Find the surface whose crop contains the stroke start, or compose a
-     * new one centered between source and dest (both usually fit then). */
-    private async surfaceFor(
-        destMerc: { x: number; y: number },
-        offsetMerc: { dx: number; dy: number },
-        zoom: number,
-        gate: { mapKey: string; version: string },
-    ): Promise<StampSurface | null> {
-        for (const surface of this.surfaces) {
-            const p = mercatorToCropPixel(surface.plan, destMerc.x, destMerc.y);
-            if (p.px >= 0 && p.py >= 0 && p.px < surface.plan.size && p.py < surface.plan.size) {
-                return surface;
-            }
+    // ── Rings and the stroke band ───────────────────────────────────────────
+
+    /**
+     * The brush rings: the brush under the pointer and, for the tools with a
+     * source, where it copies from. The source ring rides beside the brush
+     * once an offset is set (aligned strokes after the first), else it marks
+     * the picked source.
+     */
+    private updateRings(): void {
+        const mode = this.mode.peek();
+        if (mode === 'areas' || !this.geo) return;
+        const hover = this.hover;
+        if (hover) this.setRing(CLEAN_BRUSH_OVERLAY_ID, hover);
+        if (!isLive(mode)) {
+            this.removeRing(CLEAN_SOURCE_OVERLAY_ID);
+            return;
         }
-        const center = mercatorToLngLat(destMerc.x + offsetMerc.dx / 2, destMerc.y + offsetMerc.dy / 2);
-        const plan = planCrop(center.lng, center.lat, zoom, SAM_CROP_SIZE);
-        if (!plan) {
-            this.notice.set('That area is outside the tiled area.');
-            return null;
-        }
-        const template = this.orthoTemplate(gate);
-        const base = await this.imaging.composeCropPixels(cropTiles(plan, template), plan.size);
-        const surface: StampSurface = {
-            id: `clean-stamp-${++this.overlaySeq}`,
-            plan,
-            base: base.slice(),
-            work: base,
-            view: null,
-        };
-        this.surfaces.push(surface);
-        return surface;
+        const offset = this.cloneAligned.peek() ? this.alignedOffset : null;
+        if (hover && offset) this.setRing(CLEAN_SOURCE_OVERLAY_ID, { x: hover.x + offset[0], y: hover.y + offset[1] });
+        else if (this.source) this.setRing(CLEAN_SOURCE_OVERLAY_ID, this.source);
     }
 
-    /** Push `surface.work` to the surface's map view (created on first
-     * use, then updated in place). `rect` null copies the whole surface. */
-    private drawSurface(surface: StampSurface, rect: PxRect | null): void {
+    /** Show ring overlay `id` (brush-sized) centred on photo pixel `center`. */
+    private setRing(id: string, center: Px): void {
         const ctx = this.ctx;
-        if (!ctx) return;
-        if (!surface.view) {
-            const corner = (px: number, py: number): [number, number] => {
-                const p = cropPixelToLngLat(surface.plan, px, py);
-                return [p.lng, p.lat];
-            };
-            const size = surface.plan.size;
-            surface.view = this.views(ctx.map, surface.id, size,
-                [corner(0, 0), corner(size, 0), corner(size, size), corner(0, size)]);
-            rect = null;
-        }
-        surface.view.draw(surface.work, rect);
-    }
-
-    /** The clone-source ring marker (follows the brush during a stroke). */
-    private updateSourceOverlay(centerMerc: { x: number; y: number }): void {
-        const ctx = this.ctx;
-        if (!ctx) return;
-        const lat = mercatorToLngLat(centerMerc.x, centerMerc.y).lat;
-        const rMerc = (this.stampSizeM.peek() / 2) / Math.cos((lat * Math.PI) / 180);
+        const geo = this.geo;
+        if (!ctx || !geo) return;
+        const r = this.brushSizeM.peek() / 2 / geo.res;
         const ring: Array<[number, number]> = [];
         for (let i = 0; i <= 48; i++) {
             const t = (i / 48) * 2 * Math.PI;
-            const p = mercatorToLngLat(centerMerc.x + rMerc * Math.cos(t), centerMerc.y + rMerc * Math.sin(t));
+            const p = this.toLngLat({ x: center.x + r * Math.cos(t), y: center.y + r * Math.sin(t) });
             ring.push([p.lng, p.lat]);
         }
-        const data: GeoJSON = {
-            type: 'Feature',
-            properties: {},
-            geometry: { type: 'Polygon', coordinates: [ring] },
-        };
+        const data: GeoJSON = { type: 'Feature', properties: {}, geometry: { type: 'Polygon', coordinates: [ring] } };
         try {
-            if (this.sourceOverlayLive) {
-                ctx.map.updateOverlayData(CLEAN_SOURCE_OVERLAY_ID, data);
+            if (this.rings.has(id)) {
+                ctx.map.updateOverlayData(id, data);
             } else {
-                ctx.map.addOverlayLayer(CLEAN_SOURCE_OVERLAY_ID, data, [{
-                    id: `${CLEAN_SOURCE_OVERLAY_ID}-line`,
+                ctx.map.addOverlayLayer(id, data, [{
+                    id: `${id}-line`,
                     type: 'line',
-                    paint: { 'line-color': '#7dd3fc', 'line-width': 2 },
+                    paint: { 'line-color': id === CLEAN_BRUSH_OVERLAY_ID ? '#ffffff' : '#7dd3fc', 'line-width': 2 },
                 }]);
-                this.sourceOverlayLive = true;
+                this.rings.add(id);
             }
         } catch {
-            // Map mid-teardown — the marker is decorative.
+            // Map mid-teardown: the marker is decorative.
         }
     }
 
-    private removeSourceOverlay(): void {
-        if (!this.sourceOverlayLive) return;
-        this.sourceOverlayLive = false;
-        this.ctx?.map.removeOverlayLayer(CLEAN_SOURCE_OVERLAY_ID);
+    private removeRing(id: string): void {
+        if (!this.rings.delete(id)) return;
+        this.ctx?.map.removeOverlayLayer(id);
     }
 
-    // ── Shared inpaint → candidate preview path (mask modes) ────────────────
-
-    /** Common preconditions; null (with notice) when cleaning can't start. */
-    private gate(): { ctx: ToolContext; mapKey: string; version: string; zoom: number } | null {
-        const base = this.baseGate();
-        if (!base) return null;
-        if (this.health.peek() !== 'online' || !this.inpaintReady.peek()) {
-            this.notice.set(this.health.peek() !== 'online'
-                ? 'Assist sidecar is offline — start tools/sam-server and retry.'
-                : `Inpainting unavailable on the sidecar${this.healthDetail.peek() ? ` (${this.healthDetail.peek()})` : ''}.`);
-            return null;
-        }
-        return base;
-    }
-
-    /** Stamp preconditions — like gate() but WITHOUT the sidecar (cloning is
-     * local math + a server-side pixel bake; SAM/LaMa are never involved). */
-    private stampGate(): { ctx: ToolContext; mapKey: string; version: string; zoom: number } | null {
-        return this.baseGate();
-    }
-
-    private baseGate(): { ctx: ToolContext; mapKey: string; version: string; zoom: number } | null {
-        const ctx = this.ctx;
-        if (!ctx || this.phase.peek() === 'working' || this.phase.peek() === 'applying') return null;
-        if (this.phase.peek() === 'preview') {
-            this.notice.set('Accept or discard the current preview first.');
-            return null;
-        }
-        const manifest = ctx.tileset.manifest.peek();
-        const mapKey = ctx.tileset.mapKey.peek();
-        const version = ctx.tileset.tileVersion.peek();
-        if (!manifest || !mapKey || !version) {
-            this.notice.set('No ortho tiles for this course — build the map first.');
-            return null;
-        }
-        return { ctx, mapKey, version, zoom: manifest.layers.ortho.maxzoom };
-    }
-
-    /** Crops always compose from the SIM layer (per-tile pristine fallback):
-     * cleaning is cumulative on the cleaned photo, and the bake executes
-     * against the same evolving raster state. */
-    private orthoTemplate(gate: { mapKey: string; version: string }): string {
-        return tileUrlTemplate(gate.mapKey, 'ortho-sim', 'jpg', this.simTileVersion(gate.version));
-    }
-
-    private composeCrop(
-        gate: { mapKey: string; version: string },
-        plan: CropPlan,
-    ): Promise<string> {
-        const template = this.orthoTemplate(gate);
-        return this.imaging.composeCropPng(cropTiles(plan, template), plan.size);
-    }
-
-    private async runInpaint(plan: CropPlan, cropBase64: string, mask: Uint8Array, tool: string): Promise<boolean> {
-        const pixels = maskArea(mask);
-        if (pixels === 0) {
-            this.notice.set('The mask came out empty — nothing to clean.');
-            this.phase.set('idle');
-            return false;
-        }
-        const maskPng = await this.imaging.encodeMaskPng(mask, plan.size);
-        const resultBase64 = await this.client.inpaint(cropBase64, maskPng);
-        this.preview = { plan, mask, maskPngBase64: maskPng, resultBase64, tool, maskPixels: pixels };
-        this.addPreviewOverlay(CLEAN_PREVIEW_OVERLAY_ID, plan, resultBase64);
-        this.phase.set('preview');
-        return true;
-    }
-
-    private addPreviewOverlay(id: string, plan: CropPlan, resultBase64: string): void {
+    /** The red band of a spot heal or a removal while it is drawn (and while
+     * it computes): the stroke at brush width. */
+    private updateStrokeOverlay(stroke: ActiveStroke): void {
         const ctx = this.ctx;
         if (!ctx) return;
-        const corner = (px: number, py: number): [number, number] => {
-            const p = cropPixelToLngLat(plan, px, py);
-            return [p.lng, p.lat];
-        };
+        const first = stroke.lngLats[0];
+        const pts = stroke.lngLats.length > 1 ? stroke.lngLats : [first, [first[0] + 1e-9, first[1]] as [number, number]];
+        const data: GeoJSON = { type: 'Feature', properties: {}, geometry: { type: 'LineString', coordinates: pts } };
+        // Brush width in screen pixels at this zoom (512 px world tiles).
+        const zoom = (ctx.map.map.peek() as MaplibreMap | null)?.getZoom?.() ?? 18;
+        const metresPerPx = (40075016.686 * Math.cos((stroke.last.lat * Math.PI) / 180)) / (512 * 2 ** zoom);
+        const width = Math.max(2, this.brushSizeM.peek() / metresPerPx);
         try {
-            ctx.map.removeOverlayLayer(id);
-            ctx.map.addImageOverlay(
-                id,
-                `data:image/png;base64,${resultBase64}`,
-                [corner(0, 0), corner(plan.size, 0), corner(plan.size, plan.size), corner(0, plan.size)],
-                // Below the feature fills: the preview replaces PHOTO pixels
-                // only — water/bunker tints must stay visible across it.
-                { beforeId: 'features-fill' },
-            );
-        } catch {
-            // Map not ready (teardown race) — accept still works; the
-            // preview just isn't visible.
-        }
-    }
-
-    private removePreviewOverlay(): void {
-        this.ctx?.map.removeOverlayLayer(CLEAN_PREVIEW_OVERLAY_ID);
-    }
-
-    /** Discard the candidate preview: overlay gone, nothing stored anywhere. */
-    discard(): void {
-        if (this.phase.peek() !== 'preview') return;
-        this.removePreviewOverlay();
-        this.preview = null;
-        this.phase.set('idle');
-        this.notice.set(null);
-    }
-
-    /**
-     * Accept the candidate mask preview: it becomes a PENDING edit (queued
-     * for the next batch bake) and its preview overlay stays on the map
-     * under a per-edit id. NO server call happens here — see bakeAll().
-     */
-    accept(): boolean {
-        const ctx = this.ctx;
-        const preview = this.preview;
-        if (!ctx || !preview || this.phase.peek() !== 'preview') return false;
-        const { plan, maskPngBase64, resultBase64, tool } = preview;
-        const sweref = [
-            cropPixelToSweref(plan, 0, 0),
-            cropPixelToSweref(plan, plan.size, 0),
-            cropPixelToSweref(plan, plan.size, plan.size),
-            cropPixelToSweref(plan, 0, plan.size),
-        ];
-        const overlayId = `clean-pending-${++this.overlaySeq}`;
-        this.pending.push({
-            kind: 'mask',
-            maskPngBase64,
-            bounds3857: planBounds3857(plan),
-            boundsSweref: {
-                west: Math.min(...sweref.map(p => p.x)),
-                south: Math.min(...sweref.map(p => p.y)),
-                east: Math.max(...sweref.map(p => p.x)),
-                north: Math.max(...sweref.map(p => p.y)),
-            },
-            tool,
-            overlayId,
-        });
-        this.pendingCount.set(this.pending.length);
-        // Keep the preview visible under its own id; free the candidate slot.
-        this.addPreviewOverlay(overlayId, plan, resultBase64);
-        this.removePreviewOverlay();
-        this.preview = null;
-        this.phase.set('idle');
-        this.notice.set(null);
-        return true;
-    }
-
-    // ── Pending queue → batch bake ──────────────────────────────────────────
-
-    /** True when any pending edit is a mask (needs the LaMa bake deps). */
-    private pendingHasMask(): boolean {
-        return this.pending.some(e => e.kind === 'mask');
-    }
-
-    /**
-     * Bake the whole pending queue in ONE server call: ordered edits →
-     * applyOrthoEdits → single batch bake into the SIM overlay + one sim
-     * version bump — then refresh the sim source in place. On failure the
-     * queue (and its previews) stays for retry. Returns true on success.
-     */
-    async bakeAll(opts: { silent?: boolean } = {}): Promise<boolean> {
-        const ctx = this.ctx;
-        if (!ctx || this.pending.length === 0) return false;
-        if (!opts.silent && this.phase.peek() !== 'idle') return false;
-        if (this.pendingHasMask() && !this.bakeable.peek()) {
-            this.notice.set(this.bakeReason.peek()
-                ?? 'Mask edits cannot bake right now — see the panel notice.');
-            return false;
-        }
-        if (!this.stampBakeable.peek()) {
-            this.notice.set(this.bakeReason.peek()
-                ?? "This course's map must be rebuilt before edits can bake.");
-            return false;
-        }
-        if (!opts.silent) this.phase.set('applying');
-        this.notice.set(null);
-        const edits = this.pending.map(e => e.kind === 'mask'
-            ? {
-                kind: 'mask' as const,
-                maskPngBase64: e.maskPngBase64,
-                bounds3857: e.bounds3857,
-                boundsSweref: e.boundsSweref,
-                tool: e.tool,
+            if (this.strokeOverlayLive) {
+                ctx.map.updateOverlayData(CLEAN_STROKE_OVERLAY_ID, data);
+                return;
             }
-            : {
-                kind: 'stamp' as const,
-                brush: e.brush,
-                offsetM: e.offsetM,
-                path: e.path,
-                aligned: e.aligned,
-                toneMatch: e.toneMatch,
-                bounds3857: e.bounds3857,
-                boundsSweref: e.boundsSweref,
-            });
-        try {
-            const result = await this.patchesApi.applyOrthoEdits({ courseId: ctx.courseId, edits });
-            this.patchCount.set(result.count);
-            this.simGeneratedAt = result.patchesGeneratedAt;
-            this.clearPendingPreviews();
-            this.pending = [];
-            this.pendingCount.set(0);
-            if (!opts.silent) this.phase.set('idle');
-            // The pristine version did NOT change (dual photo state) — only
-            // the sim source refetches, then the manifest signal resyncs.
-            this.applyPhotoState();
-            await ctx.tileset.refreshTiles(ctx.courseId);
-            return true;
-        } catch (err) {
-            // Keep the queue (and its previews) so the user can retry.
-            if (!opts.silent) this.phase.set('idle');
-            this.notice.set(`Baking failed: ${err instanceof Error ? err.message : String(err)}`);
-            return false;
+            ctx.map.addOverlayLayer(CLEAN_STROKE_OVERLAY_ID, data, [{
+                id: `${CLEAN_STROKE_OVERLAY_ID}-line`,
+                type: 'line',
+                layout: { 'line-cap': 'round', 'line-join': 'round' },
+                paint: { 'line-color': '#ef4444', 'line-opacity': 0.45, 'line-width': width },
+            }]);
+            this.strokeOverlayLive = true;
+        } catch {
+            // Map mid-teardown: the band is decorative.
         }
     }
 
-    /** Drop the most recent pending edit (mask preview or stamp stroke). */
-    discardLastPending(): boolean {
-        const edit = this.pending.pop();
-        if (!edit) return false;
-        this.pendingCount.set(this.pending.length);
-        if (edit.kind === 'mask') {
-            this.ctx?.map.removeOverlayLayer(edit.overlayId);
-        } else {
-            this.replaySurface(edit.surfaceId);
-            this.lastDab = null;
-        }
-        return true;
+    private removeStrokeOverlay(): void {
+        if (!this.strokeOverlayLive) return;
+        this.strokeOverlayLive = false;
+        this.ctx?.map.removeOverlayLayer(CLEAN_STROKE_OVERLAY_ID);
     }
 
-    /** Drop the whole pending queue and its previews. */
-    discardAllPending(): void {
-        this.clearPendingPreviews();
-        this.pending = [];
-        this.pendingCount.set(0);
-        this.lastDab = null;
-        this.notice.set(null);
-    }
+    // ── Undo last change (server side) ──────────────────────────────────────
 
-    /** Remove every pending-edit preview (mask overlays + stamp surfaces). */
-    private clearPendingPreviews(): void {
-        for (const edit of this.pending) {
-            if (edit.kind === 'mask') this.ctx?.map.removeOverlayLayer(edit.overlayId);
-        }
-        for (const surface of this.surfaces) surface.view?.remove();
-        this.surfaces = [];
-    }
-
-    /** Re-render a stamp surface from its base + the remaining pending
-     * strokes (after a discard-last). An empty surface is dropped. */
-    private replaySurface(surfaceId: string): void {
-        const surface = this.surfaces.find(s => s.id === surfaceId);
-        if (!surface) return;
-        const strokes = this.pending.filter(
-            (e): e is PendingStampEdit => e.kind === 'stamp' && e.surfaceId === surfaceId);
-        if (strokes.length === 0) {
-            surface.view?.remove();
-            this.surfaces = this.surfaces.filter(s => s !== surface);
-            return;
-        }
-        const work = surface.base.slice();
-        for (const s of strokes) {
-            renderStampStroke(work, surface.plan.size, {
-                path: s.pathPx,
-                offsetPx: s.offsetPx,
-                radiusPx: s.radiusPx,
-                opacity: s.brush.opacity,
-                flow: s.brush.flow,
-                hardness: s.brush.hardness,
-                toneMatch: s.toneMatch,
-            });
-        }
-        surface.work = work;
-        this.drawSurface(surface, null);
-    }
-
-    /** Revert v1: drop the last BAKED entry (server re-replays + retiles the
-     * sim overlay; the pristine tree is untouched). */
-    async revertLast(): Promise<boolean> {
+    /** Put back the photo from before the last editing session or import. */
+    async undoLast(): Promise<boolean> {
         const ctx = this.ctx;
-        if (!ctx || this.phase.peek() !== 'idle') return false;
-        if (this.patchCount.peek() === 0) return false;
+        if (!ctx || this.phase.peek() !== 'idle' || this.stroke) return false;
+        if (this.undoDepth.peek() === 0) return false;
         this.phase.set('applying');
+        this.externalBusy.set('undo');
         this.notice.set(null);
         try {
-            const result = await this.patchesApi.revertLastOrthoPatch({ courseId: ctx.courseId });
-            this.patchCount.set(result.count);
-            this.simGeneratedAt = result.patchesGeneratedAt || this.simGeneratedAt;
-            this.phase.set('idle');
-            this.applyPhotoState();
-            await ctx.tileset.refreshTiles(ctx.courseId);
+            await this.settled();
+            const result = await this.photoApi.undoPhotoChange({ courseId: ctx.courseId });
+            this.undoDepth.set(result.undoDepth);
+            if (this.ctx === ctx) await this.reloadPhoto(result.patchesGeneratedAt || null);
             return true;
         } catch (err) {
-            this.phase.set('idle');
-            this.notice.set(`Revert failed: ${err instanceof Error ? err.message : String(err)}`);
+            this.notice.set(`Undo failed: ${err instanceof Error ? err.message : String(err)}`);
             return false;
+        } finally {
+            this.externalBusy.set(null);
+            this.phase.set('idle');
         }
     }
 
@@ -1400,25 +1068,28 @@ export class CleanToolService {
 
     /**
      * Put the cleaned photo onto the course meshes in the open Unity editor.
-     * Pending edits are baked first (a failed bake stops here). The server
-     * job renders the PATCHED copy of the photo the map was built from and
-     * hands Unity its -meshes variant, the darkened one with the green
-     * surface tint, which is what the meshes sample. Returns true when Unity
-     * took it; the outcome is in `unityMessage`.
+     * Waits for the saves first. The server job renders the cleaned photo of
+     * the vintage the map was built from and hands Unity its -meshes variant,
+     * the darkened one with the green surface tint, which is what the meshes
+     * sample. Returns true when Unity took it; the outcome is in
+     * `unityMessage`.
      */
     async applyInUnity(): Promise<boolean> {
         const ctx = this.ctx;
-        if (!ctx || this.phase.peek() !== 'idle') return false;
+        if (!ctx || this.phase.peek() !== 'idle' || this.stroke) return false;
         this.unityMessage.set(null);
-        if (this.pending.length > 0 && !(await this.bakeAll())) return false;
-        if (this.ctx !== ctx) return false;
         this.phase.set('applying');
         this.externalBusy.set('unity');
         try {
+            await this.settled();
+            if (this.saveState.peek() === 'error') {
+                this.unityMessage.set({ kind: 'error', text: 'Some changes are not saved yet: retry the save first.' });
+                return false;
+            }
             const sources = await this.unityApi.orthoSources({ courseId: ctx.courseId });
-            const source = sources.find(s => s.patched && s.active);
+            const source = sources.find(s => s.cleaned && s.active);
             if (!source) {
-                this.unityMessage.set({ kind: 'error', text: 'Nothing is baked into the cleaned photo yet, so there is nothing new for Unity.' });
+                this.unityMessage.set({ kind: 'error', text: 'There is no cleaned photo yet: paint a stroke or import a photo first.' });
                 return false;
             }
             let job: GsproExportJob = await this.unityApi.start({
@@ -1444,139 +1115,59 @@ export class CleanToolService {
         }
     }
 
-    // ── External edit: export the cleaned photo, import the edited one ──────
+    // ── Out to an image editor and back ────────────────────────────────────
 
-    /** The export an import compares with: the picked one if it still exists, else the latest. */
-    effectiveExportSeq(): number | null {
-        const list = this.exports.get();
-        const picked = this.pickedExportSeq.get();
-        if (picked !== null && list.some(e => e.seq === picked)) return picked;
-        return list.length > 0 ? list[list.length - 1].seq : null;
-    }
-
-    /** Move the live sim source to a new server version, then resync the manifest. */
-    private async resyncSim(ctx: ToolContext, generatedAt: string): Promise<void> {
-        this.simGeneratedAt = generatedAt;
-        this.applyPhotoState();
-        await ctx.tileset.refreshTiles(ctx.courseId);
+    /** Download URL of the cleaned photo as a PNG; null while the tool is inactive. */
+    exportUrl(): string | null {
+        return this.ctx ? cleanedPhotoExportUrl(this.ctx.courseId) : null;
     }
 
     /**
-     * Export the cleaned photo as one fixed square PNG. The server replays any
-     * stale patches first; when it did (`replayed`) the sim tiles changed and
-     * the map refreshes like after a bake. The generated client times out
-     * after 30 s while the server carries on, so a timeout is reported as
-     * "still running" and the export list is refreshed, not as a failure.
-     * Returns true when the export finished inside the request.
+     * Upload an image to become the cleaned photo: any PNG, JPEG or TIFF of
+     * the photo's pixel size, whatever it shows. Nothing has to be exported
+     * first. On a change the pixels load again and "Undo last change" covers
+     * it. Returns true when the server took the file (including "nothing
+     * changed").
      */
-    async exportPhoto(): Promise<boolean> {
+    async importPhoto(file: File): Promise<boolean> {
         const ctx = this.ctx;
-        if (!ctx || this.phase.peek() !== 'idle') return false;
-        this.phase.set('applying');
-        this.externalBusy.set('export');
-        this.externalMessage.set(null);
-        this.lastExport.set(null);
-        this.importSummary.set(null);
-        try {
-            const result = await this.patchesApi.exportOrthoSquare({ courseId: ctx.courseId });
-            this.lastExport.set(result);
-            this.exportFrame.set({ extent3006: result.extent3006, size: result.size });
-            const summary: OrthoExportSummary = {
-                seq: result.exportSeq,
-                createdAt: result.createdAt,
-                logSeq: result.logSeq,
-                size: result.size,
-                format: result.format,
-                bytes: result.bytes,
-                downloadPath: result.downloadPath,
-            };
-            this.exports.set([...this.exports.peek().filter(e => e.seq !== summary.seq), summary]
-                .sort((a, b) => a.seq - b.seq));
-            this.pickedExportSeq.set(null);
-            this.externalBusy.set(null);
-            this.phase.set('idle');
-            if (result.replayed && result.patchesGeneratedAt) {
-                await this.resyncSim(ctx, result.patchesGeneratedAt);
-            }
-            return true;
-        } catch (err) {
-            this.externalBusy.set(null);
-            this.phase.set('idle');
-            if (isRequestTimeout(err)) {
-                this.externalMessage.set({
-                    kind: 'info',
-                    text: 'The export is still running on the server (replaying the patches first can take minutes). It appears in the list when done; press Refresh to check.',
-                });
-                await this.refreshInfo({ resync: true });
-            } else {
-                this.externalMessage.set({
-                    kind: 'error',
-                    text: `Export failed: ${err instanceof Error ? err.message : String(err)}`,
-                });
-            }
-            return false;
-        }
-    }
-
-    /**
-     * Upload an edited export and let the server diff it against export
-     * `exportSeq`. `tolerance` is sent only when the user set one. On a change
-     * the patch count updates and the sim photo refreshes seamlessly, so
-     * Revert last patch covers the import. Returns true when the server
-     * answered (including "no changes found").
-     */
-    async importPhoto(file: File, exportSeq: number, tolerance: number | null = null): Promise<boolean> {
-        const ctx = this.ctx;
-        if (!ctx || this.phase.peek() !== 'idle') return false;
+        if (!ctx || this.phase.peek() !== 'idle' || this.stroke) return false;
         this.importSummary.set(null);
         this.externalMessage.set(null);
         if (file.size === 0) {
             this.externalMessage.set({ kind: 'error', text: 'The file is empty.' });
             return false;
         }
-        if (file.size > ORTHO_IMPORT_MAX_BYTES) {
-            const mb = Math.round(ORTHO_IMPORT_MAX_BYTES / (1024 * 1024));
+        if (file.size > CLEANED_IMPORT_MAX_BYTES) {
+            const mb = Math.round(CLEANED_IMPORT_MAX_BYTES / (1024 * 1024));
             this.externalMessage.set({
                 kind: 'error',
-                text: `The file is ${(file.size / (1024 * 1024)).toFixed(0)} MB; the limit is ${mb} MB. Save it as an optimised PNG.`,
+                text: `The file is ${(file.size / (1024 * 1024)).toFixed(0)} MB; the limit is ${mb} MB. Save it as a PNG or JPEG of ${CLEANED_PHOTO_SIZE} × ${CLEANED_PHOTO_SIZE} px.`,
             });
-            return false;
-        }
-        if (tolerance !== null && !(Number.isInteger(tolerance) && tolerance >= 0 && tolerance <= 254)) {
-            this.externalMessage.set({ kind: 'error', text: 'Tolerance must be a whole number from 0 to 254.' });
             return false;
         }
         this.phase.set('applying');
         this.externalBusy.set('import');
         this.uploadProgress.set(0);
         try {
+            await this.settled();
             const result = await this.importClient.importPhoto(
-                ctx.courseId, file, exportSeq, tolerance,
+                ctx.courseId, file,
                 (loaded, total) => this.uploadProgress.set(total > 0 ? loaded / total : null),
             );
-            const ortho = ctx.tileset.manifest.peek()?.layers.ortho;
-            this.importSummary.set(summarizeImport(
-                result,
-                this.exportFrame.peek(),
-                ortho ? { minzoom: ortho.minzoom, maxzoom: ortho.maxzoom } : undefined,
-            ));
-            this.patchCount.set(result.count);
+            this.importSummary.set(importSummaryText(result));
+            this.undoDepth.set(result.undoDepth);
+            this.photoExists.set(true);
             this.uploadProgress.set(null);
-            this.externalBusy.set(null);
-            this.phase.set('idle');
-            if (result.changed && result.patchesGeneratedAt) {
-                await this.resyncSim(ctx, result.patchesGeneratedAt);
-            }
+            if (result.changed && this.ctx === ctx) await this.reloadPhoto(result.patchesGeneratedAt);
             return true;
         } catch (err) {
             this.uploadProgress.set(null);
-            this.externalBusy.set(null);
-            this.phase.set('idle');
-            if (err instanceof OrthoImportError && err.status === 504) {
-                // The retile outlasted the request; the bake carries on server-side.
+            if (err instanceof PhotoImportError && err.status === 504) {
+                // The retile outlasted the request; it carries on server-side.
                 this.externalMessage.set({
                     kind: 'info',
-                    text: 'The server is still baking the import (a large change takes minutes). The patch count and the map update when it is done; press Refresh to check.',
+                    text: 'The server is still working on the import. Press Refresh to load the photo when it is done.',
                 });
                 await this.refreshInfo({ resync: true });
             } else {
@@ -1586,6 +1177,9 @@ export class CleanToolService {
                 });
             }
             return false;
+        } finally {
+            this.externalBusy.set(null);
+            this.phase.set('idle');
         }
     }
 }

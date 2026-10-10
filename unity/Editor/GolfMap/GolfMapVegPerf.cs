@@ -765,7 +765,62 @@ namespace GolfMap.Editor
             });
         }
 
-        [BridgeCommand("golfmap.vegperf.hide", "Switch part of the vegetation off, live and without touching assets. Items by system/package/type/item (globs); or storage=true (the system's persistent storage), shadows=<type|all>, wholeSystem=true. Scene switches are put back before a scene save or script reload. golfmap.vegperf.show undoes.",
+        // A probe for rendering faults: VSP draws its own material copies per LOD, with keywords it
+        // sets itself (LOD_FADE_*), so the asset does not show what is drawn. Runtime only: a VSP
+        // refresh or script reload rebuilds the copies from the assets.
+        [BridgeCommand("golfmap.vegperf.materials", "Read, and optionally change, the material copies VSP draws for items (per LOD: material, shader, keywords, the floats/vectors asked for). on/off switch shader keywords, floats/vectors set properties. Runtime only - a VSP refresh or script reload puts the assets' values back.",
+            args = "item=<glob> (required), system=inner|outer|all, package=<glob>, lod (0-3; default all), material=<glob>, on (keywords, comma-separated), off (keywords), floats ({name: value}), vectors ({name: [x,y,z,w]}), show (property names to report, comma-separated)")]
+        static object MaterialsCommand(BridgeArgs a)
+        {
+            if (!a.Has("item")) throw new BridgeError("Missing argument 'item'.");
+            int lod = a.Int("lod", -1);
+            var material = a.Has("material") ? Glob(a.String("material")) : null;
+            Func<string, string[]> split = k => (a.String(k) ?? "").Split(new[] { ',' }, StringSplitOptions.RemoveEmptyEntries).Select(x => x.Trim()).ToArray();
+            string[] on = split("on"), off = split("off"), show = split("show");
+            var floats = a.Raw("floats") as Dictionary<string, object>;
+            var vectors = a.Raw("vectors") as Dictionary<string, object>;
+            var rows = new List<object>();
+            foreach (var r in SelectItems(a, SelectSystems(a)))
+            {
+                var info = Model(r);
+                if (info == null) continue;
+                var lods = new[] { info.VegetationMaterialsLOD0, info.VegetationMaterialsLOD1, info.VegetationMaterialsLOD2, info.VegetationMaterialsLOD3 };
+                for (int l = 0; l < Math.Min(lods.Length, info.LODCount); l++)
+                {
+                    if (lods[l] == null || (lod >= 0 && lod != l)) continue;
+                    foreach (var m in lods[l].Where(x => x && (material == null || material.IsMatch(x.name))))
+                    {
+                        foreach (var k in on) m.EnableKeyword(k);
+                        foreach (var k in off) m.DisableKeyword(k);
+                        if (floats != null)
+                            foreach (var f in floats) m.SetFloat(f.Key, Convert.ToSingle(f.Value, System.Globalization.CultureInfo.InvariantCulture));
+                        if (vectors != null)
+                            foreach (var v in vectors)
+                            {
+                                var c = ((IList)v.Value).Cast<object>().Select(x => Convert.ToSingle(x, System.Globalization.CultureInfo.InvariantCulture)).ToArray();
+                                m.SetVector(v.Key, new Vector4(c[0], c.Length > 1 ? c[1] : 0, c.Length > 2 ? c[2] : 0, c.Length > 3 ? c[3] : 0));
+                            }
+                        var row = new Dictionary<string, object>
+                        {
+                            { "system", SystemLabel(r.system) }, { "item", r.item.Name }, { "lod", l }, { "material", m.name }, { "shader", m.shader ? m.shader.name : null },
+                            { "keywords", string.Join(" ", m.shaderKeywords) },
+                        };
+                        foreach (var p in show.Where(m.HasProperty))
+                        {
+                            int index = Enumerable.Range(0, ShaderUtil.GetPropertyCount(m.shader)).First(i => ShaderUtil.GetPropertyName(m.shader, i) == p);
+                            var type = ShaderUtil.GetPropertyType(m.shader, index);
+                            row[p] = type == ShaderUtil.ShaderPropertyType.Vector || type == ShaderUtil.ShaderPropertyType.Color ? (object)m.GetVector(p).ToString("0.###")
+                                : type == ShaderUtil.ShaderPropertyType.TexEnv ? (m.GetTexture(p) ? m.GetTexture(p).name : null) : (object)m.GetFloat(p);
+                        }
+                        rows.Add(row);
+                    }
+                }
+            }
+            Repaint();
+            return new Dictionary<string, object> { { "materials", rows } };
+        }
+
+        [BridgeCommand("golfmap.vegperf.hide","Switch part of the vegetation off, live and without touching assets. Items by system/package/type/item (globs); or storage=true (the system's persistent storage), shadows=<type|all>, wholeSystem=true. Scene switches are put back before a scene save or script reload. golfmap.vegperf.show undoes.",
             args = "system=inner|outer|all, package=<glob>, type=Tree|Grass|Plant|Objects|LargeObjects, item=<glob>, storage=false, shadows=<type|all>, wholeSystem=false")]
         static object HideCommand(BridgeArgs a) { return Toggle(a, false); }
 

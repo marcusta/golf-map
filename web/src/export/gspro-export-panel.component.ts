@@ -89,7 +89,7 @@ const TIP = {
     zones: 'The terrain\'s vegetation zones (shrubs, ferns, woodland floor, …) as VSPro texture masks — one PNG per four zone '
         + 'types — plus a unity-zones file for GolfMap › Vegetation Zones in Unity, which binds the items named in Vegetation '
         + 'zone types to their channels. Export the heightmap first — the zones take its height range.',
-    unityOrtho: 'Renders the inner photo with the Clean tool\'s baked edits (the picked vintage\'s patched copy when there is '
+    unityOrtho: 'Renders the inner photo with the Clean tool\'s baked edits (the picked vintage\'s cleaned photo when there is '
         + 'one) and the two boxes above as ticked, then puts its -meshes file onto the texture the course meshes sample in the '
         + 'open Unity editor whose GolfMap course imports from this folder. The old texture is backed up in the project\'s '
         + 'GolfMapSpelunk/ortho-backups first. Bake pending Clean edits before this: unbaked ones are not in the photo. Unity '

@@ -209,8 +209,8 @@ export interface GsproOrthoSource {
     source: string;
     /** Lantmäteriet collection, e.g. `orto-l2-2025`. */
     collection: string;
-    /** True for the working copy with ortho patches baked in (`.patched.tif`). */
-    patched: boolean;
+    /** True for the cleaned photo (`ortho-<collection>.cleaned.tif`, CleanedPhotoService): the vintage with the Clean tool's edits, 8192 px on the inner square. */
+    cleaned: boolean;
     /** True for the vintage the map is currently showing. */
     active: boolean;
 }
@@ -341,12 +341,12 @@ export function exportFileName(courseName: string, variant?: string): string {
 }
 
 /**
- * `Vreta`, orto-l2-2025 (patched) -> `vreta-orto-l2-2025-patched-8192.jpg`;
+ * `Vreta`, orto-l2-2025 (cleaned) -> `vreta-orto-l2-2025-cleaned-8192.jpg`;
  * `clean` (buildings removed / forest floor painted) adds `-clean` before the size.
  */
 export function orthoExportFileName(courseName: string, source: GsproOrthoSource, clean = false): string {
-    const patched = source.patched ? '-patched' : '';
-    return `${courseSlug(courseName)}-${source.collection}${patched}${clean ? '-clean' : ''}-${ORTHO_EXPORT_SIZE}.jpg`;
+    const cleaned = source.cleaned ? '-cleaned' : '';
+    return `${courseSlug(courseName)}-${source.collection}${cleaned}${clean ? '-clean' : ''}-${ORTHO_EXPORT_SIZE}.jpg`;
 }
 
 /** `Vreta`, orto-l2-2025 -> `vreta-outer-orto-l2-2025-8192.jpg` (`-clean-8192.jpg` when cleaned). */
@@ -430,11 +430,15 @@ export function outerOrthoSourceName(collection: string): string {
     return `outer-ortho-${collection}.tif`;
 }
 
-/** `ortho-orto-l2-2025.patched.tif` -> collection + patched flag; null for other files. */
-export function parseOrthoSourceName(name: string): { collection: string; patched: boolean } | null {
-    const m = /^ortho-(.+?)(\.patched)?\.tif$/i.exec(name);
+/**
+ * `ortho-orto-l2-2025.cleaned.tif` -> collection + cleaned flag; null for other
+ * files, the retired patch-log model's `.patched.tif` among them.
+ */
+export function parseOrthoSourceName(name: string): { collection: string; cleaned: boolean } | null {
+    if (/\.patched\.tif$/i.test(name)) return null;
+    const m = /^ortho-(.+?)(\.cleaned)?\.tif$/i.exec(name);
     if (!m) return null;
-    return { collection: m[1], patched: m[2] !== undefined };
+    return { collection: m[1], cleaned: m[2] !== undefined };
 }
 
 /** A Lantmäteriet collection id as it appears in file names: `orto-l2-2025`. */
@@ -450,6 +454,12 @@ export interface GsproExportDeps {
     pipelineDir?: string;
     /** Python interpreter; defaults to the pipeline venv (MAP_PIPELINE_PYTHON overrides). */
     python?: string;
+    /**
+     * Where the courses' hand-kept GSPro files live, `<root>/<course slug>/`
+     * (default `<pipelineDir>/../docs/gspro`, as the shaping layers): the trees
+     * export reads `stone-walls.json` there, the course's placed rocks.
+     */
+    courseDocsRoot?: string;
     runner?: ExportRunner;
     /** The site's terrain edits, replayed onto the outer DEM at export; defaults to a db-backed instance. */
     terrainEdits?: TerrainEditsService;
@@ -465,6 +475,7 @@ export class GsproExportService {
     private readonly unityBridge: UnityBridge;
     private readonly dataDir: string;
     private readonly pipelineDir: string;
+    private readonly courseDocsRoot: string;
     private readonly runner: ExportRunner;
     private readonly history: FeatureHistoryService;
     /** Every job started in this process, by id (finished ones pruned per course as new ones start). */
@@ -482,6 +493,7 @@ export class GsproExportService {
         this.pipelineDir = deps.pipelineDir
             ?? process.env.MAP_PIPELINE_DIR
             ?? DEFAULT_PIPELINE_DIR;
+        this.courseDocsRoot = deps.courseDocsRoot ?? path.join(this.pipelineDir, '..', 'docs', 'gspro');
         const python = deps.python ?? process.env.MAP_PIPELINE_PYTHON ?? venvPython(this.pipelineDir);
         this.runner = deps.runner ?? defaultRunner(python);
         this.history = new FeatureHistoryService(deps.db);
@@ -610,7 +622,7 @@ export class GsproExportService {
 
     /**
      * The orthophoto GeoTIFFs the map build persisted for the course's site,
-     * newest collection first, the patched working copy right after its
+     * newest collection first, the cleaned photo right after its
      * pristine original. Empty when the course has never been built here —
      * the sources live on the build machine, not in the DB.
      */
@@ -630,12 +642,12 @@ export class GsproExportService {
                 return parsed ? [{ source, ...parsed, active: parsed.collection === active }] : [];
             })
             .sort((a, b) => b.collection.localeCompare(a.collection)
-                || Number(a.patched) - Number(b.patched));
+                || Number(a.cleaned) - Number(b.cleaned));
     }
 
     /**
      * Render one persisted orthophoto as the square GSPro texture:
-     * `<dir>/<course>-<collection>[-patched]-8192.jpg`, 8192×8192 px, JPEG
+     * `<dir>/<course>-<collection>[-cleaned]-8192.jpg`, 8192×8192 px, JPEG
      * quality 80, over the inner terrain square. `source` is a file name
      * from `orthoSources` — anything else is refused, so the request can
      * never name a path outside the site's sources folder.
@@ -868,7 +880,7 @@ export class GsproExportService {
      * course's export folder runs `golfmap.orthos.apply` with the `-meshes`
      * file just written. That overwrites the texture the scene's meshes
      * sample as `_Satellite` in place (the old file backed up), so the
-     * export's own name (`-patched`, `-clean`) does not have to match the
+     * export's own name (`-cleaned`, `-clean`) does not have to match the
      * project's. The `-meshes` file is always written, whatever `tint` says:
      * it is the one the meshes use.
      */
@@ -971,6 +983,9 @@ export class GsproExportService {
             '--course', courseId,
         ];
         if (kind === 'outer') args.push('--exclude-square', terrainArg(terrain.inner));
+        // The course's placed rocks (golfmap.walls.build's spec): the lidar reads a boulder as a low bush.
+        const rocks = path.join(this.courseDocsRoot, courseSlug(course.name), 'stone-walls.json');
+        if (await statOrNull(rocks)) args.push('--rocks', rocks);
         const rendered = await this.run(`GSPro ${kind} trees`, args, out);
         return { path: rendered.path, report: [...fetched, ...rendered.report] };
     }

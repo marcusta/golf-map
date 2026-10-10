@@ -30,7 +30,7 @@ sidecars, nothing is named after a course.
    inner's is for the course meshes (the sun-lit tint lifts it); the outer's is the outer
    terrain's floor: as dark as its `-terrain` twin, with the colouring on top. The picker
    defaults to the `-terrain` twin for the inner and the `-meshes` variant for the outer,
-   patched before pristine, hillshades last.
+   cleaned before pristine, hillshades last.
 3. **Import terrains**. For each terrain it
    - copies the `.raw`, the sidecar and the picked overlay into
      `Assets/Terrain Backup/<course>/` and sets the overlay's Max Size to 8192 and its compression
@@ -516,7 +516,10 @@ spawn on only for items with an include rule on an existing group.
 Bridge (`unity_command`): `golfmap.zones.check` (`terrain=inner|outer` or `file`, `package`)
 loads and returns the summary plus the import `plan`; `golfmap.zones.import` (same args,
 `dryRun=false`) imports, and with `dryRun=true` validates the target and returns the plan
-without writing anything.
+without writing anything. The full result lists every texture, mask group, rule and bound item
+(and a `status` repeating them); `brief=true` (both commands, default false) keeps the plan's
+`summary`, `missing`, `unbound` and `dangling` and turns the other lists into counts, drops the
+package list and cuts `status` to its first line. Agents should pass `brief=true`.
 
 Woodland floor (D-VZ10): `woodland_floor` zones come from the pipeline's `woodland-features`
 (one per closed stand, weight from the lidar understory) and arrive here like any other
@@ -739,11 +742,52 @@ materials' `_Satellite` and the Stix `_ColorMap` - on Vreta both `Assets/Terrain
 pick it up; the old file goes to `GolfMapSpelunk/ortho-backups/`. Files with no copy in the project are only listed.
 Regenerate: `bun run gspro:export -- <course> ortho --tint`, then `golfmap.orthos.update`.
 
-An export from another source has another file name (`-patched`, `-clean`), which `orthos.update` only lists.
+An export from another source has another file name (`-cleaned`, `-clean`), which `orthos.update` only lists.
 `golfmap.orthos.apply file=<export .jpg>` puts that one file onto the texture the scene's renderers sample as
 `_Satellite`, in place and with the same backup; the project asset keeps its own name. It refuses when the scene uses
 several satellite textures (pass `target=<asset path>`). The web panel's **Inner cleaned photo → Unity meshes** runs the
 export and this command in one job.
+
+## Wispy rough
+
+Links-style deep rough on part of a deep-rough mesh: a rough-height floor with thin, longer, sparser blades over
+it, both Stix 3D grass coloured from the ortho. Where: hand-drawn vegetation zones of type `rough_wispy` ("Wispy
+rough", a default zone type; it binds no VSP items, so on top of the tall rough it only takes that grass away).
+`golfmap.wispy.build` (`GolfMapWispyRough.cs`) reads the outlines from the inner zones export, so update the zone
+in Unity first (web "Update in Unity" / `bun run zones -- update <course> <zone>`).
+
+- **Its own mesh.** `GrassRenderer` draws the `MeshFilter` beside it and needs no `MeshRenderer`, so each zone gets
+  an object under `GolfMap Wispy Rough` whose mesh (`<course>/WispyRough/<zone id>.asset`) is the deep course
+  meshes' triangles under the zone, painted for Stix alone (blade chance = red), fading over the zone's feather
+  (centred on the outline). The course meshes, their paint and materials are not touched, and nothing is
+  tessellated outside the zone. Vertex spacing (~1.2 m) limits the edge and the drifts.
+- **Two renderers, so the wisps are added.** The floor is the rough's own Stix material (the same asset the rough
+  meshes use): the sward is the rough's blade for blade and runs on from a rough beside the zone without a seam.
+  The wisps are a child object `Wisps` on a second copy of the mesh (`<zone id>-wisps.asset`, red = weight x drift
+  noise: `patch`/`patchM`) with `<course>/Grass/<rough> Wispy.mat`, rebuilt from the rough's material on every run:
+  the same blade made longer (`wispMin`/`wispMax` 0.15-0.30 m), thinner (`wispWidth` 6 mm), paler
+  (`wispColor`/`wispSecColor`, multipliers on the ortho colour; defaults `1.3,1.25,1.0` / `0.95,0.88,0.62`) and
+  spaced wider (`wisp` 0.15 = wisps per floor blade; 7 % at 4 mm read as too few and too thin beyond ~4 m).
+  The first version put both in one material as two grass types; a blade point is then one type or the other, so
+  the wisps thinned the floor and it read as shorter and sparser than the rough (Marcus, 2026-10-10).
+- **Sunk VSP grass on top** (Marcus's trick): the zone type's palette (`rough_wispy` in grass-palette.json) holds
+  tall texture-grass items planted below the ground with `verticalOffset` (negative, scaled with the instance): the
+  card's dense clump base ends up under the mesh and only its thin tips come up through it, at random heights.
+  VSP's grass patch is 0.4 m tall and both `height` and `verticalOffset` are in its own units, scaled together:
+  the tips stand `(0.4 + verticalOffset) x height x scale` over the ground, so the offset must stay above -0.4
+  (the first try, -0.6, hung every tuft under the mesh). Vreta: `Wispy rough - sunk wisps` (Grass Textures2/041,
+  height 1.4, offset -0.22 = 55 % buried, spacing 0.9) and `- sunk seed tips` (Rustic Grass_06, height 1.6,
+  offset -0.24, spacing 2.0), scale 0.7-1.6 plus height waves: tips of roughly 0.18-0.4 m. Bind with
+  `bun run zones -- bind <course> rough_wispy --palette <file>`. Cream tints (`#a39c7e`, white point 0.85) on 0.6-0.8 wide
+  cards read as pale clumps up close and as bright speckle from 50 m, where the Stix floor has faded out; now
+  straw-green (`#7c8a58` / `#8c8a64`, white point 0.75), cards 0.45 / 0.4 wide, spacing 0.65 / 1.5.
+- **On a rough mesh** the zone gets the wisps only (the rough has its Stix floor already); deep rough gets floor
+  and wisps. Other surfaces under a zone get nothing.
+- **Tall grass still in the zone?** A hand-drawn replace zone takes the ground from the *generated* zones only;
+  drawn zones add up (D-VZ14), so an older hand-drawn `rough_tall` zone under it keeps planting. Remove it, then
+  export the zones again before judging in Unity.
+- Not part of `golfmap.course.refresh` yet: re-run after a mesh rebuild. Not yet checked in GSPro, nor for frame
+  rate or ball visibility.
 
 ## Cart paths
 
@@ -812,6 +856,31 @@ gives a re-added path mesh the satellite material again): `pathLook=surface` (de
 2026-09-29 a plain copy of OPCD's non-satellite asphalt drew every path one flat pinkish grey, then a custom
 `GolfMap/Path Surface` shader per surface lost OPCD's knobs; both retired. The pipeline's path fill (`gspro.py ortho
 --path-fill`, above) still matters for `look=photo`.
+
+### Drawn path transitions
+
+Path transitions drawn in the web editor use red = grass, green = the path surface,
+blue = bare brown dirt. `golfmap.path_transition` paints both the path piece and its
+fringe in Blender; the FBX exports the `golfmap_path_transition` property.
+`GolfMapPathTransitionMetadata` records that convention on import, including pieces
+that have faded entirely to red and cannot be recognised from green paint alone.
+The marker is removed on reimport when the source no longer carries it.
+
+`golfmap.paths.materials` gives a painted piece its road's fringe material. Roads
+with transitions get a separate `(transition dirt Blue)` material variant, so the
+ordinary side-strip blend strength stays independent. Its blue channel uses the
+course's dirt texture. Optional `transitions` settings in `Paths/path-surfaces.json`
+are `dirtTint` (default `#595348`), `pathBlendStrength` (3), and `dirtBlendStrength` (1).
+These settings survive rebuilds; change the spec rather than the generated material.
+The same material is used across a matching piece/fringe seam. Paths retain their
+existing collider physics: this feature changes appearance and grass density, not
+GSPro lie classifications.
+
+`golfmap.roughgrass.plant` recognises painted path meshes as well as their fringe
+strips; only red grows Stix grass, so blue dirt stays bare. `only=<names>` optionally
+scopes planting and removal to those objects. Removing transition paint and running
+the normal refresh also removes obsolete path GrassRenderers. Course `.blend`
+files, orthophotos and the Unity scene are not saved by this workflow.
 
 ## Vertex paint
 
@@ -891,7 +960,10 @@ It does what deleting and re-adding the meshes by hand does, but only for the me
   it left old geometry in the scene. After OPCD's own Batch Export every mesh counts as changed.
 - **New FBX:** instantiated under the course's mesh parent the way OPCD's `GSP > Add OPCD Meshes` does. Added and
   replaced objects get a `MeshCollider`, then OPCD's `GameObject > Set Default Materials` runs on them (materials,
-  channel store, physics material).
+  channel store, physics material). It is checked: on a whole course at once (789 objects) OPCD left 668 on the
+  material their FBX carries, so what still wears an FBX material goes again in batches of 50, then one by one
+  (`opcdMaterials` in the result; any left is an error). `golfmap.meshes.materials` does the same for a scene
+  already in that state; follow it with `golfmap.course.refresh skip=meshes.sync`.
 - **FBX that is gone:** objects under the parent that show no current FBX (including painted copies of a deleted
   FBX, which keep rendering) are `stale`. The menu asks before deleting them; the bridge deletes with `prune=true`.
 - **Leftovers:** an FBX that the Blender FBX sync's record (`<folder>/.golfmap-fbx-sync.json`) doesn't list is left
@@ -953,7 +1025,7 @@ ground around them:
 | `waterplanes.build` | a named `*_Water_Base_Lake_-_Mesh`: created if it has no plane, else rebuilt keeping its lift |
 | `creeks.import` | only when a creek mesh is named: the creeks of the export with a point inside its bounds (+1 m) are refitted, no creek is removed |
 | `walls.build` | only the walls/boulders whose bank meets them (`WallsOver` for objects in the scene, `WallsIn` on bounds for the others); else skipped |
-| `surfaces.export` | not run (whole-course export): status `pending` |
+| `surfaces.export` | when a rock slab (`*_Rock_-_Mesh`) is among them: run for the inner terrain as in a full refresh (`would run` on a dry run), and the `pending` list then names only the grass zones. Otherwise not run (whole-course export): status `pending` |
 
 Where each object is (`where` in the report): the scene object (in a real run the union of the old and the new shape,
 so ground a smaller bunker gave up is matched too), else its imported FBX (root at the origin, as the sync places it),
@@ -1215,3 +1287,14 @@ the stone in).
 - Stone-painted course mesh (a wall-ground face) is class Rock (11) in the surface map, and the tall-grass rules keep off
   it. After removing wall ground, the terrain it lowered stays down: `golfmap.terrain.conform` with `x0/z0/x1/z1` raises it
   back in that area only; then `golfmap.surfaces.export` and `bun run grass:zones` so the grass returns.
+
+## Power lines
+
+`golfmap.powerlines.build` (`Editor/GolfMap/GolfMapPowerLines.cs`) builds the course's `power_line` features (drawn in golf-map's Draw mode, one point per pole structure) as H-frame wooden pole lines under `GolfMap Power Lines`: two poles and a crossarm at every point, three hanging insulators, three sagging wires between structures.
+
+1. Export the lines: `bun run py gspro.py power-lines --course <course> --out <export folder>/<prefix>-power-lines.json` (golfmap-power-lines-v1: each line's points in EPSG:3006).
+2. `unity_command golfmap.powerlines.build {dryRun: true}`: per span its length, sag, pole height and the wires' least height over the ground. `noGround` lists points with no collider under them (outside both terrains); those structures are left out.
+3. The same without `dryRun`. Defaults: 13 m poles 4.6 m apart, 9.6 m arm, wires 4.3 m apart, sag 2.2 % of the span. Where a span's wires would come within `minClearanceM` (6 m) of the ground, its two structures grow, up to 7 m: a long span over a hill usually means a pole was not drawn.
+4. Meshes (`<line> poles/insulators/wires.asset`) and the three Standard materials go to `<course>/PowerLines/`. The materials are made once and then kept (`resetMaterials: true` puts the built-in look back). The poles carry a MeshCollider with `GSPwood`; the wires have no collider.
+
+A rebuild replaces everything under `GolfMap Power Lines`. The trees export keeps survey stems out of the corridor (docs/gspro/export.md, `trees`); replant after drawing or moving a line.

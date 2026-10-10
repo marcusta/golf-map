@@ -60,7 +60,7 @@ const GEOREF = JSON.stringify({ bbox: GEOREF_BBOX });
 /** …which the exports square and snap to the 10 m step: 2054 m -> 2050 m. */
 const GEOREF_INNER = innerSquareFrom3006(GEOREF_BBOX);
 
-async function setup(runner: ExportRunner, opts: { georeference?: boolean; unityBridge?: UnityBridge } = {}) {
+async function setup(runner: ExportRunner, opts: { georeference?: boolean; unityBridge?: UnityBridge; courseDocsRoot?: string } = {}) {
     const ctx = await createTestDb(seedCourse);
     if (opts.georeference !== false) {
         await ctx.db.updateTable('courses').set({ georeference_json: GEOREF })
@@ -71,7 +71,7 @@ async function setup(runner: ExportRunner, opts: { georeference?: boolean; unity
     const assets = new AssetsService(ctx.db, dataDir);
     const svc = new GsproExportService({
         db: ctx.db, courses, assets, dataDir,
-        pipelineDir: '/pipeline', runner, unityBridge: opts.unityBridge,
+        pipelineDir: '/pipeline', runner, unityBridge: opts.unityBridge, courseDocsRoot: opts.courseDocsRoot,
     });
     return { ctx, svc, db: ctx.db, dataDir, assets };
 }
@@ -362,25 +362,27 @@ test('a built site with no sources folder yet also lists nothing', async () => {
     expect(await t.svc.orthoSources(TEST_COURSE_ID)).toEqual([]);
 });
 
-test('the persisted ortho GeoTIFFs are listed newest first, patched copies after their original', async () => {
+test('the persisted ortho GeoTIFFs are listed newest first, the cleaned photo after its original', async () => {
     const t = await setup(recordingRunner().runner);
     await buildSite(t, [
-        'ortho-orto-l2-2023.tif', 'dem.tif', 'ortho-orto-l2-2025.patched.tif',
+        'ortho-orto-l2-2023.tif', 'dem.tif', 'ortho-orto-l2-2025.cleaned.tif',
         'ortho-orto-l2-2025.tif', 'trees.geojson', 'dem-edited.tif',
     ]);
 
     const sources = await t.svc.orthoSources(TEST_COURSE_ID);
     expect(sources).toEqual([
-        { source: 'ortho-orto-l2-2025.tif', collection: 'orto-l2-2025', patched: false, active: true },
-        { source: 'ortho-orto-l2-2025.patched.tif', collection: 'orto-l2-2025', patched: true, active: true },
-        { source: 'ortho-orto-l2-2023.tif', collection: 'orto-l2-2023', patched: false, active: false },
+        { source: 'ortho-orto-l2-2025.tif', collection: 'orto-l2-2025', cleaned: false, active: true },
+        { source: 'ortho-orto-l2-2025.cleaned.tif', collection: 'orto-l2-2025', cleaned: true, active: true },
+        { source: 'ortho-orto-l2-2023.tif', collection: 'orto-l2-2023', cleaned: false, active: false },
     ]);
 });
 
-test('parseOrthoSourceName reads the collection and the patched flag', () => {
-    expect(parseOrthoSourceName('ortho-orto-l2-2025.tif')).toEqual({ collection: 'orto-l2-2025', patched: false });
-    expect(parseOrthoSourceName('ortho-orto-i2-2023.patched.tif')).toEqual({ collection: 'orto-i2-2023', patched: true });
+test('parseOrthoSourceName reads the collection and the cleaned flag', () => {
+    expect(parseOrthoSourceName('ortho-orto-l2-2025.tif')).toEqual({ collection: 'orto-l2-2025', cleaned: false });
+    expect(parseOrthoSourceName('ortho-orto-i2-2023.cleaned.tif')).toEqual({ collection: 'orto-i2-2023', cleaned: true });
     expect(parseOrthoSourceName('dem.tif')).toBeNull();
+    // The retired patch-log model's working raster is not a source any more.
+    expect(parseOrthoSourceName('ortho-orto-l2-2025.patched.tif')).toBeNull();
     expect(parseOrthoSourceName('ortho-orto-l2-2025.tif.bak')).toBeNull();
 });
 
@@ -448,13 +450,13 @@ test('exportOrtho renders the chosen source as an 8192px quality-92 JPEG over th
     expect(flag(args, '--square-3006')).toBe(squareArg(GEOREF_INNER));
 });
 
-test('a patched source is named so it cannot be mistaken for the pristine one', async () => {
+test('the cleaned photo is named so it cannot be mistaken for the pristine one', async () => {
     const { calls, runner } = recordingRunner();
     const t = await setup(runner);
-    await buildSite(t, ['ortho-orto-l2-2025.tif', 'ortho-orto-l2-2025.patched.tif']);
-    const res = await t.svc.exportOrtho(TEST_COURSE_ID, 'ortho-orto-l2-2025.patched.tif');
-    expect(path.basename(res.path)).toBe('linkan-orto-l2-2025-patched-8192.jpg');
-    expect(calls[0].args[calls[0].args.indexOf('--ortho') + 1]).toEndWith('ortho-orto-l2-2025.patched.tif');
+    await buildSite(t, ['ortho-orto-l2-2025.tif', 'ortho-orto-l2-2025.cleaned.tif']);
+    const res = await t.svc.exportOrtho(TEST_COURSE_ID, 'ortho-orto-l2-2025.cleaned.tif');
+    expect(path.basename(res.path)).toBe('linkan-orto-l2-2025-cleaned-8192.jpg');
+    expect(calls[0].args[calls[0].args.indexOf('--ortho') + 1]).toEndWith('ortho-orto-l2-2025.cleaned.tif');
 });
 
 test('exportOrtho refuses a source that is not one of the listed files', async () => {
@@ -837,6 +839,28 @@ test('the inner trees export converts the installed tree-stems asset over the in
     // The course's tree species areas travel with the stems.
     expect(flag(args, '--course')).toBe(TEST_COURSE_ID);
     expect(args).not.toContain('--exclude-square');
+    // No placed rocks for this course: nothing to keep the stems off.
+    expect(args).not.toContain('--rocks');
+});
+
+test("the trees export keeps the stems off the course's placed rocks when it has a stone-walls.json", async () => {
+    const { calls, runner } = recordingRunner({ stdout: 'Wrote x.json\n' });
+    const docs = await mkdtemp(path.join(os.tmpdir(), 'gspro-docs-'));
+    const rocks = path.join(docs, 'linkan', 'stone-walls.json');
+    await mkdir(path.dirname(rocks), { recursive: true });
+    await writeFile(rocks, '{"boulders":[]}');
+    const t = await setup(runner, { courseDocsRoot: docs });
+    await buildSite(t, ['dem.tif']);
+    const dir = await mkdtemp(path.join(os.tmpdir(), 'gspro-out-'));
+    await t.svc.setDir(TEST_COURSE_ID, dir);
+    await writeFile(path.join(dir, 'linkan-inner-dem-2050m.tif.json'), '{}');
+    const stems = t.assets.resolveTreeStemsPath(SITE_ID);
+    await mkdir(path.dirname(stems), { recursive: true });
+    await writeFile(stems, '{"trees":[]}');
+
+    await t.svc.exportTrees(TEST_COURSE_ID, 'inner');
+
+    expect(flag(calls[0].args, '--rocks')).toBe(rocks);
 });
 
 test('the outer trees are detected once from the outer lidar + DEM, then written without the inner square', async () => {
@@ -977,12 +1001,12 @@ test('outer and DEM file names carry course, terrain, vintage and side', () => {
     expect(outerOrthoSourceName('orto-l2-2025')).toBe('outer-ortho-orto-l2-2025.tif');
 });
 
-test('the ortho file name carries course, vintage, patched flag and size', () => {
-    const src = { source: 'x', collection: 'orto-l2-2025', patched: false, active: false };
+test('the ortho file name carries course, vintage, cleaned flag and size', () => {
+    const src = { source: 'x', collection: 'orto-l2-2025', cleaned: false, active: false };
     expect(orthoExportFileName('Vreta', src)).toBe('vreta-orto-l2-2025-8192.jpg');
-    expect(orthoExportFileName('Norrköping - Klinga', { ...src, patched: true })).toBe('norrkoping-klinga-orto-l2-2025-patched-8192.jpg');
+    expect(orthoExportFileName('Norrköping - Klinga', { ...src, cleaned: true })).toBe('norrkoping-klinga-orto-l2-2025-cleaned-8192.jpg');
     // The cleaned export (buildings removed / forest floor) never overwrites the plain files.
-    expect(orthoExportFileName('Vreta', { ...src, patched: true }, true)).toBe('vreta-orto-l2-2025-patched-clean-8192.jpg');
+    expect(orthoExportFileName('Vreta', { ...src, cleaned: true }, true)).toBe('vreta-orto-l2-2025-cleaned-clean-8192.jpg');
     expect(outerOrthoExportFileName('Vreta', 'orto-l2-2025', true)).toBe('vreta-outer-orto-l2-2025-clean-8192.jpg');
 });
 
@@ -1299,18 +1323,18 @@ test('unity-ortho renders the picked photo, then puts its -meshes file onto the 
     writeFileSync(path.join(discovery, 'bridge-1.json'), JSON.stringify({ pid: process.pid, port: ours.server.port!, token: 'tok', projectPath: project, projectName: 'linkan_v4', unityVersion: '', started: '' }));
     try {
         const t = await setup(runner, { unityBridge: defaultUnityBridge(discovery) });
-        await buildSite(t, ['ortho-orto-l2-2025.tif', 'ortho-orto-l2-2025.patched.tif']);
+        await buildSite(t, ['ortho-orto-l2-2025.tif', 'ortho-orto-l2-2025.cleaned.tif']);
         await t.svc.setDir(TEST_COURSE_ID, exportDir);
 
         expect(() => describeRequest({ kind: 'unity-ortho' })).toThrow(/needs a source/);
         // No tint asked for: the -meshes file is written anyway, it is the one Unity takes.
-        const job = await t.svc.start(TEST_COURSE_ID, { kind: 'unity-ortho', source: 'ortho-orto-l2-2025.patched.tif', removeBuildings: true });
+        const job = await t.svc.start(TEST_COURSE_ID, { kind: 'unity-ortho', source: 'ortho-orto-l2-2025.cleaned.tif', removeBuildings: true });
         expect(job.label).toBe('inner orthophoto onto the Unity course meshes');
         await t.svc.whenIdle(TEST_COURSE_ID);
         const res = t.svc.job(job.id);
         expect(res.error).toBeNull();
         expect(calls.map(c => c.args[1])).toEqual(['ortho']);
-        const meshes = 'linkan-orto-l2-2025-patched-clean-8192-meshes.jpg';
+        const meshes = 'linkan-orto-l2-2025-cleaned-clean-8192-meshes.jpg';
         expect(flag(calls[0]!.args, '--tint-out')).toBe(path.join(exportDir, meshes));
         expect(ours.calls.map(c => c.command)).toEqual(['golfmap.course', 'golfmap.orthos.apply']);
         expect(ours.calls[1]!.args).toEqual({ file: meshes });

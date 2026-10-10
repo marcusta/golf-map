@@ -5,6 +5,31 @@ import { VersionConflictError } from '@basics/core/server/version-conflict';
 import { ConflictError, NotFoundError } from '@basics/core/server/auth';
 import { CourseFeaturesService, InvalidFeatureError, ODBL_ATTRIBUTION } from './course-features.service';
 import type { FeatureGeometry } from './geo';
+import { pathTransitionDefaults } from '../../shared/features/path-transitions';
+
+test('path transitions persist and validate against merged geometry and surface on updates', async () => {
+    const { db } = await createTestDb(seedCourse);
+    const svc = new CourseFeaturesService(db);
+    const geometry = { ...squareGeometry(), centerline: { points: [{ x: 0, y: 0 }, { x: 40, y: 0 }], widthM: 4 } };
+    const transition = { ...pathTransitionDefaults('wheel-tracks'), id: 'tracks' };
+    const road = await svc.create({ courseId: TEST_COURSE_ID, type: 'path', geometry, attributes: { surface: 'gravel', pathTransitions: [transition] } });
+    expect((await svc.findById(road.id)).attributes?.pathTransitions).toEqual([transition]);
+    const tongue = { ...transition, centerGrassReachM: 10 };
+    const tongued = await svc.create({ courseId: TEST_COURSE_ID, type: 'path', geometry, attributes: { surface: 'gravel', pathTransitions: [tongue] } });
+    expect((await svc.findById(tongued.id)).attributes?.pathTransitions).toEqual([tongue]);
+    await expect(svc.create({ courseId: TEST_COURSE_ID, type: 'path', geometry, attributes: { surface: 'gravel', pathTransitions: [transition, { ...transition, id: 'overlap' }] } })).rejects.toBeInstanceOf(InvalidFeatureError);
+    await expect(svc.create({ courseId: TEST_COURSE_ID, type: 'path', geometry, attributes: { surface: 'gravel', unrelated: [] } })).rejects.toBeInstanceOf(InvalidFeatureError);
+    await expect(svc.create({ courseId: TEST_COURSE_ID, type: 'fairway', geometry: squareGeometry(), attributes: { pathTransitions: [transition] } })).rejects.toBeInstanceOf(InvalidFeatureError);
+    await expect(svc.update(road.id, road.version, { geometry: { ...geometry, crs: 'EPSG:4326' } })).rejects.toBeInstanceOf(InvalidFeatureError);
+    await expect(svc.update(road.id, road.version, { attributes: { surface: 'asphalt', pathTransitions: [transition] } })).rejects.toBeInstanceOf(InvalidFeatureError);
+    await expect(svc.update(road.id, road.version, { geometry: { ...geometry, centerline: { ...geometry.centerline, points: [{ x: 0, y: 0 }, { x: 2, y: 0 }] } } })).rejects.toBeInstanceOf(InvalidFeatureError);
+    for (const bad of [{ ...transition, variation: NaN }, { ...transition, direction: 0 }, { ...transition, placement: 'section', startM: 39 }]) {
+        await expect(svc.create({ courseId: TEST_COURSE_ID, type: 'path', geometry, attributes: { surface: 'gravel', pathTransitions: [bad as typeof transition] } })).rejects.toBeInstanceOf(InvalidFeatureError);
+    }
+    const cleared = await svc.update(road.id, road.version, { attributes: { surface: 'gravel' } });
+    expect(cleared.attributes?.pathTransitions).toBeUndefined();
+    await db.destroy();
+});
 
 function squareGeometry(cx = 0, cy = 0, half = 5): FeatureGeometry {
     return {
@@ -653,6 +678,29 @@ describe('CourseFeaturesService.reorder', () => {
 
         const stack = await svc.listByCourse(TEST_COURSE_ID);
         expect(stack.filter((f) => f.holeId === null).map((f) => f.id)).toEqual([b.id, a.id]);
+    });
+
+    test('stored kerb fillets are no part of orderedIds and ride along with the row below them', async () => {
+        const { db } = await createTestDb(seedCourse);
+        const svc = new CourseFeaturesService(db);
+        const line = (pts: number[][]) => ({ crs: 'EPSG:3006' as const, rings: [], centerline: { points: pts.map(([x, y]) => ({ x: 500000 + x, y: 6500000 + y })), widthM: 4 } });
+        const road = await svc.create({ courseId: TEST_COURSE_ID, type: 'path', geometry: line([[-50, 0], [50, 0]]) });
+        const branch = await svc.create({ courseId: TEST_COURSE_ID, type: 'path', geometry: line([[0, 0], [0, 40]]) });
+        const fairway = await svc.create({ courseId: TEST_COURSE_ID, holeId: null, type: 'fairway', geometry: squareGeometry() });
+        const courseLevel = async () => (await svc.listByCourse(TEST_COURSE_ID)).filter((f) => f.holeId === null && f.layer == null);
+        const before = await courseLevel();
+        const filletIds = before.filter((f) => f.source === 'road-junctions').map((f) => f.id);
+        expect(filletIds.length).toBeGreaterThan(0);
+        const drawn = before.filter((f) => f.source !== 'road-junctions').map((f) => f.id);
+
+        const next = [fairway.id, ...drawn.filter((id) => id !== fairway.id)].reverse();
+        await svc.reorder(TEST_COURSE_ID, null, next);
+
+        const after = await courseLevel();
+        expect(after.filter((f) => f.source !== 'road-junctions').map((f) => f.id)).toEqual(next);
+        expect(after.map((f) => f.sortOrder)).toEqual(after.map((_, i) => i));
+        expect(after.filter((f) => f.source === 'road-junctions').map((f) => f.id).sort()).toEqual([...filletIds].sort());
+        expect([road.id, branch.id].every((id) => next.includes(id))).toBe(true);
     });
 
     test('rejects an orderedIds set that does not match the scope (missing member)', async () => {
@@ -1700,5 +1748,83 @@ describe('CourseFeaturesService — tree_area', () => {
 
         const stack = (await svc.listByHole(TEST_HOLE_2_ID)).map((f) => f.type);
         expect(stack).toEqual(['vegetation_zone', 'tree_area', 'trees']);
+    });
+});
+
+// Rock slabs (shared/features/rock-slab.ts): a drawn surface that shaping-global
+// turns into a Blender cut-out; marginM and uvM are optional.
+describe('CourseFeaturesService — rock_slab', () => {
+    test('is a drawable type with no required attributes; margin and tile size round-trip', async () => {
+        const { db } = await createTestDb(seedCourse);
+        const svc = new CourseFeaturesService(db);
+
+        const plain = await svc.create({ courseId: TEST_COURSE_ID, holeId: null, type: 'rock_slab', geometry: squareGeometry() });
+        expect(plain.type).toBe('rock_slab');
+        expect(plain.attributes).toBeNull();
+
+        const set = await svc.update(plain.id, plain.version, { attributes: { marginM: 2.5, uvM: 6 } });
+        expect(set.attributes).toEqual({ marginM: 2.5, uvM: 6 });
+        expect((await svc.findById(plain.id)).attributes).toEqual({ marginM: 2.5, uvM: 6 });
+
+        const edge = await svc.update(plain.id, set.version, { attributes: { marginM: 0 } });
+        expect(edge.attributes).toEqual({ marginM: 0 });
+        // Geometry-only edits leave the attributes alone.
+        const moved = await svc.update(plain.id, edge.version, { geometry: squareGeometry(20, 20) });
+        expect(moved.attributes).toEqual({ marginM: 0 });
+    });
+
+    test('a margin outside 0..5 m or a tile size that is not above 0 is refused, on create, update and batch create', async () => {
+        const { db } = await createTestDb(seedCourse);
+        const svc = new CourseFeaturesService(db);
+        const create = (attributes: Record<string, unknown>) => svc.create({
+            courseId: TEST_COURSE_ID, holeId: null, type: 'rock_slab', geometry: squareGeometry(), attributes: attributes as never,
+        });
+
+        await expect(create({ marginM: -0.1 })).rejects.toThrow(/attributes.marginM must be a number between 0 and 5/);
+        await expect(create({ marginM: 5.5 })).rejects.toThrow(InvalidFeatureError);
+        await expect(create({ marginM: '1.5' })).rejects.toThrow(/attributes.marginM/);
+        await expect(create({ uvM: 0 })).rejects.toThrow(/attributes.uvM must be a number above 0/);
+        await expect(create({ uvM: true })).rejects.toThrow(InvalidFeatureError);
+
+        const slab = await create({ marginM: 5, uvM: 0.5 });
+        await expect(svc.update(slab.id, slab.version, { attributes: { marginM: 6 } })).rejects.toThrow(/attributes.marginM/);
+        await expect(svc.createMany(TEST_COURSE_ID, [{
+            holeId: null, type: 'rock_slab', geometry: squareGeometry(40, 40), attributes: { uvM: -1 },
+        }])).rejects.toThrow(/attributes.uvM/);
+        // Other types don't know the keys: a bunker's `marginM` is just a free attribute.
+        const bunker = await svc.create({
+            courseId: TEST_COURSE_ID, holeId: null, type: 'bunker', geometry: squareGeometry(60, 60), attributes: { marginM: 9 },
+        });
+        expect(bunker.attributes).toEqual({ marginM: 9 });
+    });
+
+    test('lands above the grass surfaces and below bunkers in the stack', async () => {
+        const { db } = await createTestDb(seedCourse);
+        const svc = new CourseFeaturesService(db);
+        const at = (type: string) => svc.create({ courseId: TEST_COURSE_ID, holeId: TEST_HOLE_2_ID, type, geometry: squareGeometry() });
+
+        await at('bunker');
+        await at('rough');
+        await at('rock_slab');
+
+        expect((await svc.listByHole(TEST_HOLE_2_ID)).map((f) => f.type)).toEqual(['rough', 'rock_slab', 'bunker']);
+    });
+});
+
+describe('CourseFeaturesService — power_line', () => {
+    test('is a drawable centerline type: the corridor is derived from the line and it joins no road junctions', async () => {
+        const { db } = await createTestDb(seedCourse);
+        const svc = new CourseFeaturesService(db);
+        const X = 500000, Y = 6500000;
+        const geometry = { crs: 'EPSG:3006' as const, rings: [], centerline: { points: [{ x: X, y: Y }, { x: X + 60, y: Y, corner: true }, { x: X + 120, y: Y + 20 }], widthM: 8 } };
+
+        const line = await svc.create({ courseId: TEST_COURSE_ID, holeId: null, type: 'power_line', geometry });
+
+        expect(line.type).toBe('power_line');
+        expect(line.geometry.centerline?.widthM).toBe(8);
+        expect(line.geometry.rings.length).toBeGreaterThan(0);
+        expect(line.attributes).toBeNull();
+        const widened = await svc.update(line.id, line.version, { geometry: { ...line.geometry, centerline: { ...line.geometry.centerline!, widthM: 12 } } });
+        expect(widened.geometry.centerline?.widthM).toBe(12);
     });
 });

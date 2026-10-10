@@ -37,6 +37,7 @@ import {
 } from '../../../shared/strategy';
 import { stackKey } from '../../../shared/render/stack-key';
 import { TREE_AREA_TYPE } from '../../../shared/features/tree-areas';
+import { POWER_LINE_TYPE } from '../../../shared/features/power-line';
 import { flattenRing } from '../geo/bezier';
 
 /** Corridor-obstacle feature types (shared/strategy corridor.ts), as a Set for O(1) lookup. */
@@ -125,6 +126,8 @@ export function buildLieMap(
         // (shared/features/tree-areas.ts): no lie, and it often reaches over a
         // fairway edge it must not turn into rough.
         if (feature.type === TREE_AREA_TYPE) continue;
+        // A power line hangs over the ground (shared/features/power-line.ts): no lie.
+        if (feature.type === POWER_LINE_TYPE) continue;
         if (feature.geometry.rings.length === 0) continue;
         const flat = flattenRing(feature.geometry.rings[0], LIE_MAP_TOLERANCE_M, feature.geometry.curveType);
         if (flat.length < 3) continue;

@@ -9,6 +9,9 @@
 //                        [--blend replace|mix] [--also 'type[/variant][=weight], ...']
 //                                                        new course-level zone with another feature's outline
 //                                                        (e.g. a deep_rough polygon); prints its id
+//   bun run zones -- add <course> <zoneType> --from-geojson <file> [same flags]
+//                                                        one zone per Polygon feature (EPSG:3006); a feature's
+//                                                        `properties.variant` picks its mix
 //   bun run zones -- set <course> <zoneId|prefix> [--variant key|''] [--weight x] [--feather m] [--noise m]
 //                        [--blend replace|mix] [--also 'type[/variant][=weight], ...'|'']
 //   bun run zones -- remove <course> <zoneId|prefix>
@@ -62,7 +65,7 @@ const dbPath = process.env.DB_PATH ?? path.join(dataDir, 'app.sqlite');
 
 function usage(message?: string): never {
     if (message) console.error(`error: ${message}\n`);
-    console.error('usage: bun run zones -- types|list <course> | add <course> <zoneType> --from-feature <id> [--variant --weight --feather --noise --blend --also]\n'
+    console.error('usage: bun run zones -- types|list <course> | add <course> <zoneType> (--from-feature <id> | --from-geojson <file>) [--variant --weight --feather --noise --blend --also]\n'
         + '       | set <course> <zoneId> [--variant --weight --feather --noise --blend --also] | remove <course> <zoneId> | update <course> <zoneId>...\n'
         + '       | bind <course> <zoneType> [--variant <key> [--name <label>]] (--palette <grass-palette.json> | <item>[=maxDensity]...)\n'
         + '       | creeks <course> | creek <course> <creekId> --palette <default|variant|none> [--cover 0-1] [--max m] [--wet m]');
@@ -110,10 +113,10 @@ async function featureByPrefix(courseId: string, prefix: string) {
 
 async function zoneType(courseId: string, key: string) {
     const all = await zoneTypes.listByCourse(courseId);
-    if (key === CREEK_BANK_ZONE_TYPE && !all.some((z) => z.key === key)) {
-        // A course seeded before creek_bank was a default: add it on first use.
-        const { key: k, name, color } = DEFAULT_ZONE_TYPES.find((z) => z.key === key)!;
-        all.push(await zoneTypes.create({ courseId, key: k, name, color }));
+    const preset = DEFAULT_ZONE_TYPES.find((z) => z.key === key);
+    if (preset && !all.some((z) => z.key === key)) {
+        // A course seeded before this default existed (creek_bank, rough_wispy): add it on first use.
+        all.push(await zoneTypes.create({ courseId, key: preset.key, name: preset.name, color: preset.color }));
     }
     const t = all.find((z) => z.key === key);
     if (!t) usage(`no zone type '${key}' (have: ${all.map((z) => z.key).join(', ')})`);
@@ -193,8 +196,27 @@ try {
         }
     } else if (command === 'add') {
         if (!arg) usage('add needs a zone type');
-        const variant = variantFlag(await zoneType(c.id, arg));
-        if (!flags['from-feature']) usage('add needs --from-feature <id>');
+        const type = await zoneType(c.id, arg);
+        const variant = variantFlag(type);
+        if (flags['from-geojson']) {
+            // One zone per Polygon (EPSG:3006, straight edges, holes kept); `properties.variant` picks the mix.
+            const doc = JSON.parse(readFileSync(flags['from-geojson'], 'utf8')) as {
+                features: { properties?: { variant?: string }; geometry: { type: string; coordinates: number[][][] } }[];
+            };
+            for (const f of doc.features) {
+                if (f.geometry.type !== 'Polygon') usage(`--from-geojson takes Polygon features, not ${f.geometry.type}`);
+                const v = f.properties?.variant ?? variant;
+                if (v && !type.variants.some((x) => x.key === v)) usage(`zone type '${type.key}' has no variant '${v}'`);
+                const created = await features.create({
+                    courseId: c.id, holeId: null, type: 'vegetation_zone',
+                    geometry: { crs: 'EPSG:3006', rings: f.geometry.coordinates.map((r) => ({ points: r.slice(0, -1).map(([x, y]) => ({ x, y })) })) },
+                    attributes: await layerFlags(c.id, zoneAttributes({ zoneType: arg, weight: 1, feather: 2, noise: 0 }, v)),
+                });
+                console.log(`${created.id}  ${arg}${v ? `/${v}` : ''} zone, stack position ${created.sortOrder}`);
+            }
+            process.exit(0);
+        }
+        if (!flags['from-feature']) usage('add needs --from-feature <id> or --from-geojson <file>');
         const from = await featureByPrefix(c.id, flags['from-feature']);
         const created = await features.create({
             courseId: c.id, holeId: null, type: 'vegetation_zone', geometry: from.geometry,

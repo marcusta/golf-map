@@ -11,11 +11,11 @@ afterEach(() => _reset());
 
 const DEFAULT_DIR = '/home/marcus/Downloads';
 
-/** What a built site persists: two vintages, the newer one patched too. */
+/** What a built site persists: two vintages, the newer one cleaned too. */
 const SOURCES: GsproOrthoSource[] = [
-    { source: 'ortho-orto-l2-2025.tif', collection: 'orto-l2-2025', patched: false, active: true },
-    { source: 'ortho-orto-l2-2025.patched.tif', collection: 'orto-l2-2025', patched: true, active: true },
-    { source: 'ortho-orto-l2-2023.tif', collection: 'orto-l2-2023', patched: false, active: false },
+    { source: 'ortho-orto-l2-2025.tif', collection: 'orto-l2-2025', cleaned: false, active: true },
+    { source: 'ortho-orto-l2-2025.cleaned.tif', collection: 'orto-l2-2025', cleaned: true, active: true },
+    { source: 'ortho-orto-l2-2023.tif', collection: 'orto-l2-2023', cleaned: false, active: false },
 ];
 
 
@@ -81,7 +81,7 @@ function fakeApi(opts: { failRun?: string; failSetDir?: string; sources?: GsproO
             calls.floor.push([forestFloor, floorColor, floorMix]);
             if (opts.failRun) throw new Error(opts.failRun);
             const { dir } = settingsFor(courseId);
-            return { path: `${dir}/vreta-orto-l2-2025-patched-clean-8192.jpg`, report: ['wrote x.jpg', 'Unity (vreta_v4): x-meshes.jpg put onto Assets/y.jpg'] };
+            return { path: `${dir}/vreta-orto-l2-2025-cleaned-clean-8192.jpg`, report: ['wrote x.jpg', 'Unity (vreta_v4): x-meshes.jpg put onto Assets/y.jpg'] };
         },
         async terrain() {
             calls.terrain++;
@@ -369,9 +369,9 @@ test('runOuterOrtho saves the folder and fetches the picked vintage by collectio
     expect(svc.report.peek()).toEqual(['fetched outer-ortho-orto-l2-2023.tif', 'wrote x.jpg']);
 });
 
-test('a patched pick still names the plain collection for the outer fetch', async () => {
+test('a cleaned pick still names the plain collection for the outer fetch', async () => {
     const { svc, calls } = await openService();
-    svc.orthoSource.set('ortho-orto-l2-2025.patched.tif');
+    svc.orthoSource.set('ortho-orto-l2-2025.cleaned.tif');
     expect(svc.pickedCollection).toBe('orto-l2-2025');
     await svc.runOuterOrtho();
     expect(calls.runOuterOrtho).toEqual(['orto-l2-2025']);
@@ -486,20 +486,20 @@ test('the plain orthophoto exports never ask for building removal or forest floo
     expect(calls.buildings).toHaveLength(2);
 });
 
-test('cleaned photo into Unity renders the patched copy of the picked vintage with the boxes as ticked, even both off', async () => {
+test('cleaned photo into Unity renders the cleaned photo of the picked vintage with the boxes as ticked, even both off', async () => {
     const { svc, calls } = await openService();
-    const patched = SOURCES[1]!;
+    const cleaned = SOURCES[1]!;
     svc.orthoSource.set(SOURCES[0]!.source);   // the pristine 2025 photo is picked
     expect(await svc.runUnityOrtho()).toBe(true);
     expect(svc.report.peek()).toContain('Unity (vreta_v4): x-meshes.jpg put onto Assets/y.jpg');
-    // Both boxes off is the patched photo alone: unlike the cleaned file export, still a job.
+    // Both boxes off is the cleaned photo alone: unlike the cleaned file export, still a job.
     svc.removeBuildings.set(false);
     svc.forestFloor.set(false);
     expect(await svc.runUnityOrtho()).toBe(true);
-    expect(calls.runUnityOrtho).toEqual([patched.source, patched.source]);
+    expect(calls.runUnityOrtho).toEqual([cleaned.source, cleaned.source]);
     expect(calls.buildings).toEqual([true, undefined]);
     expect(calls.floor).toEqual([[true, DEFAULT_FLOOR_COLOR, undefined], [undefined, undefined, undefined]]);
-    // A vintage without a patched copy goes as picked.
+    // A vintage without a cleaned photo goes as picked.
     svc.orthoSource.set(SOURCES[2]!.source);
     expect(await svc.runUnityOrtho()).toBe(true);
     expect(calls.runUnityOrtho[2]).toBe(SOURCES[2]!.source);

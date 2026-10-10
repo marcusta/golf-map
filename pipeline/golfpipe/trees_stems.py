@@ -125,6 +125,58 @@ LEAF_OFF_MONTHS = frozenset({10, 11, 12, 1, 2, 3, 4})
 LEAF_OFF_ZOOM = 18
 
 
+# Solid low objects. Anything standing min_height_m over the ground model is a crown candidate,
+# and the ground model has filtered out boulders: a 1.5 m rock comes out as a 1.5 m bush (Vreta,
+# 2026-10: 15 of 114 placed rocks had a bush planted on them). A laser pulse into foliage splits
+# into several returns and leaves bare twigs brown or needles green in the leaf-off photo; a pulse
+# on rock (or a shed, a car, a log pile, a stone wall) comes back once from a pale grey surface.
+# A segment under SOLID_MAX_HEIGHT_M with at most SOLID_MAX_MULTI_FRACTION of its returns from
+# multi-return pulses, mean saturation at most SOLID_MAX_SATURATION and mean brightness at least
+# SOLID_MIN_BRIGHTNESS in the leaf-off ortho is no tree: it is left out and reported (SolidObject).
+# Measured on Vreta's stems under 5 m: on known rocks the multi fraction is 0.00-0.17 (median
+# 0.09), saturation 0.07-0.15, brightness 0.40-0.53; on the other 4197 the medians are 0.48, 0.18
+# and 0.30. The rule takes 14 of the 18 on known rocks and 193 others; of 24 of those looked at in
+# the photo none was a tree (boulders, sheds, vehicles, log piles, walls, a bridge, bare ground,
+# and two clipped hedges by the car park).
+# It needs both the return counts and the leaf-off ortho; without either nothing is left out.
+SOLID_MAX_HEIGHT_M = 5.0
+SOLID_MAX_MULTI_FRACTION = 0.2
+SOLID_MAX_SATURATION = 0.16
+SOLID_MIN_BRIGHTNESS = 0.38
+SOLID_MIN_ORTHO_COVERAGE = 0.5
+
+
+@dataclass(frozen=True)
+class SolidObject:
+    """A crown candidate left out as a solid low object (a rock, most often): its peak and size."""
+    x: float
+    y: float
+    height_m: float
+    area_m2: float
+
+    def row(self) -> list[float]:
+        return [round(self.x, 2), round(self.y, 2), round(self.height_m, 1), round(self.area_m2, 1)]
+
+
+def segment_solidity(segments, count, surface_count, multi_count, rgb):
+    """Per marker (index 1..count-1; 0 unused): (multi-return fraction of the segment's surface
+    returns, mean saturation, mean brightness 0..1 over its cells the ortho covers, ortho coverage)."""
+    labels = np.maximum(segments, 0).ravel()
+
+    def seg_sum(weights):
+        return np.bincount(labels, weights=np.asarray(weights, dtype=np.float64).ravel(), minlength=count)
+    returns = seg_sum(surface_count)
+    multi = seg_sum(multi_count) / np.maximum(returns, 1.0)
+    covered = np.isfinite(rgb).all(axis=-1)
+    channels = np.where(covered[..., None], rgb, 0.0).astype(np.float64)
+    high, low = channels.max(axis=-1), channels.min(axis=-1)
+    saturation = np.where(high > 0, (high - low) / np.maximum(high, 1.0), 0.0)
+    cells = seg_sum(np.ones(labels.size))
+    seen = seg_sum(covered)
+    return (multi, seg_sum(saturation) / np.maximum(seen, 1.0), seg_sum(high) / np.maximum(seen, 1.0) / 255.0,
+            seen / np.maximum(cells, 1.0))
+
+
 @dataclass(frozen=True)
 class TreeStem:
     x: float
@@ -404,7 +456,8 @@ def segment_top_heights(raw, segments):
 
 def stems_from_ndsm(ndsm, ground, transform, min_height_m=DEFAULT_MIN_HEIGHT_M, min_area_m2=DEFAULT_MIN_AREA_M2,
                     tall_height_m=TALL_HEIGHT_M, tall_min_area_m2=TALL_MIN_AREA_M2, leaf_off_rgb=None,
-                    roof_mask=None, roof_guard_area_m2=ROOF_GUARD_AREA_M2, roof_guard_m=ROOF_GUARD_M):
+                    roof_mask=None, roof_guard_area_m2=ROOF_GUARD_AREA_M2, roof_guard_m=ROOF_GUARD_M,
+                    surface_count=None, multi_count=None, solid_objects=None):
     """Return deterministic crown estimates; all lengths and coordinates in metres.
 
     Segments with a top below tall_height_m need min_area_m2 of support;
@@ -416,6 +469,10 @@ def stems_from_ndsm(ndsm, ground, transform, min_height_m=DEFAULT_MIN_HEIGHT_M, 
     leaf_off_rgb is an ndsm-shaped (rows, cols, 3) leaf-off ortho sample (see
     sample_ortho_rgb); each stem gets a kind from its crown greenness (see
     classify_kind). Without it every kind is unknown.
+    surface_count / multi_count are ndsm-shaped grids of the surface returns per
+    cell and of those from multi-return pulses. With both and leaf_off_rgb, a low
+    segment that is solid and pale grey (see SOLID_MAX_HEIGHT_M) is left out and
+    appended to the list solid_objects, when one is given.
     """
     if tall_height_m <= 0:
         raise ValueError("tall crowns need a positive height split")
@@ -441,6 +498,11 @@ def stems_from_ndsm(ndsm, ground, transform, min_height_m=DEFAULT_MIN_HEIGHT_M, 
         scores = np.full(len(peaks), np.nan)
     else:
         scores = conifer_score(segment_greenness(raw, segments, peaks, leaf_off_rgb))
+    solidity = None
+    if surface_count is not None and multi_count is not None and leaf_off_rgb is not None:
+        if np.shape(surface_count) != raw.shape or np.shape(multi_count) != raw.shape:
+            raise ValueError("the return counts must match the nDSM shape")
+        solidity = segment_solidity(segments, len(peaks) + 1, surface_count, multi_count, leaf_off_rgb)
     stems = []
     for idx, (row, col) in enumerate(peaks, 1):
         height = float(heights[row, col])
@@ -448,6 +510,14 @@ def stems_from_ndsm(ndsm, ground, transform, min_height_m=DEFAULT_MIN_HEIGHT_M, 
             continue
         if height >= tall_height_m and area[idx] < roof_guard_area_m2 and near_roof[idx]:
             continue
+        if solidity is not None and height < SOLID_MAX_HEIGHT_M:
+            multi, saturation, brightness, coverage = (float(values[idx]) for values in solidity)
+            if (coverage >= SOLID_MIN_ORTHO_COVERAGE and multi <= SOLID_MAX_MULTI_FRACTION
+                    and saturation <= SOLID_MAX_SATURATION and brightness >= SOLID_MIN_BRIGHTNESS):
+                if solid_objects is not None:
+                    x, y = transform * (col + .5, row + .5)
+                    solid_objects.append(SolidObject(x, y, height, float(area[idx])))
+                continue
         equal_area = math.sqrt(area[idx] / math.pi)
         radius = min(equal_area, max(cell / 2, TREE_CROWN_RADIUS_PER_HEIGHT * height, LOW_CROWN_MAX_RADIUS_M), 10.0)
         if equal_area > radius and is_flat_crown(height, p75[idx], equal_area, extent[idx]):
@@ -456,6 +526,14 @@ def stems_from_ndsm(ndsm, ground, transform, min_height_m=DEFAULT_MIN_HEIGHT_M, 
         score = float(scores[idx - 1])
         stems.append(TreeStem(x, y, height, radius, float(ground[row, col]), int(classify_kind(score, height)), score))
     return stems
+
+
+def solid_feature_collection(solid_objects, source_ref):
+    """The crown candidates left out as solid low objects, as GeoJSON points (EPSG:3006): rock candidates."""
+    return {"type": "FeatureCollection", "crs": {"type": "name", "properties": {"name": "EPSG:3006"}},
+            "features": [{"type": "Feature", "geometry": {"type": "Point", "coordinates": [o.row()[0], o.row()[1]]},
+                          "properties": {"type": "solid_object", "source": "lidar-canopy", "source_ref": source_ref,
+                                         "heightM": o.row()[2], "areaM2": o.row()[3]}} for o in solid_objects]}
 
 
 def compact_asset(stems):

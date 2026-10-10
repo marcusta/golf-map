@@ -40,6 +40,7 @@ other specs: `docs/gspro/<course>/shaping/NN-<id>.json`, applied in file-name or
   object per surface (`golfmap.split_surfaces`), building pads and parking levelled.
   A path drawn tomorrow is picked up by the next generation without editing anything.
 - `10-hole-<n>.json` - per-hole work, written with Marcus: bunker recipes, creeks, ponds, overrides.
+- `20-rocks.json` - hand layer: rock slabs cut out of the course meshes into their own objects (`golfmap.cut_out`).
 - `90-water.json` - water planes (after all digs).
 - `hand/` - snapshots of meshes sculpted by hand in Blender (later).
 

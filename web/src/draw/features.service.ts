@@ -10,7 +10,7 @@ import { ringWgs84 } from '../geo/wgs84-cache';
 import type { MapService } from '../map/map.service';
 import {
     DRAW_FILL_OPACITY, NICE_FILL_OPACITY, FEATURE_TYPES, typeColorExpression, featureFillColorExpression, SELECTION_COLOR,
-    OUTLINE_ONLY_TYPES, OUTLINE_ONLY_LINE_WIDTH, OUTLINE_ONLY_CASING_WIDTH, OUTLINE_ONLY_CASING_COLOR, RULES_TYPES, VEGETATION_TYPES,
+    OUTLINE_ONLY_TYPES, OUTLINE_ONLY_LINE_WIDTH, OUTLINE_ONLY_CASING_WIDTH, OUTLINE_ONLY_CASING_COLOR, RULES_TYPES, VEGETATION_TYPES, isVegetationType,
 } from './feature-palette';
 import { CourseDetailService } from '../course-detail/course-detail.service';
 import { ZoneTypesService, zoneTypeKeyOf, zoneVariantKeyOf } from '../zones/zone-types.service';
@@ -352,6 +352,17 @@ export class FeaturesService {
         return next;
     });
     private lastGenerated: CourseFeature[] | null = null;
+
+    /** The sources of the course's generated vegetation (tall rough, creek banks, lidar woodland floor). */
+    readonly generatedVegetationSources = new Computed<string[]>(() =>
+        [...new Set(this.generatedFeatures.get().filter(f => isVegetationType(f.type)).map(f => f.source!))].sort());
+
+    /** Vegetation mode's "Generated" toggle: false once every generated vegetation source is hidden. */
+    readonly generatedVegetationShown = new Computed<boolean>(() => {
+        const hidden = this.hiddenSources.get();
+        const sources = this.generatedVegetationSources.get();
+        return sources.length === 0 || sources.some(source => !hidden.has(source));
+    });
     private junctionMemo: { roads: CourseFeature[]; features: Feature[] } | null = null;
 
     /**
@@ -857,6 +868,21 @@ export class FeaturesService {
     }
 
     /**
+     * Show or hide all the generated vegetation at once, leaving the zones
+     * drawn by hand (Vegetation mode's "Generated" toggle). The same state as
+     * the stack panel's group-row eyes, so either undoes the other.
+     */
+    setGeneratedVegetationShown(shown: boolean): void {
+        const sources = this.generatedVegetationSources.peek();
+        const hidden = this.hiddenSources.peek();
+        batched(() => {
+            for (const source of sources) {
+                if (hidden.has(source) === shown) this.toggleSourceVisibility(source);
+            }
+        });
+    }
+
+    /**
      * Toggle the Roughs layer's editor visibility (stack panel toggle).
      * Hiding drops the layer's features from the selection, like the
      * type/id/source toggles.
@@ -1320,9 +1346,14 @@ export class FeaturesService {
         if (nextOrder.length === order.length && nextOrder.every((id, i) => id === order[i])) return true; // no-op (already at the edge)
 
         // Optimistic local patch — mirrors furniture.service.ts's applySortOrder.
-        nextOrder.forEach((id, index) => {
-            const row = this.store.items.peek().find(f => f.id === id);
-            if (row) this.store.patch({ ...row, sortOrder: index });
+        // Only the rows whose position changed, in one batch: a course-level
+        // group holds over a thousand rows.
+        const byId = new Map(this.store.items.peek().map(f => [f.id, f]));
+        batched(() => {
+            nextOrder.forEach((id, index) => {
+                const row = byId.get(id);
+                if (row && row.sortOrder !== index) this.store.patch({ ...row, sortOrder: index });
+            });
         });
         const result = await this.track(request(this.saving, this.saveError, () =>
             this.featuresApi.reorder({ courseId, ...scope, orderedIds: nextOrder })));

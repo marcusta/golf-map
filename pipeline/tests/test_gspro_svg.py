@@ -856,3 +856,19 @@ def test_grass_tracks_are_written_as_rough_under_the_other_roads(tmp_path):
     assert sum(h.area for h in halves) == pytest.approx(6 * 60 - 6 * (4 - 2 * gspro.PATH_SURFACE_OVERLAP_M), rel=1e-2)
     for h in halves:
         assert h.intersection(_shape(out, "roads_2")).area == pytest.approx(6 * gspro.PATH_SURFACE_OVERLAP_M, abs=0.05)
+
+
+def test_a_rock_slab_is_no_opcd_shape_and_changes_nothing_in_the_svg(tmp_path, capsys):
+    """A rock slab (berghäll) is cut out of the meshes in Blender by the shaping layer: the SVG leaves it out,
+    names every other shape and writes every other byte exactly as without it, and the report says so instead of
+    offering to map it."""
+    slab = ("rock_slab", None, 3, [_ring((0.30, 0.30), 6)], "bspline")
+    plain = _export(tmp_path / "plain", BASIC)
+    capsys.readouterr()
+    with_slab = _export(tmp_path / "slab", [*BASIC, slab])
+    report = capsys.readouterr().out
+    assert "rock_slab" not in with_slab.read_text(encoding="utf-8")
+    assert with_slab.read_text(encoding="utf-8") == plain.read_text(encoding="utf-8")
+    assert gspro.path_surfaces_file(with_slab).read_bytes() == gspro.path_surfaces_file(plain).read_bytes()
+    assert "rock slabs left out" in report and "1 feature(s)" in report
+    assert "no OPCD surface" not in report and "--map" not in report

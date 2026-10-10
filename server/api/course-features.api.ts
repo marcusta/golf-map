@@ -41,9 +41,18 @@ const FeatureGeometrySchema = Type.Object({
 
 // Flat scalar attributes (e.g. lidar tree heights); null clears on update.
 // Key-count and value checks live in the service (InvalidFeatureError).
+const PathTransitionSchema = Type.Object({
+    id: Type.String(), pattern: Type.Union([Type.Literal('soft-fade'), Type.Literal('overgrown-gravel'), Type.Literal('wheel-tracks')]),
+    placement: Type.Union([Type.Literal('start'), Type.Literal('end'), Type.Literal('section')]),
+    startM: Type.Number(), direction: Type.Union([Type.Literal(1), Type.Literal(-1)]),
+    transitionLengthM: Type.Number(), holdLengthM: Type.Number(), fadeLengthM: Type.Number(),
+    ending: Type.Union([Type.Literal('grass'), Type.Literal('continue')]),
+    edgeIrregularity: Type.Number(), dirtAmount: Type.Number(), centerGrassReachM: Type.Number(),
+    trackWidthM: Type.Number(), trackSpacingM: Type.Number(), variation: Type.Number(), seed: Type.Number(),
+});
 const FeatureAttributesSchema = Type.Union([
     Type.Null(),
-    Type.Record(Type.String(), Type.Union([Type.Number(), Type.String(), Type.Boolean()])),
+    Type.Record(Type.String(), Type.Union([Type.Number(), Type.String(), Type.Boolean(), Type.Array(PathTransitionSchema)])),
 ]);
 
 // D28: 'roughs' = the Roughs group under every hole; null = hole / course-level.

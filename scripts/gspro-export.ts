@@ -15,7 +15,7 @@
 //   dem | hillshade | trees | buildings | zones  [:inner | :outer]   no terrain = both, inner first
 //   unity-terrain[:inner|:outer]  the heightmap export, then into the open Unity editor's terrain (golfmap.terrain.update)
 //   unity-sculpt[:inner|:outer]   what was sculpted in Unity since, back as that terrain's sculpt layer (golfmap.terrain.capture)
-//   unity-ortho                   the inner orthophoto (--source, e.g. the .patched.tif), then its -meshes file onto the Unity course meshes (golfmap.orthos.apply)
+//   unity-ortho                   the inner orthophoto (--source, e.g. the .cleaned.tif), then its -meshes file onto the Unity course meshes (golfmap.orthos.apply)
 //   creeks                   the creeks as R.A.M. splines at the water surface (inner; needs the inner dem)
 //   gkd                      GreenKeeper's <scene>.GKD into the course's GSPro folder (--course-dir <folder>
 //                            sets it, like the panel does); needs the inner dem exported first
@@ -142,7 +142,7 @@ async function cmdStatus(ident: string) {
     try {
         const sources = await exporter.orthoSources(course.id);
         console.log('ortho sources (--source):');
-        for (const s of sources) console.log(`  ${s.source}  ${s.collection}${s.patched ? ' patched' : ''}${s.active ? ' ACTIVE' : ''}`);
+        for (const s of sources) console.log(`  ${s.source}  ${s.collection}${s.cleaned ? ' cleaned' : ''}${s.active ? ' ACTIVE' : ''}`);
     } catch (e) {
         console.log(`ortho sources: ${(e as Error).message}`);
     }

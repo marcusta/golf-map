@@ -1,5 +1,7 @@
 # Plan: cleaned-photo export and re-import loop
 
+> **Superseded 2026-10-08.** The patch log, the export frame and the diff import described here were replaced by one cleaned photo per site, edited in place: `server/services/cleaned-photo.service.ts`, `pipeline/golfpipe/cleaned.py`, operator steps in [workflows.md](workflows.md) section 6. Kept for the reasoning; none of the commands, routes or files below exist any more.
+
 **Status:** implemented 2026-10-07 (OX1 to OX3; the `auto` kind of section 7 is not built). Where the code differs from the plan, the code is right: see "As built" at the end. Operator steps: [workflows.md](workflows.md) section 6.
 **Scope:** `pipeline/golfpipe` (two commands, one log entry kind), `server` (three routes), `web/src/clean` (one panel section)
 

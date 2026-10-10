@@ -37,6 +37,9 @@ export const DEFAULT_ZONE_TYPES: readonly {
     // Tall grass on the banks of the creeks marked with a `bankVeg` palette
     // (shared/features/creek-vegetation.ts; generated, source `creek-bank`).
     { key: 'creek_bank', name: 'Creek bank', color: '#5f8a4a', textureIndex: 1, channel: 1 },
+    // Links-style deep rough: a rough-height floor with thin, longer wisps over it
+    // (3D grass on the mesh; hand-drawn, on top of the tall rough it replaces).
+    { key: 'rough_wispy', name: 'Wispy rough', color: '#c9b46a', textureIndex: 1, channel: 2 },
 ];
 
 // --- Output types ---

@@ -229,8 +229,8 @@ namespace GolfMap.Bridge
             return Selection.gameObjects.Select(g => (object)PathOf(g.transform)).ToList();
         }
 
-        [BridgeCommand("screenshot", "Render the Scene view camera to a PNG in the project's Temp/GolfMapBridge folder. Optionally move the view first: from/at (world points) or pivot/rotation/size. mode=view (default) reads the Scene view's own render target (what it shows, VSP included, window size); mode=camera renders its camera offscreen at width x height. Neither reads screen pixels, so both work while Unity is covered or unfocused.",
-            args = "width=1280, height=720, from=[x,y,z], at=[x,y,z], pivot=[x,y,z], rotation=[x,y,z] (euler), size, eye=<m above ground; with from/at>, hide=[object paths, renderers off for this capture], mode=view|camera, warmup=12 (editor frames pumped first)")]
+        [BridgeCommand("screenshot", "Render the Scene view camera to a PNG in the project's Temp/GolfMapBridge folder. Optionally move the view first: from/at (world points) or pivot/rotation/size; it stays there unless restore=true puts it back after the capture. mode=view (default) reads the Scene view's own render target (what it shows, VSP included, window size); mode=camera renders its camera offscreen at width x height. Neither reads screen pixels, so both work while Unity is covered or unfocused.",
+            args = "width=1280, height=720, from=[x,y,z], at=[x,y,z], pivot=[x,y,z], rotation=[x,y,z] (euler), size, eye=<m above ground; with from/at>, hide=[object paths, renderers off for this capture], mode=view|camera, warmup=12 (editor frames pumped first), restore=false (put the Scene view back to its pose before the call)")]
         static IEnumerator Screenshot(BridgeArgs a)
         {
             var sv = SceneView.lastActiveSceneView;
@@ -246,6 +246,18 @@ namespace GolfMap.Bridge
                 at = new Vector3(at.Value.x, GroundHeight(at.Value) + 0.5f, at.Value.z);
             }
             if (from.HasValue != at.HasValue) throw new BridgeError("Give both 'from' and 'at', or neither.");
+            // Checked before the view moves, so a mistake never leaves it moved.
+            string mode = a.String("mode", "view");
+            if (mode != "view" && mode != "camera") throw new BridgeError("mode must be 'view' or 'camera'.");
+            // hide=[object paths]: their renderers are off for this capture only (see-through for
+            // "what is under this mesh"); always restored, never saved.
+            var hidden = a.Strings("hide").SelectMany(p => Resolve(p).GetComponentsInChildren<Renderer>()).Where(r => r.enabled).ToList();
+            // restore=true: the view goes back to this pose once the image is captured.
+            bool restore = a.Bool("restore", false);
+            var oldPivot = sv.pivot;
+            var oldRotation = sv.rotation;
+            var oldSize = sv.size;
+            var oldOrtho = sv.orthographic;
             if (from.HasValue)
             {
                 var dir = at.Value - from.Value;
@@ -270,11 +282,6 @@ namespace GolfMap.Bridge
             //            that repaint), at the window's size;
             //   camera - a fresh offscreen render of its camera at width x height; misses
             //            draws another repaint already consumed.
-            string mode = a.String("mode", "view");
-            if (mode != "view" && mode != "camera") throw new BridgeError("mode must be 'view' or 'camera'.");
-            // hide=[object paths]: their renderers are off for this capture only (see-through for
-            // "what is under this mesh"); always restored, never saved.
-            var hidden = a.Strings("hide").SelectMany(p => Resolve(p).GetComponentsInChildren<Renderer>()).Where(r => r.enabled).ToList();
             foreach (var r in hidden) r.enabled = false;
             Texture2D shot;
             try
@@ -286,6 +293,17 @@ namespace GolfMap.Bridge
             {
                 foreach (var r in hidden) if (r) r.enabled = true;
             }
+            // the pose the image was taken at (the result reports it, restored or not)
+            var shotPivot = sv.pivot;
+            var shotRotation = sv.rotation;
+            var shotSize = sv.size;
+            var shotCamera = sv.camera.transform.position;
+            if (restore)
+            {
+                sv.LookAtDirect(oldPivot, oldRotation, oldSize);
+                sv.orthographic = oldOrtho;
+                sv.Repaint();
+            }
 
             var folder = Path.Combine(Path.GetDirectoryName(Application.dataPath), "Temp/GolfMapBridge");
             Directory.CreateDirectory(folder);
@@ -293,11 +311,13 @@ namespace GolfMap.Bridge
             File.WriteAllBytes(file, shot.EncodeToPNG());
             int w = shot.width, h = shot.height;
             UnityEngine.Object.DestroyImmediate(shot);
-            yield return new Dictionary<string, object>
+            var result = new Dictionary<string, object>
             {
                 { "file", file }, { "width", w }, { "height", h }, { "mode", mode },
-                { "pivot", sv.pivot }, { "rotation", sv.rotation }, { "size", sv.size }, { "camera", sv.camera.transform.position },
+                { "pivot", shotPivot }, { "rotation", shotRotation }, { "size", shotSize }, { "camera", shotCamera },
             };
+            if (restore) result["restored"] = true;
+            yield return result;
         }
 
         // ---- helpers ----

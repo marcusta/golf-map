@@ -19,9 +19,9 @@ afterEach(() => {
 const DEFAULT_DIR = 'C:\\Users\\marcus\\Downloads';
 
 const SOURCES: GsproOrthoSource[] = [
-    { source: 'ortho-orto-l2-2025.tif', collection: 'orto-l2-2025', patched: false, active: true },
-    { source: 'ortho-orto-l2-2025.patched.tif', collection: 'orto-l2-2025', patched: true, active: true },
-    { source: 'ortho-orto-l2-2023.tif', collection: 'orto-l2-2023', patched: false, active: false },
+    { source: 'ortho-orto-l2-2025.tif', collection: 'orto-l2-2025', cleaned: false, active: true },
+    { source: 'ortho-orto-l2-2025.cleaned.tif', collection: 'orto-l2-2025', cleaned: true, active: true },
+    { source: 'ortho-orto-l2-2023.tif', collection: 'orto-l2-2023', cleaned: false, active: false },
 ];
 
 /** What the server lays out for a built course: a 2010 m inner square and the 5 km outer one. */
@@ -227,7 +227,7 @@ test('the vintage picker lists the persisted orthophotos and preselects the one 
     const select = host.querySelector('[data-testid=gspro-ortho-source]') as HTMLSelectElement;
     expect(select.parentElement?.className).not.toContain('hidden');
     expect([...select.options].map(o => o.textContent)).toEqual([
-        'orto-l2-2025 (shown on map)', 'orto-l2-2025 (patched)', 'orto-l2-2023',
+        'orto-l2-2025 (shown on map)', 'orto-l2-2025 (cleaned)', 'orto-l2-2023',
     ]);
     expect(svc.orthoSource.peek()).toBe('ortho-orto-l2-2025.tif');
     expect(select.value).toBe('ortho-orto-l2-2025.tif');

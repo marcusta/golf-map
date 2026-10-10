@@ -307,14 +307,7 @@ namespace GolfMap.Editor
                 created.Add(go);
             }
             laps.Mark("swap");
-            if (created.Count > 0)
-            {
-                var selection = Selection.objects;
-                Selection.objects = created.Cast<UnityEngine.Object>().ToArray();
-                if (!EditorApplication.ExecuteMenuItem(SetDefaultMaterialsMenu))
-                    errors.Add("OPCD's '" + SetDefaultMaterialsMenu + "' is not in this project; the new meshes have no materials.");
-                Selection.objects = selection;
-            }
+            if (created.Count > 0) result["opcdMaterials"] = SetDefaultMaterials(created, errors);
             laps.Mark("opcdMaterials");
             if (prune)
                 foreach (var g in stale) if (g != null) Undo.DestroyObjectImmediate(g);
@@ -344,6 +337,84 @@ namespace GolfMap.Editor
             result["errors"] = errors;
             result["followUps"] = FollowUps(created, created.Count > 0 || (prune && stale.Count > 0));
             laps.Mark("record");
+            return result;
+        }
+
+        const int MaterialsBatch = 50;
+
+        // OPCD's Set Default Materials on the objects, checked: on a large selection (a whole course re-added: 789
+        // objects) it left 668 of them with the material their FBX carries, while each alone gets its OPCD material.
+        // So what still wears an FBX material afterwards goes again in batches, then one by one. A rock slab is left
+        // out of the check (OPCD knows no such surface; golfmap.slabs.materials dresses it).
+        static Dictionary<string, object> SetDefaultMaterials(List<GameObject> objects, List<object> errors)
+        {
+            var selection = Selection.objects;
+            int passes = 0;
+            Func<List<GameObject>, bool> run = batch =>
+            {
+                passes++;
+                Selection.objects = batch.Cast<UnityEngine.Object>().ToArray();
+                return EditorApplication.ExecuteMenuItem(SetDefaultMaterialsMenu);
+            };
+            Func<List<GameObject>> undressed = () => objects.Where(g => g != null && !GolfMapRockSlabs.IsSlab(g.name) && WearsFbxMaterial(g)).ToList();
+            var result = new Dictionary<string, object> { { "objects", objects.Count } };
+            if (!run(objects))
+            {
+                Selection.objects = selection;
+                errors.Add("OPCD's '" + SetDefaultMaterialsMenu + "' is not in this project; the new meshes have no materials.");
+                return result;
+            }
+            var left = undressed();
+            result["leftByFirstPass"] = left.Count;
+            foreach (int size in new[] { MaterialsBatch, 1 })
+            {
+                if (left.Count == 0) break;
+                for (int i = 0; i < left.Count; i += size) run(left.GetRange(i, Math.Min(size, left.Count - i)));
+                left = undressed();
+            }
+            Selection.objects = selection;
+            result["passes"] = passes;
+            result["left"] = left.Select(g => (object)g.name).ToList();
+            if (left.Count > 0)
+                errors.Add(left.Count + " object(s) still wear their FBX material after OPCD's '" + SetDefaultMaterialsMenu + "' (e.g. " + left[0].name + ").");
+            return result;
+        }
+
+        // A material that is a sub-asset of a model file: what a freshly instantiated FBX wears.
+        static bool WearsFbxMaterial(GameObject go)
+        {
+            var r = go.GetComponent<MeshRenderer>();
+            return r != null && r.sharedMaterials.Any(m => m != null && AssetDatabase.GetAssetPath(m).EndsWith(".fbx", StringComparison.OrdinalIgnoreCase));
+        }
+
+        [BridgeCommand("golfmap.meshes.materials", "OPCD's Set Default Materials on the course meshes that still wear the material their FBX carries (a sync whose material step did not reach them), in batches, checked. Afterwards run golfmap.course.refresh skip=meshes.sync: OPCD's defaults undo the bunker convention, the path look and the rough grass on what they touch. Marks the scene dirty, does not save it.",
+            args = "dryRun=false, parent (default: the course's meshParent)")]
+        static object MaterialsCommand(BridgeArgs a)
+        {
+            var course = GolfMapCourses.Require();
+            var parentObject = a.String("parent") ?? course.meshParent;
+            course = null;   // OPCD's Set Default Materials unloads it
+            var scene = EditorSceneManager.GetActiveScene();
+            var parent = scene.GetRootGameObjects().FirstOrDefault(g => g.name == parentObject);
+            if (parent == null) throw new BridgeError("No root object '" + parentObject + "' in " + scene.name + ".");
+            var todo = parent.GetComponentsInChildren<MeshRenderer>(true).Select(r => r.gameObject)
+                .Where(g => g != parent && !GolfMapRockSlabs.IsSlab(g.name) && WearsFbxMaterial(g)).ToList();
+            var result = new Dictionary<string, object> { { "scene", scene.name }, { "parent", parentObject }, { "dryRun", a.Bool("dryRun", false) }, { "wearFbxMaterial", todo.Count },
+                { "first", todo.Take(12).Select(g => (object)g.name).ToList() } };
+            if (a.Bool("dryRun", false) || todo.Count == 0) return result;
+            var errors = new List<object>();
+            // batches from the start: the whole selection at once is what failed
+            for (int i = 0; i < todo.Count; i += MaterialsBatch)
+            {
+                Selection.objects = todo.GetRange(i, Math.Min(MaterialsBatch, todo.Count - i)).Cast<UnityEngine.Object>().ToArray();
+                if (!EditorApplication.ExecuteMenuItem(SetDefaultMaterialsMenu)) throw new BridgeError("OPCD's '" + SetDefaultMaterialsMenu + "' is not in this project.");
+            }
+            var left = todo.Where(g => g != null && WearsFbxMaterial(g)).ToList();
+            if (left.Count > 0) result["opcdMaterials"] = SetDefaultMaterials(left, errors);
+            Selection.objects = new UnityEngine.Object[0];
+            result["left"] = todo.Where(g => g != null && WearsFbxMaterial(g)).Select(g => (object)g.name).ToList();
+            result["errors"] = errors;
+            EditorSceneManager.MarkSceneDirty(scene);
             return result;
         }
 

@@ -28,6 +28,14 @@ export const FEATURE_TYPES = [
     // Tree species area (shared/features/tree-areas.ts): which species the
     // Unity tree planter uses for the survey stems inside it. Vegetation mode.
     'tree_area',
+    // Rock slab (shared/features/rock-slab.ts): a bare-rock surface that is no
+    // OPCD shape; the GSPro shaping layer cuts it out of the meshes. Drawn in
+    // Draw mode like the surfaces.
+    'rock_slab',
+    // Power line (shared/features/power-line.ts): an overhead line drawn as a
+    // centerline, one point per pole. No surface; the trees export clears the
+    // survey stems (the wires, read as trees) out of its corridor.
+    'power_line',
 ] as const;
 
 export type FeatureType = (typeof FEATURE_TYPES)[number];
@@ -123,6 +131,10 @@ export const FEATURE_STYLES: Record<FeatureType, FeatureStyle> = {
     vegetation_zone: { label: 'Vegetation zone', fill: '#7c8f3a', draw: '#7c8f3a', outline: '#4c5a20' },
     // Autumn oak-brown: reads apart from the olive zones and the dark trees fill.
     tree_area: { label: 'Tree species area', fill: '#a0662e', draw: '#b0703a', outline: '#6b3f16' },
+    // Warm stone grey: apart from `outside`'s cool grey and the sand of bunkers.
+    rock_slab: { label: 'Rock slab', fill: '#a69b8c', draw: '#b3a898', outline: '#6f6558' },
+    // Signal violet: nothing on a course is this colour, and it reads on grass and on trees.
+    power_line: { label: 'Power line', fill: '#b06ad6', draw: '#bd7fe0', outline: '#6f3a94' },
 };
 
 /**
@@ -170,6 +182,7 @@ export const TYPE_Z_ORDER: readonly FeatureType[] = [
     'fairway',
     'tee',
     'green',
+    'rock_slab',
     'vegetation_zone',
     'tree_area',
     'trees',
@@ -180,6 +193,7 @@ export const TYPE_Z_ORDER: readonly FeatureType[] = [
     'penalty_red',
     'oob',
     'path',
+    'power_line',
 ];
 
 /** MapLibre expression: feature `type` property → z-order sort key. */
@@ -214,6 +228,8 @@ export const SURROUND_PAIRINGS: Record<FeatureType, { targetType: FeatureType; e
     outside: null, // no surround for outside
     vegetation_zone: null, // an overlay over whatever surface is there
     tree_area: null, // an overlay over whatever surface is there
+    rock_slab: null, // a patch of bare rock: nothing implied around it
+    power_line: null, // overhead: no surface of its own, none around it
 };
 
 /**

@@ -98,6 +98,15 @@ namespace GolfMap.Editor
                 if (!byId.TryGetValue(e.id, out target))
                 {
                     target = Nearest(trees, e.ox, e.oz, FallbackMatchM, applied, remove);
+                    // A tree the user shaped by hand outlives its survey stem: a regenerated survey may have dropped
+                    // the stem (the detector's solid-object rule, a rock or power line keep-out), the tree stays.
+                    if (target == null && e.op == "modify" && e.h > 0 && e.r > 0)
+                    {
+                        var kept = new GolfMapTree { id = e.id, x = e.x, z = e.z, h = e.h, r = e.r, k = e.k, bush = e.bush, g = 0 };
+                        trees.Add(kept); byId.Add(kept.id, kept); applied[kept] = e;
+                        warnings.Add("Edit modify " + e.id + ": the survey no longer has this tree; planted from the edit.");
+                        continue;
+                    }
                     if (target == null) { warnings.Add("Edit " + e.op + " " + e.id + " matches no survey tree (none within " + FallbackMatchM + " m of its original position)."); continue; }
                 }
                 if (e.op == "delete") { remove.Add(target); continue; }

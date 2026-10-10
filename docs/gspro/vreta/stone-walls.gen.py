@@ -82,12 +82,6 @@ BIG_BOULDERS = {
 # side, lengthM = its length, topM = its top over the highest ground under it. Read off the 2025 ortho and
 # the photos, cross-checked by bearing from where each photo was taken.
 PLACED = [
-    {"id": "h13-ivy-boulder", "asset": "boulder_ivy", "e": 529941.6, "n": 6487472.6, "yawDeg": 135,
-     "lengthM": 9.5, "topM": 0.7,
-     "note": "Ivy-covered boulder across the path from the middle tee, the hole 13 sign in front of it (photo "
-             "cddccbea: ~9 m across, 4-5 m high). The round ivy mass behind the middle tee in photos e77aaa87 "
-             "(bearing 224 deg) and ab05c8a4. The edited DEM has it as the knoll SW of the path (top 89.1 m at "
-             "529941, 6487469, ~5 m over the path); the ortho shows its pale NE part under the trees."},
     {"id": "h13-middle-tee-east-boulder", "asset": "boulder_big", "e": 529980.0, "n": 6487490.5, "yawDeg": 30,
      "lengthM": 3.8, "topM": 1.7,
      "note": "Bare grey boulder at the east end of the middle tee's wall (photo e77aaa87, left, bearing 201 deg; "
@@ -247,7 +241,10 @@ H4_STONES = [
 # variants (moss on their tops); top rocks the plain ones (a grass-top rock lying on the knoll reads as a grass mound). Tried first and rejected
 # (2026-09-27): sharpening the course mesh into a 70 deg face with blocks fitted into it (read as a boxy terrace with
 # rubble), the pack's cliff facades (hollow from behind and above), Blender slabs on top (pancakes).
-OUTCROP_TINT = [0.57, 0.58, 0.61]   # the pack's rock is pale beige in Vreta's light; the klippor are cool grey granite
+OUTCROP_TINT = [0.66, 0.67, 0.70]   # the pack's rock is pale beige in Vreta's light; the klippor are cool grey granite
+# Matt: the pack's smoothness and metallic maps make the rock look wet in Vreta's light (Marcus, 2026-10-10, first on
+# hole 13's boulder, then "give the rest of the klippor the same settings"; the tint was 0.57, 0.58, 0.61 before).
+OUTCROP_MATT = {"_SmoothnessPower": 0.35, "_MetallicPower": 0.0}
 # The grass-top variants: less moss (only on faces turned up, _SnowMaxAngle), the rock itself toned like the plain ones
 # (their material's _Color is 0.68 against the plain 0.81).
 OUTCROP_MOSS = {"tint": [0.68, 0.69, 0.73], "materialFloats": {"_Snow_Amount": 1.0, "_SnowMaxAngle": 40},
@@ -319,7 +316,7 @@ def outcrop_rocks(w, toe, lip, seed):
             if min(math.dist((x2, y2), q) for q in toe) < min(math.dist((x2, y2), q) for q in lip):
                 continue
             name = OUTCROP_TOP[m % len(OUTCROP_TOP)]
-            out.append({"id": "%s-top-%02d" % (w["id"], m + 1), "prefab": NM + "Rocks/Prefabs/prefab_%s.prefab" % name, "tint": OUTCROP_TINT,
+            out.append({"id": "%s-top-%02d" % (w["id"], m + 1), "prefab": NM + "Rocks/Prefabs/prefab_%s.prefab" % name, "tint": OUTCROP_TINT, "materialFloats": OUTCROP_MATT,
                         "e": round(x2, 2), "n": round(y2, 2), "yawDeg": round(rnd.uniform(120, 170), 1),
                         "lengthM": round(rnd.uniform(3.5, 5.5), 2), "topM": round(rnd.uniform(0.3, 0.7), 2)})
             m += 1
@@ -342,7 +339,7 @@ H4_TOP_EXTRA = [
 
 def h4_placed():
     """Klippa A's extra top rocks and the stone field below it, placed whole."""
-    out = [dict({k: v for k, v in r.items() if k != "rock"}, prefab=NM + "Rocks/Prefabs/prefab_%s.prefab" % r["rock"], tint=OUTCROP_TINT)
+    out = [dict({k: v for k, v in r.items() if k != "rock"}, prefab=NM + "Rocks/Prefabs/prefab_%s.prefab" % r["rock"], tint=OUTCROP_TINT, materialFloats=OUTCROP_MATT)
            for r in H4_TOP_EXTRA]
     out += [
     ]
@@ -383,6 +380,104 @@ PLACED += [
     {"id": "pond-klippa-slab-3", "asset": "klippa_slab_3", "e": 530098.0, "n": 6487328.5,
      "yawDeg": 60, "lengthM": 4.0, "topM": 0.2},
 ]
+
+# Klippor standing alone west of the knoll with the rock slabs hall_194/195 (Marcus, 2026-10-09: "do them all as
+# klippor"). Grey rounded rocks with shadows in both the 2023 and 2025 ortho; the lidar ground model has filtered
+# them out (0.3-0.4 m bumps), topM is the raw lidar's top points over each against the highest DEM ground under it.
+PATH_KLIPPOR = [
+    {"id": "path-klippa-east", "rock": "Rock_01", "e": 529539.5, "n": 6487736.9, "yawDeg": 135, "lengthM": 7.5, "topM": 1.4,
+     "note": "At the path's west edge: about 5 x 7 m, long side NW-SE; lidar top 89.9 m, highest ground under it 88.5 m."},
+    {"id": "path-klippa-west", "rock": "Rock_03", "e": 529533.5, "n": 6487736.1, "yawDeg": 80, "lengthM": 5.2, "topM": 0.65,
+     "note": "Its neighbour 1 m to the west: about 4 x 5 m; lidar top 88.4 m, highest ground under it 87.7 m (2 m lower downhill)."},
+    {"id": "path-klippa-south", "rock": "Rock_01_cut", "e": 529579.0, "n": 6487693.8, "yawDeg": 10, "lengthM": 3.5, "topM": 0.4,
+     "note": "Single pale stone in the open grass 60 m to the SE, about 3 x 3.5 m in the 2023 ortho; "
+             "low: the lidar's top points are 0.15 m over the highest ground under it, on a slope."},
+]
+# The boulders in the tall rough between hole 6's two tees (Marcus, 2026-10-09: "add them all as klippor, small
+# ones too"). Read off the 2023 ortho (leaf-off, shadows to the NW left out), seen in the 2025 one too; topM of
+# the four big ones as above (raw lidar top against the highest DEM ground under it), the small ones' judged.
+H6_TEE_KLIPPOR = [
+    {"id": "h6-tee-klippa-a", "rock": "Rock_01", "e": 529798.4, "n": 6488555.6, "yawDeg": 20, "lengthM": 4.5, "topM": 1.6,
+     "note": "The biggest, westmost: about 4 x 4.5 m, lidar top 84.5 m over ground at 82.8 m."},
+    {"id": "h6-tee-klippa-b1", "rock": "Rock_04", "e": 529800.5, "n": 6488556.8, "yawDeg": 0, "lengthM": 2.0, "topM": 0.6,
+     "note": "Small stone against A's east side."},
+    {"id": "h6-tee-klippa-b2", "rock": "Rock_03_cut", "e": 529803.3, "n": 6488557.0, "yawDeg": 100, "lengthM": 2.4, "topM": 0.9,
+     "note": "East of A: lidar top 83.5 m over ground at 82.6 m."},
+    {"id": "h6-tee-klippa-c", "rock": "Rock_03", "e": 529806.8, "n": 6488550.6, "yawDeg": 70, "lengthM": 3.4, "topM": 0.75,
+     "note": "About 3.3 x 2.8 m: lidar top 82.9 m, highest ground under it 82.2 m (1 m lower downhill)."},
+    {"id": "h6-tee-klippa-d", "rock": "Rock_05_cut", "e": 529812.3, "n": 6488552.1, "yawDeg": 20, "lengthM": 4.6, "topM": 0.8,
+     "note": "Eastmost, nearest the forward tee: about 3.7 x 4.4 m, lidar top 83.3 m, highest ground under it 82.5 m."},
+    {"id": "h6-tee-klippa-s1", "rock": "Rock_06", "e": 529794.2, "n": 6488560.4, "yawDeg": 60, "lengthM": 1.6, "topM": 0.4,
+     "note": "Small stone 5 m NW of A."},
+    {"id": "h6-tee-klippa-s2", "rock": "Rock_07", "e": 529803.2, "n": 6488550.3, "yawDeg": 120, "lengthM": 2.4, "topM": 0.5,
+     "note": "Low stone SW of C."},
+    {"id": "h6-tee-klippa-s3", "rock": "Rock_04", "e": 529809.6, "n": 6488549.6, "yawDeg": 40, "lengthM": 1.8, "topM": 0.5,
+     "note": "Small stone between C and D."},
+]
+# Field stones spread over the tree area right of hole 1's fairway, north of its fairway bunker (Marcus,
+# 2026-10-09: "lots of smaller rocks here spread over this area"). Pale blobs with a shadow to the NW in the 2023
+# ortho (leaf-off): (E, N, length m, rock). Heights are not measured (1 lidar point per m2): topM = 0.4 x length.
+H1_TREE_STONES = [
+    (529944.8, 6487696.3, 2.6, "Rock_06"), (529937.5, 6487704.5, 1.4, "m_rock_01"), (529932.5, 6487707.3, 1.5, "m_rock_02"),
+    (529939.7, 6487704.3, 0.7, "s_rock_01"), (529940.0, 6487708.8, 0.6, "s_rock_02"), (529928.7, 6487721.2, 1.4, "m_rock_03"),
+    (529928.8, 6487717.7, 1.6, "Rock_04"), (529935.5, 6487717.7, 1.0, "s_rock_03"), (529938.7, 6487718.3, 0.7, "s_rock_04"),
+    (529934.7, 6487715.2, 0.6, "s_rock_05"), (529931.2, 6487711.3, 0.6, "s_rock_06"), (529932.7, 6487702.0, 0.8, "s_rock_01"),
+    (529923.2, 6487721.0, 1.5, "m_rock_01"), (529917.5, 6487710.1, 1.2, "m_rock_02"), (529913.7, 6487726.5, 1.0, "s_rock_02"),
+    (529916.0, 6487744.2, 2.2, "Rock_07"), (529921.05, 6487738.5, 2.6, "Rock_04"), (529906.2, 6487755.6, 3.2, "Rock_03_cut"),
+    (529904.3, 6487752.4, 1.6, "m_rock_03"), (529928.2, 6487753.1, 1.0, "s_rock_03"), (529927.2, 6487741.4, 1.4, "m_rock_01"),
+    (529935.3, 6487748.8, 1.0, "s_rock_04"), (529936.6, 6487750.7, 1.3, "m_rock_02"), (529936.9, 6487747.2, 1.0, "s_rock_05"),
+]
+H1_TREE_KLIPPOR = [{"id": "h1-tree-stone-%02d" % (i + 1), "rock": rock, "e": e, "n": n, "yawDeg": (i * 137) % 360,
+                    "lengthM": length, "topM": round(0.4 * length, 2)}
+                   for i, (e, n, length, rock) in enumerate(H1_TREE_STONES)]
+# Rocks found by the course-wide scan of 2026-10-10 (grey in both the 2023 and 2025 ortho, or standing up in the raw
+# lidar, within 35 m of play) and looked at by eye; Marcus: "All of them". (E, N, length m, top m, yawDeg, rock),
+# read off the 2023 ortho; tops judged from size and shadow, not measured.
+SURVEY_STONES = {
+    "h12": [   # hole 12: the boulder left of the fairway, the stones round the green, two along the right rough
+        (529979.9, 6487163.0, 3.5, 1.4, 30, "Rock_01_cut"), (529966.5, 6487374.7, 2.0, 0.8, 80, "Rock_06"),
+        (529963.8, 6487375.3, 1.0, 0.4, 10, "s_rock_01"), (530035.8, 6487351.6, 1.5, 0.6, 50, "m_rock_01"),
+        (530038.9, 6487350.0, 1.3, 0.5, 120, "m_rock_02"), (530037.4, 6487349.0, 1.2, 0.5, 200, "s_rock_03"),
+        (529937.6, 6487339.6, 2.0, 0.8, 140, "Rock_07"), (530042.6, 6487417.2, 1.5, 0.6, 20, "m_rock_03"),
+        (530043.6, 6487415.7, 1.2, 0.5, 100, "s_rock_02"), (530043.1, 6487429.3, 1.5, 0.6, 160, "m_rock_01"),
+        (530031.0, 6487414.1, 1.0, 0.4, 60, "s_rock_04"), (530046.8, 6487401.0, 1.2, 0.5, 300, "s_rock_05"),
+        (530045.7, 6487396.8, 1.0, 0.4, 240, "s_rock_06"), (530013.8, 6487254.5, 1.5, 0.6, 90, "m_rock_02"),
+        (530038.1, 6487211.1, 1.5, 0.6, 30, "m_rock_03"),
+    ],
+    "h4-tee": [   # 20 m south of hole 4's back tees: two big boulders (8 x 4.5 m and 5.5 x 4 m) and the stones round them
+        (529747.0, 6487834.5, 8.5, 2.0, 45, "Rock_01"), (529754.25, 6487837.75, 5.5, 1.6, 80, "Rock_03"),
+        (529756.0, 6487844.75, 1.6, 0.6, 0, "m_rock_01"), (529741.75, 6487846.75, 1.5, 0.6, 130, "m_rock_02"),
+        (529743.5, 6487844.25, 1.2, 0.5, 40, "s_rock_01"), (529741.5, 6487852.75, 2.2, 0.8, 100, "Rock_04"),
+        (529735.5, 6487828.0, 2.2, 0.9, 70, "Rock_06"), (529733.0, 6487828.0, 1.0, 0.4, 0, "s_rock_02"),
+        (529731.25, 6487841.75, 1.3, 0.5, 20, "s_rock_03"), (529732.5, 6487832.5, 1.0, 0.4, 200, "s_rock_04"),
+    ],
+    "h10-heap": [   # the stone heap (a cleared-field cairn, about 9 x 19 m) on the rough island east of hole 10
+        (530257.5, 6487344.5, 2.4, 0.9, 10, "Rock_04"), (530259.25, 6487345.5, 2.0, 0.8, 120, "Rock_06"),
+        (530257.0, 6487342.25, 1.8, 0.8, 60, "m_rock_01"), (530259.5, 6487342.5, 2.6, 1.0, 200, "Rock_07"),
+        (530258.0, 6487340.25, 2.2, 1.1, 150, "Rock_04"), (530260.0, 6487339.5, 1.8, 0.8, 300, "m_rock_02"),
+        (530257.0, 6487338.0, 2.0, 0.9, 90, "Rock_06"), (530259.25, 6487337.0, 2.4, 1.1, 30, "Rock_07"),
+        (530261.25, 6487336.5, 1.6, 0.6, 250, "m_rock_03"), (530258.0, 6487335.0, 2.0, 0.8, 170, "Rock_04"),
+        (530260.0, 6487334.0, 1.8, 0.7, 70, "m_rock_01"), (530258.5, 6487331.75, 1.6, 0.6, 320, "m_rock_02"),
+        (530256.0, 6487340.5, 1.4, 0.5, 220, "m_rock_03"),
+    ],
+    "se": [   # single boulders in the open rough of the south-east holes, each with a mown ring round it
+        (530290.75, 6486961.75, 3.0, 1.2, 40, "Rock_03_cut"), (530188.75, 6486919.75, 2.5, 1.0, 110, "Rock_01_cut"),
+        (530179.7, 6486890.8, 2.5, 1.0, 20, "Rock_06"),
+    ],
+}
+SURVEY_KLIPPOR = [{"id": "%s-stone-%02d" % (group, i + 1), "rock": rock, "e": e, "n": n, "yawDeg": yaw, "lengthM": length, "topM": top}
+                  for group, stones in SURVEY_STONES.items() for i, (e, n, length, top, yaw, rock) in enumerate(stones)]
+PLACED += [dict({k: v for k, v in r.items() if k != "rock"}, prefab=NM + "Rocks/Prefabs/prefab_%s.prefab" % r["rock"], tint=OUTCROP_TINT, materialFloats=OUTCROP_MATT)
+           for r in PATH_KLIPPOR + H6_TEE_KLIPPOR + H1_TREE_KLIPPOR + SURVEY_KLIPPOR]
+# The boulder across the path from hole 13's middle tee, the hole 13 sign in front of it (photo cddccbea: ~9 m across,
+# 4-5 m high, most of it under ivy; the edited DEM has it as the knoll SW of the path, top 89.1 m at 529941, 6487469).
+# First built as the Blender boulder_ivy, an even green dome (Marcus, 2026-10-10: "It is ugly"): now one of the
+# pack's plain rocks sunk into the slope 13 m long, centred on the knoll's 5.5 m NE face and sunk into it, top level with the crest (Marcus: "scaled up a bit and sunk into the hill") (the lidar has the boulder as that face). A rock centred on the lip hangs out over the drop and shows its flat underside: its pivot must be under the lowest ground it covers, so it is big enough to reach from the foot to the crest.
+PLACED += [{"id": "h13-ivy-boulder", "prefab": NM + "Rocks/Prefabs/prefab_Rock_01.prefab",
+            "tint": OUTCROP_TINT, "materialFloats": OUTCROP_MATT,
+            "e": 529942.77, "n": 6487472.81, "yawDeg": 135, "lengthM": 15.0, "topM": -0.3,
+            # set by hand in Unity 2026-10-10 (moved 1.8 m SW into the hill): pivot dy over the ground under it
+            "pose": {"dy": -5.190, "euler": [0, 135, 0], "scale": [5.9415, 5.9415, 5.9415]}}]
 
 WALLS = [
     {"id": "pond-klippa", "style": "cliff", "faceFromDeg": 220, "faceToDeg": 350,
