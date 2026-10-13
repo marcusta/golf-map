@@ -71,6 +71,35 @@ Flags: `--folder`, `--baseline` (mark as exported), `--all`, `--keep-orphans`, `
 `tools/fbx_sync_test.py` checks it on a course file in a temp folder (`-- --compare <OPCD fbx folder>` also
 compares file sizes with OPCD's export).
 
+## SVG -> `.blend` (OPCD) cannot be run headless
+
+Checked 2026-10-14, because step 1 of [SHAPING-PLAN.md](SHAPING-PLAN.md) ("we have a new Blend file") is the
+one manual step left before shaping. The OPCD panel's **Import SVG** and **Convert Materials and Cut** are
+not in the add-on we have installed:
+
+- `%APPDATA%\Blender Foundation\Blender\4.5\extensions\user_default\opcd_blender_tools` (OPCD **Mesh
+  Editing** Tools 3.5.8, and 3.5.6 under Blender 5.2) has **no SVG code at all**: four case-insensitive
+  `svg` matches in the whole add-on, all dead (the add-on's `category` string, a `display_debug` description
+  whose panel block is commented out, two comments), no `import_curve`/SVG operator, no `subprocess` /
+  `os.system` / `.exe` call, no `bpy.ops.wm.open_mainfile`/`append`/`link`, no template `.blend` name, and no
+  SVG or course-folder property in `properties.py` (its only path property is `export_folder`). Its whole
+  panel is the mesh-editing toolbox (`opcd.convertterrain`, `opcd.projectmesh`, bunkers, water, structures,
+  paint, topology, `opcd.separatemesh`, `opcd.matchange`, FBX export ...).
+- Those two buttons belong to the **OPCD conversion toolset**: `GSProSVGConvert.exe` turns the Inkscape SVG
+  into the `-converted.svg` the importer needs, and the conversion add-on lives in
+  `OPCDcourseconversion.blend`, **Blender 2.83 LTS only** (`D:\gspro_courses\gspro-docs\opcd\00-pipeline.md`
+  steps 8/11/13 and `04-blender-conversion.md`). Neither `GSProSVGConvert.exe` nor
+  `OPCDcourseconversion.blend` is on this machine (searched `D:\gspro`, `D:\gspro_courses`, `%LOCALAPPDATA%`,
+  `%APPDATA%`, `C:\Program Files*`), and Vreta's `.blend`s are built by OPCD's own tooling outside Blender
+  (`vreta.svg` 17:02 -> `vreta_svg_1988.blend` 17:09, AGENTS.md "Inkscape/OPCD web tools").
+
+So there is nothing to drive with `blender -b`: the code is not here, and the version of Blender it needs is
+not the one shaping runs in. A `blender/tools/opcd_build.py` is therefore not possible without the OPCD
+conversion toolset installed; if it ever is, the blockers to expect are `ImportHelper.invoke`'s file browser
+(call `execute` with `filepath=` instead, as `shape_prepare.py` already does for `opcd.convertterrain`) and
+`bpy.context.space_data.clip_end`, which needs a 3D-View context override (`_view3d_override()`). Everything
+*downstream* of the `.blend` already runs headless.
+
 ## Shaping: prepare
 
 Step 2 of [SHAPING-PLAN.md](SHAPING-PLAN.md). `tools/shape_prepare.py` takes a fresh OPCD `.blend` (Spline
@@ -84,10 +113,103 @@ and saves a copy `<name>.conformed.blend` next to the source. The source is neve
 ```
 
 Flags: `--terrain` (default `terrain.obj` next to the `.blend`), `--out`, `--json`, `--seed` (Afrod's retry
-nudges), `--limit N` (smoke test: first N meshes only). The report lists vertices left at the flatten depth
+nudges), `--limit N` (smoke test: first N meshes only), `--no-conform-cache`, `--conform-cache-dir`. The report
+lists vertices left at the flatten depth
 (-100 m) per object, timings and the Terrain's bounds. Vreta (776 meshes, 4.0 M vertices, 644 MB OBJ): import
 5 s, conform 83 s, no failures, 370 MB out. Positions in EPSG:3006 map into the `.blend` with
 `tools/shape_coords.py` (SHAPING-PLAN.md, "Coordinates").
+
+### The per-mesh conform cache
+
+A regenerated `.blend` is mostly the same flat meshes, but Conform to Terrain used to run again for all of
+them (2.5 minutes on Vreta's 996). So prepare does not press the whole-scene button: it runs the operator's
+own per-object body - the add-on's `flatten_mesh` → `project_mesh` (Shrinkwrap PROJECT +Z) →
+`object.convert` → Afrod's `fix_failed_projections`, over the same objects in the same order - and caches
+each mesh's result in `<blend folder>/shaping-staging/conform-cache/<key[:2]>/<key>.npz`.
+
+- **Key:** the mesh's whole pre-conform state (`shape_apply.capture_state` + `state_hash`: positions,
+  topology, every attribute incl. byte colours and custom normals, vertex groups, materials, custom props,
+  matrix) + the terrain OBJ's **content** hash (sha1, remembered per size+mtime in
+  `conform-cache/terrain-hash.json`, so an OBJ rewritten from the same heightmap keeps the cache) + the
+  conform button + Terrain Smooth + `--seed` + Blender, `shape_prepare.py`, Afrod and OPCD `mesh_utils`
+  sources. **Not** the object's name: a regenerated `.blend` that renamed or renumbered an otherwise
+  identical mesh still hits (`cache.renamedHits` counts those).
+- **Value:** only the arrays the conform changed (on Vreta just `position`), plus the result's `arrayKeys`,
+  meta and state hash. A hit writes them over the input's own arrays with `shape_apply.apply_state` and
+  checks the positions landed (`GOLFMAP_PREPARE_VERIFY_CACHE=1` re-hashes the whole state instead); a
+  mismatch restores the input and conforms.
+- Afrod's retry nudges are seeded **per mesh** from its state hash, not once per run, so no mesh's result
+  depends on the ones before it. On Vreta nothing fails to project, so not a single random number is drawn.
+- `--no-conform-cache` / `GOLFMAP_PREPARE_NO_CONFORM_CACHE=1` presses the operator button as before. The
+  cache also turns itself off for a scene with pot bunkers (only the operator does its rename pass).
+- Report `cache`: hits, misses, `renamedHits`, meshes, the 20 non-Spline objects the Afrod loop only
+  converts, and hash / replay / compute / store seconds.
+
+Vreta `vreta_svg_1988.blend` (996 Spline meshes, 4.11 M vertices, 644 MB OBJ, 51 MB of cache):
+
+| run | import | conform | total | cache |
+|---|---|---|---|---|
+| the Conform All button (the run that built the existing `vreta_svg_1988.conformed.blend`) | 6.5 s | 148.5 s | **157.2 s** | - |
+| cold, empty cache (two runs) | 5.1-5.9 s | 132-146 s | **139-154 s** | 0 hits, 996 misses (hash 7.2, compute 113-127, store 8.8) |
+| warm, same `.blend` (two runs) | 5.1-5.6 s | 13.6-13.7 s | **20.7-21.4 s** | 996 hits (hash 7.3, replay 4.9) |
+| `vreta_svg_1988.blend` against a cache warmed by `vreta_svg_1987.blend` | 5.2 s | 71.4 s | **78.5 s** | 526 hits, 470 misses |
+
+A warm conform is 7 s hashing the 996 inputs (unavoidable - it is the key) plus 5 s writing the results back.
+A cold one is a little faster than the button (the operator deselects all 1016 objects per mesh; this walks
+them one at a time).
+
+The 526 are exactly the meshes the two exports share byte for byte (a dump of both source `.blend`s: 548 of
+1030 shared objects identical, of which 22 are the hidden OPCD template objects the conform never touches;
+300 moved, 180 changed vertex count, 8 new, 2 gone). So the hit rate is simply how much of the course the
+new SVG changed - between those two exports, half of it.
+
+Equivalence (the speed-shim rule in [AGENTS.md](AGENTS.md)): the cold, warm and cross-version outputs and
+the existing `vreta_svg_1988.conformed.blend` built by the operator have **identical state hashes for all
+1039 mesh objects** and max |dx| = |dy| = |dz| = 0 over all 4.11 M vertices (`scratch` scripts
+`dump_blend.py` / `diff_dumps.py`, run 2026-10-14).
+
+### terrain.obj without Unity
+
+`tools/terrain_obj.py` writes the `terrain.obj` prepare imports straight from the inner heightmap `.raw` the
+GSPro export already produces, instead of the manual Unity step (Terrain > Export To OBJ, Triangles, Half -
+docs/workflows.md section 1 step 8). Pure Python + numpy, no bpy:
+
+```bash
+bun run py ../blender/tools/terrain_obj.py --sidecar "D:/gspro_courses/vreta-opcd/vreta-inner-dem-2050m.tif.json" --out "D:/gspro_courses/vreta-opcd/terrain.obj"
+```
+
+Flags: `--sidecar` (the inner `<prefix>-inner-dem-<side>m.tif.json`), `--out` (default `terrain.obj` next to
+the sidecar), `--raw` (default the sidecar's `raw.file`), `--sample full|half|quarter|eighth|sixteenth`
+(default `half`, Unity's resolution menu - what Vreta's OBJ used), `--json`. Vreta: 5.7 s, 644 MB.
+
+What Unity's exporter writes, and what this reproduces: header `# Unity Terrain OBJ File`, CRLF, then all
+`v`, all `vt`, all `f`; the heightmap at half resolution (2049 nodes a side out of the `.raw`'s 4097, corners
+included, spacing `sideM/(grid-1)` = 2050/2048 m); vertices row-major with z (north) ascending and x
+descending inside a row, **x negated** (Unity is left-handed), y = metres above the heightmap's `minM`, both
+offset by the terrain's `unity.position` (zero for the inner terrain) - which is exactly
+`shape_coords.py`'s `.blend` frame once `wm.obj_import` has mapped obj `x,y,z` to blend `x,-z,y`; `vt` =
+`ix/(grid-1) iz/(grid-1)`; two triangles a cell, cells row-major, `(iz,ix) (iz+1,ix) (iz,ix+1)` and
+`(iz,ix+1) (iz+1,ix) (iz+1,ix+1)`, 1-based `v/vt` pairs, no normals; numbers in C#'s `G7` (7 significant
+digits, half away from zero - `decimal`, not `%g`).
+
+Checked against Vreta's Sep 27 `terrain.obj` (`scratch` script `compare_obj.py`): same line count
+(16 785 411), same 4 198 401 vertices and 8 388 608 faces, and **every `#`, `vt` and `f` line and every
+vertex's x and z byte-identical**. Only the heights differ, by at most **0.63 mm** (mean 0.31 mm, 100 % under
+1 mm): that is one step of Unity's own 16-bit height storage (`heightRangeM/65535` = 40.84988/65535 =
+0.623 mm), which the heights went through on their way into the editor - ours come straight from the `.raw`.
+The difference is uniform over the whole square (no vertex above 5 cm anywhere), so the Sep 27 OBJ still
+matches the current `.raw` everywhere: no inner terrain edit has been applied since (the `.raw` is from the
+same minute). A local patch of larger differences would be exactly that - a terrain edit applied after the
+OBJ was exported - and not a bug.
+
+End to end: preparing `vreta_svg_1988.blend` against the generated OBJ instead of Unity's (139.7 s, a full
+recompute - the terrain hash is part of the conform-cache key) conforms all 996 meshes to within
+**max |dz| = 0.633 mm** of the `.conformed.blend` built on Unity's OBJ (max |dx| = 0, max |dy| = 0.5 µm over
+all 4.11 M vertices): the terrain difference, not amplified. Every custom prop, material and vertex count is
+unchanged.
+
+Tests: `python blender/tools/terrain_obj_test.py` (synthetic `.raw` -> OBJ and back: block order, CRLF, axes
+and handedness, north-up row flip, uvs, winding, sampling step, terrain position, `G7` digits, guards).
 
 ## Shaping: apply
 

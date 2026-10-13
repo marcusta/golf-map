@@ -4,13 +4,23 @@ blender/SHAPING-PLAN.md, "Terrain editor -> Blender". The web Terrain editor wri
 (`docs/gspro/<course>/shaping/NN-*.json`); the server asks this worker to bring the course meshes and their
 FBX in step, in seconds instead of a full shape_apply run.
 
-    blender -b --python blender/tools/shape_worker.py -- [--port 8766] [--blend <course>.blend|<course>.conformed.blend]
+    blender -b --python blender/tools/shape_worker.py -- [--port 8766] [--host 127.0.0.1] [--token <t>]
+        [--blend <course>.blend|<course>.conformed.blend]
         [--layers docs/gspro/<course>/shaping] [--fbx-folder <folder>] [--no-cache]
 
-JSON over HTTP on 127.0.0.1 (port: --port, else $GOLFMAP_SHAPING_PORT, else 8766):
+JSON over HTTP on --host (else $GOLFMAP_SHAPING_HOST, else 127.0.0.1; 0.0.0.0 to serve a server on another
+machine) and --port (else $GOLFMAP_SHAPING_PORT, else 8766). With --token (else $GOLFMAP_SHAPING_TOKEN) every
+request must carry it as `X-Golfmap-Token`, or it is refused with 401. Paths in the body (blend, layersDir,
+fbxFolder) may be UNC (\\\\host\\share\\...): nothing here assumes a drive letter.
+
+A /load or /sync is a JOB: the call answers at once and the work goes on in the main thread, so a sync that
+takes an hour needs no held connection.
 
 - GET /status -> {state: starting|ready|busy|error, phase, blend, conformed, layersDir, fbxFolder, appliedOps,
-  lastRun, error}
+  lastRun, error, host, port, pid, queued, job}, where `job` is the running (else the last) job:
+  {id, kind, state: running|succeeded|failed, phase, startedAt, seconds, result, error} — `result` is the
+  answer the old blocking call returned, `error` its message.
+- GET /job/<id> -> that job alone, in the same shape (404 when this worker never ran it; the last few are kept).
 - POST /load {blend?, layersDir?, fbxFolder?, cache?, syncFbx?} -> open the conformed cache (running
   shape_prepare first when it is missing or older than the source .blend), apply every layer (op-result cache:
   a cold load replays unchanged ops from <blend folder>/shaping-staging/cache), keep per-object snapshots, write
@@ -20,7 +30,10 @@ JSON over HTTP on 127.0.0.1 (port: --port, else $GOLFMAP_SHAPING_PORT, else 8766
   unit that touches them, seam-check, export the changed objects' FBX into fbxFolder (fbx_sync's exporter,
   fingerprints and manifest) and delete the FBX of removed objects -> {changedObjects, exported, removed,
   seconds, report: {warnings, seams, changedPlaces}, ...}
-- POST /shutdown -> stops the worker (Blender exits).
+- Both POSTs answer {job, kind, state: "running"} with 202, or 409 when a job is already going.
+  `?wait=1` instead holds the connection until the job is done and answers its result, as before
+  (what `curl` users want).
+- POST /shutdown -> stops the worker (Blender exits); always waits.
 
 How /sync stays exact: every op runs as units (one per feature group, shape_apply.plan_units) whose reads
 (targets plus every mesh within the op's reach) and writes are recorded. Before each op, the state of every
@@ -43,6 +56,7 @@ import sys
 import threading
 import time
 import traceback
+import urllib.parse
 from types import SimpleNamespace
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
@@ -56,7 +70,10 @@ import shape_layers as sl  # noqa: E402
 
 FORMAT = "golfmap-shaping-worker-v1"
 DEFAULT_PORT = 8766
+DEFAULT_HOST = "127.0.0.1"
+TOKEN_HEADER = "X-Golfmap-Token"
 PLAN_MARGIN = 1.0  # m added to predicted reaches when working out what a change can touch
+JOBS_KEPT = 20  # finished jobs still answerable on /job/<id>
 
 
 class HttpError(Exception):
@@ -66,12 +83,40 @@ class HttpError(Exception):
 
 
 class Job:
+    """One /load or /sync run: queued by the HTTP thread, run by the main thread's loop, polled on /status
+    and /job/<id> (and awaited in place by `?wait=1`)."""
+
+    _seq = 0
+    _seq_lock = threading.Lock()
+
     def __init__(self, kind, body):
+        with Job._seq_lock:
+            Job._seq += 1
+            self.id = str(Job._seq)
         self.kind = kind
         self.body = body
         self.done = threading.Event()
         self.code = 200
         self.result = None
+        self.error = None
+        self.state = "queued"
+        self.queued_at = time.time()
+        self.t0 = None
+        self.t1 = None
+
+    @property
+    def going(self):
+        return self.state in ("queued", "running")
+
+    def public(self, phase=None):
+        """The job as /status and /job/<id> report it. `phase` = the worker's phase, for a running job."""
+        t0 = self.t0 or self.queued_at
+        return {"id": self.id, "kind": self.kind, "state": "running" if self.going else self.state,
+                "phase": phase if self.going else None,
+                "startedAt": time.strftime("%Y-%m-%dT%H:%M:%S", time.localtime(t0)),
+                "seconds": round((self.t1 or time.time()) - t0, 1),
+                "result": self.result if self.state == "succeeded" else None,
+                "error": self.error}
 
 
 def footprint(rec):
@@ -81,6 +126,7 @@ def footprint(rec):
 class Worker:
     def __init__(self, args):
         self.args = args
+        self.token = args.token or None
         self.lock = threading.Lock()
         self.jobs = queue.Queue()
         self.running = True
@@ -89,9 +135,11 @@ class Worker:
         self.ops = []  # applied ops, in order: {key, layer, path, op, canon}
         self.entries = {}  # op key -> report entry
         self.first_sync = False  # the first /sync after a /load also exports whatever differs from the FBX manifest
+        self.job = None  # the running job, else the last one
+        self.by_id = {}  # the last JOBS_KEPT jobs, for /job/<id>
         self.status = {"format": FORMAT, "state": "starting", "phase": None, "blend": None, "conformed": None,
                        "layersDir": None, "fbxFolder": None, "appliedOps": 0, "lastRun": None, "error": None,
-                       "pid": os.getpid(), "port": args.port}
+                       "pid": os.getpid(), "host": args.host, "port": args.port}
 
     # ------------------------------------------------------------ status (any thread)
 
@@ -102,13 +150,30 @@ class Worker:
     def get_status(self):
         with self.lock:
             s = dict(self.status)
+            s["job"] = self.job.public(s["phase"]) if self.job is not None else None
         s["queued"] = self.jobs.qsize()
         return json.loads(json.dumps(s, default=str))
 
-    def submit(self, kind, body):
-        job = Job(kind, body)
+    def job_by_id(self, job_id):
+        with self.lock:
+            job = self.by_id.get(job_id)
+            phase = self.status["phase"]
+        return None if job is None else json.loads(json.dumps(job.public(phase), default=str))
+
+    def submit(self, kind, body, alone=True):
+        """Queue a job. Returns (job, None), or (None, the job in the way) when one is already going
+        (`alone=False` queues behind it anyway — /shutdown must always get through)."""
+        with self.lock:
+            if alone and self.job is not None and self.job.going:
+                return None, self.job
+            job = Job(kind, body)
+            if self.job is None or not self.job.going:
+                self.job = job
+            self.by_id[job.id] = job
+            for old in sorted(self.by_id, key=int)[:-JOBS_KEPT]:
+                self.by_id.pop(old, None)
         self.jobs.put(job)
-        return job
+        return job, None
 
     # ------------------------------------------------------------ main thread
 
@@ -159,7 +224,9 @@ class Worker:
 
     def ensure_conformed(self, blend):
         """(source, conformed, prepare report or None). Runs shape_prepare when the conformed cache is missing or
-        older than its source .blend (a regenerated course)."""
+        older than its source .blend (a regenerated course). shape_prepare's own per-mesh conform cache
+        (`<blend folder>/shaping-staging/conform-cache`) then conforms only the meshes whose flat input
+        changed, so a regenerated .blend costs seconds per changed mesh instead of the whole course."""
         source, conformed = self.resolve_blend(blend)
         stale = not os.path.isfile(conformed) or (
             source and os.path.isfile(source) and os.path.getmtime(source) > os.path.getmtime(conformed))
@@ -176,7 +243,10 @@ class Worker:
         with open(os.path.splitext(conformed)[0] + ".json", "w", encoding="utf-8") as f:
             json.dump(rep, f, indent=1)
         print("[shape_worker]\n" + shape_prepare.summary(rep))
-        return source, conformed, {k: rep[k] for k in ("out", "conformed", "failedObjects", "timings")}
+        cache = rep.get("cache") or {}
+        return source, conformed, dict(
+            {k: rep[k] for k in ("out", "conformed", "failedObjects", "timings")},
+            conformCache={k: cache.get(k) for k in ("used", "hits", "misses", "skipped")})
 
     def op_list(self, layers_dir):
         try:

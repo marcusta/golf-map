@@ -18,7 +18,10 @@ replayed in seconds to minutes.
 1. **New `.blend`** (Marcus: "we have a new Blend file"; built by OPCD from a golf-map SVG).
 2. **Prepare** (`blender/tools/shape_prepare.py`, headless, slow once): import the course's `terrain.obj`
    and conform every `Spline*` mesh with OPCD's own operators. Result cached as a derived file
-   `<name>.conformed.blend` next to the source; the source `.blend` is never saved.
+   `<name>.conformed.blend` next to the source; the source `.blend` is never saved. Only the meshes whose
+   flat input changed are conformed again (per-mesh conform cache, README "The per-mesh conform cache":
+   Vreta 154 s cold, 21 s warm, 79 s for a half-changed regeneration). The `terrain.obj` itself comes from
+   the exported heightmap (`blender/tools/terrain_obj.py`), not from Unity by hand.
 3. **Apply** (`blender/tools/shape_apply.py`, headless, fast): open the conformed cache, replay the shaping
    layers in order, write `shaping-report.json`, export changed FBX (fbx_sync logic) to the export folder
    (a staging folder until the loop is trusted).
@@ -123,7 +126,12 @@ slivers. Also the list of changed places (object, hole, centre, bounds) that Uni
   give each its own material (Unity side: read the surface token from the name; not done here).
 - `gspro.py shaping-global` writes `00-global.gen.json` from the course DB.
 - Later: DEM edits under meshes are dropped from the heightmap export (the terrain only carries edits
-  outside the meshes); the base `terrain.obj` could be written from our 0.5 m DEM instead of Unity's export.
+  outside the meshes).
+- **Done 2026-10-14:** the base `terrain.obj` is written from the exported inner heightmap instead of
+  Unity's manual Terrain › Export To OBJ — `bun run py ../blender/tools/terrain_obj.py --sidecar <inner
+  .tif.json> --out terrain.obj` (5.7 s on Vreta). Byte-identical to Unity's export apart from the heights,
+  which are at most 0.63 mm off (one step of Unity's 16-bit height storage, which ours skip); README
+  "terrain.obj without Unity". That removes the manual Unity step from docs/workflows.md section 1 step 8.
 
 ## Terrain editor → Blender (fast per-feature loop)
 
@@ -220,6 +228,10 @@ with max |dz|, sub-centimetre ripple moves left out.
 
 ## Open questions
 
+- Step 1 (SVG → `.blend`) stays manual: the OPCD panel's Import SVG / Convert Materials and Cut are not in
+  the add-on we have, they need `GSProSVGConvert.exe` + `OPCDcourseconversion.blend` under Blender 2.83,
+  neither of which is on this machine (checked 2026-10-14, README "SVG -> `.blend` (OPCD) cannot be run
+  headless").
 - OPCD's split pieces (`_pieceK_`, `_hole0_`) and blend numbering across regenerations: resolved through
   `opcd_parent_id`, to be checked on the next regeneration.
 - Afrod operators are unseeded and UI-driven (scene props, Edit Mode, selections): the engine sets

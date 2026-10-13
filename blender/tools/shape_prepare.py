@@ -21,9 +21,24 @@ depth (per object), timings, Terrain bounds.
     blender -b course.blend --python blender/tools/shape_prepare.py -- \
         [--terrain <terrain.obj>] [--out <file.blend>] [--json <report.json>] [--conform afrod|opcd]
         [--limit N]   # smoke test: conform only the first N Spline meshes (Selection = Selected)
+        [--no-conform-cache] [--conform-cache-dir <folder>]
+
+**Conform cache.** A regenerated course `.blend` is mostly the same flat meshes under new names, but
+the conform used to run again for all of them (2.5 minutes on Vreta). So instead of pressing Conform
+to Terrain once for the whole scene, prepare runs the operator's own per-object body (the add-on's
+`flatten_mesh` / `project_mesh` / `fix_failed_projections`, in the operator's order) and caches each
+mesh's result in `<blend folder>/shaping-staging/conform-cache/`, keyed on the mesh's whole
+pre-conform state (`shape_apply.capture_state`, so positions, topology, paint, normals, props - not
+its name), the terrain OBJ's content hash, the conform button, Terrain Smooth, the seed and the
+add-on + engine sources. A hit writes the stored arrays back onto the mesh; a miss conforms and
+stores it. Afrod's retry nudges are seeded per mesh from that state hash instead of once per run, so
+one mesh's result never depends on the ones before it (identical on Vreta: nothing fails to project).
+`--no-conform-cache` (or `GOLFMAP_PREPARE_NO_CONFORM_CACHE=1`) presses the operator button as before;
+the cache is also skipped for a scene with pot bunkers, whose rename pass only the operator does.
 """
 
 import argparse
+import hashlib
 import json
 import os
 import random
@@ -33,13 +48,20 @@ import time
 import bpy
 import numpy as np
 
+HERE = os.path.dirname(os.path.abspath(__file__))
+if HERE not in sys.path:
+    sys.path.insert(0, HERE)
+import shape_apply as sa  # noqa: E402  (capture_state / apply_state / state_hash / OpCache)
+
 FORMAT = "golfmap-shape-prepare-v1"
+CACHE_FORMAT = "golfmap-conform-cache-v1"
 # OPCD's flatten_mesh lowers every vertex by this much before projecting; a vertex the projection
 # misses stays there (Afrod's fix_failed_projections looks for exactly this depth, within 1 cm).
 FLATTEN_DEPTH = 100.0
 FAILED_TOL = 0.01
 OPCD_MODULE = "bl_ext.user_default.opcd_blender_tools"
 AFROD_MODULE = OPCD_MODULE + ".operators.afrod.afrod_operators"
+OPCD_UTILS_MODULE = OPCD_MODULE + ".utils.mesh_utils"
 
 
 def _view3d_override():
@@ -100,6 +122,11 @@ def import_terrain(path, override):
     return bpy.data.objects["Terrain"]
 
 
+def _tool_props(conform_op):
+    scene = bpy.context.scene
+    return scene.opcdtools if conform_op == "afrod" else scene.opcd_tools
+
+
 def conform(targets, conform_op, all_meshes, override, seed):
     """Press Conform to Terrain. `targets` are the Spline meshes it will reach (for the report)."""
     scene = bpy.context.scene
@@ -120,6 +147,192 @@ def conform(targets, conform_op, all_meshes, override, seed):
         raise RuntimeError(f"Conform to Terrain failed: {result}")
 
 
+# ---------------------------------------------------------------- per-mesh conform cache
+
+
+def cache_dir_for(blend_path):
+    return os.path.join(os.path.dirname(os.path.abspath(blend_path)), "shaping-staging", "conform-cache")
+
+
+def _module(name):
+    mod = sys.modules.get(name)
+    if mod is None:
+        import importlib
+        mod = importlib.import_module(name)
+    return mod
+
+
+def terrain_fingerprint(path, folder):
+    """A content hash of the terrain OBJ, remembered per (size, mtime) in `folder` so a re-run does not
+    read 644 MB again. Content, not mtime: a terrain.obj rewritten from the same heightmap
+    (`terrain_obj.py`) must keep the cache."""
+    st = os.stat(path)
+    tag = "%d:%d" % (st.st_size, st.st_mtime_ns)
+    index = os.path.join(folder, "terrain-hash.json")
+    try:
+        with open(index, encoding="utf-8") as f:
+            known = json.load(f)
+    except (OSError, ValueError):
+        known = {}
+    if known.get(path, {}).get("tag") == tag:
+        return known[path]["sha1"], 0.0
+    t0 = time.time()
+    h = hashlib.sha1()
+    with open(path, "rb") as f:
+        for chunk in iter(lambda: f.read(1 << 22), b""):
+            h.update(chunk)
+    sha = h.hexdigest()
+    known[path] = {"tag": tag, "sha1": sha, "bytes": st.st_size}
+    os.makedirs(folder, exist_ok=True)
+    try:
+        with open(index, "w", encoding="utf-8") as f:
+            json.dump(known, f, indent=1)
+    except OSError:
+        pass
+    return sha, time.time() - t0
+
+
+def cache_env_key(conform_op, terrain_sha, terrain_smooth, seed):
+    """Everything besides the mesh itself that decides what the conform makes of it."""
+    parts = [CACHE_FORMAT, sa.ENGINE_VERSION, bpy.app.version_string, conform_op,
+             "smooth=%.6f" % terrain_smooth, "terrain=" + terrain_sha, "seed=%d" % seed,
+             "prepare:" + str(sa._file_sha(os.path.abspath(__file__)))]
+    for name in (AFROD_MODULE, OPCD_UTILS_MODULE):
+        mod = sys.modules.get(name)
+        parts.append(name + ":" + str(sa._file_sha(getattr(mod, "__file__", "") or "") if mod else None))
+    return hashlib.sha1("|".join(parts).encode()).hexdigest()
+
+
+def _conform_target(obj):
+    return "Outer" if "Outerplot" in obj.name else "Terrain"
+
+
+def _conform_funcs(conform_op):
+    """The add-on's own per-object conform, exactly as its Conform to Terrain loop calls it."""
+    if conform_op == "afrod":
+        mod = _module(AFROD_MODULE)
+        return mod.flatten_mesh, mod.project_mesh, mod.fix_failed_projections
+    mod = _module(OPCD_UTILS_MODULE)
+    return mod.flatten_mesh, mod.project_mesh, None
+
+
+def _conform_one(obj, funcs):
+    flatten, project, fix_failed = funcs
+    if obj.modifiers:
+        obj.modifiers.clear()
+    flatten(obj)
+    project(obj, _conform_target(obj))
+    bpy.ops.object.convert(target="MESH")  # apply the Shrinkwrap
+    if fix_failed is not None:
+        fix_failed(obj, "Terrain")
+
+
+def conform_reach(conform_op, limit_targets=None):
+    """The objects the chosen Conform All button iterates. OPCD Base filters on the name; Afrod Mod's
+    filter is `'Spline' or 'Outerplot' in o.name and ...`, which is always true, so it walks every
+    visible object (it conforms the Spline/Outerplot ones and converts the rest)."""
+    if limit_targets is not None:
+        return list(limit_targets)
+    visible = [o for o in bpy.context.visible_objects if o.type == "MESH"]
+    if conform_op == "afrod":
+        return visible
+    return [o for o in visible if ("Spline" in o.name or "Outerplot" in o.name)
+            and "WaterPlane" not in o.name and "Potwall" not in o.name]
+
+
+def conform_cached(reach, conform_op, override, seed, cache, env, verify_full=False):
+    """Conform every mesh in `reach` through the cache. Returns the cache stats."""
+    funcs = _conform_funcs(conform_op)
+    stats = {"meshes": 0, "hits": 0, "misses": 0, "converted": 0, "renamedHits": 0, "mismatches": [],
+             "hashS": 0.0, "replayS": 0.0, "computeS": 0.0, "storeS": 0.0, "storedBytes": 0}
+    order = sorted(reach, key=lambda o: o.name)
+    with bpy.context.temp_override(**override):
+        if bpy.context.mode != "OBJECT":
+            bpy.ops.object.mode_set(mode="OBJECT")
+        bpy.ops.object.select_all(action="DESELECT")
+    previous = None
+    for obj in order:
+        with bpy.context.temp_override(**override):
+            if previous is not None:  # the operator deselects all; one object at a time is the same
+                previous.select_set(False)
+            obj.select_set(True)
+            previous = obj
+            bpy.context.view_layer.objects.active = obj
+            if "Spline" not in obj.name and "Outerplot" not in obj.name:
+                # what the Afrod loop still does to such an object
+                bpy.ops.object.convert(target="MESH")
+                stats["converted"] += 1
+                continue
+            stats["meshes"] += 1
+            t0 = time.time()
+            meta_in, arr_in = sa.capture_state(obj)
+            sha_in = sa.state_hash(meta_in, arr_in)
+            stats["hashS"] += time.time() - t0
+            key = hashlib.sha1("|".join((env, _conform_target(obj), sha_in)).encode()).hexdigest()
+            entry = cache.load(key)
+            if entry is not None:
+                t0 = time.time()
+                ok = _replay(obj, entry, arr_in, verify_full)
+                stats["replayS"] += time.time() - t0
+                if ok:
+                    stats["hits"] += 1
+                    # the key is the mesh's state, not its name: a regenerated .blend that renamed or
+                    # renumbered an otherwise identical mesh still hits
+                    stats["renamedHits"] += int(entry[0].get("object") != obj.name)
+                    continue
+                stats["mismatches"].append(obj.name)
+                sa.apply_state(obj.name, meta_in, arr_in)  # put the input back, then compute
+                obj = bpy.data.objects[obj.name]
+                bpy.context.view_layer.objects.active = obj
+            t0 = time.time()
+            random.seed(sha_in + ":%d" % seed)  # per mesh: no mesh depends on the ones before it
+            _conform_one(obj, funcs)
+            stats["misses"] += 1
+            stats["computeS"] += time.time() - t0
+            t0 = time.time()
+            stats["storedBytes"] += _store(cache, key, obj, meta_in, arr_in, sha_in)
+            stats["storeS"] += time.time() - t0
+    for k in ("hashS", "replayS", "computeS", "storeS"):
+        stats[k] = round(stats[k], 1)
+    return stats
+
+
+def _store(cache, key, obj, meta_in, arr_in, sha_in):
+    meta_out, arr_out = sa.capture_state(obj)
+    changed = {k: v for k, v in arr_out.items()
+               if k not in arr_in or not np.array_equal(v, arr_in[k])}
+    meta = {"format": CACHE_FORMAT, "object": obj.name, "target": _conform_target(obj),
+            "in": sha_in, "out": sa.state_hash(meta_out, arr_out), "meta": meta_out,
+            "arrayKeys": sorted(arr_out), "changed": sorted(changed)}
+    cache.store(key, meta, changed)
+    try:
+        return os.path.getsize(cache.path(key))
+    except OSError:
+        return 0
+
+
+def _replay(obj, entry, arr_in, verify_full):
+    """Write a cached conform result onto `obj`: the stored arrays over the ones the conform left alone."""
+    meta, stored = entry
+    if meta.get("format") != CACHE_FORMAT:
+        return False
+    arrays = {}
+    for k in meta["arrayKeys"]:
+        if k in stored:
+            arrays[k] = stored[k]
+        elif k in arr_in:
+            arrays[k] = arr_in[k]
+        else:
+            return False
+    sa.apply_state(obj.name, meta["meta"], arrays)
+    out = bpy.data.objects[obj.name]
+    if verify_full:
+        return sa.state_hash(*sa.capture_state(out)) == meta["out"]
+    co = sa.positions(out)
+    want = arrays[sa.POSITION_KEY].reshape(-1, 3)
+    return co.shape == want.shape and np.array_equal(co.astype(np.float32), want.astype(np.float32))
+
+
 def _bounds(obj):
     co = np.empty(len(obj.data.vertices) * 3, np.float64)
     obj.data.vertices.foreach_get("co", co)
@@ -129,7 +342,7 @@ def _bounds(obj):
     return [round(float(v), 3) for v in (*w.min(0), *w.max(0))]
 
 
-def run(terrain_path, out_path, conform_op="afrod", limit=None, seed=0):
+def run(terrain_path, out_path, conform_op="afrod", limit=None, seed=0, cache=True, cache_dir=None):
     t_start = time.time()
     source = bpy.path.abspath(bpy.data.filepath)
     if not source:
@@ -158,14 +371,35 @@ def run(terrain_path, out_path, conform_op="afrod", limit=None, seed=0):
     t_import = time.time() - t0
     print(f"[shape_prepare] terrain imported in {t_import:.1f} s: {len(terrain.data.vertices)} vertices")
 
+    if os.environ.get("GOLFMAP_PREPARE_NO_CONFORM_CACHE"):
+        cache = False
+    cache_report = {"used": False}
+    pot = sorted(o.name for o in bpy.context.visible_objects if "Pot" in o.name and "Potwall" not in o.name)
+    if cache and pot:
+        cache_report["skipped"] = f"{len(pot)} pot bunkers in the scene: only the operator renames those"
+        cache = False
+    cache_dir = cache_dir or cache_dir_for(source)
+
     t0 = time.time()
     fixed, restore = _count_fix_failed() if conform_op == "afrod" else (None, lambda: None)
     try:
-        conform(targets, conform_op, all_meshes=not limit, override=override, seed=seed)
+        if cache:
+            terrain_sha, hash_s = terrain_fingerprint(terrain_path, cache_dir)
+            env = cache_env_key(conform_op, terrain_sha, float(_tool_props(conform_op).terrainsmooth), seed)
+            reach = conform_reach(conform_op, targets if limit else None)
+            print(f"[shape_prepare] conform cache {cache_dir} (env {env[:12]}, {len(reach)} objects)")
+            stats = conform_cached(reach, conform_op, override, seed, sa.OpCache(cache_dir), env,
+                                   verify_full=bool(os.environ.get("GOLFMAP_PREPARE_VERIFY_CACHE")))
+            cache_report = dict(stats, used=True, dir=cache_dir, env=env, terrainSha=terrain_sha,
+                                terrainHashS=round(hash_s, 1))
+            _tool_props(conform_op).conform_selection_type = "Selected"  # as the operator leaves it
+        else:
+            conform(targets, conform_op, all_meshes=not limit, override=override, seed=seed)
     finally:
         restore()
     t_conform = time.time() - t0
-    print(f"[shape_prepare] conformed {len(targets)} meshes in {t_conform:.1f} s")
+    print(f"[shape_prepare] conformed {len(targets)} meshes in {t_conform:.1f} s"
+          + (" (cache: %d hits, %d misses)" % (cache_report["hits"], cache_report["misses"]) if cache else ""))
 
     failures = []
     unchanged = []
@@ -194,7 +428,9 @@ def run(terrain_path, out_path, conform_op="afrod", limit=None, seed=0):
         "source": source,
         "out": os.path.abspath(out_path),
         "terrainObj": os.path.abspath(terrain_path),
-        "conformOp": "wm.projectmesh (Afrod Mod v4)" if conform_op == "afrod" else "opcd.projectmesh (OPCD Base)",
+        "conformOp": ("wm.projectmesh (Afrod Mod v4)" if conform_op == "afrod" else "opcd.projectmesh (OPCD Base)")
+                     + (", per mesh through the conform cache" if cache_report["used"] else ""),
+        "cache": cache_report,
         "terrainSmooth": (bpy.context.scene.opcdtools if conform_op == "afrod" else bpy.context.scene.opcd_tools).terrainsmooth,
         "seed": seed,
         "limit": limit,
@@ -225,6 +461,17 @@ def summary(report):
         f"Terrain: {report['terrain']['vertices']} vertices, x {b[0]}..{b[3]}, y {b[1]}..{b[4]}, z {b[2]}..{b[5]}",
         f"Time: import {t['importS']} s, conform {t['conformS']} s, save {t['saveS']} s, total {t['totalS']} s",
     ]
+    c = report.get("cache") or {}
+    if c.get("used"):
+        lines.append("Conform cache: {hits} hits ({renamedHits} of them stored under another name), {misses} misses "
+                     "of {meshes} meshes ({converted} only converted); "
+                     "hash {hashS} s, replay {replayS} s, compute {computeS} s, store {storeS} s "
+                     "({storedBytes:.0f} MB written)".format(**dict(c, storedBytes=c["storedBytes"] / 1e6)))
+        if c["mismatches"]:
+            lines.append(f"  !! {len(c['mismatches'])} cached results did not verify and were recomputed: "
+                         f"{c['mismatches'][:5]}")
+    elif c.get("skipped"):
+        lines.append("Conform cache off: " + c["skipped"])
     fx = report["fixFailedProjections"]
     if fx is not None:
         lines.append(f"fix_failed_projections found {fx['vertices']} missed vertices in {fx['objects']} objects")
@@ -245,12 +492,16 @@ def main(argv):
                         help="which Conform to Terrain button: Afrod Mod v4 (with the failed-projection retry, default) or OPCD Base")
     parser.add_argument("--limit", type=int, help="smoke test: conform only the first N Spline meshes (by name)")
     parser.add_argument("--seed", type=int, default=0, help="seed for Afrod's random nudges (default %(default)s)")
+    parser.add_argument("--no-conform-cache", action="store_true",
+                        help="press the Conform to Terrain button for the whole scene instead of the per-mesh cache")
+    parser.add_argument("--conform-cache-dir", help="default <blend folder>/shaping-staging/conform-cache")
     args = parser.parse_args(argv)
     source = bpy.path.abspath(bpy.data.filepath)
     folder, name = os.path.split(source)
     terrain = args.terrain or os.path.join(folder, "terrain.obj")
     out = args.out or os.path.join(folder, os.path.splitext(name)[0] + ".conformed.blend")
-    report = run(terrain, out, conform_op=args.conform, limit=args.limit, seed=args.seed)
+    report = run(terrain, out, conform_op=args.conform, limit=args.limit, seed=args.seed,
+                 cache=not args.no_conform_cache, cache_dir=args.conform_cache_dir)
     print("[shape_prepare]\n" + summary(report))
     if args.json:
         with open(args.json, "w", encoding="utf-8") as f:
