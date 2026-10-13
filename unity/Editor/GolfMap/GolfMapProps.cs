@@ -447,7 +447,7 @@ namespace GolfMap.Editor
             return byAsset;
         }
 
-        [BridgeCommand("golfmap.props.record", "Write <props folder>/placed.json from the props standing in the scene now, without touching one of them: for the first golfmap.props.place after the hand-edit keeping existed (an older scene has no record, so a place would replace every prop from the spec and drop the hand moves again). Each instance is tied to its spec entry by object name and recorded with the transform it has; mark=moved (default) calls an instance hand-placed when it stands more than 1 cm from where the spec puts it in x/z, mark=all calls every one hand-placed (the scene as it stands is what is wanted - no prop is re-grounded after a terrain change until its spec entry moves). A prop only ROTATED by hand is not found by mark=moved: use mark=all, or capture it into the spec (workflow 4).",
+        [BridgeCommand("golfmap.props.record", "Write <props folder>/placed.json from the props standing in the scene now, without touching one of them: for the first golfmap.props.place after the hand-edit keeping existed (an older scene has no record, so a place would replace every prop from the spec and drop the hand moves again). Per asset, the instances are paired to the spec's entries by nearest x/z, one to one, closest pair first - never by the object name's #i, which is the index the spec had when the prop was placed and goes stale as soon as the spec gains or loses a place(...) call. The result's `pairing` says how many kept their index (indexStillRight) and how many had to be paired by position. mark=moved (default) calls an instance hand-placed when it stands more than 1 cm from the spec entry it paired with; mark=all calls every one hand-placed (the scene as it stands is what is wanted - no prop is re-grounded after a terrain change until its spec entry moves). An instance with no spec entry left is recorded unpaired (spec null, hand true; the next place deletes it); a spec entry with no instance is listed under notInScene. A prop only ROTATED by hand is not found by mark=moved: use mark=all, or capture it into the spec (workflow 4).",
             args = "folder (default <course>/Props/), only (asset ids, comma-separated), mark=moved|all")]
         static object RecordCommand(BridgeArgs a)
         {
@@ -457,9 +457,14 @@ namespace GolfMap.Editor
             return Record(a.String("folder"), only.Count == 0 ? null : new HashSet<string>(only), mark == "all");
         }
 
-        // Seeds the sidecar golfmap.props.place reads. Only x/z is compared against the spec: those are a
-        // pure function of the spec and the frame, while the height comes from a raycast that moves with
-        // the terrain and the meshes (which is why the sidecar exists at all).
+        // Seeds the sidecar golfmap.props.place reads, from the scene as it stands. The object names cannot
+        // be trusted here (`#i` is the index the spec had when the prop was placed; a later place(...) call
+        // shifts every later one, which on Vreta read as 88 "hand moves" that were one index shift per
+        // asset), so each asset's instances are paired to its spec entries by nearest x/z, one to one,
+        // closest pair first, no radius: the unmoved ones pair at distance 0 and are consumed first, and a
+        // hand move - far smaller than the spacing between two instances of one asset - can only pair with
+        // what is left. Only x/z is compared: those are a pure function of the spec and the frame, while
+        // the height comes from a raycast that moves with the terrain (which is why the sidecar exists).
         public static Dictionary<string, object> Record(string folder, HashSet<string> only, bool markAll)
         {
             var course = GolfMapCourses.Require();
@@ -477,31 +482,64 @@ namespace GolfMap.Editor
             var sidecar = Placed.SidecarPath(folder);
             string note;
             var written = Placed.Load(sidecar, out note);
-            foreach (var asset in specByAsset.Keys.ToList())
+            var ids = new SortedSet<string>(specByAsset.Keys, StringComparer.Ordinal);
+            ids.UnionWith(sceneByAsset.Keys);
+            foreach (var asset in ids)
                 if (only == null || only.Contains(asset)) written.Remove(asset);
+
             var rows = new List<object>();
             var missing = new List<object>();
-            int hand = 0;
-            for (int i = 0; i < insts.Count; i++)
+            var unpaired = new List<object>();
+            var perAsset = new SortedDictionary<string, object>(StringComparer.Ordinal);
+            int hand = 0, byName = 0, byPosition = 0;
+            foreach (var asset in ids)
             {
-                var inst = insts[i];
-                if (only != null && !only.Contains(inst.asset)) continue;
-                var name = inst.asset + "#" + i;
+                if (only != null && !only.Contains(asset)) continue;
+                List<Placed.SpecEntry> specs;
+                if (!specByAsset.TryGetValue(asset, out specs)) specs = new List<Placed.SpecEntry>();
                 List<Placed.SceneInstance> standing;
-                var found = sceneByAsset.TryGetValue(inst.asset, out standing) ? standing.FirstOrDefault(s => s.name == name) : null;
-                if (found == null) { missing.Add(name); continue; }
-                float dx = found.pose.pos.x - ((float)(inst.e - e0) + origin.x), dz = found.pose.pos.z - ((float)(inst.n - n0) + origin.z);
-                float off = Mathf.Sqrt(dx * dx + dz * dz);
-                bool isHand = markAll || off > tolerance.positionM;
-                if (isHand) hand++;
-                List<Placed.Record> list;
-                if (!written.TryGetValue(inst.asset, out list)) written[inst.asset] = list = new List<Placed.Record>();
-                list.Add(new Placed.Record { asset = inst.asset, index = i, name = name, hand = isHand, spec = SpecOf(inst), placed = found.pose });
-                if (isHand && rows.Count < 400)
-                    rows.Add(new Dictionary<string, object> {
-                        { "asset", inst.asset }, { "index", i }, { "name", name }, { "offSpecM", Math.Round(off, 3) },
-                        { "pos", new object[] { found.pose.pos.x, found.pose.pos.y, found.pose.pos.z } },
-                        { "yaw", Math.Round(found.pose.euler.y, 2) } });
+                if (!sceneByAsset.TryGetValue(asset, out standing)) standing = new List<Placed.SceneInstance>();
+                standing = standing.OrderBy(s => s.name, StringComparer.Ordinal).ToList();
+                var sx = standing.Select(s => (double)s.pose.pos.x).ToList();
+                var sz = standing.Select(s => (double)s.pose.pos.z).ToList();
+                var px = specs.Select(s => (double)((float)(s.spec.e - e0) + origin.x)).ToList();
+                var pz = specs.Select(s => (double)((float)(s.spec.n - n0) + origin.z)).ToList();
+                var paired = Placed.PairNearest(sx, sz, px, pz);
+
+                var list = new List<Placed.Record>();
+                int aName = 0, aPos = 0, aHand = 0;
+                for (int i = 0; i < standing.Count; i++)
+                {
+                    var s = standing[i];
+                    if (paired[i] < 0)
+                    {
+                        list.Add(new Placed.Record { asset = asset, index = -1, name = s.name, hand = true, spec = null, placed = s.pose });
+                        unpaired.Add(s.name + ": the spec has no entry left for it (the next place deletes it)");
+                        aHand++; hand++;
+                        continue;
+                    }
+                    var entry = specs[paired[i]];
+                    double dx = sx[i] - px[paired[i]], dz = sz[i] - pz[paired[i]];
+                    float off = (float)Math.Sqrt(dx * dx + dz * dz);
+                    bool sameIndex = s.name == asset + "#" + entry.index;
+                    if (sameIndex) { aName++; byName++; } else { aPos++; byPosition++; }
+                    bool isHand = markAll || off > tolerance.positionM;
+                    if (isHand) { aHand++; hand++; }
+                    list.Add(new Placed.Record { asset = asset, index = entry.index, name = s.name, hand = isHand, spec = entry.spec, placed = s.pose });
+                    if (isHand && rows.Count < 400)
+                        rows.Add(new Dictionary<string, object> {
+                            { "asset", asset }, { "name", s.name }, { "specIndex", entry.index }, { "pairedBy", sameIndex ? "name" : "position" },
+                            { "offSpecM", Math.Round(off, 3) },
+                            { "pos", new object[] { s.pose.pos.x, s.pose.pos.y, s.pose.pos.z } },
+                            { "yaw", Math.Round(s.pose.euler.y, 2) } });
+                }
+                if (list.Count > 0) written[asset] = list;
+                var left = Enumerable.Range(0, specs.Count).Where(k => !paired.Contains(k)).ToList();
+                foreach (var k in left) missing.Add(asset + "#" + specs[k].index);
+                perAsset[asset] = new Dictionary<string, object> {
+                    { "inScene", standing.Count }, { "inSpec", specs.Count },
+                    { "indexStillRight", aName }, { "pairedByPosition", aPos },
+                    { "handPlaced", aHand }, { "notInScene", left.Count } };
             }
             Placed.Save(sidecar, manifest, written, specByAsset.ToDictionary(kv => kv.Key, kv => Placed.SpecHash(kv.Value)));
             if (sidecar.StartsWith("Assets/", StringComparison.Ordinal)) AssetDatabase.ImportAsset(sidecar);
@@ -509,9 +547,12 @@ namespace GolfMap.Editor
             {
                 { "manifest", manifest }, { "placedRecord", sidecar }, { "mark", markAll ? "all" : "moved" },
                 { "recorded", written.Where(kv => only == null || only.Contains(kv.Key)).Sum(kv => kv.Value.Count) },
+                { "pairing", new Dictionary<string, object> {
+                    { "indexStillRight", byName }, { "pairedByPosition", byPosition },
+                    { "unpairedInstances", unpaired.Count }, { "notInScene", missing.Count } } },
                 { "handPlaced", hand }, { "rows", rows },
-                { "notInScene", missing },
-                { "note", "Nothing in the scene was touched. Run golfmap.props.place {dryRun: true} next: the hand-placed instances must come back as kept." },
+                { "notInScene", missing }, { "unpairedInstances", unpaired }, { "assets", perAsset },
+                { "note", "Nothing in the scene was touched. Instances are paired to the spec by nearest x/z, not by the object name's #i. Run golfmap.props.place {dryRun: true} next: the hand-placed instances must come back as kept." },
             };
         }
 

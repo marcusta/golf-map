@@ -12,11 +12,20 @@
 // move permanent across machines. The place report lists the hand-placed instances with both transforms
 // so the user or an agent can carry them into the spec.
 //
-// Matching is by asset and nearest recorded position, never by the instance index alone (the indices go
-// stale as soon as the spec gains or loses a place() call):
-//   scene object -> record   by object name (the record was written when that object was made), and for
-//                            a renamed object by the nearest unclaimed record within matchM;
-//   record -> spec entry     by the nearest recorded spec position (e, n), one-to-one, closest first.
+// Matching is by asset and nearest position, never by the instance index alone. `<asset>#<i>` is the
+// index in the manifest at the moment of placing, and it goes stale as soon as the spec gains or loses a
+// place() call: on Vreta a record run that trusted the names reported 88 "hand moves" that were really
+// one index shift per asset (11 range_mat all off by exactly 5.745-5.805 m, a row of hedge_boxwood all
+// off by 11.18 m, bench_stone by 187-522 m).
+//   scene object -> record   by object name - and only there is the name trusted, because the record was
+//                            written by the place that made that object; a renamed object is found by the
+//                            nearest unclaimed record within matchM;
+//   record -> spec entry     by the nearest recorded spec position (e, n), ONE-TO-ONE, closest pair
+//                            first, with no radius: PairNearest. Within one asset the instances stand far
+//                            further apart than any hand nudge, so the unmoved ones pair at distance 0
+//                            and are consumed first, and a moved one can only pair with what is left.
+//   scene object -> spec     the same PairNearest on x/z, for golfmap.props.record (which has no records
+//                            to go by: GolfMapProps.Record).
 //
 // The same rule mirrored in JS and tested with bun: unity/props-matching.mjs + props-matching.test.mjs.
 // Change both together.
@@ -58,8 +67,8 @@ namespace GolfMap.Editor
         public sealed class Record
         {
             public string asset, name;
-            public int index;
-            public SpecPose spec = new SpecPose();
+            public int index;         // the spec entry it belongs to, -1 when the spec has none for it
+            public SpecPose spec;     // null: no spec entry left for this instance (the next place deletes it)
             public Pose placed = new Pose();
             public bool hand;         // placed at a transform the user gave it, not at the spec's
         }
@@ -75,7 +84,7 @@ namespace GolfMap.Editor
             public float positionM = 0.01f;   // 1 cm
             public float rotDeg = 0.5f;       // half a degree, on any axis (a tilt counts too)
             public float scale = 0.001f;      // a thousandth, relative
-            public float matchM = 2f;         // how far a recorded position may be from the one it pairs with
+            public float matchM = 2f;         // only for finding a RENAMED scene object by its recorded position
         }
 
         // One spec entry's outcome.
@@ -100,7 +109,7 @@ namespace GolfMap.Editor
         {
             if (tol == null) tol = new Tolerance();
             var inScene = PairScene(records, scene, tol);
-            var paired = PairSpecs(specs, records, tol);
+            var paired = PairSpecs(specs, records);
 
             var decisions = new List<Decision>();
             for (int i = 0; i < specs.Count; i++)
@@ -112,7 +121,7 @@ namespace GolfMap.Editor
                 if (record == null)
                 {
                     d.rule = "no-record";
-                    d.reason = "no record of this instance (new, or the spec moved it more than " + Num(tol.matchM) + " m): the spec decides";
+                    d.reason = "no record left for this instance (a new place(...) call, or the spec has more instances of this asset than the record): the spec decides";
                     decisions.Add(d);
                     continue;
                 }
@@ -192,27 +201,41 @@ namespace GolfMap.Editor
         }
 
         // spec entry index -> record index (-1 for none): the nearest recorded spec position, one-to-one,
-        // closest pair first. Never by the instance index: those go stale with the spec.
-        static int[] PairSpecs(List<SpecEntry> specs, List<Record> records, Tolerance tol)
+        // closest pair first, no radius. Never by the instance index: those go stale with the spec.
+        // Records without a spec (an instance the spec had no entry for) take part in nothing.
+        static int[] PairSpecs(List<SpecEntry> specs, List<Record> records)
         {
-            var paired = new int[specs.Count];
+            var usable = Enumerable.Range(0, records.Count).Where(k => records[k].spec != null).ToList();
+            var paired = PairNearest(
+                specs.Select(s => s.spec.e).ToList(), specs.Select(s => s.spec.n).ToList(),
+                usable.Select(k => records[k].spec.e).ToList(), usable.Select(k => records[k].spec.n).ToList());
+            for (int i = 0; i < paired.Length; i++) paired[i] = paired[i] < 0 ? -1 : usable[paired[i]];
+            return paired;
+        }
+
+        // One-to-one nearest pairing of two sets of points, closest pair first and no radius: the returned
+        // array holds, per point of a, the index of the point of b it paired with, or -1 when b ran out.
+        // Coordinates stay double (EPSG:3006 northings lose half a metre as float), and distances are
+        // rounded to the millimetre so this and the JS mirror break ties the same way.
+        public static int[] PairNearest(IList<double> ax, IList<double> ay, IList<double> bx, IList<double> by)
+        {
+            var paired = new int[ax.Count];
             for (int i = 0; i < paired.Length; i++) paired[i] = -1;
-            var pairs = new List<int[]>();            // { specIdx, recordIdx, distance in mm }
-            for (int i = 0; i < specs.Count; i++)
-                for (int k = 0; k < records.Count; k++)
+            var pairs = new List<long[]>();           // { distance in mm, a index, b index }
+            for (int i = 0; i < ax.Count; i++)
+                for (int k = 0; k < bx.Count; k++)
                 {
-                    double de = specs[i].spec.e - records[k].spec.e, dn = specs[i].spec.n - records[k].spec.n;
-                    double dist = Math.Sqrt(de * de + dn * dn);
-                    if (dist > tol.matchM) continue;
-                    pairs.Add(new[] { i, k, (int)Math.Round(dist * 1000) });
+                    double dx = ax[i] - bx[k], dy = ay[i] - by[k];
+                    pairs.Add(new[] { (long)Math.Round(Math.Sqrt(dx * dx + dy * dy) * 1000), (long)i, (long)k });
                 }
-            pairs.Sort((x, y) => x[2] != y[2] ? x[2].CompareTo(y[2]) : (x[0] != y[0] ? x[0].CompareTo(y[0]) : x[1].CompareTo(y[1])));
-            var usedRecord = new HashSet<int>();
+            pairs.Sort((p, q) => p[0] != q[0] ? p[0].CompareTo(q[0]) : (p[1] != q[1] ? p[1].CompareTo(q[1]) : p[2].CompareTo(q[2])));
+            var used = new HashSet<int>();
             foreach (var p in pairs)
             {
-                if (paired[p[0]] >= 0 || usedRecord.Contains(p[1])) continue;
-                paired[p[0]] = p[1];
-                usedRecord.Add(p[1]);
+                int i = (int)p[1], k = (int)p[2];
+                if (paired[i] >= 0 || used.Contains(k)) continue;
+                paired[i] = k;
+                used.Add(k);
             }
             return paired;
         }
@@ -261,7 +284,7 @@ namespace GolfMap.Editor
                     asset = asset, name = o.String("name"), index = (int)o.Number("index", -1),
                     hand = o.Bool("hand", false),
                 };
-                if (spec != null)
+                if (spec != null)                     // absent or null: the spec had no entry for it
                     r.spec = new SpecPose
                     {
                         e = spec.Number("e"), n = spec.Number("n"),
@@ -300,7 +323,7 @@ namespace GolfMap.Editor
                     rows.Add(new Dictionary<string, object>
                     {
                         { "asset", r.asset }, { "index", r.index }, { "name", r.name }, { "hand", r.hand },
-                        { "spec", new Dictionary<string, object> {
+                        { "spec", r.spec == null ? null : (object)new Dictionary<string, object> {
                             { "e", r.spec.e }, { "n", r.spec.n }, { "yawDeg", r.spec.yaw }, { "dz", r.spec.dz },
                             { "scale", new object[] { r.spec.scale.x, r.spec.scale.y, r.spec.scale.z } } } },
                         { "placed", new Dictionary<string, object> {

@@ -119,12 +119,16 @@ hand"; mirror + tests `unity/props-matching.mjs`, `bun test unity/props-matching
 transform it set per instance in `<course>/Props/placed.json`, and the next one keeps the user's transform for any
 instance that is not where the tool left it (1 cm / 0.5° on any axis / 0.1 % of scale), unless that instance's spec
 entry moved by more than the same tolerance since - then the `.gen.py` is the newer intent and wins (`rule:
-spec-moved`, listed in the result's `specWon`). Instances pair by asset and nearest recorded position, never by `#i`.
+spec-moved`, listed in the result's `specWon`). Instances pair per asset by nearest position, one to one, closest
+pair first and with no radius (`GolfMapPropsPlaced.PairNearest`), never by `#i`: that is the index the spec had when
+the prop was placed, so one `place(...)` call added or removed shifts every later one (a first version of
+`props.record` that trusted the names read 88 of Vreta's props as hand-moved - one index shift per asset).
 The result's `kept`/`handPlaced` and the report's `KEPT (hand-placed)` lines are what to carry into the spec: nothing
 is written back into `docs/gspro/<course>/*-props.gen.py`, and only the spec survives another machine or a
 `props.clear` + rebuilt spec. `keepHandEdits=false` restores the old replace-everything behaviour.
 A scene from before this existed has no record: run `golfmap.props.record` once (`mark=moved|all`, touches no prop)
-before the first place, or the hand moves go one last time.
+before the first place, or the hand moves go one last time. Read its `pairing` (`indexStillRight` vs
+`pairedByPosition`), `unpairedInstances`, `notInScene` and per-asset `assets` before trusting its `handPlaced`.
 
 Vehicles are prefab assets of the spec, and never the vehicle pack's own prefabs (43 / 29 / 8 renderers for the
 hatchback / sedan / golf cart, every one a shadow caster): the spec points at merged copies in

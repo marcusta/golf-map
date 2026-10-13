@@ -1295,7 +1295,7 @@ whether that transform is the user's (`hand`); plus `specHashes` per asset. The 
 
 | | |
 |---|---|
-| Matching | scene object → record by **object name**; a renamed object by the nearest unclaimed record within 2 m. Record → spec entry by the **nearest recorded spec position** (e, n), one to one, closest pair first - never by `#i`, which goes stale as soon as the spec gains or loses a `place(...)` call |
+| Matching | scene object → record by **object name** (trusted only there: the record was written by the place that made that object); a renamed object by the nearest unclaimed record within 2 m. Record → spec entry by the **nearest recorded spec position** (e, n), one to one, closest pair first, **no radius** - never by `#i`, which is the index the spec had when the prop was placed and shifts for every later instance as soon as one `place(...)` call is added or removed. Within one asset the instances stand far further apart than any hand nudge, so the unmoved ones pair at distance 0 and are consumed first and a moved one can only pair with what is left |
 | Tolerance | 1 cm of position, 0.5° on any rotation axis (a tilt counts: the tool only ever sets yaw), 0.1 % of scale |
 | Hand-placed | the instance stands somewhere else than the record says (`rule: hand-moved`), or an earlier place already kept it (`hand-kept`; `hand-recorded` when nothing is in the scene for it now) |
 | Spec wins | a hand-placed instance whose **spec entry** moved more than the tolerance since it was recorded (`rule: spec-moved`): the user edited the `.gen.py`, so that is the newer intent. Also `no-record` (a new `place(...)` call) and `unmoved` |
@@ -1308,13 +1308,23 @@ instance from the spec. `only=<asset ids>` leaves the other assets' records unto
 
 **A scene from before this existed has no record**, so a place would replace every prop from the spec and drop the
 hand moves one last time. `golfmap.props.record` seeds `placed.json` from the props standing in the scene, touching
-none of them: each instance is tied to its spec entry by object name and recorded with the transform it has.
-`mark=moved` (default) calls an instance hand-placed when it stands more than 1 cm from where the spec puts it in
-x/z - the only comparison that is a pure function of the spec, since the height comes from a raycast that moves with
-the terrain. `mark=all` calls every instance hand-placed (the scene as it stands is what is wanted; no prop is then
-re-grounded after a terrain change until its spec entry moves). A prop that was only **rotated** by hand is not found
-by `mark=moved`: use `mark=all`, or capture it into the spec. The result lists what it marked and the instances the
-spec has but the scene does not (`notInScene`); then `golfmap.props.place {dryRun: true}` must show them as `kept`.
+none of them: per asset, the instances are paired to the spec's entries by **nearest x/z**, one to one, closest pair
+first, no radius (the same `PairNearest` the place uses), and each is recorded with the transform it has.
+`mark=moved` (default) calls an instance hand-placed when it stands more than 1 cm from the spec entry it paired
+with - x/z only, the one comparison that is a pure function of the spec, since the height comes from a raycast that
+moves with the terrain. `mark=all` calls every instance hand-placed (the scene as it stands is what is wanted; no
+prop is then re-grounded after a terrain change until its spec entry moves). A prop that was only **rotated** by hand
+is not found by `mark=moved`: use `mark=all`, or capture it into the spec.
+
+The object names must **not** be trusted here: `<asset>#<i>` is the index the spec had when the prop was placed, and
+a single `place(...)` call added or removed shifts every later one. A first run that paired by name on Vreta reported
+88 "hand moves" that were one index shift per asset (all 11 `range_mat` off by exactly 5.745-5.805 m with the same
+yaw, a row of 10 `hedge_boxwood` off by 11.18 m, `bench_stone` by 187-522 m) and 98 instances "not in the scene".
+So read the result's `pairing`: `indexStillRight` (paired instances whose name already matched their spec entry) and
+`pairedByPosition` (the stale ones), plus `unpairedInstances` (in the scene, no spec entry left: `spec: null`,
+`hand: true`, deleted by the next place), `notInScene` (spec entries with no instance) and a per-asset `assets`
+breakdown of the same numbers. `handPlaced` and `rows` are then the real hand moves; `golfmap.props.place
+{dryRun: true}` must bring them back as `kept`.
 
 ## Stone walls
 
