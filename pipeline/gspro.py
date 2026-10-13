@@ -42,6 +42,14 @@ Commands:
              layered, fill-only SVG in the GSPro/OPCD trace palette: one
              Inkscape layer per hole, shapes named <type>_<n>, fills from
              the OPCD v4 palette.
+  batch      Run several of these commands in ONE process from a JSON job
+             list (--jobs <file>, or stdin), each job's arguments exactly as
+             the command takes them on the command line. They share the
+             database connection, the course's loaded and flattened features
+             and the DEM reads, so an export that was five processes pays for
+             the interpreter, the imports and that work once. --result writes
+             a per-job report; the exit code is 0 only when every job
+             succeeded.
   dem        Clip/resample a DEM GeoTIFF to the square as a float32 EPSG:3006
              GeoTIFF AND the Unity heightmap OPCD's TIF→RAW .bat would make
              from it (4097×4097 uint16 little-endian .raw, north-up), plus a
@@ -62,6 +70,9 @@ from __future__ import annotations
 
 import zlib
 import argparse
+import contextlib
+import copy as copy_mod
+import io
 import json
 import math
 import os
@@ -69,6 +80,7 @@ import re
 import sqlite3
 import sys
 import tempfile
+import time
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -198,7 +210,22 @@ def _reproject_square(src_path: Path, extent: tuple[float, float, float, float],
     square EPSG:3006 `extent`. Returns (len(bands), size, size). For float
     output the source's nodata is honoured (masked out of the resampling
     kernel, so a -9999 never bleeds into a neighbour) and every cell the
-    source does not cover comes back NaN — `_fill_voids` deals with those."""
+    source does not cover comes back NaN — `_fill_voids` deals with those.
+
+    Inside a `batch` the result is kept per (file, extent, size, bands,
+    dtype, resampling), so two jobs asking the same raster for the same grid
+    resample it once; the caller always gets its own array to work on."""
+    cache = _BATCH
+    if cache is None or not src_path.is_file():
+        return _reproject_square_now(src_path, extent, size, bands, dtype, resampling)
+    key = (_file_key(src_path), tuple(extent), size, tuple(bands), np.dtype(dtype).str, int(resampling))
+    return cache.cached("demWindows", key,
+                        lambda: _reproject_square_now(src_path, extent, size, bands, dtype, resampling),
+                        sizeof=lambda a: a.nbytes, copy=np.ndarray.copy)
+
+
+def _reproject_square_now(src_path: Path, extent: tuple[float, float, float, float], size: int,
+                          bands: list[int], dtype, resampling: Resampling) -> np.ndarray:
     e0, n0, e1, n1 = extent
     dst_transform = from_bounds(e0, n0, e1, n1, size, size)
     floating = np.issubdtype(np.dtype(dtype), np.floating)
@@ -219,6 +246,191 @@ def _reproject_square(src_path: Path, extent: tuple[float, float, float, float],
 
 def _safe(name: str | None) -> str:
     return re.sub(r"[^A-Za-z0-9_-]+", "_", name or "unknown")
+
+
+# --- One process, several jobs: the batch cache ------------------------------
+# `batch` (cmd_batch) runs several commands in one interpreter. What each of
+# them would otherwise redo — opening the database, loading and flattening the
+# course's features, resampling and reading the DEM, parsing a sidecar — is
+# kept here while that batch runs and thrown away when it ends. A one-shot CLI
+# run has no cache (`_BATCH is None`) and does exactly what it always did.
+#
+# Only what cannot change while the batch runs goes in, and everything keyed on
+# a file carries that file's mtime and size, so the job that rewrites a DEM
+# invalidates every reader of the old one instead of being served it.
+
+# The slots, in the order `shared` reports them.
+_BATCH_SLOTS = ("db", "features", "shapes", "courseShapes", "demWindows", "demBands", "sidecars")
+# How big one cached value may be, per slot, and how much the whole cache may
+# hold. A whole DEM band is the one big thing worth keeping — `creeks` and
+# `gkd` each read a 4100² DEM, and `gkd`'s is the one `dem` just wrote (134 MB
+# as float64) — while a resampled window is cheap to redo and an 8192² ortho
+# window (200 MB) would cost more memory than it saves time.
+BATCH_VALUE_MAX_BYTES = {"demBands": 320 << 20, "demWindows": 96 << 20}
+BATCH_VALUE_DEFAULT_MAX_BYTES = 128 << 20
+BATCH_BUDGET_BYTES = 1 << 30
+
+
+class _SharedConnection(sqlite3.Connection):
+    """A batch's read-only connection to one database, shared by every job:
+    `close()` does nothing, because each command closes what it believes it
+    opened, and the batch closes it for real when it ends."""
+
+    def close(self) -> None:
+        pass
+
+    def close_for_real(self) -> None:
+        sqlite3.Connection.close(self)
+
+
+class _BatchCache:
+    """What the jobs of one batch share. `cached` is the only way in: a miss
+    builds the value, and it is kept only while the cache stays inside its
+    budget — so a huge raster window is still handed back, just not held."""
+
+    def __init__(self) -> None:
+        self.conns: dict[str, _SharedConnection] = {}
+        self.slots: dict[str, dict] = {slot: {} for slot in _BATCH_SLOTS}
+        self.counts: dict[str, list[int]] = {slot: [0, 0] for slot in _BATCH_SLOTS}
+        self.bytes = 0
+
+    def cached(self, slot: str, key, build, *, sizeof=None, copy=None):
+        """The value for `key` in `slot`, from `build()` on a miss. `sizeof`
+        measures a big value against the budget; `copy` is applied on the way
+        in and out when the caller may change what it gets."""
+        store = self.slots[slot]
+        hit = key in store
+        self.counts[slot][0 if hit else 1] += 1
+        if hit:
+            value = store[key]
+            return copy(value) if copy is not None else value
+        value = build()
+        self.put(slot, key, copy(value) if copy is not None else value,
+                 sizeof(value) if sizeof is not None else 0)
+        return value
+
+    def put(self, slot: str, key, value, size: int = 0) -> None:
+        """Keep `value` under `key` unless it busts the slot's or the whole
+        cache's budget — a value too big is still handed back, just not held."""
+        if (size <= BATCH_VALUE_MAX_BYTES.get(slot, BATCH_VALUE_DEFAULT_MAX_BYTES)
+                and self.bytes + size <= BATCH_BUDGET_BYTES):
+            self.slots[slot][key] = value
+            self.bytes += size
+
+    def connection(self, path: Path) -> _SharedConnection:
+        key = str(path.resolve())
+        conn = self.conns.get(key)
+        self.counts["db"][0 if conn is not None else 1] += 1
+        if conn is None:
+            conn = sqlite3.connect(f"file:{path}?mode=ro", uri=True, factory=_SharedConnection)
+            conn.row_factory = sqlite3.Row
+            self.conns[key] = conn
+        return conn
+
+    def stats(self) -> dict:
+        """The `shared` block of the batch result: hits and misses per slot."""
+        out: dict = {slot: {"hits": h, "misses": m} for slot, (h, m) in self.counts.items()}
+        out["bytes"] = self.bytes
+        return out
+
+    def close(self) -> None:
+        for conn in self.conns.values():
+            conn.close_for_real()
+        self.conns.clear()
+        for store in self.slots.values():
+            store.clear()
+        self.bytes = 0
+
+
+_BATCH: "_BatchCache | None" = None
+
+
+def _file_key(path: Path) -> tuple:
+    """A cache key for a file's contents as they are now: the resolved path,
+    the mtime in nanoseconds and the size. A job that rewrites the file (the
+    DEM `dem` writes and `gkd` then reads) gets a new key, never a stale hit."""
+    st = path.stat()
+    return (str(path.resolve()), st.st_mtime_ns, st.st_size)
+
+
+def _read_sidecar_json(path: Path) -> dict:
+    """A heightmap sidecar parsed; cached per file inside a batch, and the
+    caller always gets its own copy."""
+    cache = _BATCH
+    if cache is None or not path.is_file():
+        return json.loads(path.read_text(encoding="utf-8"))
+    return cache.cached("sidecars", _file_key(path),
+                        lambda: json.loads(path.read_text(encoding="utf-8")), copy=copy_mod.deepcopy)
+
+
+@dataclass(eq=False)
+class _DemBand:
+    """Band 1 of a DEM GeoTIFF read whole — what `gkd` and `creeks` each do
+    over the same square. `values` is as stored (float64); `filled` is
+    `_fill_voids` of it and `valid` the finite, non-nodata cells, computed on
+    first use because one reader wants the one and one the other. Readers
+    treat all three as read-only: inside a batch they are shared."""
+
+    values: np.ndarray
+    transform: object
+    crs: object
+    nodata: "float | None"
+    bounds: tuple[float, float, float, float]
+    filled_in: "np.ndarray | None" = None
+    valid_in: "np.ndarray | None" = None
+
+    @property
+    def filled(self) -> np.ndarray:
+        if self.filled_in is None:
+            self.filled_in = _fill_voids(self.values)
+        return self.filled_in
+
+    @property
+    def valid(self) -> np.ndarray:
+        if self.valid_in is None:
+            ok = np.isfinite(self.values)
+            if self.nodata is not None:
+                ok = ok & (self.values != self.nodata)
+            self.valid_in = ok
+        return self.valid_in
+
+
+def _band_bounds(transform, shape) -> tuple[float, float, float, float]:
+    """(left, bottom, right, top) of a raster band, as `rasterio` reports a
+    dataset's `bounds`."""
+    rows, cols = shape
+    return tuple(rasterio.transform.array_bounds(rows, cols, transform))  # type: ignore[return-value]
+
+
+def _read_dem_band(path: Path) -> _DemBand:
+    """Band 1 of a DEM GeoTIFF, read whole and cached per file inside a batch
+    (`creeks` and `gkd` read the same DEM the `dem` job just wrote)."""
+    def build() -> _DemBand:
+        with rasterio.open(path) as ds:
+            return _DemBand(values=ds.read(1).astype("float64"), transform=ds.transform, crs=ds.crs,
+                            nodata=ds.nodata,
+                            bounds=(ds.bounds.left, ds.bounds.bottom, ds.bounds.right, ds.bounds.top))
+
+    cache = _BATCH
+    if cache is None or not path.is_file():
+        return build()   # the callers check for the file first; let rasterio say it
+    return cache.cached("demBands", _file_key(path), build, sizeof=lambda b: b.values.nbytes)
+
+
+def _publish_dem_band(path: Path, values: np.ndarray, transform, crs, nodata=None,
+                      voids_filled: bool = False) -> None:
+    """Hand a raster this process has just written to the batch cache, keyed
+    exactly as `_read_dem_band` keys the file — so the next job reading it
+    back (`gkd` over the DEM `dem` wrote) takes it from memory. Nothing but
+    this very file's bytes can be found under that key."""
+    cache = _BATCH
+    if cache is None or not path.is_file():
+        return
+    band = _DemBand(values=np.asarray(values, dtype="float64"), transform=transform, crs=crs,
+                    nodata=nodata, bounds=_band_bounds(transform, values.shape))
+    if voids_filled:   # the writer filled them already; `_fill_voids` would be a no-op
+        band.filled_in = band.values
+    cache.put("demBands", _file_key(path), band, band.values.nbytes)
 
 
 # --- Command: ortho ---------------------------------------------------------
@@ -621,7 +833,7 @@ def _outer_position(extent: Extent, lo: float, inner_sidecar: Path) -> dict:
     half the side difference to the south-west, and each heightmap is scaled
     from its own minimum, so the outer is lifted by the difference in minima.
     (OPCD's MinMax sheet computes the same X, Y, Z by hand.)"""
-    inner = json.loads(inner_sidecar.read_text(encoding="utf-8"))
+    inner = _read_sidecar_json(inner_sidecar)
     e0, n0, e1, n1 = extent
     side = e1 - e0
     inner_side = float(inner["sideM"])
@@ -689,12 +901,16 @@ def cmd_dem(bbox, dem_path: Path, out: Path, resolution: float = DEFAULT_DEM_RES
         lo, hi = min(lo, float(raw_dem.min())), max(hi, float(raw_dem.max()))
 
     out.parent.mkdir(parents=True, exist_ok=True)
+    transform = from_bounds(e0, n0, e1, n1, size, size)
     with rasterio.open(
         out, "w", driver="GTiff", height=size, width=size, count=1, dtype="float32",
-        crs=SWEREF99, transform=from_bounds(e0, n0, e1, n1, size, size),
+        crs=SWEREF99, transform=transform,
         compress="deflate", predictor=3, tiled=True, blockxsize=256, blockysize=256,
     ) as dst:
         dst.write(dem, 1)
+    # Lossless deflate of the very array above, with its voids already filled:
+    # the `gkd` job of the same batch reads this file back and gets it for free.
+    _publish_dem_band(out, dem, transform, SWEREF99, None, voids_filled=True)
     print(f"Wrote {out}  ({size}×{size}, {resolution:g} m/px, {side:g} m square, {lo:.2f}..{hi:.2f} m)")
 
     sidecar_data: dict = {
@@ -1044,7 +1260,7 @@ def cmd_trees(bbox, stems_path: Path, sidecar_path: Path, out: Path, terrain: st
     extent = extent or _square_3006_extent(bbox)
     e0, n0, e1, n1 = extent
     side = e1 - e0
-    sidecar = json.loads(sidecar_path.read_text(encoding="utf-8"))
+    sidecar = _read_sidecar_json(sidecar_path)
     sq = sidecar.get("square3006")
     if sq and any(abs(a - b) > 0.01 for a, b in zip(sq, extent)):
         raise SystemExit(f"error: the sidecar {sidecar_path.name} is for square {sq}, not {list(extent)}")
@@ -1138,7 +1354,7 @@ UNITY_BUILDINGS_FORMAT = "unity-buildings-v1"
 def _read_plot_sidecar(sidecar_path: Path, extent: Extent) -> dict:
     if not sidecar_path.is_file():
         raise SystemExit(f"error: no such heightmap sidecar: {sidecar_path} (export the heightmap first)")
-    sidecar = json.loads(sidecar_path.read_text(encoding="utf-8"))
+    sidecar = _read_sidecar_json(sidecar_path)
     sq = sidecar.get("square3006")
     if sq and any(abs(a - b) > 0.01 for a, b in zip(sq, extent)):
         raise SystemExit(f"error: the sidecar {sidecar_path.name} is for square {sq}, not {list(extent)}")
@@ -1418,8 +1634,14 @@ def _path_d(anchors: list[dict], to_svg, precision: int, flatten: float | None) 
 
 
 def _open_course_db(path: Path) -> sqlite3.Connection:
+    """A read-only connection to the app database. Inside a batch every job
+    shares one per database file (`_SharedConnection`: its `close()` is a
+    no-op), so the jobs pay for opening it once."""
     if not path.is_file():
         raise SystemExit(f"error: no course database at {path} (pass --db)")
+    cache = _BATCH
+    if cache is not None:
+        return cache.connection(path)
     conn = sqlite3.connect(f"file:{path}?mode=ro", uri=True)
     conn.row_factory = sqlite3.Row
     return conn
@@ -1486,7 +1708,21 @@ def _load_course_features(db_path: Path, course_ident: str, stack: str) -> tuple
     """A course and its features (id, type, geometry_json, sort_order,
     hole_number, group_rank, source, source_ref, attributes_json, created_at,
     feature_no, generated) in paint order: the app's own, or with `stack`
-    "opcd" the green/tee/bunker lift inside each group (see TOP_TYPES)."""
+    "opcd" the green/tee/bunker lift inside each group (see TOP_TYPES).
+
+    Inside a batch the rows are loaded once per (database file, course,
+    stack) — the `svg`, `shaping-global`, `trees` and `gkd` jobs of one export
+    all want the same ones — and the caller gets its own list to filter."""
+    cache = _BATCH
+    if cache is None or not db_path.is_file():
+        return _load_course_features_now(db_path, course_ident, stack)
+    return cache.cached("features", (_file_key(db_path), course_ident.lower(), stack),
+                        lambda: _load_course_features_now(db_path, course_ident, stack),
+                        copy=lambda loaded: (loaded[0], list(loaded[1])))
+
+
+def _load_course_features_now(db_path: Path, course_ident: str,
+                              stack: str) -> tuple[sqlite3.Row, list[sqlite3.Row]]:
     conn = _open_course_db(db_path)
     course = _resolve_course(conn, course_ident)
     rank = _group_rank_sql(conn)
@@ -1691,7 +1927,7 @@ def _fill_hazard_edges(hwc: np.ndarray, extent: Extent, rows: list, fill: EdgeFi
     for row in _grass_tracks_as_turf(rows):
         if row["type"] not in fill.types:
             continue
-        shape = _feature_shape(json.loads(row["geometry_json"]), min(0.05, px / 4))
+        shape = _row_shape(row, min(0.05, px / 4))
         if shape is not None:
             by_type.setdefault(row["type"], []).append(shape)
             counts[row["type"]] = counts.get(row["type"], 0) + 1
@@ -1829,7 +2065,7 @@ def _fill_path_shadows(hwc: np.ndarray, extent: Extent, rows: list) -> tuple[np.
 
     height, width = hwc.shape[:2]
     px = (extent[2] - extent[0]) / width
-    shapes = [s for s in (_feature_shape(json.loads(r["geometry_json"]), min(0.05, px / 4))
+    shapes = [s for s in (_row_shape(r, min(0.05, px / 4))
                           for r in _path_fill_rows(rows)) if s is not None]
     if not shapes:
         return hwc, "no paths to lift shadows on"
@@ -2231,6 +2467,19 @@ def _feature_shape(geom: dict, tol: float):
     return shape if not shape.is_empty and shape.area > 0 else None
 
 
+def _row_shape(row, tol: float):
+    """`_feature_shape` for a course_features row. Inside a batch a feature is
+    flattened once per tolerance however many passes ask for it — `svg` alone
+    wants every road shape four times — keyed on the feature's id and a
+    checksum of its geometry, so an edited feature is flattened again."""
+    geom_json = row["geometry_json"]
+    cache = _BATCH
+    if cache is None:
+        return _feature_shape(json.loads(geom_json), tol)
+    key = (row["id"], len(geom_json), zlib.crc32(geom_json.encode("utf-8")), round(float(tol), 9))
+    return cache.cached("shapes", key, lambda: _feature_shape(json.loads(geom_json), tol))
+
+
 def _polygons(shape) -> list:
     """The polygons of a shapely geometry (collections flattened)."""
     if shape is None or shape.is_empty:
@@ -2419,7 +2668,7 @@ def _road_regions(roads: list[MergedRoad], names: list[str], rows: list, tol: fl
             r = by_id.get(fid)
             if r is None:
                 continue
-            shape = _feature_shape(json.loads(r["geometry_json"]), tol)
+            shape = _row_shape(r, tol)
             if shape is None:
                 continue
             surface = road.surface or _row_surface(r)
@@ -2526,7 +2775,7 @@ def _merged_roads(rows: list, fills: dict[str, str], tol: float) -> tuple[list[M
         kind = row["type"]
         if kind not in ROADS_TYPES or not fills.get(kind):
             continue
-        shape = _feature_shape(json.loads(row["geometry_json"]), tol)
+        shape = _row_shape(row, tol)
         if shape is not None:
             pieces.setdefault(kind, []).append((row["id"], shape, _row_surface(row)))
 
@@ -2604,7 +2853,7 @@ def _road_edge_fills(rows: list, fills: dict[str, str], roads: list[MergedRoad],
         kind = row["type"]
         if kind in ROADS_TYPES or not fills.get(kind):
             continue
-        shape = _feature_shape(json.loads(row["geometry_json"]), tol)
+        shape = _row_shape(row, tol)
         if shape is not None and shape.intersects(reach):
             near.append((row["id"], kind, shape))
     if not near:
@@ -2723,7 +2972,7 @@ def _tiny_rows(rows: list, tol: float, fills: dict[str, str]) -> list:
     for r in rows:
         if r["type"] in ROADS_TYPES or r["type"] not in fills:
             continue
-        shape = _feature_shape(json.loads(r["geometry_json"]), tol)
+        shape = _row_shape(r, tol)
         if shape is None or shape.area < MIN_SHAPE_AREA_M2:
             tiny.append(r)
     return tiny
@@ -2928,7 +3177,7 @@ def cmd_svg(bbox, out: Path, db_path: Path, course_ident: str,
         # point outside need not mean the curve is.
         shape = grown.get(row["id"])
         if shape is None and not _anchors_inside(anchor_rings, extent):
-            whole = _feature_shape(geom, tol)
+            whole = _row_shape(row, tol)
             if whole is not None and not whole.within(square):
                 shape = whole
         if shape is None:
@@ -3129,7 +3378,7 @@ def _is_lot(row) -> "object | None":
     geom = json.loads(row["geometry_json"])
     if geom.get("centerline"):
         return None
-    poly = _largest_polygon(_feature_shape(geom, SHAPING_LOT_FLATTEN_M))
+    poly = _largest_polygon(_row_shape(row, SHAPING_LOT_FLATTEN_M))
     if poly is None or poly.length <= 0:
         return None
     compactness = 4 * math.pi * poly.area / poly.length ** 2
@@ -3175,9 +3424,29 @@ def _shaping_json(doc: dict) -> str:
     return re.sub(r"\[\s+(-?[\d.eE+-]+),\s+(-?[\d.eE+-]+)\s+\]", r"[\1, \2]", text) + "\n"
 
 
+SHAPING_COURSE_SHAPE_FLATTEN_M = 0.25
+
+
+def _course_mesh_shapes(db_path: Path, rows: list, fills: dict) -> tuple[list, object]:
+    """Every shape the SVG writes for this course and an STRtree over them —
+    "is there a mesh near here", which the building pads ask once each.
+    Bridge decks are props, not ground. Built once per batch."""
+    from shapely import STRtree
+
+    def build() -> tuple[list, object]:
+        shapes = [s for r in rows if r["type"] in fills and not _is_bridge_deck(r)
+                  for s in [_row_shape(r, SHAPING_COURSE_SHAPE_FLATTEN_M)] if s is not None]
+        return shapes, (STRtree(shapes) if shapes else None)
+
+    cache = _BATCH
+    if cache is None or not db_path.is_file():
+        return build()
+    key = (_file_key(db_path), tuple(r["id"] for r in rows), tuple(sorted(fills)))
+    return cache.cached("courseShapes", key, build)
+
+
 def shaping_global(db_path: Path, course_ident: str) -> tuple[dict, dict]:
     """The global shaping layer for a course, and counts for the report."""
-    from shapely import STRtree
     from shapely.geometry import Polygon
 
     course, rows = _load_course_features(db_path, course_ident, "app")
@@ -3226,9 +3495,7 @@ def shaping_global(db_path: Path, course_ident: str) -> tuple[dict, dict]:
     stats["lots"] = len(lots)
 
     # Where the meshes are: every shape the SVG writes (bridge decks are props).
-    course_shapes = [s for r in rows if r["type"] in fills and not _is_bridge_deck(r)
-                     for s in [_feature_shape(json.loads(r["geometry_json"]), 0.25)] if s is not None]
-    tree = STRtree(course_shapes) if course_shapes else None
+    course_shapes, tree = _course_mesh_shapes(db_path, rows, fills)
     pads, used = [], set()
     stats.update(pads_far=0, lot_edits=0, stale_edits=0, bad_edits=0)
     for edit in _load_plane_edits(db_path, course["id"]):
@@ -3390,7 +3657,7 @@ def _rock_slab_ops(rows: list) -> tuple[list[dict], dict]:
                               name, warnings)
         uv = _slab_number(attrs, SHAPING_SLAB_TILE_ATTRIBUTE, SHAPING_SLAB_UV_M, lambda v: v > 0, "above 0", name, warnings)
 
-        pieces = _polygons(_feature_shape(json.loads(r["geometry_json"]), SHAPING_SLAB_FLATTEN_M))
+        pieces = _polygons(_row_shape(r, SHAPING_SLAB_FLATTEN_M))
         drawn = max(pieces, key=lambda p: p.area) if pieces else None
         if drawn is None or drawn.area < MIN_SHAPE_AREA_M2:
             warnings.append(f"rock slab {name} ({r['id']}) is under {MIN_SHAPE_AREA_M2:g} m2 (drawn by mistake? delete it); skipped")
@@ -5183,17 +5450,17 @@ class _GkdGround:
     Unity y: metres above `min_m`, the terrain's own zero."""
 
     def __init__(self, dem_path: Path, extent: Extent, min_m: float) -> None:
-        with rasterio.open(dem_path) as ds:
-            if ds.crs is not None and CRS.from_user_input(ds.crs) != SWEREF99:
-                raise SystemExit(f"error: {dem_path} is {ds.crs}, not EPSG:3006")
-            b = ds.bounds
-            if (b.left - extent[0] > 0.51 or b.bottom - extent[1] > 0.51
-                    or extent[2] - b.right > 0.51 or extent[3] - b.top > 0.51):
-                raise SystemExit(f"error: {dem_path.name} covers {tuple(round(v) for v in b)}, "
-                                 f"which does not hold the square {list(extent)}")
-            self._dem = _fill_voids(ds.read(1).astype("float64"))
-            self._inv = ~ds.transform
-            self._res = abs(ds.transform.a)
+        band = _read_dem_band(dem_path)
+        if band.crs is not None and CRS.from_user_input(band.crs) != SWEREF99:
+            raise SystemExit(f"error: {dem_path} is {band.crs}, not EPSG:3006")
+        b = band.bounds
+        if (b[0] - extent[0] > 0.51 or b[1] - extent[1] > 0.51
+                or extent[2] - b[2] > 0.51 or extent[3] - b[3] > 0.51):
+            raise SystemExit(f"error: {dem_path.name} covers {tuple(round(v) for v in b)}, "
+                             f"which does not hold the square {list(extent)}")
+        self._dem = band.filled
+        self._inv = ~band.transform
+        self._res = abs(band.transform.a)
         self._min_m = float(min_m)
         self._rows, self._cols = self._dem.shape
         self._slope: "np.ndarray | None" = None
@@ -6066,7 +6333,6 @@ def cmd_creeks(bbox, db_path: Path, course_ident: str, dem_path: Path, sidecar_p
     A centerline creek uses its drawn control points (R.A.M. interpolates
     through them the way the editor does); a polygon creek the line down its
     middle (golfpipe.creeks.ribbon_centerline). `ram: false` skips a creek."""
-    import rasterio
     from scipy.spatial import cKDTree
     from shapely.geometry import LineString, box
 
@@ -6079,19 +6345,15 @@ def cmd_creeks(bbox, db_path: Path, course_ident: str, dem_path: Path, sidecar_p
         raise SystemExit(f"error: no such DEM: {dem_path}")
     extent = extent or _square_3006_extent(bbox)
     e0, n0, e1, n1 = extent
-    sidecar = json.loads(sidecar_path.read_text(encoding="utf-8"))
+    sidecar = _read_sidecar_json(sidecar_path)
     sq = sidecar.get("square3006")
     if sq and any(abs(a - b) > 0.01 for a, b in zip(sq, extent)):
         raise SystemExit(f"error: the sidecar {sidecar_path.name} is for square {sq}, not {list(extent)}")
     min_m = float(sidecar["minM"])
-    with rasterio.open(dem_path) as src:
-        if src.crs is None or src.crs.to_epsg() != 3006:
-            raise SystemExit(f"error: {dem_path} is not in EPSG:3006")
-        dem = src.read(1).astype(np.float64)
-        transform = src.transform
-        valid = np.isfinite(dem)
-        if src.nodata is not None:
-            valid &= dem != src.nodata
+    band = _read_dem_band(dem_path)
+    if band.crs is None or band.crs.to_epsg() != 3006:
+        raise SystemExit(f"error: {dem_path} is not in EPSG:3006")
+    dem, transform, valid = band.values, band.transform, band.valid
 
     course, rows = _load_creeks(db_path, course_ident)
     square = box(e0, n0, e1, n1)
@@ -6163,6 +6425,182 @@ def cmd_creeks(bbox, db_path: Path, course_ident: str, dem_path: Path, sidecar_p
           f"{sum(c['lengthM'] for c in creeks):.0f} m, surface from {dem_path.name})")
     for line in skipped:
         print(f"  skipped {line}")
+
+
+# --- Command: batch ---------------------------------------------------------
+# One export is five or six of the commands above over the same course and the
+# same square. As five processes they each pay the interpreter plus
+# rasterio/shapely imports (2-4 s), open the database, load and flatten the
+# course's features again, and re-read the DEM the previous one had just
+# written. `batch` runs them in order in ONE process over the batch cache
+# above, with each job's output captured, prefixed and reported.
+
+BATCH_FORMAT = "golfmap-gspro-batch-v1"
+
+
+class _JobOut(io.TextIOBase):
+    """One job's stdout and stderr: every finished line is kept for the result
+    file and written through to the real stdout prefixed with the job's id, so
+    a batch log reads like the separate runs it replaces."""
+
+    def __init__(self, job_id: str, stream) -> None:
+        self.lines: list[str] = []
+        self._id = job_id
+        self._stream = stream
+        self._partial = ""
+
+    def writable(self) -> bool:
+        return True
+
+    def write(self, text: str) -> int:
+        self._partial += text
+        while "\n" in self._partial:
+            line, _, self._partial = self._partial.partition("\n")
+            self._line(line)
+        return len(text)
+
+    def flush(self) -> None:
+        if self._partial:
+            line, self._partial = self._partial, ""
+            self._line(line)
+
+    def _line(self, line: str) -> None:
+        self.lines.append(line)
+        print(f"[{self._id}] {line}", file=self._stream, flush=True)
+
+
+def _batch_error(exc: BaseException) -> str:
+    """What a failed job says in the result. A command's own
+    `raise SystemExit("error: …")` is the message the one-shot CLI would have
+    printed; argparse's exit is its code; anything else names its type."""
+    if isinstance(exc, SystemExit):
+        code = exc.code
+        if code is None or code == 0:
+            return ""
+        return f"exited with code {code}" if isinstance(code, int) else str(code)
+    return f"{type(exc).__name__}: {exc}"
+
+
+def _batch_jobs(doc: dict) -> list[tuple[str, str, list[str]]]:
+    """(id, command, args) per job, validated. `args` are the flags the
+    one-shot CLI takes for that command, verbatim — so a caller hands over the
+    argv it already builds, minus `gspro.py <command>`. Ids default to
+    `<command>-<position>` and must be unique: the log and the result key on
+    them."""
+    jobs = doc.get("jobs")
+    if not isinstance(jobs, list) or not jobs:
+        raise SystemExit('error: the job list needs a non-empty "jobs" array')
+    out: list[tuple[str, str, list[str]]] = []
+    seen: set[str] = set()
+    for i, job in enumerate(jobs):
+        where = f"job {i + 1}"
+        if not isinstance(job, dict):
+            raise SystemExit(f"error: {where} is not an object")
+        command = job.get("command")
+        if not isinstance(command, str) or not command:
+            raise SystemExit(f'error: {where} has no "command"')
+        if command == "batch":
+            raise SystemExit(f"error: {where}: a batch cannot run `batch`")
+        args = job.get("args") or []
+        if not isinstance(args, list) or any(not isinstance(a, str) for a in args):
+            raise SystemExit(f'error: {where} ({command}): "args" must be a list of strings')
+        job_id = str(job.get("id") or f"{command}-{i + 1}")
+        if job_id in seen:
+            raise SystemExit(f"error: two jobs share the id {job_id!r}")
+        seen.add(job_id)
+        out.append((job_id, command, list(args)))
+    return out
+
+
+def _read_batch_doc(path: Path | None) -> dict:
+    """The job list, from `--jobs <file>` or stdin."""
+    if path is None:
+        text, where = sys.stdin.read(), "the job list on stdin"
+    elif not path.is_file():
+        raise SystemExit(f"error: no such job list: {path}")
+    else:
+        text, where = path.read_text(encoding="utf-8"), str(path)
+    try:
+        doc = json.loads(text)
+    except ValueError as exc:
+        raise SystemExit(f"error: {where} is not JSON ({exc})")
+    if not isinstance(doc, dict):
+        raise SystemExit(f'error: {where} must be an object with a "jobs" array')
+    return doc
+
+
+def _batch_shared_line(shared: dict) -> str:
+    """The `shared` block as one line for the log: only what was asked for."""
+    parts = [f"{slot} {counts['hits']}/{counts['hits'] + counts['misses']}"
+             for slot in _BATCH_SLOTS
+             for counts in [shared[slot]] if counts["hits"] or counts["misses"]]
+    return ", ".join(parts) + f"; {shared['bytes'] / (1 << 20):.0f} MB held"
+
+
+def cmd_batch(doc: dict, result_path: Path | None = None, stop_on_error: bool = False) -> int:
+    """Run the job list in order in this process, sharing the batch cache.
+    Each job's report is captured, printed prefixed with its id and recorded;
+    a job that fails (a `SystemExit` from the command, a bad argument, any
+    exception) is that job's error and the batch carries on, unless
+    `stopOnError` — then the jobs after it are reported as not run. Writes the
+    golfmap-gspro-batch-v1 result and returns 0 only when every job
+    succeeded."""
+    global _BATCH
+
+    jobs = _batch_jobs(doc)
+    stop = stop_on_error or bool(doc.get("stopOnError"))
+    log = sys.stdout
+    results: list[dict] = []
+    stopped = ""
+    started = time.perf_counter()
+    _BATCH = _BatchCache()
+    try:
+        print(f"batch: {len(jobs)} job(s) in one process"
+              + (" (stopping at the first failure)" if stop else ""), file=log, flush=True)
+        for job_id, command, args in jobs:
+            if stopped:
+                results.append({"id": job_id, "command": command, "ok": False, "seconds": 0.0,
+                                "report": [], "error": f"not run ({stopped} failed, stopOnError)"})
+                continue
+            out = _JobOut(job_id, log)
+            at = time.perf_counter()
+            error = ""
+            try:
+                with contextlib.redirect_stdout(out), contextlib.redirect_stderr(out):
+                    try:
+                        code = main([command, *args])
+                    finally:
+                        out.flush()
+                if code:
+                    error = f"exited with code {code}"
+            except KeyboardInterrupt:
+                raise
+            except BaseException as exc:   # this job's failure, not the batch's
+                out.flush()
+                error = _batch_error(exc)
+            seconds = round(time.perf_counter() - at, 3)
+            results.append({"id": job_id, "command": command, "ok": not error, "seconds": seconds,
+                            "report": out.lines, "error": error or None})
+            print(f"[{job_id}] {'FAILED: ' + error if error else 'ok'} in {seconds:.2f} s",
+                  file=log, flush=True)
+            if error and stop:
+                stopped = job_id
+        shared = _BATCH.stats()
+    finally:
+        _BATCH.close()
+        _BATCH = None
+
+    total = round(time.perf_counter() - started, 3)
+    ok = sum(1 for r in results if r["ok"])
+    if result_path is not None:
+        result_path.parent.mkdir(parents=True, exist_ok=True)
+        result_path.write_text(json.dumps({"format": BATCH_FORMAT, "jobs": results,
+                                           "seconds": total, "shared": shared}, indent=1) + "\n",
+                               encoding="utf-8")
+        print(f"batch: wrote {result_path}", file=log)
+    print(f"batch: {ok} of {len(results)} job(s) ok in {total:.1f} s "
+          f"(shared: {_batch_shared_line(shared)})", file=log, flush=True)
+    return 0 if ok == len(results) else 1
 
 
 # --- CLI --------------------------------------------------------------------
@@ -6392,6 +6830,15 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--library", help="the shaping recipe library (default $GOLFMAP_RECIPE_LIBRARY, else "
                                      "blender/recipes/library.json)")
 
+    p = sub.add_parser("batch", help="run several of the commands above in ONE process from a JSON job list, "
+                                     "sharing the database, the course's features and the DEM reads")
+    p.add_argument("--jobs", help="the job list JSON ({\"jobs\": [{\"id\", \"command\", \"args\"}], "
+                                  "\"stopOnError\": false}); omit to read it from stdin")
+    p.add_argument("--result", help=f"write the {BATCH_FORMAT} result (per-job ok/seconds/report/error, "
+                                    f"the totals and the cache stats) here")
+    p.add_argument("--stop-on-error", dest="stop_on_error", action="store_true",
+                   help="stop at the first failed job, like \"stopOnError\": true in the job list")
+
     p = sub.add_parser("svg", help="export a course's drawn features as a layered GSPro/OPCD SVG")
     _add_area(p)
     p.add_argument("--out", required=True, help="output SVG path")
@@ -6431,6 +6878,9 @@ def main(argv: list[str] | None = None) -> int:
         return 0
 
     _load_dotenv()
+    if args.command == "batch":
+        return cmd_batch(_read_batch_doc(Path(args.jobs) if args.jobs else None),
+                         Path(args.result) if args.result else None, args.stop_on_error)
     if args.command == "zones-patch":
         cmd_zones_patch(Path(args.db), args.course, Path(args.zones_json),
                         [i.strip() for i in args.ids.split(",") if i.strip()],
