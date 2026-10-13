@@ -406,10 +406,10 @@ namespace GolfMap.Editor
         static void UpdateMenu() { Debug.Log("[GolfMap] " + GolfMapJson.Serialize(UpdateHeights("both", null, float.NaN, false), false)); }
 
         [BridgeCommand("golfmap.terrain.update", "Put the course export folder's heightmaps (<prefix>-<terrain>-dem-<side>m.raw + .tif.json, what golf-map's heightmap export writes) onto the scene's existing terrains in place: heights, size and resolution from the sidecar, the outer plot re-placed from the two sidecars, lowered by the sink it has now (or outerSink). Backs up each TerrainData to <course>/Backups/ first, refreshes VSP. Keeps the objects, their data assets and the overlay. Undoes a terrain conform.",
-            args = "terrain=inner|outer|both (default both; both skips an outer the folder lacks), folder (default: the active course's export folder), outerSink (m below its sidecar position; default: keep the plot's current sink), dryRun=false")]
+            args = "terrain=inner|outer|both (default both; both skips an outer the folder lacks), folder (default: the active course's export folder), outerSink (m below its sidecar position; default: keep the plot's current sink), dryRun=false, " + GolfMapSceneSave.Arg)]
         static object UpdateCommand(BridgeArgs a)
         {
-            return UpdateHeights(a.String("terrain", "both"), a.String("folder"), (float)a.Number("outerSink", double.NaN), a.Bool("dryRun", false));
+            return GolfMapSceneSave.After(a, UpdateHeights(a.String("terrain", "both"), a.String("folder"), (float)a.Number("outerSink", double.NaN), a.Bool("dryRun", false)));
         }
 
         // The course meshes' satellite (OPCD MAHS _Satellite) and the Stix grass colour map (_ColorMap) are a copy of the
@@ -417,7 +417,7 @@ namespace GolfMap.Editor
         // (e.g. with the pipeline's bunker edge fill) reaches the course only when that copy is overwritten in place:
         // same file, same GUID, so every material keeps pointing at it.
         [BridgeCommand("golfmap.orthos.update", "Copy the course export folder's orthophoto JPEGs (<prefix>-*<match>, default the -meshes textures the course meshes and the Stix grass sample) over the project's copies of the same file name, in place (same GUID: materials keep their reference), each old file backed up to GolfMapSpelunk/ortho-backups/ first, then reimported. Files with no copy in the project are listed, not added.",
-            args = "match=-meshes.jpg (file name ending), folder (default: the active course's export folder), dryRun=false")]
+            args = "match=-meshes.jpg (file name ending), folder (default: the active course's export folder), dryRun=false, " + GolfMapSceneSave.Arg)]
         static object OrthosUpdateCommand(BridgeArgs a)
         {
             var course = GolfMapCourses.Require();
@@ -452,7 +452,7 @@ namespace GolfMap.Editor
                 rows.Add(row);
             }
             if (!dryRun) SceneView.RepaintAll();
-            return new Dictionary<string, object> { { "folder", folder }, { "match", match }, { "dryRun", dryRun }, { "files", rows } };
+            return GolfMapSceneSave.After(a, new Dictionary<string, object> { { "folder", folder }, { "match", match }, { "dryRun", dryRun }, { "files", rows } });
         }
 
         // Overwrites the project texture at assetPath with the file src, keeping the asset (same GUID); the old file
@@ -475,7 +475,7 @@ namespace GolfMap.Editor
         // photo, the cleaned one) has its own name, so this one takes the export file by name and puts it onto the
         // texture the scene's course meshes sample, whatever that asset is called.
         [BridgeCommand("golfmap.orthos.apply", "Put one orthophoto JPEG of the course export folder (file) onto the texture the scene's course meshes sample as _Satellite, in place (same GUID: the MAHS materials and the Stix colour map on the same asset keep their reference), the old file backed up to GolfMapSpelunk/ortho-backups/ first, then reimported. The project asset keeps its own file name. With several satellite textures in the scene, pass target.",
-            args = "file (a .jpg in the export folder, e.g. <prefix>-<collection>-patched-clean-8192-meshes.jpg), target (project asset path; default: the one _Satellite texture the scene's renderers use), folder (default: the active course's export folder), dryRun=false")]
+            args = "file (a .jpg in the export folder, e.g. <prefix>-<collection>-patched-clean-8192-meshes.jpg), target (project asset path; default: the one _Satellite texture the scene's renderers use), folder (default: the active course's export folder), dryRun=false, " + GolfMapSceneSave.Arg)]
         static object OrthosApplyCommand(BridgeArgs a)
         {
             var course = GolfMapCourses.Require();
@@ -517,11 +517,11 @@ namespace GolfMap.Editor
             var status = ReplaceOrthoInPlace(src, target, root, Path.Combine(root, "GolfMapSpelunk", "ortho-backups"), DateTime.Now.ToString("yyyyMMdd-HHmmss"), dryRun);
             if (!dryRun) SceneView.RepaintAll();
             int renderers; users.TryGetValue(target, out renderers);
-            return new Dictionary<string, object>
+            return GolfMapSceneSave.After(a, new Dictionary<string, object>
             {
                 { "file", file }, { "export", File.GetLastWriteTime(src).ToString("yyyy-MM-dd HH:mm") }, { "target", target },
                 { "renderers", renderers }, { "status", status }, { "dryRun", dryRun },
-            };
+            });
         }
 
         public static Dictionary<string, object> UpdateHeights(string which, string folder, float outerSinkM, bool dryRun)

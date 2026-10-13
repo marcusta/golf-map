@@ -65,11 +65,11 @@ namespace GolfMap.Editor
             Log(Sync(false, true, true, null, null, true));
         }
 
-        [BridgeCommand("golfmap.meshes.sync", "Bring the scene's course meshes in step with the course's FBX folder (Blender export) the way deleting and re-adding them by hand does, but only where something changed: an FBX whose content changed since the last sync (file size+time) has its object deleted and added again, new FBX are added (under the course's mesh parent, MeshCollider, OPCD's Set Default Materials), objects that show no current FBX are stale (deleted with prune), then vertex paint is applied again. The first sync only records the scene (replaceAll rebuilds everything). FBX the Blender manifest does not list (leftovers of an older .blend) are never added. Marks the scene dirty, does not save it.",
-            args = "dryRun=false (plan only), prune=false (delete stale objects), paint=true, replaceAll=false, folder (under Assets; default: the course's meshFolder), parent (default: the course's meshParent), exclude (comma-separated FBX name prefixes; default: the course's meshExclude)")]
+        [BridgeCommand("golfmap.meshes.sync", "Bring the scene's course meshes in step with the course's FBX folder (Blender export) the way deleting and re-adding them by hand does, but only where something changed: an FBX whose content changed since the last sync (file size+time) has its object deleted and added again, new FBX are added (under the course's mesh parent, MeshCollider, OPCD's Set Default Materials), objects that show no current FBX are stale (deleted with prune), then vertex paint is applied again. The first sync only records the scene (replaceAll rebuilds everything). FBX the Blender manifest does not list (leftovers of an older .blend) are never added. Marks the scene dirty; save=true saves it (and the assets it changed) once the sync has succeeded.",
+            args = "dryRun=false (plan only), prune=false (delete stale objects), paint=true, replaceAll=false, folder (under Assets; default: the course's meshFolder), parent (default: the course's meshParent), exclude (comma-separated FBX name prefixes; default: the course's meshExclude), " + GolfMapSceneSave.Arg)]
         static object Command(BridgeArgs a)
         {
-            return Sync(a.Bool("dryRun", false), a.Bool("prune", false), a.Bool("paint", true), a.String("folder"), a.String("parent"), a.Bool("replaceAll", false), a.String("exclude"));
+            return GolfMapSceneSave.After(a, Sync(a.Bool("dryRun", false), a.Bool("prune", false), a.Bool("paint", true), a.String("folder"), a.String("parent"), a.Bool("replaceAll", false), a.String("exclude")));
         }
 
         // Read-only: renderers that may draw white or untextured after a sync/refresh. Per active MeshRenderer of the

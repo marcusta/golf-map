@@ -2,6 +2,13 @@
 
 Per-tool behaviour notes moved out of unity/AGENTS.md. They complement [unity/README.md](../unity/README.md), which has the user-facing sections (Bunker Materials, Cart paths, Vertex paint, FBX sync, Creeks, Water planes, Course props, Stone walls); read the matching section there too.
 
+Saving: every command that writes into the scene takes `save=false` (`GolfMapSceneSave.cs`, README "Saving what a
+command changed"). With `save: true` it saves the open dirty scenes and `AssetDatabase.SaveAssets()` **after** it has
+succeeded and reports `saved: {scenes, seconds}`; a dry run and a failed run never save (`saved.skipped` says why),
+and `golfmap.course.refresh` saves once at the end rather than per chained step. Without it nothing changed: the
+scene is marked dirty and the user is asked (or `scene.save`). Pass it when a run is unattended or long - the
+2026-10-09 editor crash lost 13 meshes that were only in memory.
+
 Bunkers: `GolfMap > Bunker Materials` (`GolfMapBunkerMaterials.cs` + `GolfMapBunkerChannels.cs`) checks
 vertex paint and builds copies of OPCD's `ChannelMaterials` from `bunker-channels.json` (owned by
 [blender/](../blender/AGENTS.md); copy into `Assets/GolfMap/<Course>/` after an edit), with restore.
@@ -70,7 +77,8 @@ previous build's result or error (README "Course build").
 
 Blender shaping loop ([SHAPING-PLAN](../blender/SHAPING-PLAN.md)): `golfmap.course.refresh` (`GolfMapCourseRefresh.cs`) chains
 mesh sync, bunker convention, paint, `golfmap.terrain.conform mode=match` (terrain both ways under the meshes, feathered),
-water planes, creeks, walls and surfaces; `dryRun` plans only. `GolfMap > Review` (`GolfMapReview.cs`, bridge
+water planes, creeks, walls and surfaces; `dryRun` plans only; `save` saves once at the end, never per step, and not
+when a step failed. `GolfMap > Review` (`GolfMapReview.cs`, bridge
 `golfmap.review.list|goto|load`) walks the shaping report's changed places (default `<export folder>/shaping-staging/shaping-report.json`; `goto object=` frames one object). `only=<object names>` is the per-feature path (README "Per feature"): just those FBX imported and swapped, bunker sets, paint and a terrain window around them. Blender -> Unity FBX coordinates: `(x, y, z) -> (-x, z, -y)`.
 
 Where a view is: every Scene view shows a position box top right (`GolfMapViewInfo.cs`, toggle `GolfMap > Scene View >
@@ -106,6 +114,17 @@ Hand-modelled props near the course (clubhouse area: buildings, shelters, range,
 measured spec (`blender/tools/build_props.py`, `docs/gspro/<course>/*-props.gen.py`) and placed by `golfmap.props.place`
 (`GolfMapProps.cs`, README "Course props"): EPSG:3006 positions on the highest collider, Standard materials from the
 manifest, no custom components on placed objects (GSPro loads them as missing scripts; they are found by name).
+A re-place **keeps what was moved by hand** (`GolfMapPropsPlaced.cs`, README "A re-place keeps what was moved by
+hand"; mirror + tests `unity/props-matching.mjs`, `bun test unity/props-matching.test.mjs`): every place records the
+transform it set per instance in `<course>/Props/placed.json`, and the next one keeps the user's transform for any
+instance that is not where the tool left it (1 cm / 0.5° on any axis / 0.1 % of scale), unless that instance's spec
+entry moved by more than the same tolerance since - then the `.gen.py` is the newer intent and wins (`rule:
+spec-moved`, listed in the result's `specWon`). Instances pair by asset and nearest recorded position, never by `#i`.
+The result's `kept`/`handPlaced` and the report's `KEPT (hand-placed)` lines are what to carry into the spec: nothing
+is written back into `docs/gspro/<course>/*-props.gen.py`, and only the spec survives another machine or a
+`props.clear` + rebuilt spec. `keepHandEdits=false` restores the old replace-everything behaviour.
+A scene from before this existed has no record: run `golfmap.props.record` once (`mark=moved|all`, touches no prop)
+before the first place, or the hand moves go one last time.
 
 Vehicles are prefab assets of the spec, and never the vehicle pack's own prefabs (43 / 29 / 8 renderers for the
 hatchback / sedan / golf cart, every one a shadow caster): the spec points at merged copies in
@@ -137,7 +156,8 @@ inside `golfmap.paint.apply`, which also moves the MeshCollider to the reshaped 
 Pack rocks read as rubble; judge changes from the photo viewpoints (`golfmap.view`). Klippor are big closed rocks sunk
 into the lidar knoll, not reshaped ground (README "Stone walls"). Stone colliders need GSPro's `GSPstone` physics
 material (`physicMaterial` in the spec, `golfmap.walls.colliders`). Stones Marcus moves by hand are captured as `pose` in
-the generator before any rebuild.
+the generator before any rebuild: unlike props, a wall's stones get no `placed.json` record, because they are generated
+from the wall's seed and have no identity in the spec to key a hand move to (a `pose` boulder is that identity).
 
 Buildings (`GolfMapBuildingPlanter.cs`, `building-matching.mjs` + `match-building-palette.mjs`) follow the
 tree assignment pattern — offline matcher writes a report keyed by stable id, overrides persist, the Unity

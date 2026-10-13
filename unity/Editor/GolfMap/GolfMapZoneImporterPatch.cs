@@ -42,15 +42,15 @@ namespace GolfMap.Editor
             public List<string> zones, removed;
         }
 
-        [BridgeCommand("golfmap.zones.patch", "Take a zones-patch (gspro.py zones-patch) into the scene: reimport only the mask PNGs it changed and respawn VSP only inside its window. Needs a full golfmap.zones.import of the same export first; changes no groups or rules. Marks the scene dirty; does not save it.",
-            args = "terrain=inner|outer or file (the zones JSON), patch=<unity-zones-patch-v1 json>, package (name)")]
+        [BridgeCommand("golfmap.zones.patch", "Take a zones-patch (gspro.py zones-patch) into the scene: reimport only the mask PNGs it changed and respawn VSP only inside its window. Needs a full golfmap.zones.import of the same export first; changes no groups or rules. Marks the scene dirty; save=true saves it (and the assets it changed) once the patch has succeeded.",
+            args = "terrain=inner|outer or file (the zones JSON), patch=<unity-zones-patch-v1 json>, package (name), " + GolfMapSceneSave.Arg)]
         static object BridgePatch(BridgeArgs a)
         {
-            return WithImporter(a, w =>
+            return GolfMapSceneSave.After(a, WithImporter(a, w =>
             {
                 w.ValidateTarget();
                 return w.ApplyPatch(Path.GetFullPath(a.Require("patch")));
-            });
+            }));
         }
 
         Dictionary<string, object> ApplyPatch(string patchPath)

@@ -12,6 +12,24 @@ lists) and the idempotence every command owes them.
 
 Agent-facing per-tool notes moved from `AGENTS.md`: [docs/unity-tool-notes.md](../docs/unity-tool-notes.md); gotchas: [docs/unity-gotchas.md](../docs/unity-gotchas.md).
 
+## Saving what a command changed: `save`
+
+Every command that writes into the scene marks it dirty and leaves saving to the user. That cost 13 meshes
+on 2026-10-09, when the editor crashed with the work only in memory. So each of them takes `save=false`
+(`GolfMapSceneSave.cs`): with `save: true` the command, **once it has succeeded**, saves every open scene
+that is dirty and runs `AssetDatabase.SaveAssets()` for the assets it changed (terrain data, palettes,
+materials, meshes), and puts `saved: { scenes: [<scene paths>], seconds }` in its result.
+
+- Default `false`: a call without `save` behaves exactly as before (dirty scene, "save it in Unity").
+- A dry run never saves, and neither does a run that failed (a command that throws never gets that far;
+  `golfmap.course.refresh` with a failed step leaves the scene dirty on purpose). `saved.skipped` says why.
+- `golfmap.course.refresh` saves **once**, after its last step: the steps it chains never save of their own.
+- The commands that take it: `course.refresh`, `meshes.sync`, `terrain.update`, `terrain.conform`,
+  `zones.import`, `zones.patch`, `grass.apply`, `orthos.apply`, `orthos.update`, `creeks.import`,
+  `creeks.water`, `props.place`, `props.clear`, `walls.build`, `walls.clear`, `waterplanes.build`,
+  `trees.plant`.
+- Saving by itself, after a run without `save`: `unity_command scene.save` (mcp/README.md).
+
 ## Terrain Importer
 
 `GolfMap > Terrain Importer` turns the folder the app's **Export to GSPro** panel writes
@@ -55,7 +73,8 @@ base map distance …); set those as the base project prefers.
 
 The Terrain Importer builds the terrains. After that, a new heightmap (terrain edits, pads, digs) goes
 onto the existing ones with `GolfMap > Terrain > Update heights from export`, or the bridge's
-`golfmap.terrain.update [terrain=inner|outer|both] [outerSink] [dryRun=true]`.
+`golfmap.terrain.update [terrain=inner|outer|both] [outerSink] [dryRun=true] [save=true]`
+(`save`: the new heights and the scene saved when the update succeeded, see ["Saving what a command changed"](#saving-what-a-command-changed-save)).
 
 - **In place:** the same Terrain objects and TerrainData assets, so VSP systems, tree storage and
   references stay. Each TerrainData is backed up to `<course>/Backups/<data>-before-update-<time>.asset`
@@ -527,7 +546,9 @@ spawn on only for items with an include rule on an existing group.
 Bridge (`unity_command`): `golfmap.zones.check` (`terrain=inner|outer` or `file`, `package`)
 loads and returns the summary plus the import `plan`; `golfmap.zones.import` (same args,
 `dryRun=false`) imports, and with `dryRun=true` validates the target and returns the plan
-without writing anything. The full result lists every texture, mask group, rule and bound item
+without writing anything. `save=true` on `zones.import` and `zones.patch` saves the scene and the package
+asset once the import succeeded (["Saving what a command changed"](#saving-what-a-command-changed-save)).
+The full result lists every texture, mask group, rule and bound item
 (and a `status` repeating them); `brief=true` (both commands, default false) keeps the plan's
 `summary`, `missing`, `unbound` and `dangling` and turns the other lists into counts, drops the
 package list and cuts `status` to its first line. Agents should pass `brief=true`.
@@ -757,7 +778,8 @@ An export from another source has another file name (`-cleaned`, `-clean`), whic
 `golfmap.orthos.apply file=<export .jpg>` puts that one file onto the texture the scene's renderers sample as
 `_Satellite`, in place and with the same backup; the project asset keeps its own name. It refuses when the scene uses
 several satellite textures (pass `target=<asset path>`). The web panel's **Inner cleaned photo → Unity meshes** runs the
-export and this command in one job.
+export and this command in one job. Both take `save=true` (save the scene and the reimported texture asset when it
+succeeded, ["Saving what a command changed"](#saving-what-a-command-changed-save)).
 
 ## Wispy rough
 
@@ -981,7 +1003,8 @@ scene's course meshes in step with the FBX folder the Blender export writes into
 [`blender/tools/fbx_sync.py`](../blender/README.md#fbx-sync) ("Export changed FBX"), which only rewrites the FBX
 of meshes that changed, so Unity only reimports those.
 
-It does what deleting and re-adding the meshes by hand does, but only for the meshes that changed:
+It does what deleting and re-adding the meshes by hand does, but only for the meshes that changed
+(`save=true` saves the scene and the reimported assets when the sync succeeded, ["Saving what a command changed"](#saving-what-a-command-changed-save)):
 
 - **Changed FBX** (size or time differs from the last sync, `<course>/meshes-sync.json`): the scene object is
   deleted and added again in the same place. Unity's in-place update of an overwritten FBX is not relied on;
@@ -1027,7 +1050,12 @@ and bunker lips; `grassMaterial`, `lipGrass=false`), `terrain.conform mode=match
 `featherM`), `waterplanes.build` (every lake: a fresh OPCD `.blend` never has water planes - OPCD's Add Water Plane is a manual Blender step - so new lakes get one, ours are rebuilt keeping their lift, lakes another plane covers are left alone, and our stale planes plus any water plane whose mesh is gone - OPCD's after a new `.blend` - are deleted),
 `creeks.import` (refit), `walls.build` and `surfaces.export`. `skip=<ids>` leaves steps out; a failed step stops the
 rest unless `continueOnError`. Not automatic, listed under `pending`: grass zones (`bun run grass:zones -- <course>`,
-then `golfmap.zones.import` + `golfmap.grass.apply`) and `props.place` (it would drop props moved by hand).
+then `golfmap.zones.import` + `golfmap.grass.apply`) and `props.place` (props moved by hand are kept now, but the
+spec is still the only place a hand move is permanent).
+
+`save=true` saves once, after the last step: the open dirty scenes and `AssetDatabase.SaveAssets()`, reported as
+`saved: { scenes, seconds }`. The chained steps never save of their own (`save` is not passed down), a dry run never
+saves, and a run with a failed step is left dirty on purpose - see ["Saving what a command changed"](#saving-what-a-command-changed-save).
 
 `dryRun=true` (menu: *... (dry run)*) runs each step's own dry run where it changes nothing (meshes.sync without
 importing, bunkers, paint, terrain match, water planes, creeks) and lists `walls.build` (its dry run prepares the stone
@@ -1076,7 +1104,8 @@ its `restore.json` instead of a full `AssetDatabase.Refresh` (and not at all on 
 
 `golfmap.terrain.conform mode=match` puts the terrain under the meshes at exactly `margin` below the mesh top, raising
 **and** lowering (a dug bunker, a built-up tee), and fades the change out over `featherM` (default 2 m) outside the
-meshes' footprint so no cliff is left. Backup first, as `mode=raise` (the default, unchanged). The dry run reports
+meshes' footprint so no cliff is left. Backup first, as `mode=raise` (the default, unchanged). `save=true` saves the
+scene and the changed TerrainData when the conform succeeded (["Saving what a command changed"](#saving-what-a-command-changed-save)). The dry run reports
 `samplesRise`/`samplesFall` (under the meshes, changes over 1 mm), `featherRise`/`featherFall`, `maxRiseCm`/`maxFallCm`.
 Vreta 2026-09-28: 16.6 M samples under meshes (OPCD's deep-rough fill covers almost the whole inner square),
 11.2 M would fall (mean 2.1 cm, max 146.7 cm), 1 033 rise (max 157 cm), 39.7 k feathered.
@@ -1107,7 +1136,8 @@ Bridge:
 ## Creeks (R.A.M.)
 
 `GolfMap > Creeks > Import creeks (R.A.M.)` (`GolfMapCreeks.cs`, bridge `golfmap.creeks.import
-[file] [dryRun=true]`) turns golf-map's `<prefix>-inner-creeks.json` (unity-creeks-v1, the GSPro panel's
+[file] [dryRun=true] [save=true]`; `save` also on `golfmap.creeks.water`, see
+["Saving what a command changed"](#saving-what-a-command-changed-save)) turns golf-map's `<prefix>-inner-creeks.json` (unity-creeks-v1, the GSPro panel's
 **Export creeks** / `gspro.py creeks`) into NatureManufacture R.A.M. splines: one `RamSpline` per creek under
 **GolfMap Creeks**, named `Creek feature:<id>`.
 
@@ -1171,7 +1201,8 @@ water on), run it, and the new plane is selected so its Y is at hand in the Insp
 and the Console says what it built or why not. Select a plane (or its probe) and run it again to rebuild it from its
 mesh. `GolfMap > Waterplanes > Build for all lakes` does every `*_Water_Base_Lake_-_Mesh` at once. Both are
 `GolfMapWaterplanes.cs`, bridge `golfmap.waterplanes.build [dryRun] [selected] [only] [outsetM=2] [belowM=0.05]
-[liftM=0.3] [replaceExisting] [prune]`:
+[liftM=0.3] [replaceExisting] [prune] [save]` (`save=true`: the scene and the saved plane meshes written out when the
+build succeeded, ["Saving what a command changed"](#saving-what-a-command-changed-save)):
 
 - **Geometry**: the lake's `Spline_*_Water_Base_Lake_-_Mesh` (or the selected mesh), welded, every vertex put at one level = the lowest
   vertex on its edge (islands included) − `belowM`, then a flat ring `outsetM` wide around every edge so the plane
@@ -1224,8 +1255,10 @@ mesh. `GolfMap > Waterplanes > Build for all lakes` does every `*_Water_Base_Lak
   every instance under `GolfMap Props/<Category>s/<asset>#<index>` at its EPSG:3006 position (inner DEM sidecar
   frame) on the highest collider below (course meshes, else terrain), rotated to its `yawDeg`. Buildings and
   structures get MeshColliders, small props box colliders or none; Unity-prefab assets keep their own. A realtime
-  reflection probe (on awake) covers the area. Replaces what the last place made (`only=<ids>` just those).
-  `dryRun=true` returns ground heights and the plan. Report: `GolfMapSpelunk/<Course>_props.txt`. Warns when a
+  reflection probe (on awake) covers the area. Replaces what the last place made (`only=<ids>` just those), except
+  the instances moved or rotated by hand (below). `dryRun=true` returns ground heights and the plan, `kept` instances
+  included. `save=true` saves the scene when the place succeeded (["Saving what a command changed"](#saving-what-a-command-changed-save)).
+  Report: `GolfMapSpelunk/<Course>_props.txt`. Warns when a
   building's footprint spans more than 1 m of ground (a pad or a plinth to check).
 - Placed objects carry no custom component (GSPro would load it as a missing script); they are found by name.
 - `golfmap.props.measure` (`folder` or `paths`): prefab sizes, LODs and colliders, for sizing prefab assets in a spec.
@@ -1247,7 +1280,41 @@ mesh. `GolfMap > Waterplanes > Build for all lakes` does every `*_Water_Base_Lak
   height above the ground. Triangles are counted from each mesh's submeshes: in a built course static batching
   gives every renderer the whole combined mesh, and a sum of `sharedMesh.triangles` there is ~90x too high.
 - Manifest materials can be `fade` (translucent Standard, e.g. ball-stop netting) or `cutout`.
-- `golfmap.props.clear` deletes `GolfMap Props`.
+- `golfmap.props.clear` deletes `GolfMap Props`. The `placed.json` record stays, so the next place still keeps what
+  was moved by hand.
+
+### A re-place keeps what was moved by hand
+
+`props.place` used to rebuild every instance from the spec and drop every prop Marcus had moved or rotated in Unity
+(three sessions lost to it). It now records what it placed, in `<course>/Props/placed.json`
+(`golfmap-props-placed-v1`, written beside the manifest, never by hand): per instance the spec entry it came from
+(`e`, `n`, `yawDeg`, `dz`, `scale`), the world transform it set (`pos`, `euler`, `scale`), the object name, and
+whether that transform is the user's (`hand`); plus `specHashes` per asset. The rule
+(`GolfMapPropsPlaced.cs`, mirrored and tested in [`props-matching.mjs`](props-matching.mjs) /
+[`props-matching.test.mjs`](props-matching.test.mjs)):
+
+| | |
+|---|---|
+| Matching | scene object → record by **object name**; a renamed object by the nearest unclaimed record within 2 m. Record → spec entry by the **nearest recorded spec position** (e, n), one to one, closest pair first - never by `#i`, which goes stale as soon as the spec gains or loses a `place(...)` call |
+| Tolerance | 1 cm of position, 0.5° on any rotation axis (a tilt counts: the tool only ever sets yaw), 0.1 % of scale |
+| Hand-placed | the instance stands somewhere else than the record says (`rule: hand-moved`), or an earlier place already kept it (`hand-kept`; `hand-recorded` when nothing is in the scene for it now) |
+| Spec wins | a hand-placed instance whose **spec entry** moved more than the tolerance since it was recorded (`rule: spec-moved`): the user edited the `.gen.py`, so that is the newer intent. Also `no-record` (a new `place(...)` call) and `unmoved` |
+| Result | `kept` = how many kept their transform, `handPlaced` and `specWon` list them with the spec entry, where they stand and where the tool had put them; `placedRecord` is the sidecar's path. The report repeats it per line (`KEPT (hand-placed)`) |
+
+Nothing is written back into `docs/gspro/<course>/*-props.gen.py`: that is still the only way to make a hand move
+permanent across machines and through a `props.clear` + rebuilt spec, and the report's `handPlaced` is what to carry
+into it (workflow 4 in [docs/workflows.md](../docs/workflows.md)). `keepHandEdits=false` is the old behaviour: every
+instance from the spec. `only=<asset ids>` leaves the other assets' records untouched.
+
+**A scene from before this existed has no record**, so a place would replace every prop from the spec and drop the
+hand moves one last time. `golfmap.props.record` seeds `placed.json` from the props standing in the scene, touching
+none of them: each instance is tied to its spec entry by object name and recorded with the transform it has.
+`mark=moved` (default) calls an instance hand-placed when it stands more than 1 cm from where the spec puts it in
+x/z - the only comparison that is a pure function of the spec, since the height comes from a raycast that moves with
+the terrain. `mark=all` calls every instance hand-placed (the scene as it stands is what is wanted; no prop is then
+re-grounded after a terrain change until its spec entry moves). A prop that was only **rotated** by hand is not found
+by `mark=moved`: use `mark=all`, or capture it into the spec. The result lists what it marked and the instances the
+spec has but the scene does not (`notInScene`); then `golfmap.props.place {dryRun: true}` must show them as `kept`.
 
 ## Stone walls
 
@@ -1306,9 +1373,12 @@ the stone in).
 - `golfmap.walls.build` (GolfMap > Walls > Build stone walls): runs the paint first when a wall has ground, then the
   stones, fitted to the course meshes (terrain where there are none), under `GolfMap Walls/<id>/<model>#<n>`,
   MeshColliders on Blender stones, no custom components. Rebuilds replace (`only=<ids>`); a wall's seed + `variant`
-  gives the same stones every time, so hand edits to single stones are lost on a rebuild. `profile=<wall id>` shows
-  the bank as the meshes have it, `dryRun=true` the plan. Report: `GolfMapSpelunk/<Course>_walls.txt`.
-- `golfmap.walls.clear` (`only=<ids>`) deletes the stones (the ground stays: drop `ground` and paint again).
+  gives the same stones every time, so hand edits to single stones are lost on a rebuild - a wall's stones have no
+  identity in the spec (they are generated from its seed), so they get no `placed.json` record the way props do;
+  capture a moved stone as a `pose` boulder instead (below). `profile=<wall id>` shows
+  the bank as the meshes have it, `dryRun=true` the plan, `save=true` saves the scene when the build succeeded
+  (["Saving what a command changed"](#saving-what-a-command-changed-save)). Report: `GolfMapSpelunk/<Course>_walls.txt`.
+- `golfmap.walls.clear` (`only=<ids>`, `save`) deletes the stones (the ground stays: drop `ground` and paint again).
 - `ground: false` on a wall turns its ground reshaping and rock paint off and keeps the rest of its entry. Vreta's
   `pond-klippa` and `h4-klippa-a` have it since 2026-09-29 (the klippa ground is left to the Blender shaping tools);
   the hole 13 tee walls keep theirs.

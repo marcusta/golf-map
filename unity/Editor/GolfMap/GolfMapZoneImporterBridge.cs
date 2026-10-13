@@ -21,11 +21,11 @@ namespace GolfMap.Editor
             return WithImporter(a, w => Result(w, false, a.Bool("brief", false)));
         }
 
-        [BridgeCommand("golfmap.zones.import", "Import a zones export into VSP (mask textures, one mask group per item, the items' density/include rules; deletes stale golfmap-zone groups and their rules), like the window's Import button. Writes the package asset and marks the scene dirty; does not save the scene. dryRun=true validates the target and returns the plan without writing anything.",
-            args = "terrain=inner|outer or file, package (name), dryRun=false, brief=false (short result: the plan's long lists as counts, status cut to its first line)")]
+        [BridgeCommand("golfmap.zones.import", "Import a zones export into VSP (mask textures, one mask group per item, the items' density/include rules; deletes stale golfmap-zone groups and their rules), like the window's Import button. Writes the package asset and marks the scene dirty; save=true saves the scene and the assets it changed once the import has succeeded. dryRun=true validates the target and returns the plan without writing anything.",
+            args = "terrain=inner|outer or file, package (name), dryRun=false, brief=false (short result: the plan's long lists as counts, status cut to its first line), " + GolfMapSceneSave.Arg)]
         static object BridgeImport(BridgeArgs a)
         {
-            return WithImporter(a, w =>
+            return GolfMapSceneSave.After(a, WithImporter(a, w =>
             {
                 w.ValidateTarget();
                 bool dryRun = a.Bool("dryRun", false);
@@ -33,7 +33,7 @@ namespace GolfMap.Editor
                 var result = Result(w, !dryRun, a.Bool("brief", false));
                 result["dryRun"] = dryRun;
                 return result;
-            });
+            }));
         }
 
         static object WithImporter(BridgeArgs a, Func<GolfMapZoneImporter, object> action)

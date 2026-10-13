@@ -443,7 +443,7 @@ namespace GolfMap.Editor
         }
 
         [BridgeCommand("golfmap.grass.apply", "Build a grass palette from <course>/grass-palette.json into VSP: greyscale textures, the lower-vegetation package on the terrain's system, texture grass items with tints, scale and spacing. Items spawn only once the zone import gave them an include rule. With \"prefabItems\": \"arborist\" in the file, prefab items (bushes, ground plants) are left out and removed from the package: they come from Arborist.",
-            args = "palette (zone type key; default all), terrain=inner|outer (default inner), rebuildTextures=false, spawn=true (false hides the palette's items, e.g. to compare against the bare ground)")]
+            args = "palette (zone type key; default all), terrain=inner|outer (default inner), rebuildTextures=false, spawn=true (false hides the palette's items, e.g. to compare against the bare ground), " + GolfMapSceneSave.Arg)]
         static object Apply(BridgeArgs a)
         {
             var course = GolfMapCourses.Require();
@@ -516,11 +516,11 @@ namespace GolfMap.Editor
             EditorSceneManager.MarkSceneDirty(terrain.gameObject.scene);
             AssetDatabase.SaveAssets();
             SceneView.RepaintAll();
-            return new Dictionary<string, object>
+            return GolfMapSceneSave.After(a, new Dictionary<string, object>
             {
                 { "terrain", terrain.name }, { "system", system.name }, { "plantDistance", system.VegetationSettings.PlantDistance },
                 { "log", log }, { "items", items },
-            };
+            });
         }
 
         [BridgeCommand("golfmap.grass.refresh", "Refresh the VSP system of a terrain (rebuild items and respawn), e.g. after editing items by hand.", args = "terrain=inner|outer")]

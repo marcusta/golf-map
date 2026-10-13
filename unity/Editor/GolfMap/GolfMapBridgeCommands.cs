@@ -12,8 +12,8 @@ namespace GolfMap.Editor
 {
     static class GolfMapBridgeCommands
     {
-        [BridgeCommand("golfmap.trees.plant", "The Tree Planter's 'Plant' for one area without its window: re-reads the area's trees file (<prefix>-<terrain>-trees.json, the panel's own setting), replaces that area's imported trees with it (never appends; manual tree edits are applied as in the window; a planting backup is written first) and returns the planter's status text. check=true is the panel's 'Load and check': nothing is planted. Marks the scene dirty, does not save it.",
-            args = "terrain=inner|outer, check=false")]
+        [BridgeCommand("golfmap.trees.plant", "The Tree Planter's 'Plant' for one area without its window: re-reads the area's trees file (<prefix>-<terrain>-trees.json, the panel's own setting), replaces that area's imported trees with it (never appends; manual tree edits are applied as in the window; a planting backup is written first) and returns the planter's status text. check=true is the panel's 'Load and check': nothing is planted. Marks the scene dirty; save=true saves it (and the assets it changed) once the plant has succeeded.",
+            args = "terrain=inner|outer, check=false, " + GolfMapSceneSave.Arg)]
         static object PlantTrees(BridgeArgs a)
         {
             var terrain = a.String("terrain", "inner");
@@ -22,7 +22,8 @@ namespace GolfMap.Editor
             var component = terrain == "outer" ? GolfMapTreePlanter.Outer(host) : host;
             bool check = a.Bool("check", false);
             var status = GolfMapTreePlanter.For(component).RunFromBridge(!check);
-            return new System.Collections.Generic.Dictionary<string, object> { { "terrain", terrain }, { "planted", !check }, { "file", component.filePath }, { "status", status } };
+            var result = new System.Collections.Generic.Dictionary<string, object> { { "terrain", terrain }, { "planted", !check }, { "file", component.filePath }, { "status", status } };
+            return check ? (object)result : GolfMapSceneSave.After(a, result);
         }
 
         [BridgeCommand("golfmap.course", "The active GolfMap course and every course in the project: folder, scene, palette, export files (present, size, modified) and reports.")]

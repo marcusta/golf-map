@@ -6,8 +6,10 @@
 // 'GolfMap Props' at its EPSG:3006 position (inner DEM sidecar frame), on the surface the player
 // sees (highest collider under it: course meshes, else terrain), turned so the asset's Blender +x
 // axis points along the instance's compass yawDeg. Buildings/structures get MeshColliders, small
-// props box colliders or none, per the manifest. Placing always replaces what the last place
-// made. Unity 2018.2 / C# 6.
+// props box colliders or none, per the manifest. Placing replaces what the last place made, but
+// keeps every instance the user moved or rotated in Unity: each place records what it placed in
+// <props folder>/placed.json and the next one compares against it (GolfMapPropsPlaced.cs).
+// Unity 2018.2 / C# 6.
 using System;
 using System.Collections.Generic;
 using System.IO;
@@ -17,6 +19,7 @@ using GolfMap.Bridge;
 using UnityEditor;
 using UnityEditor.SceneManagement;
 using UnityEngine;
+using Placed = GolfMap.Editor.GolfMapPropsPlaced;
 
 namespace GolfMap.Editor
 {
@@ -26,17 +29,17 @@ namespace GolfMap.Editor
         const string Format = "golfmap-props-v1";
 
         [MenuItem("GolfMap/Props/Place props from manifest")]
-        static void Menu() { Debug.Log("[GolfMap Props] " + GolfMapJson.Serialize(Place(null, false, null, true), false)); }
+        static void Menu() { Debug.Log("[GolfMap Props] " + GolfMapJson.Serialize(Place(null, false, null, true, true), false)); }
 
-        [BridgeCommand("golfmap.props.place", "Place the course's Blender-built props (<course>/Props/props.json, golfmap-props-v1 from blender/tools/build_props.py): Standard materials from the manifest (textures set up as albedo/normal maps), FBX materials remapped onto them, then every instance under 'GolfMap Props' at its EPSG:3006 position on the highest collider below (course meshes, else terrain), rotated to its yawDeg, with MeshColliders on buildings/structures. Replaces what the last place made. Marks the scene dirty, does not save it.",
-            args = "folder (default <course>/Props/), dryRun=false (ground heights and the plan, nothing written), only (asset ids, comma-separated: place just these, keep the rest), materials=true (rebuild materials and FBX import settings)")]
+        [BridgeCommand("golfmap.props.place", "Place the course's Blender-built props (<course>/Props/props.json, golfmap-props-v1 from blender/tools/build_props.py): Standard materials from the manifest (textures set up as albedo/normal maps), FBX materials remapped onto them, then every instance under 'GolfMap Props' at its EPSG:3006 position on the highest collider below (course meshes, else terrain), rotated to its yawDeg, with MeshColliders on buildings/structures. Replaces what the last place made, except the instances the user moved or rotated in Unity: those keep their transform (kept=true in the report, with both transforms), until the spec moves that instance itself. Marks the scene dirty unless save.",
+            args = "folder (default <course>/Props/), dryRun=false (ground heights and the plan, kept instances included, nothing written), only (asset ids, comma-separated: place just these, keep the rest), materials=true (rebuild materials and FBX import settings), keepHandEdits=true (false: every instance from the spec, hand moves dropped - the old behaviour), " + GolfMapSceneSave.Arg)]
         static object Command(BridgeArgs a)
         {
             var only = a.Strings("only").SelectMany(s => s.Split(',')).Select(s => s.Trim()).Where(s => s.Length > 0).ToList();
-            return Place(a.String("folder"), a.Bool("dryRun", false), only.Count == 0 ? null : new HashSet<string>(only), a.Bool("materials", true));
+            return GolfMapSceneSave.After(a, Place(a.String("folder"), a.Bool("dryRun", false), only.Count == 0 ? null : new HashSet<string>(only), a.Bool("materials", true), a.Bool("keepHandEdits", true)));
         }
 
-        [BridgeCommand("golfmap.props.clear", "Delete 'GolfMap Props' (everything golfmap.props.place made). Marks the scene dirty.", args = "")]
+        [BridgeCommand("golfmap.props.clear", "Delete 'GolfMap Props' (everything golfmap.props.place made). The placed.json record stays, so the next place still keeps what was moved by hand. Marks the scene dirty unless save.", args = GolfMapSceneSave.Arg)]
         static object Clear(BridgeArgs a)
         {
             var root = FindRoot();
@@ -44,7 +47,7 @@ namespace GolfMap.Editor
             int n = root.GetComponentsInChildren<Transform>(true).Length - 1;
             Undo.DestroyObjectImmediate(root);
             EditorSceneManager.MarkSceneDirty(EditorSceneManager.GetActiveScene());
-            return new Dictionary<string, object> { { "removed", n } };
+            return GolfMapSceneSave.After(a, new Dictionary<string, object> { { "removed", n } });
         }
 
         static GameObject FindRoot()
@@ -400,9 +403,121 @@ namespace GolfMap.Editor
             return best;
         }
 
+        // ---- hand edits: what the spec says, what stands in the scene -------------------------
+
+        // The manifest's instances grouped by asset, each keeping its manifest index (the object name's #i).
+        static Dictionary<string, List<Placed.SpecEntry>> SpecsByAsset(List<Inst> insts)
+        {
+            var byAsset = new Dictionary<string, List<Placed.SpecEntry>>();
+            for (int i = 0; i < insts.Count; i++)
+            {
+                var inst = insts[i];
+                if (string.IsNullOrEmpty(inst.asset)) continue;
+                List<Placed.SpecEntry> l;
+                if (!byAsset.TryGetValue(inst.asset, out l)) byAsset[inst.asset] = l = new List<Placed.SpecEntry>();
+                l.Add(new Placed.SpecEntry { index = i, spec = SpecOf(inst) });
+            }
+            return byAsset;
+        }
+
+        static Placed.SpecPose SpecOf(Inst inst)
+        {
+            return new Placed.SpecPose { e = inst.e, n = inst.n, yaw = inst.yaw, dz = inst.dz, scale = inst.scale };
+        }
+
+        // The placed instances standing in the scene now, by asset: the direct children of the category
+        // groups ('GolfMap Props/<Category>s/<asset>#<i>'), with their world transform.
+        static Dictionary<string, List<Placed.SceneInstance>> SceneInstances(GameObject root)
+        {
+            var byAsset = new Dictionary<string, List<Placed.SceneInstance>>();
+            if (root == null) return byAsset;
+            foreach (var t in root.GetComponentsInChildren<Transform>(true))
+            {
+                int hash = t.name.IndexOf('#');
+                if (hash <= 0 || t.parent == null || t.parent.parent != root.transform) continue;
+                var id = t.name.Substring(0, hash);
+                List<Placed.SceneInstance> l;
+                if (!byAsset.TryGetValue(id, out l)) byAsset[id] = l = new List<Placed.SceneInstance>();
+                l.Add(new Placed.SceneInstance
+                {
+                    name = t.name,
+                    pose = new Placed.Pose { pos = t.position, euler = t.eulerAngles, scale = t.localScale },
+                });
+            }
+            return byAsset;
+        }
+
+        [BridgeCommand("golfmap.props.record", "Write <props folder>/placed.json from the props standing in the scene now, without touching one of them: for the first golfmap.props.place after the hand-edit keeping existed (an older scene has no record, so a place would replace every prop from the spec and drop the hand moves again). Each instance is tied to its spec entry by object name and recorded with the transform it has; mark=moved (default) calls an instance hand-placed when it stands more than 1 cm from where the spec puts it in x/z, mark=all calls every one hand-placed (the scene as it stands is what is wanted - no prop is re-grounded after a terrain change until its spec entry moves). A prop only ROTATED by hand is not found by mark=moved: use mark=all, or capture it into the spec (workflow 4).",
+            args = "folder (default <course>/Props/), only (asset ids, comma-separated), mark=moved|all")]
+        static object RecordCommand(BridgeArgs a)
+        {
+            var only = a.Strings("only").SelectMany(s => s.Split(',')).Select(s => s.Trim()).Where(s => s.Length > 0).ToList();
+            var mark = a.String("mark", "moved");
+            if (mark != "moved" && mark != "all") throw new BridgeError("mark must be moved or all.");
+            return Record(a.String("folder"), only.Count == 0 ? null : new HashSet<string>(only), mark == "all");
+        }
+
+        // Seeds the sidecar golfmap.props.place reads. Only x/z is compared against the spec: those are a
+        // pure function of the spec and the frame, while the height comes from a raycast that moves with
+        // the terrain and the meshes (which is why the sidecar exists at all).
+        public static Dictionary<string, object> Record(string folder, HashSet<string> only, bool markAll)
+        {
+            var course = GolfMapCourses.Require();
+            folder = string.IsNullOrEmpty(folder) ? GolfMapCourses.Folder(course) + "Props/" : folder.Replace('\\', '/').TrimEnd('/') + "/";
+            var manifest = folder + "props.json";
+            if (!File.Exists(manifest)) throw new InvalidOperationException("No props manifest at " + manifest + ": run blender/tools/build_props.py with --out " + folder);
+            List<Mat> mats; List<Asset> assets; List<Inst> insts;
+            Load(manifest, out mats, out assets, out insts);
+            double e0, n0; Vector3 origin;
+            Frame(course, out e0, out n0, out origin);
+            var specByAsset = SpecsByAsset(insts);
+            var sceneByAsset = SceneInstances(FindRoot());
+            var tolerance = new Placed.Tolerance();
+
+            var sidecar = Placed.SidecarPath(folder);
+            string note;
+            var written = Placed.Load(sidecar, out note);
+            foreach (var asset in specByAsset.Keys.ToList())
+                if (only == null || only.Contains(asset)) written.Remove(asset);
+            var rows = new List<object>();
+            var missing = new List<object>();
+            int hand = 0;
+            for (int i = 0; i < insts.Count; i++)
+            {
+                var inst = insts[i];
+                if (only != null && !only.Contains(inst.asset)) continue;
+                var name = inst.asset + "#" + i;
+                List<Placed.SceneInstance> standing;
+                var found = sceneByAsset.TryGetValue(inst.asset, out standing) ? standing.FirstOrDefault(s => s.name == name) : null;
+                if (found == null) { missing.Add(name); continue; }
+                float dx = found.pose.pos.x - ((float)(inst.e - e0) + origin.x), dz = found.pose.pos.z - ((float)(inst.n - n0) + origin.z);
+                float off = Mathf.Sqrt(dx * dx + dz * dz);
+                bool isHand = markAll || off > tolerance.positionM;
+                if (isHand) hand++;
+                List<Placed.Record> list;
+                if (!written.TryGetValue(inst.asset, out list)) written[inst.asset] = list = new List<Placed.Record>();
+                list.Add(new Placed.Record { asset = inst.asset, index = i, name = name, hand = isHand, spec = SpecOf(inst), placed = found.pose });
+                if (isHand && rows.Count < 400)
+                    rows.Add(new Dictionary<string, object> {
+                        { "asset", inst.asset }, { "index", i }, { "name", name }, { "offSpecM", Math.Round(off, 3) },
+                        { "pos", new object[] { found.pose.pos.x, found.pose.pos.y, found.pose.pos.z } },
+                        { "yaw", Math.Round(found.pose.euler.y, 2) } });
+            }
+            Placed.Save(sidecar, manifest, written, specByAsset.ToDictionary(kv => kv.Key, kv => Placed.SpecHash(kv.Value)));
+            if (sidecar.StartsWith("Assets/", StringComparison.Ordinal)) AssetDatabase.ImportAsset(sidecar);
+            return new Dictionary<string, object>
+            {
+                { "manifest", manifest }, { "placedRecord", sidecar }, { "mark", markAll ? "all" : "moved" },
+                { "recorded", written.Where(kv => only == null || only.Contains(kv.Key)).Sum(kv => kv.Value.Count) },
+                { "handPlaced", hand }, { "rows", rows },
+                { "notInScene", missing },
+                { "note", "Nothing in the scene was touched. Run golfmap.props.place {dryRun: true} next: the hand-placed instances must come back as kept." },
+            };
+        }
+
         // ---- place ----------------------------------------------------------------------------
 
-        public static Dictionary<string, object> Place(string folder, bool dryRun, HashSet<string> only, bool materials)
+        public static Dictionary<string, object> Place(string folder, bool dryRun, HashSet<string> only, bool materials, bool keepHandEdits)
         {
             var course = GolfMapCourses.Require();
             folder = string.IsNullOrEmpty(folder) ? GolfMapCourses.Folder(course) + "Props/" : folder.Replace('\\', '/').TrimEnd('/') + "/";
@@ -413,6 +528,30 @@ namespace GolfMap.Editor
             var byId = assets.ToDictionary(a => a.id);
             double e0, n0; Vector3 origin;
             Frame(course, out e0, out n0, out origin);
+
+            // What the last place made, what stands in the scene now, and so which instances the user
+            // moved by hand (GolfMapPropsPlaced.cs). Read before anything is destroyed.
+            var sidecar = Placed.SidecarPath(folder);
+            string sidecarNote;
+            var records = Placed.Load(sidecar, out sidecarNote);
+            var specByAsset = SpecsByAsset(insts);
+            var sceneByAsset = SceneInstances(FindRoot());
+            var decisions = new Dictionary<int, Placed.Decision>();
+            var droppedHand = new List<string>();
+            var tolerance = new Placed.Tolerance();
+            if (keepHandEdits)
+                foreach (var kv in specByAsset)
+                {
+                    if (only != null && !only.Contains(kv.Key)) continue;
+                    List<Placed.Record> known;
+                    if (!records.TryGetValue(kv.Key, out known)) known = new List<Placed.Record>();
+                    List<Placed.SceneInstance> standing;
+                    if (!sceneByAsset.TryGetValue(kv.Key, out standing)) standing = new List<Placed.SceneInstance>();
+                    List<Placed.Record> gone;
+                    foreach (var d in Placed.Decide(kv.Value, known, standing, tolerance, out gone)) decisions[d.index] = d;
+                    foreach (var g in gone)
+                        if (g.hand) droppedHand.Add(kv.Key + " " + g.name + ": hand-placed, but the spec no longer has this instance");
+                }
 
             AssetDatabase.Refresh();
             recolorCache.Clear();
@@ -452,7 +591,13 @@ namespace GolfMap.Editor
             var rows = new List<object>();
             var warnings = new List<string>();
             var counts = new SortedDictionary<string, int>();
-            int placed = 0;
+            var handPlaced = new List<object>();   // instances placed at the transform the user gave them
+            var specWon = new List<object>();      // hand-placed instances the spec moved since: back to the spec
+            int placed = 0, keptCount = 0;
+            // The records this run writes: assets it does not place keep theirs.
+            var written = new Dictionary<string, List<Placed.Record>>();
+            foreach (var kv in records)
+                if (only != null && !only.Contains(kv.Key)) written[kv.Key] = kv.Value;
             if (!dryRun)
             {
                 Undo.IncrementCurrentGroup();
@@ -477,6 +622,12 @@ namespace GolfMap.Editor
                 bool native = !string.IsNullOrEmpty(a.prefab);  // Unity prefab: local +x is its own +x, no Blender axis swap
                 var rot = Quaternion.Euler(0f, native ? (a.axis == "z" ? inst.yaw : inst.yaw - 90f) : unityYaw(inst.yaw), 0f);
                 int ax = native ? 1 : sx, az = native ? 1 : sz;
+                // An instance the user moved or rotated in Unity keeps its transform (the spec takes it
+                // back only once the spec itself moved that instance); the ground is still sampled under
+                // where it really stands, for the report's spread.
+                Placed.Decision dec;
+                bool kept = decisions.TryGetValue(i, out dec) && dec.kept;
+                if (kept) { pos.x = dec.keep.pos.x; pos.z = dec.keep.pos.z; rot = Quaternion.Euler(dec.keep.euler); }
                 // sample the footprint (Blender bounds, local x/y) on a 3x3 grid, or just the centre
                 var samples = new List<float>();
                 bool small = (a.bmax.x - a.bmin.x) < 1.5f && (a.bmax.y - a.bmin.y) < 1.5f;
@@ -489,23 +640,44 @@ namespace GolfMap.Editor
                     var g = Ground(w.x, w.z, root != null ? root.transform : null);
                     if (g != null) samples.Add(g.Value);
                 }
-                if (samples.Count == 0) { warnings.Add(inst.asset + " #" + i + ": nothing to stand on"); continue; }
+                // A kept instance carries its own height, so it is placed even where nothing answers the
+                // raycast (the samples are then only for the report).
+                if (samples.Count == 0 && !kept) { warnings.Add(inst.asset + " #" + i + ": nothing to stand on"); continue; }
                 samples.Sort();
-                float y;
-                switch (inst.ground)
-                {
-                    case "max": y = samples[samples.Count - 1]; break;
-                    case "min": y = samples[0]; break;
-                    case "centre": y = samples[samples.Count / 2]; break;
-                    default: y = samples[samples.Count / 2]; break;
-                }
-                float spread = samples[samples.Count - 1] - samples[0];
-                pos.y = y + inst.dz;
+                float y = samples.Count == 0 ? 0f : samples[samples.Count / 2];
+                if (samples.Count > 0)
+                    switch (inst.ground)
+                    {
+                        case "max": y = samples[samples.Count - 1]; break;
+                        case "min": y = samples[0]; break;
+                        case "centre": y = samples[samples.Count / 2]; break;
+                        default: y = samples[samples.Count / 2]; break;
+                    }
+                float spread = samples.Count == 0 ? 0f : samples[samples.Count - 1] - samples[0];
+                pos.y = kept ? dec.keep.pos.y : y + inst.dz;
+                if (samples.Count == 0) warnings.Add(inst.asset + " #" + i + ": nothing to stand on, but it is hand-placed: kept at its own height");
                 if (a.category == "building" && spread > 1.0f) warnings.Add(string.Format("{0} #{1}: ground spread {2:F2} m under the footprint", inst.asset, i, spread));
-                sb.AppendLine(string.Format("{0,-22} #{1,-3} E {2:F2} N {3:F2} yaw {4,6:F1}  y {5,7:F2}  spread {6:F2}", inst.asset, i, inst.e, inst.n, inst.yaw, pos.y, spread));
+                sb.AppendLine(string.Format("{0,-22} #{1,-3} E {2:F2} N {3:F2} yaw {4,6:F1}  y {5,7:F2}  spread {6:F2}{7}", inst.asset, i, inst.e, inst.n, inst.yaw, pos.y, spread, kept ? "  KEPT (hand-placed)" : ""));
+                if (dec != null && (kept || dec.record != null && dec.record.hand))
+                {
+                    sb.AppendLine("     " + dec.reason);
+                    if (dec.was != null)
+                        sb.AppendLine(string.Format("     tool placed it at x {0:F2} y {1:F2} z {2:F2} yaw {3:F1}; now x {4:F2} y {5:F2} z {6:F2} yaw {7:F1}",
+                            dec.was.pos.x, dec.was.pos.y, dec.was.pos.z, dec.was.euler.y, pos.x, pos.y, pos.z, rot.eulerAngles.y));
+                    if (kept) handPlaced.Add(HandRow(inst, i, a.id, dec, pos, rot));
+                    else specWon.Add(HandRow(inst, i, a.id, dec, pos, rot));
+                }
                 int c; counts.TryGetValue(inst.asset, out c); counts[inst.asset] = c + 1;
                 placed++;
-                if (dryRun) { if (rows.Count < 400) rows.Add(new Dictionary<string, object> { { "asset", inst.asset }, { "x", pos.x }, { "y", pos.y }, { "z", pos.z }, { "spread", spread } }); continue; }
+                if (kept) keptCount++;
+                if (dryRun)
+                {
+                    if (rows.Count < 400) rows.Add(new Dictionary<string, object> {
+                        { "asset", inst.asset }, { "index", i }, { "x", pos.x }, { "y", pos.y }, { "z", pos.z },
+                        { "yaw", Math.Round(rot.eulerAngles.y, 2) }, { "spread", spread }, { "kept", kept },
+                        { "rule", dec != null ? dec.rule : null }, { "note", dec != null ? dec.reason : null } });
+                    continue;
+                }
 
                 Transform parent;
                 var gname = char.ToUpper(a.category[0]) + a.category.Substring(1) + "s";
@@ -521,7 +693,16 @@ namespace GolfMap.Editor
                 go.transform.SetParent(parent, false);
                 go.transform.position = pos;
                 go.transform.rotation = rot;
-                go.transform.localScale = Vector3.Scale(go.transform.localScale, inst.scale);
+                go.transform.localScale = kept ? dec.keep.scale : Vector3.Scale(go.transform.localScale, inst.scale);
+                // Record what this place put there, and whether that transform is the user's: the next
+                // place reads this back (<props folder>/placed.json).
+                List<Placed.Record> recorded;
+                if (!written.TryGetValue(inst.asset, out recorded)) written[inst.asset] = recorded = new List<Placed.Record>();
+                recorded.Add(new Placed.Record
+                {
+                    asset = inst.asset, index = i, name = go.name, hand = kept, spec = SpecOf(inst),
+                    placed = new Placed.Pose { pos = go.transform.position, euler = go.transform.eulerAngles, scale = go.transform.localScale },
+                });
                 if (a.recolor.Count > 0)
                 {
                     var swap = RecolorMaterials(folder, a);
@@ -589,16 +770,50 @@ namespace GolfMap.Editor
                 probe.farClipPlane = 2000f;
                 probe.RenderProbe();
             }
+            warnings.AddRange(droppedHand);
             foreach (var w in warnings) sb.AppendLine("!! " + w);
+            if (keptCount > 0)
+                sb.AppendLine("-- " + keptCount + " instance(s) kept their hand transform. To make a hand move permanent (and survive on another machine),"
+                    + " carry it into docs/gspro/<course>/*-props.gen.py: workflow 4 in docs/workflows.md.");
             File.WriteAllText(GolfMapCourses.ReportPath(course, "props.txt"), sb.ToString());
-            if (!dryRun) EditorSceneManager.MarkSceneDirty(EditorSceneManager.GetActiveScene());
+            var specHashes = specByAsset.ToDictionary(kv => kv.Key, kv => Placed.SpecHash(kv.Value));
+            if (!dryRun)
+            {
+                Placed.Save(sidecar, manifest, written, specHashes);
+                if (sidecar.StartsWith("Assets/", StringComparison.Ordinal)) AssetDatabase.ImportAsset(sidecar);
+                EditorSceneManager.MarkSceneDirty(EditorSceneManager.GetActiveScene());
+            }
             var result = new Dictionary<string, object>
             {
                 { "manifest", manifest }, { "dryRun", dryRun }, { "placed", placed }, { "assets", counts },
                 { "axis", axis }, { "warnings", warnings }, { "report", GolfMapCourses.ReportPath(course, "props.txt") },
+                { "placedRecord", sidecar }, { "keepHandEdits", keepHandEdits }, { "kept", keptCount },
+                { "handPlaced", handPlaced }, { "specWon", specWon },
             };
+            if (sidecarNote != null) result["placedRecordNote"] = sidecarNote;
             if (dryRun) result["rows"] = rows;
             return result;
+        }
+
+        // One row of the place report's hand-edit lists: the spec entry, where the instance now stands,
+        // and where the tool itself had put it.
+        static Dictionary<string, object> HandRow(Inst inst, int index, string assetId, Placed.Decision dec, Vector3 pos, Quaternion rot)
+        {
+            var row = new Dictionary<string, object>
+            {
+                { "asset", assetId }, { "index", index }, { "name", assetId + "#" + index }, { "rule", dec.rule }, { "reason", dec.reason },
+                { "spec", new Dictionary<string, object> { { "e", inst.e }, { "n", inst.n }, { "yawDeg", inst.yaw }, { "dz", inst.dz } } },
+                { "unity", new Dictionary<string, object> { { "pos", new object[] { pos.x, pos.y, pos.z } }, { "yaw", Math.Round(rot.eulerAngles.y, 2) } } },
+            };
+            if (dec.was != null)
+                row["toolPlaced"] = new Dictionary<string, object>
+                {
+                    { "pos", new object[] { dec.was.pos.x, dec.was.pos.y, dec.was.pos.z } },
+                    { "yaw", Math.Round(dec.was.euler.y, 2) },
+                };
+            row["movedByHand"] = new Dictionary<string, object> { { "m", Math.Round(dec.movedM, 3) }, { "deg", Math.Round(dec.movedDeg, 2) } };
+            row["specMoved"] = new Dictionary<string, object> { { "m", Math.Round(dec.specMovedM, 3) }, { "deg", Math.Round(dec.specMovedDeg, 2) } };
+            return row;
         }
     }
 }

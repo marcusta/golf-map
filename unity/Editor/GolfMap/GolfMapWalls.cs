@@ -182,19 +182,19 @@ namespace GolfMap.Editor
         [MenuItem("GolfMap/Walls/Clear stone walls")]
         static void MenuClear() { Debug.Log("[GolfMap Walls] " + GolfMapJson.Serialize(Clear(null), false)); }
 
-        [BridgeCommand("golfmap.walls.build", "Build dry-stone walls from the course's golfmap-walls-v1 spec (<course>/stone-walls.json, from docs/gspro/<course>/stone-walls.gen.py): each wall's bank, between its traced foot and top edge, faced with courses of boulders (Blender-built, the spec's stonesFolder, or prefabs), fitted to the course meshes; and the spec's single boulders, each topM over the highest ground under it. Replaces the stones of the walls and boulders it builds under 'GolfMap Walls'; the same seed + variant gives the same stones. Marks the scene dirty, does not save it.",
-            args = "file (default <course>/stone-walls.json), only (wall or boulder ids, comma-separated), dryRun=false (plan and counts, nothing placed), variant=0 (another random layout), profile (a wall id: its bank measured on the meshes every metre)")]
+        [BridgeCommand("golfmap.walls.build", "Build dry-stone walls from the course's golfmap-walls-v1 spec (<course>/stone-walls.json, from docs/gspro/<course>/stone-walls.gen.py): each wall's bank, between its traced foot and top edge, faced with courses of boulders (Blender-built, the spec's stonesFolder, or prefabs), fitted to the course meshes; and the spec's single boulders, each topM over the highest ground under it. Replaces the stones of the walls and boulders it builds under 'GolfMap Walls'; the same seed + variant gives the same stones (a stone moved by hand is not kept: capture it as a pose boulder in the generator). Marks the scene dirty; save=true saves it (and the assets it changed) once the build has succeeded.",
+            args = "file (default <course>/stone-walls.json), only (wall or boulder ids, comma-separated), dryRun=false (plan and counts, nothing placed), variant=0 (another random layout), profile (a wall id: its bank measured on the meshes every metre), " + GolfMapSceneSave.Arg)]
         static object Command(BridgeArgs a)
         {
             var only = a.Strings("only").SelectMany(s => s.Split(',')).Select(s => s.Trim()).Where(s => s.Length > 0).ToList();
-            return Build(a.String("file"), only.Count == 0 ? null : new HashSet<string>(only), a.Bool("dryRun", false), a.Int("variant", 0), a.String("profile"));
+            return GolfMapSceneSave.After(a, Build(a.String("file"), only.Count == 0 ? null : new HashSet<string>(only), a.Bool("dryRun", false), a.Int("variant", 0), a.String("profile")));
         }
 
-        [BridgeCommand("golfmap.walls.clear", "Delete the stones golfmap.walls.build placed ('GolfMap Walls', or only the named walls). Marks the scene dirty.", args = "only (wall ids, comma-separated)")]
+        [BridgeCommand("golfmap.walls.clear", "Delete the stones golfmap.walls.build placed ('GolfMap Walls', or only the named walls). Marks the scene dirty.", args = "only (wall ids, comma-separated), " + GolfMapSceneSave.Arg)]
         static object ClearCommand(BridgeArgs a)
         {
             var only = a.Strings("only").SelectMany(s => s.Split(',')).Select(s => s.Trim()).Where(s => s.Length > 0).ToList();
-            return Clear(only.Count == 0 ? null : new HashSet<string>(only));
+            return GolfMapSceneSave.After(a, Clear(only.Count == 0 ? null : new HashSet<string>(only)));
         }
 
         static GameObject FindRoot()

@@ -36,8 +36,8 @@ Order (each later step invalidates the ones after it, never the ones before):
    - Terrain changed but no new meshes: `unity_command golfmap.terrain.conform {terrain: "inner"}` alone (`golfmap.terrain.restore {backup}` undoes).
    - Never OPCD's right-click "Conform Mesh To Terrain": it moves the meshes down instead.
    - Done when `<course>/refresh-report.json` shows every step ok; its `pending` list is what remains.
-10. **After conform** (redo all of these after any later terrain change): **Plant for GSPro** (workflow 2), `golfmap.props.place` (workflow 4 first), anything checked by screenshot. Done when the `pending` steps are done and verified in a screenshot.
-11. **Save the scene** (ask the user; the commands mark it dirty, never save). Done when the title bar loses the `*`.
+10. **After conform** (redo all of these after any later terrain change): **Plant for GSPro** (workflow 2), `golfmap.props.place` (workflow 4; hand-moved props are kept), anything checked by screenshot. Done when the `pending` steps are done and verified in a screenshot.
+11. **Save the scene.** Every command that writes into the scene takes `save: true`: it then saves the open dirty scenes and the assets it changed once it has succeeded, and reports `saved: {scenes, seconds}` (a dry run and a failed run never save; `golfmap.course.refresh` saves once, after its last step). The ask is for commands run **without** it: they mark the scene dirty and never save, so ask the user (or run `unity_command scene.save`). Done when the title bar loses the `*`.
 
 A terrain change after step 9 = back to step 4 (capture), then 5-11 in order. Unity sculpts and anything hand-placed in the scene are the only things a re-run can lose.
 
@@ -63,7 +63,7 @@ Batch: the user prefers several zone edits, then one update/replant, not one per
 5. **Verify**: `unity_screenshot` over the zone with `warmup` 20-80 (an unfocused 2018 editor never ticks VSP on its own); `golfmap.vsp` lists the item spawning with mask rules. Done when the grass/bushes are visible in the screenshot.
    - Bare where the mask says it should grow: run `golfmap.terrain.conform` (grass buried under the meshes).
    - VSP throws `JobHandle.Complete()` every frame: `golfmap.vsp.reset` or any `unity_sync push`.
-6. **Save the scene** (ask the user). Done when saved.
+6. **Save the scene**: pass `save: true` to the last import/apply, or ask the user (workflow 1, step 11). Done when saved.
 
 ## 3. Edit Unity editor scripts: repo first, then sync
 
@@ -85,7 +85,7 @@ Generators that rebuild scene objects from a spec and drop hand edits:
 
 | Command | Hand edits lost | Where to capture |
 |---|---|---|
-| `golfmap.props.place [only=<asset>]` | every instance of the assets placed (`GolfMap Props/<Category>s/<asset>#<i>`) | `place(...)` calls in `docs/gspro/<course>/*-props.gen.py` |
+| `golfmap.props.place [only=<asset>]` | **none: hand moves are kept** (see below). Only a prop whose spec entry moved more than 1 cm / 0.5° since it was placed goes back to the spec | `place(...)` calls in `docs/gspro/<course>/*-props.gen.py` (the only permanent, machine-independent place) |
 | `golfmap.walls.build [only=<id>]` | single stones/boulders moved | `pose {dy, euler, scale}` in `docs/gspro/<course>/stone-walls.gen.py` (e.g. `H4_POSES`) |
 | `golfmap.creeks.import` | spline points and moved spline objects | the creek feature in the web editor |
 | `golfmap.waterplanes.build` | a moved reflection probe (the plane's lift is kept) | not capturable |
@@ -94,21 +94,36 @@ Generators that rebuild scene objects from a spec and drop hand edits:
 `golfmap.course.refresh` never runs `props.place` (listed as pending) but does run `walls.build` near changed meshes and `creeks.import`.
 Tree replants keep `<course>-<terrain>-tree-edits.json`: no capture needed there.
 
-Props (same pattern for walls):
+### Props: a re-place keeps what was moved by hand
 
-1. **Find what was hand-edited**: `unity_scene` / `unity_command scene.find` under `/GolfMap Props`; read each transform with `scene.inspect` (Transform). Done when every instance of the assets to re-place has position + yaw.
-2. **Match to the spec** by asset and nearest position, not by `#i` (indices go stale after spec edits). Done when each scene object maps to one `place(...)` line.
-3. **Write back** into `docs/gspro/<course>/*-props.gen.py`, comment "set by hand in Unity <date>":
+Every `golfmap.props.place` records what it placed in `<course>/Props/placed.json` (per instance: the spec entry it came from, the world transform it set, and whether that transform is the user's). The next place compares and **keeps the user's transform** for any instance that is not where the tool left it; the spec takes an instance back only when the spec entry itself moved more than 1 cm / 0.5° / 0.1 % of scale since it was recorded. Instances are matched by asset and nearest recorded position, not by `#i`. Details and the decision table: [unity/README.md](../unity/README.md#a-re-place-keeps-what-was-moved-by-hand).
+
+**Once per course, on a scene from before this existed**: there is no record yet, so a place would drop the hand moves one last time. `unity_command golfmap.props.record` seeds `<course>/Props/placed.json` from the props standing in the scene without touching any of them (`mark=moved`, the default, marks the ones more than 1 cm off their spec x/z; `mark=all` marks every instance, which also stops any prop being re-grounded after a terrain change until its spec entry moves; a prop only **rotated** by hand needs `mark=all` or the spec). Done when its `handPlaced` count matches what the user remembers moving and the next dry run shows them as `kept`.
+
+Then the normal loop after moving props in Unity is just:
+
+1. **Dry run**: `unity_command golfmap.props.place {dryRun: true}` (or `only: "<asset>"`). Its `rows` carry `kept: true` and a `rule` per instance; `kept` counts them. Done when every prop you moved shows `kept: true` and nothing you did not move does.
+2. **Place**: the same without `dryRun` (add `save: true` to save the scene in the same call). Check `kept`, `handPlaced` and `specWon` in the result, `GolfMapSpelunk/<Course>_props.txt` (`KEPT (hand-placed)` lines with both transforms) and a `unity_screenshot`. Done when the props stand where the user left them.
+   - `specWon` is the list to read out loud: those are hand moves the spec overrode because the `.gen.py` moved them too.
+   - A warning per hand-placed instance the spec no longer has (a `place(...)` call removed).
+   - `keepHandEdits: false` is the old behaviour (everything from the spec) if a clean rebuild is wanted.
+
+**Carrying hand moves into the spec** is still needed to make them permanent - another machine, a `props.clear` plus a rebuilt spec, and a `build_props.py` run that renumbers instances all read the spec, not `placed.json`. The result's `handPlaced` rows have everything for it:
+
+1. **Write back** into `docs/gspro/<course>/*-props.gen.py`, comment "set by hand in Unity <date>":
    - position: EPSG:3006 E = Unity x + inner sidecar `square3006[0]`, N = Unity z + `square3006[1]` (`GolfMapProps.cs`); `place()` takes e/n relative to the script's `E0, N0`.
    - yaw: `place()` sets Unity yaw = `yawDeg − 90` for prefab `axis: x` and Blender assets (`sx > 0` in the place report's `axis`), `yawDeg + 90` for mirrored Blender assets, `yawDeg` for `axis: z`; invert that. <!-- VERIFY: memory note says Blender assets use spec = Unity yaw − 90; check sx on Vreta's report before trusting either -->
    - height: `dz` = lift above the ground mode the spec uses.
    Done when the script holds every captured transform.
-4. **Rebuild the spec + models**: `pipeline/.venv/Scripts/python.exe docs/gspro/<course>/clubhouse-props.gen.py` from the repo root (writes `*-props.json`), then `"C:/Program Files/Blender Foundation/Blender 4.5/blender.exe" -b --factory-startup --python blender/tools/build_props.py -- --spec docs/gspro/<course>/clubhouse-props.json --out "<Unity project>/Assets/GolfMap/<Course>/Props"`. Done when `<course>/Props/props.json` is rewritten.
-5. **Dry run**: `unity_command golfmap.props.place {dryRun: true, only: "<asset>"}`. Done when positions/yaws/heights in the plan match the captured ones (within a few cm / 0.5°).
-6. **Place**: same without `dryRun`; check `GolfMapSpelunk/<Course>_props.txt` and a `unity_screenshot`. Done when the props stand where the user left them.
-7. **Save the scene** (ask the user).
+2. **Rebuild the spec + models**: `pipeline/.venv/Scripts/python.exe docs/gspro/<course>/clubhouse-props.gen.py` from the repo root (writes `*-props.json`), then `"C:/Program Files/Blender Foundation/Blender 4.5/blender.exe" -b --factory-startup --python blender/tools/build_props.py -- --spec docs/gspro/<course>/clubhouse-props.json --out "<Unity project>/Assets/GolfMap/<Course>/Props"`. Done when `<course>/Props/props.json` is rewritten.
+3. **Dry run, then place** as above. The spec now sits where the prop stands, so the plan shows `rule: spec-moved` (or `unmoved`) and nothing moves: that is the proof the capture is right. Done when positions/yaws/heights in the plan match what was in the scene (within a few cm / 0.5°).
+4. **Save the scene** (`save: true`, or ask the user; workflow 1, step 11).
 
-Walls: capture moved stones as `pose` (e/n of the pivot, `dy` over the ground under it, Euler, scale) in `stone-walls.gen.py`, run it with `--out "<Unity course folder>"`, then `golfmap.walls.build {only: "<wall id>", dryRun: true}`, then for real.
+Reading the transforms out of the scene by hand still works when `placed.json` is missing (the first place after this existed, or another machine): `unity_scene` / `unity_command scene.find` under `/GolfMap Props`, `scene.inspect` (Transform) per instance, then the write-back above.
+
+### Walls: capture the stone as a pose
+
+Walls get no such record: a wall's stones are generated from its seed and have no identity in the spec, so there is nothing to key a hand move to. Capture a moved stone as `pose` (e/n of the pivot, `dy` over the ground under it, Euler, scale) in `stone-walls.gen.py`, run it with `--out "<Unity course folder>"`, then `golfmap.walls.build {only: "<wall id>", dryRun: true}`, then for real. A boulder with a `pose` is placed exactly so on every rebuild.
 
 ## 5. A path changed surface → Blender → Unity
 
@@ -118,7 +133,7 @@ Only for a changed **Path surface** (Draw mode's selection panel). A moved or re
    - `gspro.py svg --paths-only`: rewrites `<prefix>-paths.json` next to the exported SVG, the SVG itself untouched. Its report names the shapes that changed surface and warns about what a surfaces-only update cannot carry.
    - `gspro.py shaping-global` and the shaping worker's sync: `golfmap.split_surfaces` re-cuts the roads of mixed surfaces; only what changed is re-shaped (any other shaping not yet applied goes with it).
    - `golfmap.course.refresh only=<changed objects> skip=paths.materials`, then `golfmap.paths.materials` over every path mesh (also when Blender changed nothing: a whole road given another surface).
-2. Done when the result dialog says **Paths updated in Unity** with no warnings and its `Path meshes:` line shows the surfaces. Then save the scene (ask the user).
+2. Done when the result dialog says **Paths updated in Unity** with no warnings and its `Path meshes:` line shows the surfaces. Then save the scene (ask the user; workflow 1, step 11).
 
 Needs the SVG exported once, the course's `.blend` and its Unity project open, like the Terrain editor's **Shape in Blender**.
 
@@ -132,7 +147,7 @@ The cleaned photo is **one image per site**: `data/sources/<siteId>/ortho-<vinta
    - Another pixel size is refused with the two sizes in the message.
    - Do not pick the file while the editor is still writing it: the upload stops and is answered after 30 s with how far it got.
 3. **Undo last session** puts back the photo from before the last editing session (everything painted since the tool last loaded the photo) or import, up to 5 steps. Done when the count beside the button drops by one.
-4. **Onto the Unity course meshes.** With the course's Unity project open: Clean panel › **Apply in Unity** (the cleaned photo as the darkened, green-tinted `-meshes` texture, no building removal or forest floor), or export panel › Cleaned orthophoto textures › **Inner cleaned photo → Unity meshes** (the same with the panel's brightness, tint and two cleaning boxes). Both run the `unity-ortho` job: render, then `golfmap.orthos.apply` with the `-meshes` file. About 40 s. Done when the report's last lines name the Unity texture it was put onto; then save the Unity project (ask the user).
+4. **Onto the Unity course meshes.** With the course's Unity project open: Clean panel › **Apply in Unity** (the cleaned photo as the darkened, green-tinted `-meshes` texture, no building removal or forest floor), or export panel › Cleaned orthophoto textures › **Inner cleaned photo → Unity meshes** (the same with the panel's brightness, tint and two cleaning boxes). Both run the `unity-ortho` job: render, then `golfmap.orthos.apply` with the `-meshes` file. About 40 s. Done when the report's last lines name the Unity texture it was put onto; then save the Unity project (`golfmap.orthos.apply {save: true}` by hand, else ask the user; workflow 1, step 11).
 
 Without the browser: `bun run photo -- info|export|import|undo <course> [file]` (`scripts/cleaned-photo.ts`, the same service), then **Refresh** in the Clean panel.
 
@@ -163,7 +178,7 @@ A low slab of bedrock lying in the slope, with grass growing in over its edges. 
 2. **Rock material, once per course.** `unity_command golfmap.slabs.materials {material: "<asset path of a tiling rock material>"}` writes `<course>/rock-slabs.json` (Vreta: `Assets/GolfMap/Vreta/Walls/granite_boulder (rock color pond-klippa).mat`, physics `GSPstone`). Done when the result lists the material and `physicMaterial`.
 3. **Shape, sync, replant: one command.** `bun run shaping -- <course>` (or the Terrain editor's shaping button): regenerates the layers (one `golfmap.cut_out` per slab, last in `00-global.gen.json`), replays them in Blender, exports the changed FBX, runs `golfmap.course.refresh only=<changed>` (slab material and physics, surface map re-exported because a slab is among them), then plants the vegetation again so the tall grass leaves the rock but for a fringe over its edge and some patches. `--dry-run` first shows what would change. Done when every phase is `ok` and "Surface map and grass" names the slab.
    - Never drive the shaping worker by hand without regenerating the layers first: the `.gen.json` files on disk can be older than the database, and a sync then puts older meshes into Unity.
-4. **Verify.** `unity_screenshot` with `restore: true` (the user's Scene view stays where it was), from 25 m up and from a golfer's eye: rock colour against the course's other granite, no straight bare mesh edge, grass patches. `ground.probe {x, z}` on the slab must hit the slab mesh first, the terrain 1 cm under it. Then ask the user to save the scene.
+4. **Verify.** `unity_screenshot` with `restore: true` (the user's Scene view stays where it was), from 25 m up and from a golfer's eye: rock colour against the course's other granite, no straight bare mesh edge, grass patches. `ground.probe {x, z}` on the slab must hit the slab mesh first, the terrain 1 cm under it. Then ask the user to save the scene (workflow 1, step 11).
 
 A slab drawn before this workflow existed may sit in a hand layer (`docs/gspro/<course>/shaping/20-rocks.json`, Vreta's two); the same slab drawn in the app as well would be cut twice: remove it from one.
 

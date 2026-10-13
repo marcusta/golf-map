@@ -14,7 +14,7 @@ Read first for foliage/material problems: [tree rendering fixes](../docs/tree-re
 - Course build without the GSP > Build Course window: `golfmap.course.build` (`Editor/GolfMap/GolfMapCourseBuild.cs`; saves the scene, runs OPCD's builder, about 12 minutes during which the editor does not answer: call with a long timeout).
 - What costs frame rate, ranked per category, in the editor and in GSPro: [README.md](README.md#performance-ranking) (`golfmap.perf.report`, `ArboristMod/perf.ts --rank`; categories are rules in `Editor/GolfMap/GolfMapPerfCategories.json`).
 - Script copies, project paths, versions: [install.json](install.json), `unity/mcp/README.md`, root AGENTS.md.
-- Matcher tests: `bun test unity/building-matching.test.mjs`; performance ranking model: `bun test unity/perf-rank.test.ts`. Course-less compile check: `unity/check-planter.ps1 [-UnityProject <path>]` (add new files to its list; writes `tree-export/`).
+- Matcher tests: `bun test unity/building-matching.test.mjs unity/tree-matching.test.mjs unity/props-matching.test.mjs`; performance ranking model: `bun test unity/perf-rank.test.ts`. Course-less compile check: `unity/check-planter.ps1 [-UnityProject <path>]` (add new files to its list; writes `tree-export/`).
 - New bridge commands: `[BridgeCommand]` static methods in `Editor/GolfMap/GolfMapBridgeCommands.cs` or beside the tool they wrap; keep `Editor/GolfMapBridge/` free of `GolfMap.Editor` references.
 
 ## Workflow (every session)

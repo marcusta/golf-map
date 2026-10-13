@@ -99,8 +99,8 @@ namespace GolfMap.Editor
         [MenuItem("GolfMap/Creeks/Water from the R.A.M. profile")]
         static void MenuProfile() { Debug.Log("[GolfMap Creeks] " + GolfMapJson.Serialize(Style("profile"), false)); }
 
-        [BridgeCommand("golfmap.creeks.import", "Import the course's unity-creeks-v1 export (<prefix>-inner-creeks.json) as NatureManufacture R.A.M. splines under 'GolfMap Creeks': one RamSpline per creek with its profile, fitted to the course meshes under it (water aboveBedM over the bed; each side out to where the bank rises above the water plus bankM; both ends run on into the bank the same way), wearing the lakes' water (water=lake) or the profile's material (water=profile). Re-import after changing creeks, heightmap or meshes refits them in place (points and transform reset) and removes creeks no longer exported. Marks the scene dirty, does not save it.",
-            args = "file (default: the active course's export), dryRun=false, fit=true (false: the export's surface and width as they are), aboveBedM=0.15, bankM=2, buryM=0.05, searchM=8 (how far past the export's half width to look for a bank), trace (a creek id or part of one: its fit station by station), water=lake|profile")]
+        [BridgeCommand("golfmap.creeks.import", "Import the course's unity-creeks-v1 export (<prefix>-inner-creeks.json) as NatureManufacture R.A.M. splines under 'GolfMap Creeks': one RamSpline per creek with its profile, fitted to the course meshes under it (water aboveBedM over the bed; each side out to where the bank rises above the water plus bankM; both ends run on into the bank the same way), wearing the lakes' water (water=lake) or the profile's material (water=profile). Re-import after changing creeks, heightmap or meshes refits them in place (points and transform reset) and removes creeks no longer exported. Marks the scene dirty; save=true saves it (and the assets it changed) once the import has succeeded.",
+            args = "file (default: the active course's export), dryRun=false, fit=true (false: the export's surface and width as they are), aboveBedM=0.15, bankM=2, buryM=0.05, searchM=8 (how far past the export's half width to look for a bank), trace (a creek id or part of one: its fit station by station), water=lake|profile, " + GolfMapSceneSave.Arg)]
         static object Command(BridgeArgs a)
         {
             var o = new FitOptions();
@@ -111,12 +111,12 @@ namespace GolfMap.Editor
             o.searchM = (float)a.Number("searchM", o.searchM);
             o.trace = a.String("trace");
             o.water = a.String("water") ?? o.water;
-            return Import(a.String("file"), a.Bool("dryRun", false), o);
+            return GolfMapSceneSave.After(a, Import(a.String("file"), a.Bool("dryRun", false), o));
         }
 
-        [BridgeCommand("golfmap.creeks.water", "Set the look of the imported creeks without refitting them: water=lake gives every creek under 'GolfMap Creeks' the lakes' water (a copy of OPCD's AQUAS water plane material in <course>/Creeks/, made once and then kept, so hand tuning stays) and the nearest lake's reflection probe; water=profile puts back each spline's R.A.M. profile material. Marks the scene dirty, does not save it.",
-            args = "water=lake|profile")]
-        static object WaterCommand(BridgeArgs a) { return Style(a.String("water") ?? "lake"); }
+        [BridgeCommand("golfmap.creeks.water", "Set the look of the imported creeks without refitting them: water=lake gives every creek under 'GolfMap Creeks' the lakes' water (a copy of OPCD's AQUAS water plane material in <course>/Creeks/, made once and then kept, so hand tuning stays) and the nearest lake's reflection probe; water=profile puts back each spline's R.A.M. profile material. Marks the scene dirty; save=true saves it (and the assets it changed) once it has succeeded.",
+            args = "water=lake|profile, " + GolfMapSceneSave.Arg)]
+        static object WaterCommand(BridgeArgs a) { return GolfMapSceneSave.After(a, Style(a.String("water") ?? "lake")); }
 
         public static Dictionary<string, object> Import(string file, bool dryRun, FitOptions fit)
         {
