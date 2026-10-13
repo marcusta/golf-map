@@ -23,7 +23,7 @@ Map view's photo card and the large viewer. `photos-overlay.ts` draws markers
 and view wedges (dashed = heading not refined). Thumbnails are the 2048 px
 previews, lazy-loaded; the server has no smaller size.
 
-## Clean tool: PhotoCraft retouching on the pixels, image editor round trip, Apply in Unity
+## Clean tool: PhotoCraft retouching on the pixels, image editor round trip
 
 **Areas mode** (`clean/cleanup-areas.controller.ts`) draws and saves inclusion and protection polygons independently of photo edits. The effective preview and GeoJSON download both use `shared/cleanup-areas.ts`: union inclusions, then subtract all exclusions. Names, redraw, delete and session-local undo are available; drafts survive save errors. Boundary editing works without the assist sidecar. Server persistence is site-wide and versioned (`CleanupAreasService`, migration 027); operator steps and skill handoff are in [workflows.md](workflows.md#boundaries-for-ai-photo-cleanup).
 
@@ -40,7 +40,7 @@ In the Clean panel (`clean/clean-panel.component.ts`), the rest of `CleanToolSer
 
 - **Download photo (PNG)** is a plain link (`exportUrl()`, `GET /api/cleaned-photo/:courseId/export.png`): no state, no request before the click.
 - **Import a photo** (`importPhoto(file)`) goes through `PhotoImportClient` (`clean/clean-external.ts`), because `PUT /api/cleaned-photo/:courseId/import` is a raw route with no generated client and the upload needs progress (`XMLHttpRequest` behind the `UploadLike` seam, so tests need no network). It holds the tool's `applying` phase (`externalBusy` is `import`) and, on a change, loads the pixels again. `importSummaryText` (pure) makes the one-line result; a refusal (another pixel size, a stalled upload) shows the server's own message.
-- **Apply in Unity** (`applyInUnity()`): waits for the saves, then starts the GSPro export job `unity-ortho` on the built vintage's `.cleaned.tif` (`api.gsproExport`, behind the `UnityOrthoApi` seam) and polls it; `externalBusy` is `unity`, the outcome goes to `unityMessage`. The job applies the `-meshes` variant (darkened, grass surfaces tinted green) with server defaults and no building removal or forest floor; the export panel's own button is the one with options ([gspro/export.md](gspro/export.md)).
+- **The push into Unity is not in this panel.** The command bar's **Update photo** runs the Photo target's whole chain (`GsproSyncService`, below); the panel keeps one hint line (`unity-apply-hint`) pointing at it. `CleanToolService.applyInUnity()` is still there — the narrow single step: wait for the saves, start the GSPro export job `unity-ortho` on the built vintage's `.cleaned.tif` (`api.gsproExport`, behind the `UnityOrthoApi` seam), poll it, outcome in `unityMessage` — kept for its test and for a caller that wants only the `-meshes` variant with server defaults; the export panel's Photo row has the one with options ([gspro/export.md](gspro/export.md)).
 
 ## The GSPro dialog is a status board
 
@@ -52,6 +52,29 @@ In the Clean panel (`clean/clean-panel.component.ts`), the rest of `CleanToolSer
 - **`GsproSyncService`** (`export/gspro-sync.service.ts`, DI singleton, API client injected like `GsproExportService`): `status`, `job`, `running`, `staleCount`, `error`, `loading`, `tick`, `courseId`; `openFor(courseId)`, `close()`, `refresh(courseId)`, `update(courseId, target | 'stale')` (starts, polls `GET /gspro-sync/job` every 1.5 s through queued → running to the end, then refreshes; false on a refusal or a failed job), `target(id)`, `unityLabel()`, `unityTitle()`, `queuedBehind()`. It re-reads the board every 30 s while the dialog is open, since the edits that make a row stale happen in the other modes. The words the rows are written in are pure functions next to it: `agoLabel`, `whenLabel`, `aboutLabel`, `secsLabel`, `changedLabel`, `kindLabel`, `rowStatusLabel`.
 - **The two halves open together.** `GsproExportService` still owns the folder, the course details and every single-file export (unchanged behaviour: the heightmaps and hillshades and the Pull-from-Unity sculpt captures under Terrain, the vintage picker, cleaning boxes, the plain/cleaned JPEGs and "→ Unity meshes" under Photo, the SVG with its exclusions and bisect under Course shapes, the zones/trees/buildings/creeks files under their rows, and the GSPro course folder + Tees mapping + Course details + .GKD under Course file). The panel bridges the two services, so opening either half opens the other and closing closes both — the command bar can open the board with `GsproSyncService.openFor(courseId)` alone.
 - Server side, and what each target's Update chain does: [gspro/export.md](gspro/export.md) "The GSPro status board: `GsproSyncService`".
+
+### The GSPro group in the command bar
+
+The board is one of **two** places a push into GSPro starts from; the other is the command bar's right end (Create mode, builder only, `app/command-bar.component.ts` `buildGspro`). The right-hand panels have no push buttons at all any more — they edit, the bar pushes.
+
+- **GSPro** (`gspro-board-btn`, title "Open the GSPro status board") is permanent in every Create sub-mode and carries the stale count in its label (`GSPro · 6`, `gspro-stale-badge`). The count is read when the course opens and again at the end of every run below — no timer; the board itself polls while it is open.
+- **One or two contextual Update buttons** before it, named exactly like the board's rows, each `aria-busy` while its own run goes and all of them off while any GSPro job runs (the board's, the shaping worker's, a planting). Which shows follows the sub-mode and the selection:
+
+| Sub-mode | Selection | Button | What it runs |
+|---|---|---|---|
+| Terrain editor | — | **Update terrain** | `update('terrain')` (the chain bakes unapplied terrain edits itself) |
+| Terrain editor | nothing in "Shape in Blender" | **Update meshes** | `update('meshes')` |
+| Terrain editor | a feature with a recipe | **Update meshes (this feature)** | `ShapingService.apply(courseId, <ids>)` — the Shape section's old button, scope = the selection |
+| Draw | a path | **Update paths** | `ShapingService.apply(…, { paths: true })` (unchanged flow, new label) |
+| Draw | a rock slab / bunker / pond / creek | **Update meshes (this feature)** | the same feature-scoped shaping run |
+| Draw | anything else | **Update shapes** | `update('shapes')`; its report ends with the manual Blender step |
+| Vegetation | — | **Update vegetation** | `PlantVegetationService.plant` behind its confirm (was "Plant for GSPro") |
+| Vegetation | zones | **Update zone** / **Update N zones** | `PlantVegetationService.update` (was "Update N zones for GSPro") |
+| Clean photo | — | **Update photo** | `update('photo')` (was the Clean panel's "Apply in Unity") |
+| Furniture | — | **Update course file** | `update('course-file')` |
+
+- The outcome is the result dialog the bar already used for planting: the job's `results[].report` as the detail, the target's `manual` step and — only when the report touched Unity and has no `Saved …` line of its own (`needsSceneSave`, exported for its test) — "Save the scene in Unity to keep it.". While a run goes, the button's label is the job's `step`.
+- The Terrain editor's panel still **shows** a shaping run: the selection's phases under the Shape section (`terrain-shape-job`) and a course-wide run's under the edit list (`terrain-edit-meshes-job`, which also picks up a run started elsewhere through `ShapingService.resume`). Only the buttons moved.
 
 ## Rules lines live in Furniture
 
@@ -98,4 +121,4 @@ Contents (`src/vegetation/vegetation-stems.ts`): 400 x 400 m ground with a gener
 
 ## Rock slabs in Draw
 
-`rock_slab` ("Rock slab", Swedish berghäll; `shared/features/rock-slab.ts`) is a Draw-mode surface type like the roughs: pick it in the type panel (no digit key), press N, click the outline's points (Shift = corner) and Enter or click the first point, or drag it freehand. The selection panel's "Rock slab" section edits `marginM` (how far the cut-out reaches past the outline, 0-5 m, default 1.5) and `uvM` (texture tile size, default 4 m) on every selected slab; clearing a box drops the key. It is no OPCD surface: `gspro.py svg` leaves it out and `shaping-global` writes a `golfmap.cut_out` op for it (docs/gspro/export.md), applied by the Terrain editor's Apply to meshes. The planner reads it as rough (unknown types do), iOS draws it in the fallback grey.
+`rock_slab` ("Rock slab", Swedish berghäll; `shared/features/rock-slab.ts`) is a Draw-mode surface type like the roughs: pick it in the type panel (no digit key), press N, click the outline's points (Shift = corner) and Enter or click the first point, or drag it freehand. The selection panel's "Rock slab" section edits `marginM` (how far the cut-out reaches past the outline, 0-5 m, default 1.5) and `uvM` (texture tile size, default 4 m) on every selected slab; clearing a box drops the key. It is no OPCD surface: `gspro.py svg` leaves it out and `shaping-global` writes a `golfmap.cut_out` op for it (docs/gspro/export.md), applied by the command bar's Update meshes. The planner reads it as rough (unknown types do), iOS draws it in the fallback grey.

@@ -330,7 +330,14 @@ describe('Clean panel: undo, download, import', () => {
         p.svc.phase.set('applying');
         expect(p.q<HTMLButtonElement>('undo-btn').disabled).toBe(true);
         expect(p.q<HTMLInputElement>('import-file').disabled).toBe(true);
-        expect(p.q<HTMLButtonElement>('unity-apply-btn').disabled).toBe(true);
+    });
+
+    test('the push into Unity is not here: one hint points at the command bar', async () => {
+        const p = await mountPanel();
+        expect(p.q('unity-apply-btn')).toBeNull();
+        expect(p.q('unity-message')).toBeNull();
+        expect(p.q('unity-apply-hint').textContent).toContain('Update photo');
+        expect(p.q('unity-apply-hint').textContent).toContain('command bar');
     });
 
     test('picking a file uploads it and shows what changed', async () => {

@@ -988,7 +988,7 @@ describe('shape in Blender', () => {
         expect(await h.svc.saveRecipes(['b1', 'p1'], 'pot', { depth: 1.2, seed: 99 }, { keepSeeds: true })).toBe(true);
         expect(h.api.calls.update).toEqual([{ id: 'r1', version: 2, params: { recipe: 'pot', overrides: { depth: 1.2, seed: 7 } } }]);
         expect(h.api.calls.create).toEqual([{ siteId: 'site-1', op: 'recipe', params: { recipe: 'pot', overrides: { depth: 1.2 } }, featureId: 'p1' }]);
-        expect(h.svc.notice.get()).toBe('Recipe saved on 2 features. Apply to meshes to shape them.');
+        expect(h.svc.notice.get()).toBe('Recipe saved on 2 features. Update meshes in the command bar to shape them.');
     });
 
     test('recipe edits are listed under Blender recipes by feature, hole and recipe name; clicking one selects its feature', async () => {
@@ -1024,7 +1024,7 @@ describe('shape in Blender', () => {
         expect(e - w).toBeLessThan(0.001); // about 10 m, not the 80 m fairway
     });
 
-    test("Apply to meshes runs the course's shaping job from the feature's section or the course button, and follows it to the end", async () => {
+    test("applyToMeshes runs the course's shaping job for the selection's scope or the whole course, and follows it to the end", async () => {
         const h = await harness({ features: course(), holes, recipes: library });
         h.shaping.polls = [shapingJob(), doneJob(['Spline_hole_3_1c_Bunker_-_Mesh'])];
         expect(await h.svc.applyToMeshes('b1')).toBe(true);

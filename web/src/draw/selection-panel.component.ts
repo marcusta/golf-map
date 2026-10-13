@@ -151,7 +151,7 @@ const tpl = template(`
             <label class="zone-field" title="Metres per texture tile on the slab">Texture tile (m)
                 <input bind="rockTile" type="number" min="0.5" step="0.5" data-testid="rock-slab-tile" />
             </label>
-            <div class="tree-area-hint">Not in the SVG: Terrain editor, Apply to meshes cuts it out of the course meshes in Blender.</div>
+            <div class="tree-area-hint">Not in the SVG: <b>Update meshes</b> in the command bar cuts it out of the course meshes in Blender.</div>
         </div>
         <div bind="creekSection" class="zone-section" data-testid="creek-bank-section">
             <h4 bind="creekTitle" class="section-title"></h4>

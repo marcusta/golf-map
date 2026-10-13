@@ -11,9 +11,12 @@ import type { ShapingJob } from '../../shared/api/shaping.gen';
 import { doneJob, fakeShapingApi, phases, shapingJob, type LibraryEntry } from './shaping-fakes';
 
 // Render smoke for the Terrain editor's "Shape in Blender" section and the
-// course-wide "Apply to meshes" button (no per-component specs by design —
-// TESTING.md — but the recipe select's options, the Save → edit wiring and
-// the job outcome are worth one pass through happy-dom).
+// shaping job's phase displays (no per-component specs by design — TESTING.md
+// — but the recipe select's options, the Save → edit wiring and the job
+// outcome are worth one pass through happy-dom). The buttons that START a
+// shaping run live in the command bar now ("Update meshes (this feature)" /
+// "Update meshes"); the panel only shows the run, so these tests drive the
+// tool service the way the bar does.
 
 afterEach(() => {
     _reset();
@@ -149,13 +152,20 @@ test('Save writes the recipe edit; it shows under Blender recipes and the select
     expect(q('terrain-edit-name').textContent).toBe('Bunker · hole 3 · Pot bunker');
 });
 
-test("Apply to meshes from the feature shows the job's changed objects there; the course button shows them under itself", async () => {
-    const { tool, q, applies } = mount({
+test("a feature-scoped run shows the job's changed objects in its section; a course-wide one under the whole list", async () => {
+    const { tool, q, host, applies } = mount({
         jobs: [shapingJob(), doneJob(['Spline_hole_3_1c_Bunker_-_Mesh'], { warnings: ['1 seam gap'] })],
     });
     await tick();
     tool.selectFeature('b1');
-    q<HTMLButtonElement>('terrain-shape-apply').click();
+    // No push button in the panel any more: the command bar runs this.
+    expect(q('terrain-shape-apply')).toBeNull();
+    expect(q('terrain-edit-apply-meshes')).toBeNull();
+    expect(q('terrain-shape-apply-hint').textContent).toContain('Update meshes (this feature)');
+    expect(q('terrain-edit-meshes-hint').textContent).toContain('Update meshes');
+    expect(host.textContent).toContain('are in the command bar');
+
+    void tool.applyToMeshes('b1');
     await tick(20);
 
     expect(applies).toEqual([{ courseId: 'course-1' }]);
@@ -166,16 +176,14 @@ test("Apply to meshes from the feature shows the job's changed objects there; th
     expect(job.textContent).toContain('1 seam gap');
     expect(q('terrain-edit-meshes-job').className).not.toContain('show');
 
-    const course = q<HTMLButtonElement>('terrain-edit-apply-meshes');
-    expect(course.textContent).toBe('Apply to meshes (Blender → Unity)');
-    course.click();
+    void tool.applyToMeshes();
     await tick(20);
     expect(applies[1]).toEqual({ courseId: 'course-1' });
     expect(q('terrain-edit-meshes-job').className).toContain('show');
     expect(q('terrain-shape-job').className).not.toContain('show');
 });
 
-test('the job shows each phase live (the cold start with its seconds), then done with the phase and Unity step timings, and the buttons come back', async () => {
+test('the job shows each phase live (the cold start with its seconds), then done with the phase and Unity step timings', async () => {
     const { tool, q, qa, shapingApi } = mount();
     // One poll answered per release: the test walks the job through its phases.
     const queue: Array<(job: ShapingJob) => void> = [];
@@ -188,8 +196,7 @@ test('the job shows each phase live (the cold start with its seconds), then done
     const phaseLines = () => qa('terrain-shape-phases').flatMap(l => [...l.querySelectorAll('li')].map(li => li.textContent));
     await tick();
     tool.selectFeature('b1');
-    const apply = q<HTMLButtonElement>('terrain-shape-apply');
-    apply.click();
+    void tool.applyToMeshes('b1');
     await tick();
 
     await answer(shapingJob({ phase: 'worker', phases: phases('worker', {
@@ -202,8 +209,7 @@ test('the job shows each phase live (the cold start with its seconds), then done
         '· Blender sync',
         '· Unity refresh',
     ]);
-    expect(apply.disabled).toBe(true);
-    expect(apply.textContent).toBe('Applying…');
+    expect(q('terrain-shape-section').className).not.toContain('hidden');
 
     await answer(shapingJob({ phase: 'unity', phases: phases('unity', { details: { unity: 'refreshing 2 object(s) in vreta_v4' } }) }));
     expect(phaseLines()[3]).toBe('… Unity refresh — refreshing 2 object(s) in vreta_v4 (1 s)');
@@ -224,9 +230,6 @@ test('the job shows each phase live (the cold start with its seconds), then done
     ]);
     expect(q('terrain-shape-unity-steps').textContent).toBe('Unity: meshes.sync 13 s · terrain.conform 20 s');
     expect(q('terrain-shape-job').textContent).toContain('1 seam gap');
-    expect(apply.disabled).toBe(false);
-    expect(apply.textContent).toBe('Apply to meshes');
-    expect(q<HTMLButtonElement>('terrain-edit-apply-meshes').disabled).toBe(false);
 });
 
 test('a failed job says in which phase; skipped Unity is not claimed as refreshed', async () => {
@@ -236,16 +239,15 @@ test('a failed job says in which phase; skipped Unity is not claimed as refreshe
     })] });
     await tick();
     tool.selectFeature('b1');
-    q<HTMLButtonElement>('terrain-shape-apply').click();
+    void tool.applyToMeshes('b1');
     await tick(20);
     expect(q('terrain-shape-status').textContent).toBe('Applying to the meshes failed (starting the shaping worker): The shaping worker exited (code 1) before it answered');
     expect(qa('terrain-shape-phases')[0]!.querySelector('li[data-status="failed"]')!.getAttribute('data-phase')).toBe('worker');
-    expect(q<HTMLButtonElement>('terrain-shape-apply').disabled).toBe(false);
 
     const skipped = phases('unity', { last: 'skipped', details: { unity: 'Unity not refreshed: no open Unity editor imports from D:\\\\x' } });
     const again = mount({ jobs: [doneJob(['A'], { phases: skipped, warnings: ['Unity not refreshed: no open Unity editor imports from D:\\\\x'] })] });
     await tick();
-    again.q<HTMLButtonElement>('terrain-edit-apply-meshes').click();
+    void again.tool.applyToMeshes();
     await tick(20);
     expect(again.q('terrain-shape-status').textContent).toBe('Done in 3 s — 1 object re-shaped:');
     expect(again.qa('terrain-shape-phases')[0]!.textContent).toContain('– Unity refresh — Unity not refreshed');

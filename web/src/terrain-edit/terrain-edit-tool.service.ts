@@ -512,8 +512,8 @@ export class TerrainEditToolService {
     // ─────────────────────────────────────────────────────────────────────────
     // Shape in Blender (SHAPING-PLAN.md "Terrain editor → Blender"): click a
     // bunker, pond, creek or path, pick its recipe (a `recipe` edit; none =
-    // the course default for its surface), then Apply to meshes runs the
-    // shaping job for it (ShapingService).
+    // the course default for its surface), then the command bar's "Update
+    // meshes (this feature)" runs the shaping job for it (ShapingService).
     // ─────────────────────────────────────────────────────────────────────────
 
     /** The recipe edit of a feature, if it has one (else it gets the course default). */
@@ -594,8 +594,8 @@ export class TerrainEditToolService {
             const on = n === 1 ? '' : ` on ${n} features`;
             const them = n === 1 ? 'it' : 'them';
             this.notice.set(recipeId
-                ? `Recipe saved${on}. Apply to meshes to shape ${them}.`
-                : `Back to the course default recipe${on}. Apply to meshes to shape ${them}.`);
+                ? `Recipe saved${on}. Update meshes in the command bar to shape ${them}.`
+                : `Back to the course default recipe${on}. Update meshes in the command bar to shape ${them}.`);
             return true;
         } catch (e) {
             await this.reload(); // resync (order per setEnabled)
@@ -638,11 +638,17 @@ export class TerrainEditToolService {
     }
 
     /**
-     * Runs the Blender → Unity shaping job, from the selection's section or
-     * the course button. The server always runs the whole course (the worker
-     * re-shapes only meshes whose ops changed, so one saved recipe re-shapes
-     * just its feature's meshes); `scope` (a feature id, or the selection's
-     * `selectionScope`) says where to show the outcome.
+     * Runs the Blender → Unity shaping job for this tool's course. The server
+     * always runs the whole course (the worker re-shapes only meshes whose ops
+     * changed, so one saved recipe re-shapes just its feature's meshes);
+     * `scope` (a feature id, or the selection's `selectionScope`) says where
+     * the panel shows the outcome.
+     *
+     * The buttons that start it are the command bar's ("Update meshes (this
+     * feature)" runs `ShapingService.apply` with the selection as its scope,
+     * "Update meshes" the whole target through the status board); this stays as
+     * the tool's own way in, for the keyboard and for callers that already
+     * hold the tool.
      */
     async applyToMeshes(scope?: string): Promise<boolean> {
         const ctx = this.ctx;

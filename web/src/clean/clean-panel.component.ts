@@ -77,10 +77,7 @@ const tpl = template(`
             <span bind="undoCount" class="patch-count" data-testid="undo-count"></span>
             <button bind="undoBtn" type="button" class="small-btn" data-testid="undo-btn">Undo last session</button>
         </div>
-        <div class="preview-actions">
-            <button bind="unityBtn" type="button" class="accept-btn" data-testid="unity-apply-btn"></button>
-        </div>
-        <div bind="unityMessage" class="ext-message" data-testid="unity-message"></div>
+        <div class="mode-hint" data-testid="unity-apply-hint"><b>Update photo</b> is in the command bar: it puts the cleaned photo onto the course meshes in Unity.</div>
         <div class="external-section" data-testid="external-edit">
             <h4 class="section-title">Edit in an image editor</h4>
             <div class="ext-line">The cleaned photo is one 8192 × 8192 px image. Download it, edit it, and import the result: any image of that size becomes the cleaned photo.</div>
@@ -503,7 +500,6 @@ export class CleanPanelComponent extends Component {
                 textContent: () => {
                     if (tool.working.get()) return 'Filling… (a large area takes a few seconds)';
                     const busy = tool.externalBusy.get();
-                    if (busy === 'unity') return 'Rendering the mesh texture and putting it into Unity… (about a minute)';
                     if (busy === 'undo') return 'Putting the earlier photo back…';
                     if (busy === 'import') {
                         const p = tool.uploadProgress.get();
@@ -525,20 +521,6 @@ export class CleanPanelComponent extends Component {
                 title: () => 'Puts back the cleaned photo from before the last editing session or import.',
                 onclick: () => void this.tool.undoLast(),
                 disabled: () => this.tool.undoDepth.get() === 0 || this.tool.phase.get() !== 'idle',
-            },
-            unityBtn: {
-                textContent: () => tool.externalBusy.get() === 'unity' ? 'Applying in Unity…' : 'Apply in Unity',
-                title: () => 'Puts the cleaned photo onto the course meshes in the open Unity project: the darkened, '
-                    + 'green-tinted mesh texture. The old texture is backed up in Unity.',
-                onclick: () => void tool.applyInUnity(),
-                disabled: () => tool.phase.get() !== 'idle' || !tool.photoExists.get(),
-            },
-            unityMessage: {
-                textContent: () => this.tool.unityMessage.get()?.text ?? '',
-                className: () => {
-                    const m = this.tool.unityMessage.get();
-                    return m ? `ext-message show${m.kind === 'error' ? ' error' : ''}` : 'ext-message';
-                },
             },
             exportLink: {
                 // A plain download: the server encodes the PNG on demand (about ten seconds).

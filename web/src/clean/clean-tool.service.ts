@@ -1068,6 +1068,10 @@ export class CleanToolService {
 
     /**
      * Put the cleaned photo onto the course meshes in the open Unity editor.
+     * The panel has no button for it any more — the command bar's **Update
+     * photo** runs the Photo target's whole chain through `GsproSyncService`
+     * (both the meshes texture and the outer terrain's). This is the narrow
+     * one-call version, kept for the CLI-less single step and its test.
      * Waits for the saves first. The server job renders the cleaned photo of
      * the vintage the map was built from and hands Unity its -meshes variant,
      * the darkened one with the green surface tint, which is what the meshes

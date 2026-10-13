@@ -40,8 +40,8 @@ const tpl = template(`
             <div bind="paramsHost" class="shape-params" data-testid="terrain-shape-params"></div>
             <div class="edit-form__actions">
                 <button bind="recipeSaveBtn" type="button" data-testid="terrain-shape-save">Save</button>
-                <button bind="shapeApplyBtn" type="button" data-testid="terrain-shape-apply">Apply to meshes</button>
             </div>
+            <div class="hint" data-testid="terrain-shape-apply-hint">Save the recipe, then <b>Update meshes (this feature)</b> in the command bar.</div>
             <div bind="shapeJob" class="shape-job" data-testid="terrain-shape-job"></div>
         </div>
         <div class="section">
@@ -82,7 +82,7 @@ const tpl = template(`
         </div>
         <button bind="applyBtn" type="button" class="apply-btn" data-testid="terrain-edit-apply">Apply to terrain</button>
         <div bind="applyLine" class="busy-line" data-testid="terrain-edit-apply-progress"></div>
-        <button bind="applyMeshesBtn" type="button" class="apply-btn" data-testid="terrain-edit-apply-meshes">Apply to meshes (Blender → Unity)</button>
+        <div class="hint" data-testid="terrain-edit-meshes-hint"><b>Update meshes</b> and <b>Update terrain</b> are in the command bar.</div>
         <div bind="courseJob" class="shape-job" data-testid="terrain-edit-meshes-job"></div>
         <div class="tedit-panel__hints">
             <div><b>Click</b> a bunker, pond, creek or path to pick its Blender recipe; <b>Cmd/Ctrl+click</b> more of the same kind to give them all one recipe.</div>
@@ -443,13 +443,6 @@ export class TerrainEditPanelComponent extends Component {
                 },
                 className: () => this.tool.applying.get() ? 'busy-line show' : 'busy-line',
             },
-            applyMeshesBtn: {
-                disabled: () => this.tool.shaping.running.get(),
-                textContent: () => this.tool.shaping.running.get() && this.tool.shaping.jobScope.get() === null
-                    ? 'Applying to meshes…' : 'Apply to meshes (Blender → Unity)',
-                title: 'Regenerate the shaping layers from every recipe and area edit, re-shape the changed course meshes in Blender and refresh them in the open Unity project. Apply to terrain still bakes the DEM outside the meshes',
-                onclick: () => void this.tool.applyToMeshes(),
-            },
             shapeSection: {
                 className: () => this.tool.selectedFeature.get() ? 'section shape' : 'section shape hidden',
             },
@@ -491,18 +484,6 @@ export class TerrainEditPanelComponent extends Component {
                     const recipeId = choice || (Object.keys(overrides).length > 0 ? this.chosenRecipe.peek()?.id ?? null : null);
                     if (features.length === 1) void this.tool.saveRecipe(features[0].id, recipeId, overrides);
                     else void this.tool.saveRecipes(features.map(f => f.id), recipeId, overrides, { keepSeeds: true });
-                },
-            },
-            shapeApplyBtn: {
-                disabled: () => this.tool.shaping.running.get() || this.tool.saving.get(),
-                textContent: () => this.tool.shaping.running.get() && this.tool.shaping.jobScope.get() === this.tool.selectionScope.get()
-                    ? 'Applying…' : 'Apply to meshes',
-                title: () => this.multi.get()
-                    ? "Re-shape these features' meshes in Blender with their saved recipe and refresh them in the open Unity project"
-                    : "Re-shape this feature's meshes in Blender with the saved recipe and refresh them in the open Unity project",
-                onclick: () => {
-                    const scope = this.tool.selectionScope.peek();
-                    if (scope) void this.tool.applyToMeshes(scope);
                 },
             },
         });

@@ -19,11 +19,15 @@ import { EditorModeService } from '../editor/editor-mode.service';
 import { ServerModeService, visibleEditorTools } from './server-mode.service';
 import { SvgImportService, boundsFromGeoreference } from '../import/svg-import.service';
 import { GeojsonImportService } from '../import/geojson-import.service';
-import { GsproExportService } from '../export/gspro-export.service';
+import { GsproSyncService } from '../export/gspro-sync.service';
 import { ZoneTypesService, zoneTypeKeyOf } from '../zones/zone-types.service';
 import { VEGETATION_TOOL_ID } from '../zones/vegetation-tool';
 import { PlantVegetationService, arboristOutcome } from '../zones/plant-vegetation.service';
 import { ShapingService, type ShapingJob } from '../terrain-edit/shaping.service';
+import { TerrainEditToolService, TERRAIN_EDIT_TOOL_ID } from '../terrain-edit/terrain-edit-tool.service';
+import { CLEAN_TOOL_ID } from '../clean/clean-tool.service';
+import { FURNITURE_TOOL_ID } from '../furniture/furniture.service';
+import { MESH_FEATURE_TYPES, gsproTarget, type GsproTargetId } from '../../../shared/gspro-targets';
 import { MapBuildClientService, formatBytes } from '../map-build/map-build.service';
 import { TilesetService } from '../map/tileset.service';
 import { MapService } from '../map/map.service';
@@ -66,6 +70,7 @@ const tpl = template(`
         <span bind="zone3Divider" class="cmdbar__divider"></span>
         <div bind="zone3Host" class="cmdbar__zone3"></div>
         <div class="cmdbar__right">
+            <span bind="gsproHost" class="cmdbar__gspro"></span>
             <span bind="saveHost" class="cmdbar__save-slot"></span>
             <span bind="actionsHost" class="cmdbar__slot"></span>
             <span class="cmdbar__divider cmdbar__divider--sm"></span>
@@ -108,15 +113,48 @@ const zone3Tpl = template(`
         <select bind="pathSurface" class="cmdbar__path-width cmdbar__path-surface" aria-label="Path surface" data-testid="path-surface-default"></select>
         <button bind="boxSelect" type="button" class="cmdbar__box"></button>
         <button bind="generatedBtn" type="button" class="cmdbar__plant" data-testid="generated-vegetation-btn"></button>
-        <button bind="plantBtn" type="button" class="cmdbar__plant" data-testid="plant-vegetation-btn"></button>
-        <button bind="updateZonesBtn" type="button" class="cmdbar__plant" data-testid="update-zones-btn"></button>
-        <button bind="updatePathsBtn" type="button" class="cmdbar__plant" data-testid="update-paths-btn"></button>
         <span class="cmdbar__divider cmdbar__divider--sm"></span>
         <button bind="undoBtn" type="button" class="cmdbar__hist" aria-label="Undo">${icon('undo', 16)}</button>
         <button bind="redoBtn" type="button" class="cmdbar__hist" aria-label="Redo">${icon('redo', 16)}</button>
     </span>
     <button bind="helpBtn" type="button" class="cmdbar__help" aria-label="Keyboard shortcuts" title="Keyboard shortcuts (?)">${icon('circle-help', 16)}</button>
 `);
+
+/**
+ * The GSPro group at the right end of the bar (Create, builder only): the
+ * contextual **Update** buttons of the active sub-mode — the same words as the
+ * status board's rows — and then the permanent board button with the stale
+ * count. These are the only places a push into GSPro/Unity starts from; the
+ * right-hand panels keep the editing controls only (docs/web-features.md,
+ * "The GSPro dialog is a status board").
+ */
+const gsproTpl = template(`
+    <button bind="terrainBtn" type="button" class="cmdbar__gspro-btn" data-testid="gspro-update-terrain-btn"></button>
+    <button bind="meshesFeatureBtn" type="button" class="cmdbar__gspro-btn" data-testid="gspro-update-meshes-feature-btn"></button>
+    <button bind="meshesBtn" type="button" class="cmdbar__gspro-btn" data-testid="gspro-update-meshes-btn"></button>
+    <button bind="pathsBtn" type="button" class="cmdbar__gspro-btn" data-testid="update-paths-btn"></button>
+    <button bind="shapesBtn" type="button" class="cmdbar__gspro-btn" data-testid="gspro-update-shapes-btn"></button>
+    <button bind="plantBtn" type="button" class="cmdbar__gspro-btn" data-testid="plant-vegetation-btn"></button>
+    <button bind="zonesBtn" type="button" class="cmdbar__gspro-btn" data-testid="update-zones-btn"></button>
+    <button bind="photoBtn" type="button" class="cmdbar__gspro-btn" data-testid="gspro-update-photo-btn"></button>
+    <button bind="courseFileBtn" type="button" class="cmdbar__gspro-btn" data-testid="gspro-update-course-file-btn"></button>
+    <button bind="boardBtn" type="button" class="cmdbar__gspro-btn" data-testid="gspro-board-btn"></button>
+`);
+
+/**
+ * True when a result dialog still has to ask for the Unity scene to be saved.
+ * A chain that pushed into Unity with `save: true` reports a `Saved …` line of
+ * its own (unity/README.md, "Saving what a command changed"), and a report
+ * that never mentions Unity changed nothing there.
+ */
+export function needsSceneSave(report: readonly string[]): boolean {
+    return report.some(l => l.includes('Unity')) && !report.some(l => l.includes('Saved '));
+}
+
+/** `Course shapes` → `course shapes`, for "Could not update …". */
+function lower(label: string): string {
+    return label.charAt(0).toLowerCase() + label.slice(1);
+}
 
 /**
  * The unified command bar (Builder redesign v2) — one 58px header shared by
@@ -366,8 +404,8 @@ export class CommandBarComponent extends Component<{ mode: CommandBarMode }> {
                 & .cmdbar__new-icon { transform: rotate(45deg); }
             }
             & .cmdbar__box { ${iconBtn()} }
-            /* Vegetation mode's one-click planting (generate, export, into Unity). */
-            & .cmdbar__plant {
+            /* Vegetation mode's generated-zones eye and the GSPro Update buttons. */
+            & .cmdbar__plant, & .cmdbar__gspro-btn {
                 ${iconBtn()}
                 width: auto;
                 gap: 6px;
@@ -375,6 +413,20 @@ export class CommandBarComponent extends Component<{ mode: CommandBarMode }> {
                 font-size: 0.8rem;
                 white-space: nowrap;
                 &[aria-busy="true"] { cursor: progress; opacity: 0.75; }
+                &:disabled { opacity: 0.45; cursor: default; }
+            }
+
+            /* The GSPro group: the sub-mode's Update buttons, then the board. */
+            & .cmdbar__gspro {
+                display: inline-flex;
+                align-items: center;
+                gap: ${s('sm')};
+                &:empty { display: none; }
+            }
+            /* The number of stale targets, inside the board button's label. */
+            & .cmdbar__badge {
+                color: ${t('color-status-caution')};
+                font-weight: 700;
             }
 
             /* New-path toggles like new-polygon; its width field only shows
@@ -675,7 +727,7 @@ export class CommandBarComponent extends Component<{ mode: CommandBarMode }> {
     private mode = this.inject(EditorModeService);
     private importSvc = this.inject(SvgImportService);
     private geojsonImportSvc = this.inject(GeojsonImportService);
-    private gsproExportSvc = this.inject(GsproExportService);
+    private gsproSync = this.inject(GsproSyncService);
     private zoneTypesSvc = this.inject(ZoneTypesService);
     private mapBuild = this.inject(MapBuildClientService);
     private tileset = this.inject(TilesetService);
@@ -684,8 +736,13 @@ export class CommandBarComponent extends Component<{ mode: CommandBarMode }> {
     private confirm = this.inject(ConfirmService);
     private plant = this.inject(PlantVegetationService);
     private shaping = this.inject(ShapingService);
-    /** True while "Update paths in Unity" runs (the shaping job it started). */
-    private updatingPaths = new Signal(false);
+    /** The Terrain editor's own feature selection ("Shape in Blender"); built on first read. */
+    private terrainTool?: TerrainEditToolService;
+    private get terrain(): TerrainEditToolService {
+        return (this.terrainTool ??= this.inject(TerrainEditToolService));
+    }
+    /** Which GSPro action this bar started ('' = none), so its button shows the step. */
+    private readonly action = new Signal<string>('');
     private helpModal = this.inject(HelpModalService);
     private serverMode = this.inject(ServerModeService);
     private auth = this.inject(AuthService);
@@ -761,6 +818,10 @@ export class CommandBarComponent extends Component<{ mode: CommandBarMode }> {
             }));
 
             this.buildSaveState(this.ref(frag, 'saveHost'), this.ref(frag, 'toastHost'));
+
+            // The GSPro group (right end): builder only — nothing on a serve
+            // box pushes into Unity.
+            if (this.serverMode.isBuilder()) this.buildGspro(this.ref(frag, 'gsproHost'));
         }
 
         // Zone 4: actions + avatar. Every entry in the actions menu authors
@@ -898,42 +959,6 @@ export class CommandBarComponent extends Component<{ mode: CommandBarMode }> {
                 'aria-pressed': () => String(this.features.generatedVegetationShown.get()),
                 onclick: () => this.features.setGeneratedVegetationShown(!this.features.generatedVegetationShown.peek()),
             },
-            plantBtn: {
-                'data-off': () => String(!this.isVegetationSubmode()),
-                innerHTML: () => `${icon('sprout', 16)}<span>${this.plant.runningKind.get() === 'vegetation' ? 'Planting…' : 'Plant for GSPro'}</span>`,
-                title: "Plant for GSPro: regenerate the tall rough and the creek and pond banks from the course as drawn, export the zones, import them into the course's open Unity project, and write the Arborist file GSPro draws the bushes, the woodland floor and most trees from (its trees only with Unity open)",
-                'aria-busy': () => String(this.plant.running.get()),
-                onclick: () => {
-                    const course = this.svc.course.peek();
-                    if (course && !this.plant.running.peek()) void this.confirmPlantVegetation(course.id);
-                },
-            },
-            // Vegetation mode with zones selected: just their area, into Unity and the Arborist file.
-            updateZonesBtn: {
-                'data-off': () => String(!this.isVegetationSubmode() || this.selectedZoneIds().length === 0),
-                innerHTML: () => {
-                    const n = this.selectedZoneIds().length;
-                    return `${icon('upload', 16)}<span>${this.plant.runningKind.get() === 'vegetation-update' ? 'Updating…' : n > 1 ? `Update ${n} zones for GSPro` : 'Update for GSPro'}</span>`;
-                },
-                title: "Update for GSPro: re-rasterize only the area of the selected zones (as drawn now and as last exported), respawn it in the course's open Unity project and write the Arborist file's lower vegetation again. The generators do not run and the trees are left; use Plant for GSPro after changing the zone types' items",
-                'aria-busy': () => String(this.plant.running.get()),
-                onclick: () => {
-                    const course = this.svc.course.peek();
-                    const ids = this.selectedZoneIds();
-                    if (course && ids.length > 0 && !this.plant.running.peek()) void this.updateZonesInUnity(course.id, ids);
-                },
-            },
-            // Draw mode with a road or path selected: its surface through Blender into Unity.
-            updatePathsBtn: {
-                'data-off': () => String(this.isVegetationSubmode() || this.selectedPathCount() === 0),
-                innerHTML: () => `${icon('upload', 16)}<span>${this.updatingPaths.get() ? this.pathsStep() : 'Update paths in Unity'}</span>`,
-                title: "Update paths in Unity: take the paths' surfaces as set now (Path surface) through to the course's open Unity project. Rewrites the surfaces file of the exported SVG, lets Blender cut the roads of mixed surfaces apart (only what changed is re-shaped, with any other shaping not yet applied), re-imports those meshes and gives every path mesh its surface's material. For a changed surface only: a path that was moved or redrawn needs the SVG export and the OPCD build",
-                'aria-busy': () => String(this.shaping.running.get()),
-                onclick: () => {
-                    const course = this.svc.course.peek();
-                    if (course && !this.shaping.running.peek()) void this.updatePathsInUnity(course.id);
-                },
-            },
             newPath: {
                 innerHTML: icon('route', 16),
                 title: () => (this.pathArmed()
@@ -1035,6 +1060,181 @@ export class CommandBarComponent extends Component<{ mode: CommandBarMode }> {
         });
 
         host.appendChild(frag);
+    }
+
+    // ── Zone 4: the GSPro group (Update buttons + the status board) ────────
+
+    /**
+     * The sub-mode's Update buttons and the board button. Each Update runs the
+     * same chain the board's row of that name runs, and reports the job's own
+     * report in the house result dialog; the board's stale count is re-read
+     * when the course opens and after every run (no timer: the bar is not the
+     * board).
+     */
+    private buildGspro(host: HTMLElement): void {
+        const frag = this.wire(gsproTpl, {
+            // Terrain mode: the terrain edits, both heightmaps and the files
+            // that read them. The chain bakes the edits itself when they are stale.
+            terrainBtn: {
+                'data-off': () => String(this.subMode() !== TERRAIN_EDIT_TOOL_ID),
+                innerHTML: () => this.updateLabel('terrain', 'Update terrain'),
+                title: () => `${gsproTarget('terrain').description} Unapplied terrain edits are baked first.`,
+                ...this.updateButton('terrain', (courseId) => this.runSyncUpdate(courseId, 'terrain')),
+            },
+            // One feature's meshes: the Terrain editor's selection, or a slab,
+            // bunker, pond or creek selected in Draw mode.
+            meshesFeatureBtn: {
+                'data-off': () => String(this.meshFeatureIds().length === 0),
+                innerHTML: () => this.updateLabel('meshes-feature',
+                    this.meshFeatureIds().length > 1 ? `Update meshes (${this.meshFeatureIds().length} features)` : 'Update meshes (this feature)'),
+                title: () => (this.meshFeatureIds().length > 1
+                    ? "Re-shape these features' meshes in Blender with their saved recipe and refresh them in the course's open Unity project"
+                    : "Re-shape this feature's meshes in Blender with its saved recipe (a rock slab: cut it out of them) and refresh them in the course's open Unity project"),
+                ...this.updateButton('meshes-feature', (courseId) => this.updateMeshesForFeatures(courseId, this.meshFeatureIds())),
+            },
+            meshesBtn: {
+                'data-off': () => String(this.subMode() !== TERRAIN_EDIT_TOOL_ID || this.meshFeatureIds().length > 0),
+                innerHTML: () => this.updateLabel('meshes', 'Update meshes'),
+                title: () => gsproTarget('meshes').description,
+                ...this.updateButton('meshes', (courseId) => this.runSyncUpdate(courseId, 'meshes')),
+            },
+            // Draw mode with a road or path selected: its surface through Blender into Unity.
+            pathsBtn: {
+                'data-off': () => String(this.subMode() !== DRAW_TOOL_ID || this.selectedPathCount() === 0),
+                innerHTML: () => `${icon('upload', 16)}<span>${this.action.get() === 'paths' ? this.pathsStep() : 'Update paths'}</span>`,
+                title: "Update paths: take the paths' surfaces as set now (Path surface) through to the course's open Unity project. Rewrites the surfaces file of the exported SVG, lets Blender cut the roads of mixed surfaces apart (only what changed is re-shaped, with any other shaping not yet applied), re-imports those meshes and gives every path mesh its surface's material. For a changed surface only: a path that was moved or redrawn needs the SVG export and the OPCD build",
+                ...this.updateButton('paths', (courseId) => this.updatePathsInUnity(courseId)),
+            },
+            shapesBtn: {
+                'data-off': () => String(this.subMode() !== DRAW_TOOL_ID
+                    || this.selectedPathCount() > 0 || this.meshFeatureIds().length > 0),
+                innerHTML: () => this.updateLabel('shapes', 'Update shapes'),
+                title: () => `${gsproTarget('shapes').description} Then: ${gsproTarget('shapes').manual}.`,
+                ...this.updateButton('shapes', (courseId) => this.runSyncUpdate(courseId, 'shapes')),
+            },
+            plantBtn: {
+                'data-off': () => String(this.subMode() !== VEGETATION_TOOL_ID),
+                innerHTML: () => `${icon('sprout', 16)}<span>${this.plant.runningKind.get() === 'vegetation' ? 'Planting…' : 'Update vegetation'}</span>`,
+                title: 'Update vegetation: regenerate the tall rough and the creek and pond banks from the course as drawn, export the zones, import them into the course\'s open Unity project, and write the Arborist file GSPro draws the bushes, the woodland floor and most trees from (its trees only with Unity open)',
+                ...this.updateButton('vegetation', (courseId) => this.confirmPlantVegetation(courseId)),
+            },
+            // Vegetation mode with zones selected: just their area, into Unity and the Arborist file.
+            zonesBtn: {
+                'data-off': () => String(this.subMode() !== VEGETATION_TOOL_ID || this.selectedZoneIds().length === 0),
+                innerHTML: () => {
+                    const n = this.selectedZoneIds().length;
+                    return `${icon('upload', 16)}<span>${this.plant.runningKind.get() === 'vegetation-update' ? 'Updating…' : n === 1 ? 'Update zone' : `Update ${n} zones`}</span>`;
+                },
+                title: "Update the selected zones: re-rasterize only their area (as drawn now and as last exported), respawn it in the course's open Unity project and write the Arborist file's lower vegetation again. The generators do not run and the trees are left; use Update vegetation after changing the zone types' items",
+                ...this.updateButton('zones', (courseId) => this.updateZonesInUnity(courseId, this.selectedZoneIds())),
+            },
+            photoBtn: {
+                'data-off': () => String(this.subMode() !== CLEAN_TOOL_ID),
+                innerHTML: () => this.updateLabel('photo', 'Update photo'),
+                title: () => gsproTarget('photo').description,
+                ...this.updateButton('photo', (courseId) => this.runSyncUpdate(courseId, 'photo')),
+            },
+            courseFileBtn: {
+                'data-off': () => String(this.subMode() !== FURNITURE_TOOL_ID),
+                innerHTML: () => this.updateLabel('course-file', 'Update course file'),
+                title: () => gsproTarget('course-file').description,
+                ...this.updateButton('course-file', (courseId) => this.runSyncUpdate(courseId, 'course-file')),
+            },
+            boardBtn: {
+                innerHTML: () => {
+                    const stale = this.gsproSync.staleCount.get();
+                    const badge = stale > 0
+                        ? `<span class="cmdbar__badge" data-testid="gspro-stale-badge"> · ${stale}</span>`
+                        : '';
+                    return `${icon('layers', 16)}<span>GSPro${badge}</span>`;
+                },
+                title: 'Open the GSPro status board',
+                onclick: () => {
+                    const course = this.svc.course.peek();
+                    if (course) void this.gsproSync.openFor(course.id);
+                },
+            },
+        });
+        host.appendChild(frag);
+
+        // The stale count once, when the course opens: no timer here (the
+        // board polls while it is open, and every run above re-reads it).
+        let read: string | null = null;
+        this.track(effect(() => {
+            const id = this.svc.course.get()?.id ?? null;
+            if (!id || id === read) return;
+            read = id;
+            untrack(() => void this.gsproSync.refresh(id));
+        }));
+    }
+
+    /** The shared parts of an Update button: busy while its own run goes, off while any GSPro job runs. */
+    private updateButton(action: string, run: (courseId: string) => Promise<void>): {
+        disabled: () => boolean; 'aria-busy': () => string; onclick: () => void;
+    } {
+        return {
+            disabled: () => this.gsproBusy(),
+            'aria-busy': () => String(this.action.get() === action),
+            onclick: () => {
+                const course = this.svc.course.peek();
+                if (!course || this.gsproBusyNow()) return;
+                void this.runAction(action, () => run(course.id));
+            },
+        };
+    }
+
+    /** An Update button's face: the running job's step while it is this button's run. */
+    private updateLabel(action: string, label: string): string {
+        return `${icon('upload', 16)}<span>${this.action.get() === action ? this.syncStep() : label}</span>`;
+    }
+
+    /** The running board job's step ("Exporting the heightmaps…"). */
+    private syncStep(): string {
+        const job = this.gsproSync.job.get();
+        return `${job?.step || 'Updating'}…`;
+    }
+
+    /**
+     * The Create sub-mode the buttons follow. Nothing armed yet reads as Draw,
+     * the way the drawing controls do.
+     */
+    private subMode(): string {
+        return this.mode.activeTool()?.id ?? DRAW_TOOL_ID;
+    }
+
+    /** A GSPro job this bar can start is on its way (reactive, for the buttons). */
+    private gsproBusy(): boolean {
+        return this.gsproSync.running.get() || this.shaping.running.get() || this.plant.running.get();
+    }
+
+    /** The same, read without subscribing (a click guard). */
+    private gsproBusyNow(): boolean {
+        return this.gsproSync.running.peek() || this.shaping.running.peek() || this.plant.running.peek();
+    }
+
+    /** Run one GSPro action, with its button showing the step while it goes. */
+    private async runAction(action: string, run: () => Promise<void>): Promise<void> {
+        this.action.set(action);
+        try {
+            await run();
+        } finally {
+            this.action.set('');
+        }
+    }
+
+    /**
+     * The features a feature-scoped shaping run would re-shape in the active
+     * sub-mode: the Terrain editor's "Shape in Blender" selection, or a rock
+     * slab, bunker, pond or creek selected in Draw mode (a selected path has
+     * its own button). Empty = the button does not show.
+     */
+    private meshFeatureIds(): string[] {
+        const mode = this.subMode();
+        if (mode === TERRAIN_EDIT_TOOL_ID) return [...this.terrain.selectedFeatureIds.get()];
+        if (mode !== DRAW_TOOL_ID || this.selectedPathCount() > 0) return [];
+        return this.features.selectedFeatures.get()
+            .filter(f => f.type !== 'path' && MESH_FEATURE_TYPES.includes(f.type))
+            .map(f => f.id);
     }
 
     /** Draw-target chip line 2: the new-shape type policy (DrawToolService). */
@@ -1496,19 +1696,21 @@ export class CommandBarComponent extends Component<{ mode: CommandBarMode }> {
             };
             host.appendChild(treesBtn);
 
-            // Export to GSPro SVG — the outbound counterpart to the two
-            // importers: the course's drawn features as a layered, fill-only
-            // OPCD SVG written to a folder on this machine (per course,
-            // default Downloads). The panel does the work; this just opens it.
+            // GSPro… — the status board (one row per target, every single-file
+            // export behind a row's "…"). The same dialog the bar's GSPro
+            // button opens; the panel bridges the two services, so opening
+            // either half opens the other.
             const gsproBtn = document.createElement('button');
             gsproBtn.type = 'button';
             gsproBtn.className = 'menu-item';
             gsproBtn.dataset.testid = 'course-export-gspro-btn';
-            gsproBtn.innerHTML = `<span class="menu-item__icon">${icon('download', 16)}</span><span class="menu-item__label">Export to GSPro</span>`;
+            const stale = this.gsproSync.staleCount.peek();
+            gsproBtn.innerHTML = `<span class="menu-item__icon">${icon('layers', 16)}</span>`
+                + `<span class="menu-item__label">GSPro…${stale > 0 ? ` (${stale} stale)` : ''}</span>`;
             gsproBtn.onclick = () => {
                 const course = this.svc.course.peek();
                 close();
-                if (course) void this.gsproExportSvc.openFor(course.id, course.name);
+                if (course) void this.gsproSync.openFor(course.id);
             };
             host.appendChild(gsproBtn);
 
@@ -1764,7 +1966,80 @@ export class CommandBarComponent extends Component<{ mode: CommandBarMode }> {
         }
     }
 
-    /** The roads and paths in the selection ("Update paths in Unity" shows with one). */
+    /**
+     * One target's whole chain through the status board
+     * (`GsproSyncService.update`: the files, both terrains and the push into
+     * the open Unity editor), then what each target in the job reported. The
+     * board re-reads itself at the end of the run, so the stale count follows.
+     */
+    private async runSyncUpdate(courseId: string, id: GsproTargetId): Promise<void> {
+        const target = gsproTarget(id);
+        const ok = await this.gsproSync.update(courseId, id);
+        const job = this.gsproSync.job.peek();
+        const results = job?.results ?? [];
+        const report = results.flatMap(r => [
+            ...(results.length > 1 ? [`${r.label}:`] : []),
+            ...r.report,
+            ...(r.error ? [`error: ${r.error}`] : []),
+        ]);
+        const body = ok
+            ? [
+                target.manual ? `Then: ${target.manual}.` : '',
+                needsSceneSave(report) ? 'Save the scene in Unity to keep it.' : '',
+            ].filter(Boolean).join(' ') || `${target.label} is up to date in GSPro.`
+            : this.gsproSync.error.peek() || job?.error || 'The update failed.';
+        await this.confirm.confirm({
+            title: ok ? `${target.label} updated` : `Could not update the ${lower(target.label)}`,
+            body,
+            detail: report.length > 0 ? report.join('\n') : undefined,
+            confirmLabel: ok ? 'Done' : 'OK', cancelLabel: 'Close',
+            tone: ok ? 'primary' : 'warning',
+            layout: report.length > 3 ? 'review' : 'default',
+        });
+    }
+
+    /**
+     * One feature's meshes: the shaping job the Terrain editor's Shape section
+     * used to run (`ShapingService.apply` with the selection as its scope —
+     * the server re-shapes only the meshes whose ops changed). The Terrain
+     * editor's panel shows the phases live while it runs; this is the outcome.
+     */
+    private async updateMeshesForFeatures(courseId: string, ids: readonly string[]): Promise<void> {
+        if (ids.length === 0) return;
+        const job = await this.shaping.apply(courseId, ids.join(','));
+        if (!job || job.status !== 'succeeded' || !job.result) {
+            await this.confirm.confirm({
+                title: 'Could not update the meshes',
+                body: job?.error ?? this.shaping.jobError.peek() ?? 'The job failed.',
+                detail: job?.phases.filter(p => p.status !== 'pending').map(p => `${p.label}: ${p.status}${p.detail ? ` - ${p.detail}` : ''}`).join('\n'),
+                confirmLabel: 'OK', cancelLabel: 'Close', tone: 'warning',
+            });
+            return;
+        }
+        const r = job.result;
+        const unity = job.phases.find(p => p.id === 'unity');
+        const report = [
+            `Blender: ${r.changedObjects.length} object(s) re-shaped${r.removed.length ? `, ${r.removed.length} removed` : ''}`,
+            ...(r.changedObjects.length > 0 ? [r.changedObjects.join(', ')] : []),
+            `Unity: ${unity?.detail ?? unity?.status ?? 'not run'}`,
+            ...r.warnings.map(w => (w.startsWith('warning:') ? w : `warning: ${w}`)),
+        ];
+        const nothing = r.changedObjects.length === 0 && r.removed.length === 0;
+        await this.confirm.confirm({
+            title: nothing ? 'Nothing to re-shape' : 'Meshes updated',
+            body: nothing
+                ? 'The meshes already match this feature\'s recipe and outline.'
+                : [r.unityError ? `Unity: ${r.unityError}` : '', needsSceneSave(report) ? 'Save the scene in Unity to keep it.' : '']
+                    .filter(Boolean).join(' ') || 'Done.',
+            detail: report.join('\n'),
+            confirmLabel: 'Done', cancelLabel: 'Close',
+            tone: !nothing && !r.unityError && r.warnings.length === 0 ? 'primary' : 'warning',
+            layout: report.length > 3 ? 'review' : 'default',
+        });
+        await this.gsproSync.refresh(courseId);
+    }
+
+    /** The roads and paths in the selection ("Update paths" shows with one). */
     private selectedPathCount(): number {
         return this.features.selectedFeatures.get().filter(f => f.type === 'path').length;
     }
@@ -1783,13 +2058,7 @@ export class CommandBarComponent extends Component<{ mode: CommandBarMode }> {
      * No confirm first: it only carries through what the paths already say.
      */
     private async updatePathsInUnity(courseId: string): Promise<void> {
-        this.updatingPaths.set(true);
-        let job: ShapingJob | null;
-        try {
-            job = await this.shaping.apply(courseId, null, { paths: true });
-        } finally {
-            this.updatingPaths.set(false);
-        }
+        const job: ShapingJob | null = await this.shaping.apply(courseId, null, { paths: true });
         if (!job || job.status !== 'succeeded' || !job.result) {
             await this.confirm.confirm({
                 title: 'Could not update the paths',
@@ -1812,19 +2081,21 @@ export class CommandBarComponent extends Component<{ mode: CommandBarMode }> {
         ];
         // What a surfaces-only update cannot carry: a moved outline, a grass track made a hard path (or back), a new road.
         const needsBuild = r.pathSurfaces.some(l => l.startsWith('warning:'));
+        const save = needsSceneSave(report) ? ' Save the scene in Unity to keep it.' : '';
         await this.confirm.confirm({
             title: !intoUnity ? 'Paths not in Unity yet' : needsBuild ? 'Paths updated, but some changes need a new build' : 'Paths updated in Unity',
             body: !intoUnity ? (r.unityError ?? 'Unity did not take them - see below.')
-                : needsBuild ? 'Some changes cannot reach the meshes without the SVG export and the OPCD build (see the warnings). The rest is in Unity: save the scene to keep it.'
-                    : 'Save the scene in Unity to keep it.',
+                : needsBuild ? `Some changes cannot reach the meshes without the SVG export and the OPCD build (see the warnings). The rest is in Unity.${save}`
+                    : (save.trim() || 'The paths are in Unity.'),
             detail: report.join('\n'),
             confirmLabel: 'Done', cancelLabel: 'Close',
             tone: intoUnity && r.warnings.length === 0 ? 'primary' : 'warning',
             layout: report.length > 3 ? 'review' : 'default',
         });
+        await this.gsproSync.refresh(courseId);
     }
 
-    /** The vegetation zones in the selection (the ids "Update for GSPro" sends). */
+    /** The vegetation zones in the selection (the ids "Update N zones" sends). */
     private selectedZoneIds(): string[] {
         return this.features.selectedFeatures.get().filter(f => f.type === 'vegetation_zone').map(f => f.id);
     }
@@ -1845,16 +2116,18 @@ export class CommandBarComponent extends Component<{ mode: CommandBarMode }> {
         const report = job.result?.report ?? [];
         const ok = job.status === 'succeeded';
         const intoUnity = report.some(l => l.startsWith('Unity ('));
+        const save = needsSceneSave(report) ? ', save the scene to keep it' : '';
         await this.confirm.confirm({
             title: ok ? (intoUnity ? 'Zones updated for GSPro' : 'Nothing to update') : 'Could not update the zones',
             body: ok
-                ? (intoUnity ? `Unity: updated, save the scene to keep it. ${arboristOutcome(report)}` : 'The masks already match these zones.')
+                ? (intoUnity ? `Unity: updated${save}. ${arboristOutcome(report)}` : 'The masks already match these zones.')
                 : job.error ?? 'The job failed.',
             detail: report.join('\n'),
             confirmLabel: ok ? 'Done' : 'OK', cancelLabel: 'Close',
             tone: ok && !report.some(l => l.includes(': skipped - ') || l.startsWith('warning:')) ? 'primary' : 'warning',
             layout: report.length > 3 ? 'review' : 'default',
         });
+        await this.gsproSync.refresh(courseId);
     }
 
     /**
@@ -1865,10 +2138,10 @@ export class CommandBarComponent extends Component<{ mode: CommandBarMode }> {
      */
     private async confirmPlantVegetation(courseId: string): Promise<void> {
         const ok = await this.confirm.confirm({
-            title: 'Plant for GSPro?',
+            title: 'Update the vegetation?',
             body: "Regenerates the tall rough and the creek and pond banks from the course as drawn now (your zones, the creeks and ponds with bank vegetation), exports the zones, imports them into the course's open Unity project and writes the Arborist file in the GSPro course folder.",
-            detail: 'Takes a minute or two. Generated zones are replaced; the zones you drew are kept. Without Unity open the zones are exported and the Arborist file gets its lower vegetation only: its trees come from the Unity scene. Save the scene in Unity afterwards.',
-            confirmLabel: 'Plant for GSPro',
+            detail: 'Takes a minute or two. Generated zones are replaced; the zones you drew are kept. Without Unity open the zones are exported and the Arborist file gets its lower vegetation only: its trees come from the Unity scene.',
+            confirmLabel: 'Update vegetation',
             cancelLabel: 'Cancel',
             tone: 'primary',
         });
@@ -1878,7 +2151,7 @@ export class CommandBarComponent extends Component<{ mode: CommandBarMode }> {
             job = await this.plant.plant(courseId);
         } catch (e) {
             await this.confirm.confirm({
-                title: 'Could not plant for GSPro',
+                title: 'Could not update the vegetation',
                 body: e instanceof Error ? e.message : String(e),
                 confirmLabel: 'OK', cancelLabel: 'Close', tone: 'warning',
             });
@@ -1887,16 +2160,18 @@ export class CommandBarComponent extends Component<{ mode: CommandBarMode }> {
         await this.features.reloadOrLoad(courseId);
         const report = job.result?.report ?? [];
         const intoUnity = report.some(l => l.startsWith('Unity ('));
+        const save = needsSceneSave(report) ? ', save the scene to keep it' : '';
         await this.confirm.confirm({
-            title: job.status === 'succeeded' ? 'Planted for GSPro' : 'Could not plant for GSPro',
+            title: job.status === 'succeeded' ? 'Vegetation updated' : 'Could not update the vegetation',
             body: job.status === 'succeeded'
-                ? `${intoUnity ? 'Unity: planted, save the scene to keep it.' : 'Unity: not open, zones exported only.'} ${arboristOutcome(report)}`
+                ? `${intoUnity ? `Unity: planted${save}.` : 'Unity: not open, zones exported only.'} ${arboristOutcome(report)}`
                 : job.error ?? 'The job failed.',
             detail: report.join('\n'),
             confirmLabel: 'Done', cancelLabel: 'Close',
             tone: job.status === 'succeeded' && !report.some(l => /warning|not planted|Unity: not open|Arborist trees: skipped/.test(l)) ? 'primary' : 'warning',
             layout: report.length > 3 ? 'review' : 'default',
         });
+        await this.gsproSync.refresh(courseId);
     }
 
     private async reloadTilesKeepingCamera(courseId: string): Promise<void> {

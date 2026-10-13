@@ -173,7 +173,7 @@ not rasterized), whatever their blend; their extra palettes are ignored with the
 **D-VZ13. Update selected zones without planting everything.** Added 2026-09-27. Planting runs
 the generators, rasterizes every zone into all the 4096 masks, and has Unity reimport all of them
 and respawn the whole terrain. For an edit to a few drawn zones only their area needs any of that.
-"Update for GSPro" (until 2026-10-13 "Update in Unity") on the selected zones re-rasterizes the window they cover, now and in the last
+"Update N zones" (until 2026-10-13 "Update in Unity", until 2026-10-14 "Update for GSPro") on the selected zones re-rasterizes the window they cover, now and in the last
 export (the rows of the zones JSON, so a moved zone's old spot clears), plus zones that export has
 and the course no longer has. The window is exact: each zone's weight still comes from its own
 crop, clipped only to the window plus its `feather / 2 + noise`, beyond which a pixel's weight does
@@ -183,7 +183,7 @@ VSP's cache only in the window. On Vreta a 68 m zone took 2.4 s in the pipeline 
 whole job with nothing to change, against minutes for a planting. The channel layout cannot move
 in a patch: when the zone types' item bindings changed since a terrain's export, that terrain is
 skipped (the outer, which planting does not refresh, often is), and when every terrain is, the
-job asks for Plant for GSPro. Unity must be open first, so the export and the scene cannot drift
+job asks for Update vegetation. Unity must be open first, so the export and the scene cannot drift
 apart silently. Since 2026-10-13 the job then writes the Arborist file's lower vegetation again
 (`arborist.py lower`, about 10 s on Vreta), since that file carries the inner masks themselves.
 Revised 2026-09-27: a hand-drawn creek_bank zone is a creek section only within a creek's or
@@ -288,8 +288,8 @@ scale 1` (LOD0 mesh top plus the vertical offset, measured by the importer). The
 where the height mask is 0 and the item where it is above 0, so one of the two grows at any point.
 Texture grass keeps its size. The export's `height` block names the mask and the items of every
 palette such a zone plants; when that list changes (the first height on a palette, the last one
-gone) a patch stops and asks for Plant for GSPro, since Unity needs other items. After that,
-changing a height or moving the zone is an "Update for GSPro".
+gone) a patch stops and asks for Update vegetation, since Unity needs other items. After that,
+changing a height or moving the zone is an "Update N zones".
 Limits: one range for every species in the zone; a height changes size, not spacing, so a closed
 screen still needs a dense palette (Vreta's `shrub/dense`); a prefab with no readable LOD0 mesh
 keeps the palette's sizes (reported at import); the palette editor's live edits reach a twin at the
@@ -645,8 +645,8 @@ eyes. Why: drawn zones add up with each other (D-VZ14), and an old hand-drawn
 tall-rough zone under a new wispy one was invisible among the generated bands
 (Vreta, 2026-10-10).
 
-The command bar's **Plant for GSPro** (Vegetation mode only; "Plant vegetation"
-until 2026-10-13) runs the
+The command bar's **Update vegetation** (Vegetation mode only; "Plant
+vegetation" until 2026-10-13, "Plant for GSPro" until 2026-10-14) runs the
 server's `vegetation` export job through `zones/plant-vegetation.service.ts`
 (start, or follow the planting already running; poll to the end): every
 vegetation generator, the zones export, the import into the open Unity
@@ -656,7 +656,7 @@ with Unity open; [gspro/arborist.md](gspro/arborist.md), "Who writes the file").
 Then the features reload and the job's report is shown; the result dialog's
 body says in one line each what Unity and the Arborist file got
 (`arboristOutcome`). With zones
-selected, **Update for GSPro** (`update-zones-btn`, `PlantVegetationService.update`)
+selected, **Update N zones** (`update-zones-btn`, `PlantVegetationService.update`)
 runs the `vegetation-update` job for just them (`GsproExportService.updateZones`:
 `gspro.py zones-patch` per exported terrain, then `golfmap.zones.patch`, then
 `arborist.py lower` when the inner masks changed). It runs
