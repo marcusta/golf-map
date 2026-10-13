@@ -101,6 +101,18 @@ The whole loop without a hand on the mouse: Unity `golfmap.course.build` (about 
 the GSPro round first, and close the course in Arborist if memory is short), `arborist.py trees` /
 `lower`, `gspro.ts open <course>`, then `screen`, `veg.at`, `fps`.
 
+The same loop in Arborist is one command: **`bun run arborist -- <course> [--trees|--lower]
+[--no-reload] [--screenshot [<view>...]] [--close-others]`** (`scripts/arborist.ts`) — it
+regenerates the course's `arboristdata.dat` with the server's own service, calls `ResetVSPro` and
+`LoadData` here, waits for the load by polling `veg.systems` until the stored-instance count stops
+changing (the documented 85 s only as the cap), and then takes the screenshots with `fps` and
+`veg.at` at the course's judged viewpoints. When nothing answers it says why — Arborist not
+running, the mod not loaded, or the memory gone — instead of timing out. See
+[docs/gspro/arborist.md](../../docs/gspro/arborist.md), "The loop: one command". It never starts
+Arborist or loads a course in it.
+
+`call.ts` also exports its discovery for other scripts: `players()`, `player(app?)`, `playerDir()`.
+
 ## Memory
 
 Arborist, Unity and GreenKeeper with the same course loaded do not fit in 48 GB together

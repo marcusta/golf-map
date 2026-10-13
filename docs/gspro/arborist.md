@@ -50,8 +50,8 @@ Unity, so the Arborist vegetation follows the zones without a shell (`ArboristSe
   the course folder, for a trial. `bun run grass:zones` runs `lower` after its zones export
   (`--no-arborist` leaves it), and so does the shaping run's replant after a rock slab.
 - Still by hand: the first `arboristdata.dat` of a course (golf-map only replaces its own packages
-  in an existing file), `arborist.py post` (look.json's post values), `lineup`, the reload in
-  Arborist (below), and after the trees changed owner the trim in Unity: the report then ends with
+  in an existing file), `arborist.py post` (look.json's post values), `lineup`, and after the trees
+  changed owner the trim in Unity (the reload in Arborist is `bun run arborist`, below): the report then ends with
   a warning naming `golfmap.vsp.trees.trim restore=true`, then `file=<path>`, save, build.
   The trim is not run for you, because `restore` after a replant in Unity would put the old trees
   back beside the new ones.
@@ -76,18 +76,55 @@ rotation the Unity planter gives each one (that choice is made in C# today), (2)
 only Unity (or the course `.blend`) has: the DEM differs from the meshes by 15-50 cm in places on
 Vreta.
 
-### The loop by hand
+### The loop: one command
 
-Edit `arborist-species.json` → regenerate → reload in the open Arborist → screenshot.
-`bun run gspro:export -- <course> arborist` is the regenerate step; the two commands below are what
-it runs, for when an argument has to differ.
+Edit `arborist-species.json` → regenerate → reload in the open Arborist → screenshot. All of it,
+with Marcus's Arborist already open on the course (`scripts/arborist.ts`):
+
+```bash
+bun run arborist -- vreta                                  # the whole file, then the reload
+bun run arborist -- vreta --lower                          # only the lower vegetation (about 10 s)
+bun run arborist -- vreta --trees --screenshot "hole 6"    # and a picture at a judged viewpoint
+bun run arborist -- vreta --no-reload                      # the file only (= gspro:export -- <course> arborist)
+bun run arborist -- vreta --close-others --screenshot      # Unity and GreenKeeper closed first, every viewpoint
+```
+
+- One status line per step with its elapsed seconds; the first failure stops the rest and exits 1
+  naming the step. The file is written by the same `ArboristService` as **Plant for GSPro**, so the
+  inputs, arguments and report lines are the panel's.
+- `--trees` takes the trees out of the open Unity editor's scene when it is open
+  (`golfmap.trees.dump`, read-only there) and otherwise keeps the dump the last run wrote, which is
+  what an iteration over looks and species wants — the planting has not changed. `--close-others`
+  never asks Unity (it has just closed it).
+- The reload is `ResetVSPro` + `LoadData` through the mod, and then it **waits for a real signal**:
+  `veg.systems` polled every 3 s until the stored-instance count is above zero and the same twice
+  in a row (Vreta: about 15 s, not the documented 85). The 85 s is only the cap — reached, or
+  without `veg.systems` in the build, it says so and carries on. `--wait <s>` moves the cap.
+- `--screenshot` poses the camera at the course's judged viewpoints
+  (`docs/gspro/<course>/perf-views.json`, the same file `unity/ArboristMod/perf.ts` reads; a name is
+  a part of one, no name = every one), lets it settle (`--settle`, 6 s; 25 s for a frame rate worth
+  quoting) and prints the PNG, `fps` and what `veg.at` finds in the middle of the picture.
+- No bridge answered is diagnosed instead of timing out: whether Arborist is running at all (then
+  the mod is not loaded — BepInEx), what else holds the memory, and how much is free. An Arborist
+  that died of out-of-memory at start looks exactly like a closed one.
+- Nothing here starts Arborist or loads a course in it: ask Marcus, or
+  `pwsh unity/ArboristMod/apps.ps1 start`.
+- `--out <folder>` writes the `.dat` there for a trial and leaves the course folder's alone (pair it
+  with `--no-reload`: Arborist reloads its own). `arborist.py` still rewrites
+  `data/arborist/<slug>-vsp-far.json` beside the planted trees, so after a trial that trim list can
+  be ahead of the course folder's file.
+
+### The same by hand
+
+`bun run gspro:export -- <course> arborist` is the regenerate step on its own; the commands below
+are what it runs, for when an argument has to differ.
 
 ```bash
 C="C:/GSProV1/Core/GSP/Courses/Vreta_lidar_scene"; SQ="-1475 -1475 3525 3525"   # union of the terrains, world x0 z0 x1 z1
 bun run py arborist.py trees --course-dir "$C" --planted ../data/arborist/vreta-planted-trees.json --sizes ../data/arborist/catalog-sizes.json --species ../docs/gspro/vreta/arborist-species.json --terrains-square $SQ --surfaces D:/gspro_courses/vreta-opcd/vreta-inner-surfaces.json
 bun run py arborist.py lower --course-dir "$C" --palette ../docs/gspro/vreta/grass-palette.json --zones D:/gspro_courses/vreta-opcd/vreta-inner-zones.json --species ../docs/gspro/vreta/arborist-species.json
 bun unity/ArboristMod/call.ts call '{"type":"AAT.ExportVSPro","method":"ResetVSPro","args":["Vreta_lidar_scene"]}'
-bun unity/ArboristMod/call.ts call '{"type":"AAT.ExportVSPro","instance":0,"method":"LoadData"}' 120    # then wait about 85 s before a screenshot
+bun unity/ArboristMod/call.ts call '{"type":"AAT.ExportVSPro","instance":0,"method":"LoadData"}' 120    # then wait: 85 s, or poll veg.systems until the stored count stops changing (what bun run arborist does)
 bun unity/ArboristMod/call.ts screenshot '{"from":[1040,60,900],"at":[930,18,1000],"width":1280,"height":720,"frames":20}'   # Vreta hole 1
 ```
 
