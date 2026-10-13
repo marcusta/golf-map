@@ -4,13 +4,18 @@ import { di } from '@basics/core/client/core';
 import { _reset } from '@basics/core/client/error-report';
 import { GsproExportPanelComponent } from '../src/export/gspro-export-panel.component';
 import { GsproExportService } from '../src/export/gspro-export.service';
+import { GsproSyncService } from '../src/export/gspro-sync.service';
 import type { GsproExportApi, GsproExportSettings, GsproOrthoSource, CourseTerrain, GsproExportJob } from '../../shared/api/gspro-export.gen';
+import type { GsproSyncApi, GsproSyncJob, GsproTargetStatus, JobPhase } from '../../shared/api/gspro-sync.gen';
+import { GSPRO_TARGETS, type GsproTargetId } from '../../shared/gspro-targets';
 import { FeaturesService } from '../src/draw/features.service';
 import type { CourseFeature, CourseFeaturesApi } from '../../shared/api/course-features.gen';
 
-// Render smoke for the GSPro export panel (there are no per-component specs by
-// design — TESTING.md — but the folder field, the default hint and the report
-// list are worth one throw-check through happy-dom).
+// Render smoke for the GSPro dialog — the status board (there are no
+// per-component specs by design — TESTING.md — but the board's rows, the
+// folder field, the default hint and the report list are worth one
+// throw-check through happy-dom). Every legacy export button now lives behind
+// its row's "…" details toggle, so the pins on them read from there.
 
 afterEach(() => {
     _reset();
@@ -154,13 +159,118 @@ function jobApi(h: Record<string, (input: any) => Promise<any>>, current: () => 
     };
 }
 
-async function mount(dir: string | null = null, run?: () => never, sources?: GsproOrthoSource[], terrain?: CourseTerrain | null) {
+// --- The status board behind the dialog (GsproSyncService) ---
+
+const row = (patch: Partial<GsproTargetStatus> & { id: GsproTargetId }): GsproTargetStatus => ({
+    label: GSPRO_TARGETS.find(t => t.id === patch.id)!.label,
+    lastRun: hoursAgo(2),
+    seconds: null,
+    changedSince: { count: 0, kinds: [] },
+    stale: false,
+    manual: GSPRO_TARGETS.find(t => t.id === patch.id)!.manual,
+    blocked: null,
+    ...patch,
+});
+
+/** The board's times are relative, so the fixture's are too. */
+const hoursAgo = (h: number) => new Date(Date.now() - h * 3600_000).toISOString();
+
+/** A board in the shape the dialog has to cope with: fresh, stale and blocked rows. */
+const BOARD = (): GsproTargetStatus[] => [
+    row({ id: 'terrain', seconds: 42 }),
+    row({ id: 'photo', lastRun: null, stale: true, blocked: 'Build the map first' }),
+    row({
+        id: 'shapes', lastRun: hoursAgo(48), seconds: 12, stale: true,
+        changedSince: { count: 14, kinds: ['bunker', 'path', 'tee'] },
+    }),
+    row({ id: 'meshes' }),
+    row({ id: 'vegetation' }),
+    row({ id: 'trees', lastRun: null, stale: true }),
+    row({ id: 'buildings' }),
+    row({ id: 'creeks' }),
+    row({ id: 'course-file' }),
+];
+
+const PHASES: JobPhase[] = [
+    { id: 'shapes-svg', label: 'Course SVG', status: 'done', detail: '200 features', seconds: 6 },
+    { id: 'trees-files', label: 'Tree files', status: 'running', detail: null, seconds: null },
+];
+
+const RUNNING_JOB: GsproSyncJob = {
+    id: 'sync-1', courseId: 'course-1', request: 'stale', targets: ['shapes', 'trees'], status: 'running',
+    phase: 'trees-files', step: 'inner trees', phases: PHASES, queuedAt: hoursAgo(0),
+    startedAt: hoursAgo(0), finishedAt: null, seconds: 8, results: [], error: null,
+};
+
+/** The sync server as a plain object; `job` always answers with what `update` started. */
+function fakeSyncApi(opts: { targets?: GsproTargetStatus[]; statusJob?: GsproSyncJob | null; matched?: string | null } = {}) {
+    const updates: string[] = [];
+    let started: GsproSyncJob | null = null;
+    const finished = (base: GsproSyncJob): GsproSyncJob => ({
+        ...base, status: 'succeeded', finishedAt: '2026-10-14T12:00:40.000Z', seconds: 39,
+        phases: base.phases.map(p => ({ ...p, status: 'done' as const })),
+        results: base.targets.map(t => ({
+            target: t, label: GSPRO_TARGETS.find(x => x.id === t)!.label, seconds: 10,
+            report: [`${t}: written`], error: null,
+        })),
+    });
+    const api: GsproSyncApi = {
+        async status() {
+            return {
+                unity: {
+                    editors: [{
+                        projectName: 'vreta_v4_2025_12_02', projectPath: 'D:\\gspro_courses\\vreta_v4_2025_12_02',
+                        activeCourse: 'Vreta', exportFolder: 'D:\\gspro_courses\\vreta-opcd',
+                        matches: opts.matched !== null, error: null,
+                    }],
+                    matched: opts.matched === undefined ? 'vreta_v4_2025_12_02' : opts.matched,
+                    exportDir: 'D:\\gspro_courses\\vreta-opcd',
+                },
+                worker: {
+                    url: 'http://127.0.0.1:8777', reachable: true, state: 'loaded', phase: null, blend: null,
+                    conformed: null, layersDir: null, appliedOps: null, lastRun: null, error: null, spawnedPid: null,
+                },
+                targets: opts.targets ?? BOARD(),
+                job: started ?? opts.statusJob ?? null,
+                queue: [],
+            };
+        },
+        async update({ target }) {
+            updates.push(target);
+            const targets = target === 'stale'
+                ? (opts.targets ?? BOARD()).filter(t => t.stale && t.blocked === null).map(t => t.id)
+                : [target as GsproTargetId];
+            started = { ...RUNNING_JOB, id: `sync-${updates.length}`, request: target, targets, status: 'running' };
+            return started;
+        },
+        async job() {
+            if (!started) throw new Error('no job');
+            started = finished(started);
+            return started;
+        },
+        async editors() { throw new Error('not used'); },
+    };
+    return { api, updates };
+}
+
+async function mount(dir: string | null = null, run?: () => never, sources?: GsproOrthoSource[], terrain?: CourseTerrain | null,
+    syncOpts?: Parameters<typeof fakeSyncApi>[0]) {
     const { api, orthoCalls, outerCalls, demCalls, hillshadeCalls, treesCalls, zonesCalls, floorCalls, gkdCalls, metaCalls, gkd } = fakeApi(dir, run, sources, terrain);
     const svc = new GsproExportService(api, 1);
     di.set(GsproExportService, svc);
+    const { api: syncApi, updates } = fakeSyncApi(syncOpts);
+    const sync = new GsproSyncService(syncApi, 1, 60_000);
+    di.set(GsproSyncService, sync);
     const host = document.createElement('div');
     new GsproExportPanelComponent({}).mount(host);
-    return { host, svc, orthoCalls, outerCalls, demCalls, hillshadeCalls, treesCalls, zonesCalls, floorCalls, gkdCalls, metaCalls, gkd };
+    return { host, svc, sync, updates, orthoCalls, outerCalls, demCalls, hillshadeCalls, treesCalls, zonesCalls, floorCalls, gkdCalls, metaCalls, gkd };
+}
+
+/** The dialog opens for a course and the board's first read lands. */
+async function open(svc: GsproExportService) {
+    await svc.openFor('course-1', 'Vreta');
+    await new Promise(r => setTimeout(r, 0));
+    await new Promise(r => setTimeout(r, 0));
 }
 
 test('the panel stays hidden until a course opens it', async () => {
@@ -229,6 +339,170 @@ test('a failure shows the error section and the run button recovers', async () =
     const button = host.querySelector('[data-testid=gspro-run-svg]') as HTMLButtonElement;
     expect(button.disabled).toBe(false);
     expect(button.textContent).toBe('Export SVG');
+});
+
+// --- The status board ---
+
+test('the dialog is the board: a row per target in order, with its time and what changed', async () => {
+    const { host, svc } = await mount();
+    await open(svc);
+
+    const dialog = host.querySelector('[data-testid=gspro-dialog]') as HTMLElement;
+    expect(dialog.querySelector('h3')!.textContent).toBe('GSPro');
+    const rows = [...host.querySelectorAll('[data-testid^=gspro-row-]')];
+    expect(rows.map(r => r.getAttribute('data-testid'))).toEqual(GSPRO_TARGETS.map(t => `gspro-row-${t.id}`));
+    expect(rows.map(r => r.querySelector('.gspro-export__blabel')!.textContent!.trim().split(' ')[0]))
+        .toEqual(['Terrain', 'Photo', 'Course', 'Meshes', 'Vegetation', 'Trees', 'Buildings', 'Creeks', 'Course']);
+
+    const status = (id: string) => host.querySelector(`[data-testid=gspro-status-${id}]`)!.textContent;
+    expect(status('terrain')).toBe('2 h ago · up to date');
+    expect(status('shapes')).toBe('2 days ago · 14 features changed (bunkers, paths, tees)');
+    expect(status('trees')).toBe('never');
+    // The absolute time is the title behind the relative one.
+    expect(host.querySelector('[data-testid=gspro-status-terrain]')!.getAttribute('title'))
+        .toContain('Last updated:');
+});
+
+test('stale rows are marked, a blocked row says why and cannot be updated', async () => {
+    const { host, svc, updates } = await mount();
+    await open(svc);
+
+    const dot = (id: string) => (host.querySelector(`[data-testid=gspro-row-${id}] .gspro-export__dot`) as HTMLElement).className;
+    expect(dot('shapes')).toContain('stale');
+    expect(dot('terrain')).toContain('fresh');
+    expect(dot('photo')).toContain('blocked');
+
+    expect(host.querySelector('[data-testid=gspro-blocked-photo]')!.textContent).toBe('Build the map first');
+    const photo = host.querySelector('[data-testid=gspro-update-photo]') as HTMLButtonElement;
+    expect(photo.disabled).toBe(true);
+    expect(photo.title).toBe('Build the map first');
+    photo.click();
+    expect(updates).toEqual([]);
+
+    // Two rows are stale AND runnable — photo is stale but blocked, so the
+    // header's count (and a "stale" run) leaves it out.
+    const all = host.querySelector('[data-testid=gspro-update-stale]') as HTMLButtonElement;
+    expect(all.textContent).toBe('Update all stale (2)');
+    expect(all.disabled).toBe(false);
+    expect(host.textContent).toContain('2 rows out of date.');
+});
+
+test('the manual step a row leaves behind shows under it', async () => {
+    const { host, svc } = await mount();
+    await open(svc);
+    expect(host.querySelector('[data-testid=gspro-manual-shapes]')!.textContent)
+        .toBe('then: Build the SVG in Blender (OPCD), then Update meshes');
+    expect(host.querySelector('[data-testid=gspro-manual-buildings]')!.textContent)
+        .toContain('then: Run GolfMap › Buildings › Plant from assignments');
+    expect(host.querySelector('[data-testid=gspro-manual-terrain]')!.textContent).toBe('');
+});
+
+test('Update runs one target and the header button runs every stale one', async () => {
+    const { host, svc, sync, updates } = await mount();
+    await open(svc);
+
+    (host.querySelector('[data-testid=gspro-update-trees]') as HTMLButtonElement).click();
+    await new Promise(r => setTimeout(r, 20));
+    expect(updates).toEqual(['trees']);
+    expect(sync.job.peek()?.status).toBe('succeeded');
+    expect(host.querySelector('[data-testid=gspro-job-status]')!.textContent).toContain('Updated');
+
+    (host.querySelector('[data-testid=gspro-update-stale]') as HTMLButtonElement).click();
+    await new Promise(r => setTimeout(r, 20));
+    expect(updates).toEqual(['trees', 'stale']);
+});
+
+test('a job the server is already running shows its phases, and no row can be updated under it', async () => {
+    const { host, svc } = await mount(null, undefined, undefined, undefined, { statusJob: RUNNING_JOB });
+    await open(svc);
+
+    expect(host.querySelector('[data-testid=gspro-job]')!.className).not.toContain('hidden');
+    expect(host.querySelector('[data-testid=gspro-job-status]')!.textContent).toContain('Updating');
+    const phases = [...host.querySelectorAll('[data-testid=gspro-job-phases] li')].map(li => li.textContent);
+    expect(phases).toEqual(['✓ Course SVG — 200 features (6 s)', '… Tree files']);
+    expect((host.querySelector('[data-testid=gspro-update-trees]') as HTMLButtonElement).disabled).toBe(true);
+    expect((host.querySelector('[data-testid=gspro-update-stale]') as HTMLButtonElement).disabled).toBe(true);
+});
+
+test('a finished job shows each target\'s report, the last one open', async () => {
+    const { host, svc } = await mount();
+    await open(svc);
+
+    (host.querySelector('[data-testid=gspro-update-stale]') as HTMLButtonElement).click();
+    await new Promise(r => setTimeout(r, 20));
+    const reports = [...host.querySelectorAll('[data-testid=gspro-job-results] details')];
+    expect(reports.map(d => d.querySelector('summary')!.textContent))
+        .toEqual(['Course shapes — done in 10 s', 'Trees — done in 10 s']);
+    // The last target's report is the one left open.
+    expect((reports.at(-1) as HTMLDetailsElement).open).toBe(true);
+    expect(reports.at(-1)!.querySelector('li')!.textContent).toBe('trees: written');
+});
+
+test('the Unity chip names the editor with this course active, or says it is not open', async () => {
+    const { host, svc } = await mount();
+    await open(svc);
+    const chip = host.querySelector('[data-testid=gspro-unity-chip]') as HTMLElement;
+    expect(chip.textContent).toBe('Unity: vreta_v4_2025_12_02 · course Vreta');
+    expect(chip.className).toContain('matched');
+    expect(chip.title).toContain('D:\\gspro_courses\\vreta-opcd');
+    expect(host.querySelector('[data-testid=gspro-worker-chip]')!.textContent).toBe('Blender: loaded');
+
+    di.reset();
+    const other = await mount(null, undefined, undefined, undefined, { matched: null });
+    await open(other.svc);
+    const none = other.host.querySelector('[data-testid=gspro-unity-chip]') as HTMLElement;
+    expect(none.textContent).toBe('Unity: not open for this course');
+    expect(none.className).not.toContain('matched');
+});
+
+test('a row\'s "…" opens its own files and settings', async () => {
+    const { host, svc } = await mount();
+    await open(svc);
+
+    const panel = (id: string) => host.querySelector(`[data-testid=gspro-panel-${id}]`) as HTMLElement;
+    const toggle = (id: string) => host.querySelector(`[data-testid=gspro-details-${id}]`) as HTMLButtonElement;
+    expect(panel('photo').className).toContain('hidden');
+    expect(toggle('photo').getAttribute('aria-expanded')).toBe('false');
+
+    toggle('photo').click();
+    expect(panel('photo').className).not.toContain('hidden');
+    expect(toggle('photo').getAttribute('aria-expanded')).toBe('true');
+    // The Textures tab's content, now under the Photo row: the vintage picker,
+    // the cleaning boxes and the four JPEG buttons plus the one into Unity.
+    expect(panel('photo').querySelector('[data-testid=gspro-ortho-source]')).not.toBeNull();
+    expect(panel('photo').querySelector('.gspro-export__run-ortho')).not.toBeNull();
+    expect(panel('photo').querySelector('.gspro-export__run-clean-ortho')).not.toBeNull();
+    expect(panel('photo').querySelector('[data-testid=gspro-unity-ortho]')).not.toBeNull();
+
+    // Each other row's own files are under its own toggle.
+    expect(panel('terrain').querySelector('.gspro-export__run-inner-dem')).not.toBeNull();
+    expect(panel('terrain').querySelector('[data-testid=gspro-inner-sculpt]')).not.toBeNull();
+    expect(panel('shapes').querySelector('[data-testid=gspro-run-svg]')).not.toBeNull();
+    expect(panel('trees').querySelector('.gspro-export__run-inner-trees')).not.toBeNull();
+    expect(panel('buildings').querySelector('.gspro-export__run-inner-buildings')).not.toBeNull();
+    expect(panel('vegetation').querySelector('.gspro-export__run-inner-zones')).not.toBeNull();
+    expect(panel('creeks').querySelector('.gspro-export__run-creeks')).not.toBeNull();
+    expect(panel('course-file').querySelector('.gspro-export__run-gkd')).not.toBeNull();
+    expect(panel('course-file').querySelector('[data-testid=gspro-tee-sets]')).not.toBeNull();
+    expect(panel('course-file').querySelector('[data-testid=gspro-meta]')).not.toBeNull();
+    expect(panel('meshes').textContent).toContain('docs/gspro/Vreta/shaping');
+
+    toggle('photo').click();
+    expect(panel('photo').className).toContain('hidden');
+});
+
+test('the board opened from the command bar brings the export half with it', async () => {
+    const { host, sync, svc } = await mount();
+    await sync.openFor('course-1');
+    await new Promise(r => setTimeout(r, 0));
+    await new Promise(r => setTimeout(r, 0));
+    expect((host.querySelector('.gspro-export') as HTMLElement).className).toContain('show');
+    expect(svc.courseId.peek()).toBe('course-1');
+    expect(sync.staleCount.peek()).toBe(2);
+
+    (host.querySelector('.gspro-export__header button') as HTMLButtonElement).click();
+    expect(sync.isOpen).toBe(false);
+    expect(svc.isOpen).toBe(false);
 });
 
 // --- Orthophoto ---
@@ -383,13 +657,14 @@ test('the trees buttons export the inner and the outer terrain', async () => {
     expect(host.textContent).toContain('vreta-outer-trees.json');
 });
 
-test('the panel shows what is running and what last ran', async () => {
+test('the footer shows what single-file export is running and what last ran', async () => {
     const { host, svc } = await mount();
-    await svc.openFor('course-1', 'Vreta');
-    expect(host.querySelector('.gspro-export__job')!.closest('.gspro-export__section')!.className).toContain('hidden');
+    await open(svc);
+    const note = () => host.querySelector('[data-testid=gspro-status] .gspro-export__job') as HTMLElement;
+    expect(note().closest('.gspro-export__section')!.className).toContain('hidden');
     await svc.runDem('inner');
-    expect(host.querySelector('.gspro-export__job')!.textContent).toMatch(/^Last export: dem, done in \d+ s$/);
-    expect(host.querySelector('.gspro-export__job')!.closest('.gspro-export__section')!.className).not.toContain('hidden');
+    expect(note().textContent).toMatch(/^Last export: dem, done in \d+ s$/);
+    expect(note().closest('.gspro-export__section')!.className).not.toContain('hidden');
 });
 
 test('a course with no map area says why the terrains are unavailable and cannot export them', async () => {
@@ -556,6 +831,7 @@ test('features are left out of the SVG from the filtered list and the map select
     const { api, svgCalls } = fakeApi(null);
     const svc = new GsproExportService(api, 1, null);
     di.set(GsproExportService, svc);
+    di.set(GsproSyncService, new GsproSyncService(fakeSyncApi().api, 1, 60_000));
     const host = document.createElement('div');
     new GsproExportPanelComponent({}).mount(host);
     await svc.openFor('course-1', 'Vreta');
@@ -600,6 +876,7 @@ test('bisecting the shown paths walks the steps to the culprit', async () => {
     const { api, svgCalls } = fakeApi(null);
     const svc = new GsproExportService(api, 1, null);
     di.set(GsproExportService, svc);
+    di.set(GsproSyncService, new GsproSyncService(fakeSyncApi().api, 1, 60_000));
     const host = document.createElement('div');
     new GsproExportPanelComponent({}).mount(host);
     await svc.openFor('course-1', 'Vreta');
