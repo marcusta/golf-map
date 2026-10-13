@@ -44,6 +44,10 @@ namespace GolfMap.Bridge
             public DateTime started;
             public readonly ManualResetEvent done = new ManualResetEvent(false);
             public Dictionary<string, object> response;
+            // The VSP watchdog ran the command a second time (once per job).
+            public bool vspReset;
+            public string vspFirstError;
+            public object vspResetResult;
         }
 
         static HttpListener listener;
@@ -301,18 +305,91 @@ namespace GolfMap.Bridge
             var job = running;
             running = null;
             runningSteps = null;
-            Finish(job, new Dictionary<string, object> { { "ok", true }, { "result", result }, { "consoleSeq", BridgeConsole.LastSeq } });
+            var response = new Dictionary<string, object> { { "ok", true }, { "result", result }, { "consoleSeq", BridgeConsole.LastSeq } };
+            if (job.vspReset) Note(response, job, result);
+            Finish(job, response);
         }
 
         static void Fail(Exception e)
         {
             var job = running;
+            // Vegetation Studio Pro's stalled job lists: cured in place, once per job.
+            if (job != null && !job.vspReset && IsVspJobStall(e)) { RetryAfterVspReset(job, e); return; }
             running = null;
             runningSteps = null;
             var response = Error(e is BridgeError ? e.Message : e.GetType().Name + ": " + e.Message);
             if (!(e is BridgeError)) response["stack"] = e.StackTrace;
             response["consoleSeq"] = BridgeConsole.LastSeq;
+            if (job != null && job.vspReset) Note(response, job, null);
             Finish(job, response);
+        }
+
+        // ---- VSP watchdog ----
+        //
+        // Once an asset refresh has orphaned the jobs one VegetationStudioPro Update
+        // scheduled, every later frame and every command that refreshes vegetation
+        // throws "The previously scheduled job ... You must call JobHandle.Complete()"
+        // (docs/unity-gotchas.md, "VSP stuck on JobHandle.Complete()"). The cure is
+        // golfmap.vsp.reset and running the command again, which is what this does for
+        // the caller. Safe because our commands are idempotent: they re-read the scene
+        // and the exported files and do only what is still missing.
+        //
+        // The reset is reached as a bridge command, not as a type: Editor/GolfMapBridge/
+        // stays free of GolfMap.Editor references, and the registry already holds
+        // whatever the project's scripts registered. A project without them simply has
+        // no such command, and the first error is reported as it was.
+        const string VspResetCommand = "golfmap.vsp.reset";
+
+        static bool IsVspJobStall(Exception e)
+        {
+            for (var x = e; x != null; x = x.InnerException)
+            {
+                var message = x.Message ?? "";
+                if (message.IndexOf("previously scheduled job", StringComparison.OrdinalIgnoreCase) >= 0 &&
+                    message.IndexOf("JobHandle.Complete()", StringComparison.OrdinalIgnoreCase) >= 0) return true;
+            }
+            return false;
+        }
+
+        static void RetryAfterVspReset(Job job, Exception stall)
+        {
+            job.vspReset = true;
+            job.vspFirstError = stall.GetType().Name + ": " + stall.Message;
+            runningSteps = null;
+            Debug.LogWarning("[Bridge] " + job.command + " hit VSP's stalled job lists; running " + VspResetCommand + " and the command once more.\n" + stall);
+            try { job.vspResetResult = RunToEnd(BridgeCommands.Invoke(VspResetCommand, new BridgeArgs(null))); }
+            catch (Exception resetFailure)
+            {
+                job.vspResetResult = resetFailure.Message;
+                Debug.LogWarning("[Bridge] " + VspResetCommand + " did not run: " + resetFailure.Message);
+            }
+            try
+            {
+                var result = BridgeCommands.Invoke(job.command, job.args);
+                runningSteps = result as IEnumerator;
+                if (runningSteps == null) Complete(result);
+            }
+            catch (Exception again) { Fail(again); } // job.vspReset is set: no second retry
+        }
+
+        // The reset cannot be stepped frame by frame from inside this one, so a
+        // multi-frame reset is run to its end here; it is short either way.
+        static object RunToEnd(object result)
+        {
+            var steps = result as IEnumerator;
+            if (steps == null) return result;
+            while (steps.MoveNext()) if (steps.Current != null) return steps.Current;
+            return null;
+        }
+
+        static void Note(Dictionary<string, object> response, Job job, object result)
+        {
+            response["vspReset"] = true;
+            response["vspResetAfter"] = job.vspFirstError;
+            response["vspResetResult"] = job.vspResetResult;
+            // Clients that see the result alone (unity/mcp/bridge.ts run()) get it too.
+            var dict = result as Dictionary<string, object>;
+            if (dict != null && !dict.ContainsKey("vspReset")) dict["vspReset"] = true;
         }
 
         static void TakeSnapshot()

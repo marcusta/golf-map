@@ -19,6 +19,7 @@ agent ──stdio MCP──▶ unity/mcp/server.ts ──HTTP 127.0.0.1──▶
 | `unity/Editor/GolfMap/GolfMapBridgeCommands.cs` | GolfMap's own commands (`golfmap.course`). Course tooling adds commands here or next to its scripts. |
 | `unity/mcp/server.ts` | Dependency-free stdio MCP server (bun). Registered as `unity` in the repo's `.mcp.json`. |
 | `unity/mcp/bridge.ts` | Finds editors, calls commands, follows a refresh through compile and domain reload. |
+| `unity/mcp/build-status.ts` | Reads a course build's progress file off disk, for when the editor is inside OPCD's builder and answers nothing. `bun unity/mcp/build-status.ts [project]`. |
 | `unity/mcp/sync.ts` | Three-way file sync between the repo and a project, driven by `unity/install.json`. |
 
 Discovery: each editor writes `%LOCALAPPDATA%\GolfMapBridge\bridge-<pid>.json` (port, token, project
@@ -31,7 +32,7 @@ default to the only open editor.
 | Tool | Use |
 |---|---|
 | `unity_editors` | Open editors and their state. |
-| `unity_status` | Scenes (dirty?), compiling, busy command, selection, Scene view pose, console position. |
+| `unity_status` | Scenes (dirty?), compiling, busy command, selection, Scene view pose, console position; `courseBuild` when a `golfmap.course.build` is running or lately finished (read from its file, so it shows while the editor is inside the builder). |
 | `unity_sync` | `check` / `push` / `pull` against the project, then recompile and report errors. |
 | `unity_compile` | Refresh + recompile + errors, after editing assets or files directly in the project. |
 | `unity_console` | Console since a sequence number, filtered by type/text; `clear`. |
@@ -93,6 +94,18 @@ Throw `BridgeError` for a caller mistake (message only). Other exceptions return
 command that opens a modal dialog blocks the main thread until the user answers it; the MCP call
 returns "still running" and the job keeps going. Add new bridge files to `unity/check-planter.ps1`.
 
+**Every command must be idempotent** (ours are: sync and refresh steps re-read the scene and the
+exported files and do only what is still missing), because two robustness retries run a command a
+second time on their own:
+
+| Retried when | Where | Shows as |
+|---|---|---|
+| The command's `AssetDatabase.Refresh()` set off a script reload, so the job died with the domain ("Unknown job (jobs do not survive a script reload)" / "The editor is reloading scripts; call again") - the known "`course.refresh` returned null right after `meshes.sync`" | `bridge.ts` `call()`: waits up to 90 s for the bridge to answer and the editor to be idle (`waitForBridge`), then submits the same command once | `retried: true` on the response and in the result, plus a stderr line from `run()`. A second failure surfaces as itself. |
+| The command threw VSP's "previously scheduled job ... JobHandle.Complete()" | `BridgeServer.Fail`: runs `golfmap.vsp.reset` through the registry, then the command once | `vspReset: true` with `vspResetAfter` / `vspResetResult` (see [unity-gotchas.md](../../docs/unity-gotchas.md)) |
+
+Both retry **once per call**; neither retries a command that is still pending.
+
 ## Tests
 
-`bun test unity/mcp/`: sync rules against temp folders, and the client against a fake bridge.
+`bun test unity/mcp/`: sync rules against temp folders, the client against a fake bridge (including
+the lost-job retry), and the course build's progress file.

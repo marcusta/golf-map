@@ -6,7 +6,9 @@ project under `Assets/Editor/GolfMap/` (any folder named `Editor` works). The me
 items appear under `GolfMap`. [`install.json`](install.json) lists every folder that goes into a
 course project; the `unity` MCP server's `unity_sync` does the copying, and the editor bridge
 (`Editor/GolfMapBridge/`) lets an agent recompile, run menus, read the console and take
-screenshots in the open editor. See [mcp/README.md](mcp/README.md).
+screenshots in the open editor. See [mcp/README.md](mcp/README.md), whose "Adding a command" has the two
+retries that run a command a second time on their own (a job lost to a script reload, VSP's stalled job
+lists) and the idempotence every command owes them.
 
 Agent-facing per-tool notes moved from `AGENTS.md`: [docs/unity-tool-notes.md](../docs/unity-tool-notes.md); gotchas: [docs/unity-gotchas.md](../docs/unity-gotchas.md).
 
@@ -1341,6 +1343,30 @@ The stops come from `<export folder>/<prefix>-holes.json` (golfmap-holes-v1: eve
 4. Meshes (`<line> poles/insulators/wires.asset`) and the three Standard materials go to `<course>/PowerLines/`. The materials are made once and then kept (`resetMaterials: true` puts the built-in look back). The poles carry a MeshCollider with `GSPwood`; the wires have no collider.
 
 A rebuild replaces everything under `GolfMap Power Lines`. The trees export keeps survey stems out of the corridor (docs/gspro/export.md, `trees`); replant after drawing or moving a line.
+
+## Course build (the GSPro course file)
+
+`golfmap.course.build` (`GolfMapCourseBuild.cs`) does what `GSP > Build Course`'s Build button does, without the
+window: saves the open scene (the bundle is built from the file on disk), switches the four terrain colliders off as
+the window does, runs OPCD's own builder (`BuildCourseDLL.Encryption`, reached by name) and puts the wind zone and the
+VSP systems back after it. Output: `<courses dir>/<scene>/<scene>.gspcrse` (`dir`, default the folder saved in the
+build window). It takes about 12 minutes, inside which the editor's main thread is OPCD's: no bridge command is
+answered, and the call itself usually comes back as "still running".
+
+**Progress while it runs: `golfmap.course.build.status`.** The build writes
+`GolfMapSpelunk/<Course>_build-status.json` before it starts and at every milestone it can observe -
+`{ running, startedAt, seconds, phase, written, scene, lastResult }`, phases `starting`, `saving-scene`, `preparing`,
+`building-bundle`, then `refreshing-vegetation` or `failed-restoring-wind`, and `done` / `failed` - so there is no
+need to guess from the `.gspcrse`
+mtime. `seconds` of a running build is counted from `startedAt` when the status is read, because the build cannot
+update its own file through the long phase; `lastResult` is the last finished build's result (file, megabytes,
+seconds) or its error, and is carried along while a new build runs. The file outlives a build that takes the editor
+with it.
+
+The bridge may be as silent as the editor, so the file is also read straight off disk:
+`bun unity/mcp/build-status.ts [project]`, and `unity_status` reports a running or lately finished build under
+`courseBuild` (`unity/mcp/build-status.ts`, `readBuildStatus`). A project where no single `GolfMapCourse` claims the
+scene builds as before, with a warning and no progress file.
 
 ## Performance ranking
 

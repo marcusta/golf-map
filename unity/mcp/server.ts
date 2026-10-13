@@ -6,6 +6,7 @@
 import { readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { type BridgeInfo, listBridges, pickBridge, refreshAndCompile, run, status } from "./bridge";
+import { readBuildStatus } from "./build-status";
 import { loadInstallFolders, summarize, sync, type SyncMode } from "./sync";
 
 const UNITY_DIR = join(dirname(import.meta.path), "..");
@@ -49,10 +50,23 @@ const tools: Tool[] = [
   },
   {
     name: "unity_status",
-    description: "Editor state for one project: open scenes (dirty?), compiling, busy command, selection, Scene view camera, console position.",
+    description:
+      "Editor state for one project: open scenes (dirty?), compiling, busy command, selection, Scene view camera, console position. " +
+      "A golfmap.course.build running or lately finished is reported under courseBuild, read from its progress file on disk, " +
+      "so it shows even while the build holds the editor's main thread and no command is answered.",
     inputSchema: { type: "object", properties: { project } },
     async handler(a) {
-      return text(await run(pickBridge(a.project), "status", {}, 30));
+      const b = pickBridge(a.project);
+      const builds = readBuildStatus(b.projectPath).filter((s) => s.running || s.staleSeconds < 3600);
+      let live: unknown;
+      try {
+        live = await run(b, "status", {}, 20);
+      } catch (e) {
+        // A command holding the main thread (golfmap.course.build: minutes inside
+        // OPCD's builder) leaves only the off-thread snapshot and the build's own file.
+        live = { snapshot: (await status(b)) ?? null, commandError: (e as Error).message.split("\n")[0] };
+      }
+      return text(builds.length ? { ...(live as object), courseBuild: builds } : live);
     },
   },
   {

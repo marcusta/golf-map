@@ -4,8 +4,16 @@
 // without the DLL), and nothing more: same colliders switched off for the bundle, same
 // encryption, same output <courses dir>/<scene>/<scene>.gspcrse.
 // The bundle is built from the scene file on disk, so the open scene is saved first.
+//
+// The build holds the editor's main thread for minutes, so the bridge answers no
+// command while it runs (and a build that takes the editor down answers nothing ever
+// after). Progress therefore goes to a file the build writes at every milestone it
+// can observe - GolfMapSpelunk/<Course>_build-status.json - which a second process
+// polls through golfmap.course.build.status or reads straight off disk
+// (unity/mcp/build-status.ts). Callers no longer have to guess from the .gspcrse mtime.
 using System;
 using System.Collections.Generic;
+using System.Globalization;
 using System.IO;
 using System.Linq;
 using System.Reflection;
@@ -54,6 +62,20 @@ namespace GolfMap.Editor
             args = "dir (courses folder; default the one saved in the build window), save=true, terrainCollider=false, outerCollider=false, foliageCollider=false, grassesCollider=false (true keeps that terrain's collider in the bundle; the window's default switches all four off)")]
         static object Build(BridgeArgs a)
         {
+            var file = StatusFile();
+            var begun = DateTime.Now;
+            var previous = PreviousResult(file);
+            try { return Run(a, file, begun, previous); }
+            catch (Exception e)
+            {
+                WriteStatus(file, false, begun, "failed", new Dictionary<string, object> { { "error", e.Message }, { "seconds", Elapsed(begun) } });
+                throw;
+            }
+        }
+
+        static object Run(BridgeArgs a, string statusFile, DateTime begun, object previous)
+        {
+            WriteStatus(statusFile, true, begun, "starting", previous);
             var builder = Named("BuildCourseDLL.Encryption");
             if (builder == null) throw new BridgeError("OPCD's course builder (BuildCourseDLL) is not in this project.");
             var scene = SceneManager.GetActiveScene();
@@ -61,12 +83,14 @@ namespace GolfMap.Editor
             if (scene.isDirty)
             {
                 if (!a.Bool("save", true)) throw new BridgeError("The scene has unsaved changes, which a build would leave out. Save it or pass save=true.");
+                WriteStatus(statusFile, true, begun, "saving-scene", previous);
                 if (!EditorSceneManager.SaveScene(scene)) throw new BridgeError("Could not save " + scene.path + ".");
             }
             var asset = AssetDatabase.LoadAssetAtPath<SceneAsset>(scene.path);
             string dir = (a.String("dir") ?? CoursesDir()).Replace('\\', '/').TrimEnd('/');
             if (!Directory.Exists(dir)) throw new BridgeError("No courses folder at " + dir + ".");
 
+            WriteStatus(statusFile, true, begun, "preparing", previous);
             Set(builder, "TerrainColDisable", !a.Bool("terrainCollider", false));
             Set(builder, "GrassesColDisable", !a.Bool("grassesCollider", false));
             Set(builder, "FoliageColDisable", !a.Bool("foliageCollider", false));
@@ -78,12 +102,16 @@ namespace GolfMap.Editor
             var colliders = UnityEngine.Object.FindObjectOfType<AwesomeTechnologies.ColliderSystem.ColliderSystemPro>();
             if (colliders) colliders.enabled = true;
             string failure = null;
+            // The long phase: nothing else runs on the main thread until it returns, so
+            // this is the last word a poller sees for about 12 minutes.
+            WriteStatus(statusFile, true, begun, "building-bundle", previous);
             try { builder.GetMethod("BuildBundle", BindingFlags.Static | BindingFlags.Public | BindingFlags.NonPublic).Invoke(null, null); }
             catch (Exception e)
             {
                 failure = (e.InnerException ?? e).Message;
                 RestoreWind();
             }
+            WriteStatus(statusFile, true, begun, failure == null ? "refreshing-vegetation" : "failed-restoring-wind", previous);
             foreach (var system in UnityEngine.Object.FindObjectsOfType<AwesomeTechnologies.VegetationSystem.VegetationSystemPro>())
             {
                 system.SelectedWindZone = UnityEngine.Object.FindObjectOfType<WindZone>();
@@ -95,11 +123,95 @@ namespace GolfMap.Editor
             string file = dir + "/" + asset.name + "/" + asset.name + ".gspcrse";
             var info = new FileInfo(file);
             if (!info.Exists || info.LastWriteTime < started) throw new BridgeError("The build ran but left no new " + file + ".");
-            return new Dictionary<string, object>
+            var result = new Dictionary<string, object>
             {
                 { "file", file }, { "megabytes", Math.Round(info.Length / 1048576.0, 1) }, { "written", info.LastWriteTime.ToString("s") },
                 { "seconds", Math.Round((DateTime.Now - started).TotalSeconds) }, { "scene", scene.path }, { "sceneDirtyAfter", SceneManager.GetActiveScene().isDirty },
             };
+            if (statusFile != null) result["statusFile"] = statusFile;
+            WriteStatus(statusFile, false, begun, "done", result);
+            return result;
+        }
+
+        // ---- Progress file ----
+
+        const string StatusSuffix = "build-status.json";
+
+        // Null when no single course claims the scene: the build still runs, without
+        // progress reporting (the course only names the file; GolfMapCourses.Require()
+        // keeps the name out of the code).
+        static string StatusFile()
+        {
+            try { return GolfMapCourses.ReportPath(GolfMapCourses.Require(), StatusSuffix); }
+            catch (Exception e)
+            {
+                Debug.LogWarning("[GolfMap] No course for the build status file (" + e.Message + "): this build reports no progress.");
+                return null;
+            }
+        }
+
+        static int Elapsed(DateTime since) { return (int)(DateTime.Now - since).TotalSeconds; }
+
+        static void WriteStatus(string file, bool running, DateTime begun, string phase, object lastResult)
+        {
+            if (file == null) return;
+            try
+            {
+                File.WriteAllText(file, BridgeJson.Write(new Dictionary<string, object>
+                {
+                    { "running", running },
+                    { "startedAt", begun.ToString("s") },
+                    { "seconds", Elapsed(begun) },
+                    { "phase", phase },
+                    { "written", DateTime.Now.ToString("s") },
+                    { "scene", SceneManager.GetActiveScene().path },
+                    { "lastResult", lastResult },
+                }));
+            }
+            catch (Exception e) { Debug.LogWarning("[GolfMap] Could not write " + file + ": " + e.Message); }
+        }
+
+        // What the last finished build left, carried along while a new one runs.
+        static object PreviousResult(string file)
+        {
+            try
+            {
+                if (file == null || !File.Exists(file)) return null;
+                var stored = BridgeJson.Parse(File.ReadAllText(file)) as Dictionary<string, object>;
+                object value;
+                return stored != null && stored.TryGetValue("lastResult", out value) ? value : null;
+            }
+            catch (Exception) { return null; }
+        }
+
+        [BridgeCommand("golfmap.course.build.status", "How far golfmap.course.build has got, read from the file that build writes (GolfMapSpelunk/<Course>_build-status.json): { running, startedAt, seconds (a running build: how long it has been going; a finished one: how long it took), phase (starting, saving-scene, preparing, building-bundle, refreshing-vegetation or failed-restoring-wind, done, failed), lastResult (the last finished build's result or its error) }. The editor answers no command while the build holds the main thread, so poll this from a second process, or read the file itself with 'bun unity/mcp/build-status.ts'.")]
+        static object BuildStatus()
+        {
+            var file = GolfMapCourses.ReportPath(GolfMapCourses.Require(), StatusSuffix);
+            var status = new Dictionary<string, object> { { "file", Path.GetFullPath(file).Replace('\\', '/') } };
+            var stored = File.Exists(file) ? BridgeJson.Parse(File.ReadAllText(file)) as Dictionary<string, object> : null;
+            if (stored == null)
+            {
+                status["running"] = false;
+                status["phase"] = "never-run";
+                status["startedAt"] = null;
+                status["seconds"] = 0;
+                status["lastResult"] = null;
+                return status;
+            }
+            foreach (var key in new[] { "running", "startedAt", "seconds", "phase", "written", "scene", "lastResult" })
+            {
+                object value;
+                status[key] = stored.TryGetValue(key, out value) ? value : null;
+            }
+            // A running build cannot update its own file (the main thread is inside OPCD's
+            // builder), so how long ago it started is the only live number there is.
+            var startedAt = status["startedAt"] as string;
+            DateTime started;
+            if (status["running"] is bool && (bool)status["running"] && startedAt != null &&
+                DateTime.TryParse(startedAt, CultureInfo.InvariantCulture, DateTimeStyles.None, out started))
+                status["seconds"] = Elapsed(started);
+            return status;
         }
     }
 }

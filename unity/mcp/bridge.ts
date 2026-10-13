@@ -26,6 +26,10 @@ export interface BridgeResponse {
   pending?: boolean;
   job?: string;
   consoleSeq?: number;
+  /** The command lost its job to a script reload and was submitted a second time (see `call`). */
+  retried?: boolean;
+  /** The editor hit VSP's stalled job lists, ran `golfmap.vsp.reset` and ran the command again. */
+  vspReset?: boolean;
 }
 
 export function discoveryDir(): string {
@@ -124,8 +128,29 @@ export async function status(b: BridgeInfo, waitSec = 0): Promise<any | null> {
   }
 }
 
-// Runs a bridge command. Commands that outlive `timeoutSec` per request are polled until `totalSec`.
-export async function call(b: BridgeInfo, command: string, args: Record<string, unknown> = {}, totalSec = 120): Promise<BridgeResponse> {
+// Waits for the bridge to answer and the editor to be idle again after a script
+// reload. The editor restarts the listener on the same port and token when the new
+// domain loads (another port only if that one was taken meanwhile), so the discovery
+// file is re-read every poll. Returns the live info, or null when it never came back
+// within `waitSec` or the editor is gone.
+export async function waitForBridge(b: BridgeInfo, waitSec: number): Promise<BridgeInfo | null> {
+  const deadline = Date.now() + waitSec * 1000;
+  for (;;) {
+    const info = refreshInfo(b);
+    const s = await status(info);
+    if (s && !s.compiling && !s.updating) return info;
+    if (Date.now() >= deadline || !alive(info.pid)) return null;
+    await sleep(500);
+  }
+}
+
+// The editor's own words when a command's job did not survive the domain reload its
+// AssetDatabase.Refresh set off (BridgeServer.cs: Route's /job lookup, Stop's queue
+// drain). The command usually ran to its end in the old domain, but its result is gone.
+const LOST_TO_RELOAD = /Unknown job \(jobs do not survive a script reload\)|The editor is reloading scripts; call again/i;
+
+// One submission: POST the command, then poll its job until it finishes or `totalSec` runs out.
+async function submit(b: BridgeInfo, command: string, args: Record<string, unknown>, totalSec: number): Promise<BridgeResponse> {
   const deadline = Date.now() + totalSec * 1000;
   const perRequest = Math.max(1, Math.min(60, totalSec));
   let r = await withReloadRetry(b, 60, (x) => request(x, "POST", `/cmd/${encodeURIComponent(command)}`, args, perRequest));
@@ -136,11 +161,49 @@ export async function call(b: BridgeInfo, command: string, args: Record<string, 
   return r;
 }
 
+// Runs a bridge command. Commands that outlive `timeoutSec` per request are polled
+// until `totalSec`. A command that took the domain down with it (a refresh that
+// compiles something, e.g. golfmap.meshes.sync right after a unity_sync push) ends
+// as a lost job; the bridge is waited for (up to `reloadWaitSec`) and the same
+// command is submitted once more, with `retried` set on the response.
+//
+// Resubmitting is safe because every command of ours is idempotent by design: sync
+// and refresh steps re-read the scene and the exported files and do only what is
+// still missing, so running one twice costs time, never correctness. A command that
+// is not idempotent must not go through here.
+export async function call(
+  b: BridgeInfo,
+  command: string,
+  args: Record<string, unknown> = {},
+  totalSec = 120,
+  reloadWaitSec = 90,
+): Promise<BridgeResponse> {
+  const first = await submit(b, command, args, totalSec);
+  if (first.ok || first.pending || !LOST_TO_RELOAD.test(first.error ?? "")) return first;
+  const back = await waitForBridge(b, reloadWaitSec);
+  if (!back)
+    return { ...first, error: `${first.error} The bridge did not come back within ${reloadWaitSec} s, so '${command}' was not submitted again.` };
+  const second = await submit(back, command, args, totalSec);
+  second.retried = true;
+  return second;
+}
+
 export async function run(b: BridgeInfo, command: string, args: Record<string, unknown> = {}, totalSec = 120): Promise<any> {
   const r = await call(b, command, args, totalSec);
-  if (r.ok) return r.result;
+  // Logged (stderr) as well as reported in the result: callers that see only the
+  // result still get the line (server/services/unity-bridge.ts wraps run()).
+  if (r.retried) console.error(`[bridge] '${command}' lost its job to a script reload; submitted again once (${r.ok ? "ok" : "failed again"}).`);
+  if (r.vspReset) console.error(`[bridge] '${command}' ran again after golfmap.vsp.reset (VSP's job lists were stalled).`);
+  if (r.ok) {
+    if (r.retried && r.result && typeof r.result === "object" && !Array.isArray(r.result) && r.result.retried === undefined) r.result.retried = true;
+    return r.result;
+  }
   if (r.pending) throw new Error(`'${command}' is still running in Unity (job ${r.job}). Check unity_status; it keeps going in the editor.`);
-  throw new Error(r.error + (r.stack ? `\n${r.stack}` : ""));
+  throw new Error(
+    r.error +
+      (r.stack ? `\n${r.stack}` : "") +
+      (r.retried ? "\n(the command was submitted a second time after a script reload and failed again)" : ""),
+  );
 }
 
 export interface CompileOutcome {

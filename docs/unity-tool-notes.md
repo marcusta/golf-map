@@ -52,6 +52,22 @@ on a replaced mesh. Do not rely on Unity updating an overwritten FBX's scene obj
 place: in Marcus's scene that left old geometry (z-fighting, gaps) and only replacing the objects fixed it. Test sync
 changes with real geometry changes (not timestamp touches), checked in the scene. Blender side: `blender/tools/fbx_sync.py` exports only changed meshes.
 
+Two retries the bridge does for you, so a command that is run twice must cost time only (ours all re-read the scene
+and the exported files): a command whose own `AssetDatabase.Refresh()` reloads the scripts loses its job with the
+domain and answers "Unknown job (jobs do not survive a script reload)" or "The editor is reloading scripts; call
+again" - `unity/mcp/bridge.ts` waits up to 90 s for the bridge and submits it once more (`retried: true` in the
+result, a stderr line, a second failure surfaces); a command that throws VSP's "previously scheduled job ...
+JobHandle.Complete()" makes the editor run `golfmap.vsp.reset` and the command once more (`vspReset: true`,
+[unity-gotchas.md](unity-gotchas.md)). Neither covers a command that is still `pending`: that one is still running in
+the editor.
+
+Course build: `golfmap.course.build` holds the main thread for ~12 minutes, so poll
+`golfmap.course.build.status` from a second process - or read `GolfMapSpelunk/<Course>_build-status.json` without the
+bridge at all (`bun unity/mcp/build-status.ts`, also folded into `unity_status` as `courseBuild`) - instead of
+watching the `.gspcrse` mtime. Phases: `starting`, `saving-scene`, `preparing`, `building-bundle` (the long one),
+`refreshing-vegetation` or `failed-restoring-wind`, `done`, `failed`; `seconds` of a running build counts from `startedAt`, `lastResult` is the
+previous build's result or error (README "Course build").
+
 Blender shaping loop ([SHAPING-PLAN](../blender/SHAPING-PLAN.md)): `golfmap.course.refresh` (`GolfMapCourseRefresh.cs`) chains
 mesh sync, bunker convention, paint, `golfmap.terrain.conform mode=match` (terrain both ways under the meshes, feathered),
 water planes, creeks, walls and surfaces; `dryRun` plans only. `GolfMap > Review` (`GolfMapReview.cs`, bridge

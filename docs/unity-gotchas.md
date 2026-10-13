@@ -11,6 +11,16 @@ Full text of the gotchas indexed in [unity/AGENTS.md](../unity/AGENTS.md). Each 
   the jobs one Update schedules in the next LateUpdate; an asset refresh between the two can orphan
   them, and from then on every frame and every command that refreshes VSP throws. A script reload
   (`unity_sync push` with a compile) clears it; `golfmap.vsp.reset` disables and re-enables the systems.
+  Since 2026-10-14 the bridge does that for a command itself: a `[BridgeCommand]` that throws with
+  both "previously scheduled job" and "JobHandle.Complete()" in its message (any exception type, inner
+  exceptions included) makes `BridgeServer.Fail` run `golfmap.vsp.reset` and the command once more,
+  **once per job**, and the answer carries `vspReset: true` with `vspResetAfter` (the first error) and
+  `vspResetResult` (what the reset reported per system); `unity/mcp/bridge.ts` also logs a line. Only
+  the command is retried, not the frame: a scene left mid-edit by the first attempt is why every
+  command must stay idempotent. The reset is called through the command registry, not as a type, so
+  `Editor/GolfMapBridge/` keeps no reference to `GolfMap.Editor`; a project without the GolfMap
+  scripts has no such command and reports the original error unchanged. A second throw surfaces as
+  itself (with the `vspReset` note), which still means "reload the scripts".
 - **VSP draws nothing after a refresh until its Update runs.** It is `[ExecuteInEditMode]` and only
   re-culls/spawns in Update/LateUpdate; a focused editor ticks it (a user fixes a blank VSP with a small
   pan), an unfocused 2018 editor never does - `QueuePlayerLoopUpdate` and dirtying objects do not help.
