@@ -22,7 +22,7 @@ import { GeojsonImportService } from '../import/geojson-import.service';
 import { GsproExportService } from '../export/gspro-export.service';
 import { ZoneTypesService, zoneTypeKeyOf } from '../zones/zone-types.service';
 import { VEGETATION_TOOL_ID } from '../zones/vegetation-tool';
-import { PlantVegetationService } from '../zones/plant-vegetation.service';
+import { PlantVegetationService, arboristOutcome } from '../zones/plant-vegetation.service';
 import { ShapingService, type ShapingJob } from '../terrain-edit/shaping.service';
 import { MapBuildClientService, formatBytes } from '../map-build/map-build.service';
 import { TilesetService } from '../map/tileset.service';
@@ -900,22 +900,22 @@ export class CommandBarComponent extends Component<{ mode: CommandBarMode }> {
             },
             plantBtn: {
                 'data-off': () => String(!this.isVegetationSubmode()),
-                innerHTML: () => `${icon('sprout', 16)}<span>${this.plant.runningKind.get() === 'vegetation' ? 'Planting…' : 'Plant vegetation'}</span>`,
-                title: "Plant vegetation: regenerate the tall rough and the creek and pond banks from the course as drawn, export the zones, and import them into the course's open Unity project",
+                innerHTML: () => `${icon('sprout', 16)}<span>${this.plant.runningKind.get() === 'vegetation' ? 'Planting…' : 'Plant for GSPro'}</span>`,
+                title: "Plant for GSPro: regenerate the tall rough and the creek and pond banks from the course as drawn, export the zones, import them into the course's open Unity project, and write the Arborist file GSPro draws the bushes, the woodland floor and most trees from (its trees only with Unity open)",
                 'aria-busy': () => String(this.plant.running.get()),
                 onclick: () => {
                     const course = this.svc.course.peek();
                     if (course && !this.plant.running.peek()) void this.confirmPlantVegetation(course.id);
                 },
             },
-            // Vegetation mode with zones selected: just their area, straight into Unity.
+            // Vegetation mode with zones selected: just their area, into Unity and the Arborist file.
             updateZonesBtn: {
                 'data-off': () => String(!this.isVegetationSubmode() || this.selectedZoneIds().length === 0),
                 innerHTML: () => {
                     const n = this.selectedZoneIds().length;
-                    return `${icon('upload', 16)}<span>${this.plant.runningKind.get() === 'vegetation-update' ? 'Updating…' : n > 1 ? `Update ${n} zones in Unity` : 'Update in Unity'}</span>`;
+                    return `${icon('upload', 16)}<span>${this.plant.runningKind.get() === 'vegetation-update' ? 'Updating…' : n > 1 ? `Update ${n} zones for GSPro` : 'Update for GSPro'}</span>`;
                 },
-                title: "Update in Unity: re-rasterize only the area of the selected zones (as drawn now and as last exported) and respawn it in the course's open Unity project. The generators do not run; use Plant vegetation after changing the zone types' items",
+                title: "Update for GSPro: re-rasterize only the area of the selected zones (as drawn now and as last exported), respawn it in the course's open Unity project and write the Arborist file's lower vegetation again. The generators do not run and the trees are left; use Plant for GSPro after changing the zone types' items",
                 'aria-busy': () => String(this.plant.running.get()),
                 onclick: () => {
                     const course = this.svc.course.peek();
@@ -1824,7 +1824,7 @@ export class CommandBarComponent extends Component<{ mode: CommandBarMode }> {
         });
     }
 
-    /** The vegetation zones in the selection (the ids "Update in Unity" sends). */
+    /** The vegetation zones in the selection (the ids "Update for GSPro" sends). */
     private selectedZoneIds(): string[] {
         return this.features.selectedFeatures.get().filter(f => f.type === 'vegetation_zone').map(f => f.id);
     }
@@ -1846,13 +1846,13 @@ export class CommandBarComponent extends Component<{ mode: CommandBarMode }> {
         const ok = job.status === 'succeeded';
         const intoUnity = report.some(l => l.startsWith('Unity ('));
         await this.confirm.confirm({
-            title: ok ? (intoUnity ? 'Zones updated in Unity' : 'Nothing to update') : 'Could not update the zones',
+            title: ok ? (intoUnity ? 'Zones updated for GSPro' : 'Nothing to update') : 'Could not update the zones',
             body: ok
-                ? (intoUnity ? 'Save the scene in Unity to keep it.' : 'The masks already match these zones.')
+                ? (intoUnity ? `Unity: updated, save the scene to keep it. ${arboristOutcome(report)}` : 'The masks already match these zones.')
                 : job.error ?? 'The job failed.',
             detail: report.join('\n'),
             confirmLabel: ok ? 'Done' : 'OK', cancelLabel: 'Close',
-            tone: ok && !report.some(l => l.includes(': skipped - ')) ? 'primary' : 'warning',
+            tone: ok && !report.some(l => l.includes(': skipped - ') || l.startsWith('warning:')) ? 'primary' : 'warning',
             layout: report.length > 3 ? 'review' : 'default',
         });
     }
@@ -1860,14 +1860,15 @@ export class CommandBarComponent extends Component<{ mode: CommandBarMode }> {
     /**
      * Confirm, run the planting job (PlantVegetationService), reload the
      * features so the regenerated zones show, and put the job's report up:
-     * what each generator planted, the zones export, and what Unity did.
+     * what each generator planted, the zones export, what Unity did and what
+     * went into the Arborist file.
      */
     private async confirmPlantVegetation(courseId: string): Promise<void> {
         const ok = await this.confirm.confirm({
-            title: 'Plant vegetation?',
-            body: "Regenerates the tall rough and the creek and pond banks from the course as drawn now (your zones, the creeks and ponds with bank vegetation), exports the zones and imports them into the course's open Unity project.",
-            detail: 'Takes a minute or two. Generated zones are replaced; the zones you drew are kept. Save the scene in Unity afterwards.',
-            confirmLabel: 'Plant vegetation',
+            title: 'Plant for GSPro?',
+            body: "Regenerates the tall rough and the creek and pond banks from the course as drawn now (your zones, the creeks and ponds with bank vegetation), exports the zones, imports them into the course's open Unity project and writes the Arborist file in the GSPro course folder.",
+            detail: 'Takes a minute or two. Generated zones are replaced; the zones you drew are kept. Without Unity open the zones are exported and the Arborist file gets its lower vegetation only: its trees come from the Unity scene. Save the scene in Unity afterwards.',
+            confirmLabel: 'Plant for GSPro',
             cancelLabel: 'Cancel',
             tone: 'primary',
         });
@@ -1877,7 +1878,7 @@ export class CommandBarComponent extends Component<{ mode: CommandBarMode }> {
             job = await this.plant.plant(courseId);
         } catch (e) {
             await this.confirm.confirm({
-                title: 'Could not plant vegetation',
+                title: 'Could not plant for GSPro',
                 body: e instanceof Error ? e.message : String(e),
                 confirmLabel: 'OK', cancelLabel: 'Close', tone: 'warning',
             });
@@ -1887,13 +1888,13 @@ export class CommandBarComponent extends Component<{ mode: CommandBarMode }> {
         const report = job.result?.report ?? [];
         const intoUnity = report.some(l => l.startsWith('Unity ('));
         await this.confirm.confirm({
-            title: job.status === 'succeeded' ? (intoUnity ? 'Vegetation planted in Unity' : 'Vegetation zones exported') : 'Could not plant vegetation',
+            title: job.status === 'succeeded' ? 'Planted for GSPro' : 'Could not plant for GSPro',
             body: job.status === 'succeeded'
-                ? (intoUnity ? 'Save the scene in Unity to keep it.' : 'Unity did not take them - see below.')
+                ? `${intoUnity ? 'Unity: planted, save the scene to keep it.' : 'Unity: not open, zones exported only.'} ${arboristOutcome(report)}`
                 : job.error ?? 'The job failed.',
             detail: report.join('\n'),
             confirmLabel: 'Done', cancelLabel: 'Close',
-            tone: job.status === 'succeeded' && !report.some(l => /warning|not planted|Not in Unity/.test(l)) ? 'primary' : 'warning',
+            tone: job.status === 'succeeded' && !report.some(l => /warning|not planted|Unity: not open|Arborist trees: skipped/.test(l)) ? 'primary' : 'warning',
             layout: report.length > 3 ? 'review' : 'default',
         });
     }

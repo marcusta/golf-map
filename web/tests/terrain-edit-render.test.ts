@@ -90,9 +90,10 @@ function addDraftPoint(draft: AnchorPoint[], k: number): AnchorPoint[] {
 // Stable identities, as the tool service's computeds hand them out.
 const NO_LABELS: TerrainEditView['labels'] = {};
 const NO_SELECTION: TerrainEditView['selection'] = [];
+const NO_RECIPES: TerrainEditView['recipes'] = {};
 
 function view(edits: TerrainEdit[], draft: AnchorPoint[], cursor: Point | null = null): TerrainEditView {
-    return { edits, draft, cursor, highlightId: null, labels: NO_LABELS, selection: NO_SELECTION };
+    return { edits, draft, cursor, highlightId: null, labels: NO_LABELS, recipes: NO_RECIPES, selection: NO_SELECTION };
 }
 
 const roles = (fc: FeatureCollection) => fc.features.map(f => (f.properties as { role: string }).role);
@@ -229,6 +230,38 @@ describe('glyph diff by id', () => {
         r.render(m.svc, view(edits, []));
         expect(log.created).toBe(4);
         expect(m.adds.filter(id => id === TERRAIN_EDIT_OVERLAY_ID)).toHaveLength(2);
+    });
+});
+
+describe('recipe edits', () => {
+    test('a recipe edit is drawn on its feature in the recipe colour, with a pill naming the recipe', () => {
+        const m = fakeMap();
+        const pills: HTMLElement[] = [];
+        const r = new TerrainEditOverlayRenderer(el => {
+            pills.push(el);
+            return { setLngLat() { return this; }, remove() { return this; } };
+        });
+        const hand = edit(500);
+        const done = edit(501, { op: 'recipe', params: { featherM: 0, recipe: 'pot' }, rings: [] });
+        const away = edit(502, { op: 'recipe', params: { featherM: 0, recipe: 'pot' }, rings: [] }); // its feature is not loaded
+        const edits = [hand, done, away];
+        const base = view(edits, []);
+        r.render(m.svc, base); // overlay added
+
+        const recipes = { e501: { rings: [ring(501)], color: '#fb923c' } };
+        r.render(m.svc, { ...base, labels: { e501: 'Pot bunker' }, recipes });
+        const data = m.updates.filter(u => u.id === TERRAIN_EDIT_OVERLAY_ID).at(-1)!.data;
+        expect(data.features.map(f => f.properties)).toEqual([
+            { role: 'edit', enabled: true },
+            { role: 'recipe', enabled: true, color: '#fb923c' },
+        ]);
+        expect(pills.map(el => el.textContent)).toEqual(['▱ plane', '◈ Pot bunker']);
+        // happy-dom keeps the colour as written.
+        expect(pills[1].style.cssText).toContain('#fb923c');
+
+        // Hovering its row highlights the feature's outline.
+        r.render(m.svc, { ...base, labels: { e501: 'Pot bunker' }, recipes, highlightId: 'e501' });
+        expect(roles(lastDraftData(m)!)).toEqual(['highlight']);
     });
 });
 

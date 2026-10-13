@@ -8,6 +8,42 @@ Record new fixes here with the symptom, actual material/shader, cause, exact cha
 refresh steps and where the result was verified. Separate confirmed results from
 experiments: a Unity result does not establish the GSPro result.
 
+## Arborist birch colour and dark leaves, 2026-10-12
+
+Verified visually in Arborist on Vreta, not in GSPro. The library's
+`S7_European_White_Birch` uses `Arb_AwesomeTechnologies/VS_SpeedTree`, not the
+course's Forst/CTI birch. A black `TintColor1` probe removed the pale leaf areas;
+the inspected leaf material exposes no smoothness/specular controls. Disabling
+`EFFECT_BUMP`, the directional light's shadows, or postprocessing AO individually
+did not resolve the dark-leaf contrast in the comparison view.
+
+Leaf colour: `TintColor1 = #527e4b`, `TextureSaturation = 0`, texture brightness
+kept at 0. This removes the texture's yellow/olive hue variation while retaining
+its detail. Applied to both birch looks and their controller arrays; species
+mapping records the same tint for regeneration. Billboard settings are unchanged.
+
+Postprocessing also matters: the active ACES colour grading had
+`lift.w = -0.20678772032260896`. Raising only that component to `-0.03` retains
+more detail in dark leaves. This is a whole-view adjustment, saved separately
+in the course's `arborist_postprocess.dat`; no claim yet about its use in GSPro.
+AO, exposure, gamma, gain and all other postprocessing settings were retained.
+Experiments with flatter ambient light also reduced contrast, but the original
+Trilight colours, directional intensity 1.1 and shadow strength 0.556 were restored.
+The temporary normal-map probe was reset through `RefreshVegetationSystem`.
+After `LoadPostProcessingData` and `SetPostProcessingUISettings`, the lift value
+was confirmed from disk and every other postprocessing parameter matched the
+snapshot. Ambient lighting had changed to Flat/0.596 during this reload sequence;
+the session's original Trilight values were reapplied. Do not assume a postprocess
+reload preserves viewer lighting. The original ambient colours were sky
+(0.72, 0.68, 0.704), equator (0.678, 0.768, 0.662), ground
+(0.5019608, 0.490196079, 0.458823532).
+
+Local originals and diagnostic scripts are in
+`tree-export/arborist-birch-20261012/`: `before.dat`, `before.biome`,
+`species-before.json`, `postprocess-before.dat`, and the decoded/updated files.
+The vegetation-file patch changes only 40 colour properties on four birch items;
+all placements, other species and billboard settings are preserved.
+
 ## Exposed rock material, 2026-09-28
 
 Confirmed in Unity: `EditorUtility.CopySerialized` rewrote the painted mesh's
@@ -212,6 +248,9 @@ confirmed by Marcus on screen (2026-09-26/27):
    materials, leaves and bark alike so the leaves stay on their branches. It is set by
    `golfmap.cti.apply` (`WindMultipliers` in GolfMapCtiTrial.cs). VSP's CTI controller
    does not override it, and the global wind the other trees use is unchanged.
+   Still more than the other trees (2026-10-11): 0.5 → 0.25. The leaves' tumble
+   (`_TumbleStrength`) and `_LeafTurbulence` are not scaled by the multipliers; they are
+   the next knob if the leaves alone still move too much.
 
 Restore was verified end to end four times. All four backups are byte-identical to
 each other, so every restore returned exactly the original files, and the view matches

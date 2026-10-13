@@ -109,6 +109,9 @@ namespace GolfMap.Editor
                     var mp = AssetDatabase.GetAssetPath(m);
                     string what = m.name + " (" + (m.shader != null ? m.shader.name : "no shader") + ") | " + path;
                     if (m.shader == null || m.shader.name == "Hidden/InternalErrorShader") { add("error shader (pink)", what); continue; }
+                    // OPCD's Set Default Materials reads the MAHS channel properties off such a renderer and logs
+                    // "Material doesn't have a color property '_RedOverallColor'" (and the rest) for it.
+                    if (r.GetComponent("MeshChannelMaterialsStore") != null && !m.HasProperty("_RedOverallColor")) add("OPCD channel store on a material without the MAHS channels", what);
                     if (m.name == "Default-Material" || mp == "Resources/unity_builtin_extra") add("Unity default material", what);
                     var texProps = Enumerable.Range(0, ShaderUtil.GetPropertyCount(m.shader))
                         .Where(i => ShaderUtil.GetPropertyType(m.shader, i) == ShaderUtil.ShaderPropertyType.TexEnv)
@@ -345,9 +348,15 @@ namespace GolfMap.Editor
         // OPCD's Set Default Materials on the objects, checked: on a large selection (a whole course re-added: 789
         // objects) it left 668 of them with the material their FBX carries, while each alone gets its OPCD material.
         // So what still wears an FBX material afterwards goes again in batches, then one by one. A rock slab is left
-        // out of the check (OPCD knows no such surface; golfmap.slabs.materials dresses it).
+        // out altogether (golfmap.slabs.materials dresses it): OPCD knows no such surface, so it makes a ChannelMaterials
+        // out of the slab's FBX material (Resources/Materials/SOs/Rough.asset) and then logs ~140 "Material doesn't
+        // have a ... property '_Red...'" errors per slab reading MAHS channels off that Standard material.
         static Dictionary<string, object> SetDefaultMaterials(List<GameObject> objects, List<object> errors)
         {
+            objects = objects.Where(g => g != null && !GolfMapRockSlabs.IsSlab(g.name)).ToList();
+            if (objects.Count == 0) return new Dictionary<string, object> { { "objects", 0 } };
+            // a slab that got OPCD's store some other way (the menu run by hand on it) would make every run below log errors
+            int slabStores = GolfMapRockSlabs.StripChannelStores(EditorSceneManager.GetActiveScene());
             var selection = Selection.objects;
             int passes = 0;
             Func<List<GameObject>, bool> run = batch =>
@@ -356,8 +365,9 @@ namespace GolfMap.Editor
                 Selection.objects = batch.Cast<UnityEngine.Object>().ToArray();
                 return EditorApplication.ExecuteMenuItem(SetDefaultMaterialsMenu);
             };
-            Func<List<GameObject>> undressed = () => objects.Where(g => g != null && !GolfMapRockSlabs.IsSlab(g.name) && WearsFbxMaterial(g)).ToList();
+            Func<List<GameObject>> undressed = () => objects.Where(g => g != null && WearsFbxMaterial(g)).ToList();
             var result = new Dictionary<string, object> { { "objects", objects.Count } };
+            if (slabStores > 0) result["slabStoresRemoved"] = slabStores;
             if (!run(objects))
             {
                 Selection.objects = selection;

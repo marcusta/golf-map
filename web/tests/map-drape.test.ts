@@ -236,6 +236,22 @@ describe('overlay layer order keeps one draped run', () => {
         expect(stacks(f.layers)).toHaveLength(1);
     });
 
+    test('a raster a caller adds itself at drapedLayerSlot lies under the markers and under later overlay lines', () => {
+        const { svc, f } = service();
+        svc.addOverlayLayer('draw', EMPTY as never, [
+            { id: 'draw-line', type: 'line', paint: {} },
+            { id: 'draw-vertices', type: 'circle', paint: {} },
+        ], { keepOnTop: true });
+        svc.addOverlayLayer('furniture', EMPTY as never, [{ id: 'furniture-pin', type: 'circle', paint: {} }]);
+        // The green's slope image (analysis-overlay.ts), then its contour lines.
+        f.map.addLayer({ id: 'analysis-heat', type: 'raster' }, svc.drapedLayerSlot());
+        svc.addOverlayLayer('contours', EMPTY as never, [{ id: 'contours-line', type: 'line', paint: {} }]);
+        expect(f.layers.map(l => l.id)).toEqual([
+            'ortho', 'hillshade', 'analysis-heat', 'contours-line', 'draw-line', 'furniture-pin', 'draw-vertices',
+        ]);
+        expect(stacks(f.layers)).toHaveLength(1);
+    });
+
     test('the draw preview (keepOnTop, lines + circles) added first stays on top of each group', () => {
         const { svc, f } = service();
         svc.addOverlayLayer('draw', EMPTY as never, [

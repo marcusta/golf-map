@@ -223,6 +223,7 @@ namespace GolfMap.Editor
             if (needOpcd.Count > 0)
             {
                 var selection = Selection.objects;
+                GolfMapRockSlabs.StripChannelStores(needOpcd[0].scene);
                 Selection.objects = needOpcd.Cast<UnityEngine.Object>().ToArray();
                 if (!EditorApplication.ExecuteMenuItem(SetDefaultMaterialsMenu))
                     errors.Add("OPCD's '" + SetDefaultMaterialsMenu + "' is not in this project: the planes have no water material, physics or reflection probe.");

@@ -3,6 +3,7 @@ import { EntityStore } from '@basics/core/client/entity-store';
 import { request, type RequestError } from '@basics/core/client/request';
 import { api } from '../api';
 import type { Tee, TeesApi } from '../../../shared/api/tees.gen';
+import type { TeeSet, TeeSetsApi } from '../../../shared/api/tee-sets.gen';
 import type { Green, GreensApi } from '../../../shared/api/greens.gen';
 import type { Pin, PinsApi } from '../../../shared/api/pins.gen';
 import type { AimPoint, AimPointsApi } from '../../../shared/api/aim-points.gen';
@@ -16,9 +17,20 @@ export type PlacementKind = 'tee' | 'pin' | 'aim' | 'green' | null;
 /** Which point of a green row (one row per hole holds all three). */
 export type GreenPoint = 'center' | 'front' | 'back';
 
-/** Tee colour presets (the four tournament sets the renderer knows about). */
-export const TEE_COLORS = ['black', 'white', 'yellow', 'blue', 'red'] as const;
+/** What can change on a tee set (`TeeSetsApi.update` without id and version). */
+export type TeeSetPatch = Omit<Parameters<TeeSetsApi['update']>[0], 'id' | 'version'>;
+
+/** Tee colour presets (the ones the renderer has a fill for, `teeFill`). */
+export const TEE_COLORS = ['black', 'white', 'green', 'blue', 'yellow', 'red'] as const;
 export type TeeColor = (typeof TEE_COLORS)[number];
+
+/**
+ * The pin positions a green has, by name: GreenKeeper and GSPro keep exactly
+ * four per hole, one per tournament day, and the GKD export (`gspro.py gkd`)
+ * puts a pin named after a day on that day.
+ */
+export const PIN_DAYS = ['Thursday', 'Friday', 'Saturday', 'Sunday'] as const;
+export type PinDay = (typeof PIN_DAYS)[number];
 
 /** Pin difficulty presets. */
 export const PIN_DIFFICULTIES = ['easy', 'medium', 'hard'] as const;
@@ -78,11 +90,16 @@ export class FurnitureService {
 
     /** Armed placement kind (null = select mode). */
     readonly placing = new Signal<PlacementKind>(null);
-    /** Pending attributes for the next placed tee. */
-    readonly pendingTeeName = new Signal('');
-    readonly pendingTeeColor = new Signal<TeeColor>('white');
+    /**
+     * The course's tee sets (name, colour, men's and women's rating and
+     * slope), in order. A hole's tee belongs to one and takes its name and
+     * colour from it.
+     */
+    readonly teeSets = new Signal<TeeSet[]>([]);
+    /** The set the next placed tee goes on (null = the course's first). */
+    readonly pendingTeeSetId = new Signal<string | null>(null);
     /** Pending attributes for the next placed pin. */
-    readonly pendingPinName = new Signal('');
+    readonly pendingPinDay = new Signal<PinDay>('Thursday');
     readonly pendingPinDifficulty = new Signal<PinDifficulty>('medium');
     /** Which green point the tool places when armed to 'green'. */
     readonly pendingGreenPoint = new Signal<GreenPoint>('center');
@@ -164,6 +181,7 @@ export class FurnitureService {
         private pinsApi: PinsApi = api.pins,
         private aimPointsApi: AimPointsApi = api.aimPoints,
         private elevation: ElevationSampler = NULL_ELEVATION,
+        private teeSetsApi: TeeSetsApi = api.teeSets,
     ) {}
 
     /**
@@ -200,6 +218,8 @@ export class FurnitureService {
     private async fetchAndApply(courseId: string, holeIds: string[]): Promise<void> {
         this.selection.set(null);
         const data = await request(this.loading, this.error, async () => {
+            // The sets first: listing them adopts tees written without one.
+            const teeSets = await this.teeSetsApi.listByCourse({ courseId });
             const [tees, pins, perHole] = await Promise.all([
                 this.teesApi.listByCourse({ courseId }),
                 this.pinsApi.listByCourse({ courseId }),
@@ -211,13 +231,14 @@ export class FurnitureService {
                     })),
                 ),
             ]);
-            return { tees, pins, perHole };
+            return { teeSets, tees, pins, perHole };
         });
         if (!data) return;
         // Apply all four furniture signals atomically so downstream effects
         // (the overlay geojson build, hole framing) see a complete set in one
         // pass instead of rebuilding on each partial intermediate state.
         batch(() => {
+            this.teeSets.set(data.teeSets);
             this.tees.set(sortBySortOrder(data.tees));
             this.pins.set(data.pins);
             this.aims.set(data.perHole.flatMap(h => sortBySortOrder(h.aims)));
@@ -250,6 +271,21 @@ export class FurnitureService {
         this.selection.set(selection);
     }
 
+    /**
+     * Select a pin the way the Pin panel shows one: pin placement armed on
+     * that pin's day. The panel's day buttons are the one place a pin is
+     * picked and read, so a pin picked on the map lands there too.
+     */
+    focusPin(id: string): void {
+        const pin = this.pins.items.peek().find(p => p.id === id);
+        if (!pin) return;
+        this.notice.set(null);
+        this.placing.set('pin');
+        const day = PIN_DAYS.find(d => d.toLowerCase() === pin.name.trim().toLowerCase());
+        if (day) this.pendingPinDay.set(day);
+        this.selection.set({ kind: 'pin', id });
+    }
+
     // ── Tee-name presets / duplicate handling ──────────────────────────────
 
     /** True when a tee with this name already exists on the hole. */
@@ -258,23 +294,92 @@ export class FurnitureService {
         return this.tees.items.peek().some(t => t.holeId === holeId && t.name.trim().toLowerCase() === n);
     }
 
+    /** The set the next placed tee goes on: the picked one, else the course's first; null without any. */
+    pendingTeeSet(): TeeSet | null {
+        const sets = this.teeSets.get();
+        return sets.find(s => s.id === this.pendingTeeSetId.get()) ?? sets[0] ?? null;
+    }
+
     /**
-     * Advance `pendingTeeColor` / `pendingTeeName` to the next colour preset
-     * whose default name is still free on the hole. Returns true if it moved
-     * to a free preset, false when every preset is taken.
+     * Advance the pending tee set to the next one (in the course's order)
+     * the hole has no tee of. Returns true if it moved to a free set, false
+     * when the hole has every set.
      */
     advancePendingTee(holeId: string): boolean {
-        const start = TEE_COLORS.indexOf(this.pendingTeeColor.peek() as TeeColor);
-        for (let i = 1; i <= TEE_COLORS.length; i++) {
-            const color = TEE_COLORS[(Math.max(start, 0) + i) % TEE_COLORS.length];
-            const name = defaultTeeName(color);
-            if (!this.teeNameTaken(holeId, name)) {
-                this.pendingTeeColor.set(color);
-                this.pendingTeeName.set('');
+        const sets = this.teeSets.peek();
+        const start = Math.max(sets.findIndex(s => s.id === this.pendingTeeSet()?.id), 0);
+        for (let i = 1; i <= sets.length; i++) {
+            const set = sets[(start + i) % sets.length];
+            if (!this.teeNameTaken(holeId, set.name)) {
+                this.pendingTeeSetId.set(set.id);
                 return true;
             }
         }
         return false;
+    }
+
+    // ── Tee sets (course level) ────────────────────────────────────────────
+
+    async createTeeSet(name: string, color: string | null): Promise<TeeSet | undefined> {
+        const courseId = this.loadedCourseId;
+        if (!courseId) return undefined;
+        const created = await request(this.saving, this.saveError, () =>
+            this.teeSetsApi.create({ courseId, name, color }));
+        if (created) {
+            this.teeSets.set([...this.teeSets.peek(), created]);
+            this.pendingTeeSetId.set(created.id);
+        }
+        return created;
+    }
+
+    /**
+     * Change a set. A new name, colour or GSPro-only mark is on its tees too,
+     * so those are re-read; a GSPro tee taken from another set changed that
+     * set as well, so the sets are.
+     */
+    async updateTeeSet(id: string, patch: TeeSetPatch): Promise<TeeSet | undefined> {
+        const current = this.teeSets.peek().find(s => s.id === id);
+        const courseId = this.loadedCourseId;
+        if (!current || !courseId) return undefined;
+        const updated = await request(this.saving, this.saveError, () =>
+            this.teeSetsApi.update({ id, version: current.version, ...patch }));
+        if (!updated) return undefined;
+        this.teeSets.set(this.teeSets.peek().map(s => (s.id === id ? updated : s)));
+        if (updated.gsproTee && updated.gsproTee !== current.gsproTee) {
+            const sets = await request(this.loading, this.error, () => this.teeSetsApi.listByCourse({ courseId }));
+            if (sets) this.teeSets.set(sets);
+        }
+        if (updated.name !== current.name || updated.color !== current.color || updated.gsproOnly !== current.gsproOnly) {
+            const tees = await request(this.loading, this.error, () => this.teesApi.listByCourse({ courseId }));
+            if (tees) this.tees.set(sortBySortOrder(tees));
+        }
+        return updated;
+    }
+
+    /** Re-read the sets after something else changed them (ratings read in from a .GKD). */
+    async reloadTeeSets(): Promise<void> {
+        const courseId = this.loadedCourseId;
+        if (!courseId) return;
+        const sets = await request(this.loading, this.error, () => this.teeSetsApi.listByCourse({ courseId }));
+        if (sets) this.teeSets.set(sets);
+    }
+
+    /** Remove a set no hole has a tee of (the server refuses otherwise). */
+    async removeTeeSet(id: string): Promise<boolean> {
+        const current = this.teeSets.peek().find(s => s.id === id);
+        if (!current) return false;
+        const res = await request(this.saving, this.saveError, () =>
+            this.teeSetsApi.remove({ id, version: current.version }));
+        if (res === undefined) return false;
+        this.teeSets.set(this.teeSets.peek().filter(s => s.id !== id));
+        if (this.pendingTeeSetId.peek() === id) this.pendingTeeSetId.set(null);
+        return true;
+    }
+
+    /** Keep a set's tee count in step with a tee added to or removed from it. */
+    private countTee(teeSetId: string | null | undefined, delta: number): void {
+        if (!teeSetId) return;
+        this.teeSets.set(this.teeSets.peek().map(s => (s.id === teeSetId ? { ...s, teeCount: s.teeCount + delta } : s)));
     }
 
     // ── Green lookup ───────────────────────────────────────────────────────
@@ -312,13 +417,15 @@ export class FurnitureService {
 
     // ── Tee CRUD ───────────────────────────────────────────────────────────
 
-    async createTee(input: { holeId: string; name: string; color: string; lat: number; lon: number }): Promise<Tee | undefined> {
+    /** Add a tee to a hole, on one of the course's tee sets (it takes the set's name and colour). */
+    async createTee(input: { holeId: string; teeSetId?: string; name?: string; color?: string; lat: number; lon: number }): Promise<Tee | undefined> {
         if (!this.loadedCourseId) return undefined;
         const elevation = await this.sampleElevation(input.lat, input.lon);
         const created = await request(this.saving, this.saveError, () =>
             this.teesApi.create({ ...input, ...(elevation !== undefined ? { elevation } : {}) }));
         if (created) {
             this.tees.add(created);
+            this.countTee(created.teeSetId, 1);
             this.selection.set({ kind: 'tee', id: created.id });
         }
         return created;
@@ -350,6 +457,7 @@ export class FurnitureService {
             this.teesApi.remove({ id, version: current.version }));
         if (result === undefined) { await this.reloadHoleIds(); return false; }
         this.tees.remove(id);
+        this.countTee(current.teeSetId, -1);
         this.clearSelectionIf('tee', id);
         // If the deleted tee was the sticky line-origin and no tee by that name
         // survives anywhere on the course, drop back to the default (first by
@@ -551,6 +659,21 @@ export class FurnitureService {
         const green = this.greenForHole(holeId);
         if (!green) return [];
         return this.pins.items.get().filter(p => p.greenId === green.id);
+    }
+
+    /** A green's pin for a tournament day (by name, any case), if it has one. */
+    pinForDay(greenId: string, day: PinDay): Pin | undefined {
+        return this.pins.items.peek().find(p => p.greenId === greenId && p.name.trim().toLowerCase() === day.toLowerCase());
+    }
+
+    /**
+     * Point the next pin placement at the first day the green has no pin for
+     * (left as it is when all four are placed). True when one was free.
+     */
+    advancePendingPinDay(greenId: string): boolean {
+        const free = PIN_DAYS.find(day => !this.pinForDay(greenId, day));
+        if (free) this.pendingPinDay.set(free);
+        return !!free;
     }
 
     private clearSelectionIf(kind: 'tee' | 'pin' | 'aim', id: string): void {

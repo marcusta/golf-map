@@ -1,16 +1,20 @@
 // Plant a course's lower vegetation from the command line: the same handler as
-// the web Vegetation mode's "Plant vegetation" button
+// the web Vegetation mode's "Plant for GSPro" button
 // (GsproExportService.plantVegetation). It runs every vegetation generator
 // (server/services/vegetation-generators.ts: tall rough, then creek banks,
 // ...) and imports each one's zones as the course's generated zones of its
 // source (a re-run replaces exactly those; hand-drawn zones are never
-// touched), then re-exports the terrain's zones for Unity. The Unity import
+// touched), then re-exports the terrain's zones for Unity and, for a course
+// with an Arborist species file, writes the Arborist file's lower vegetation
+// from them (--no-arborist leaves that; the trees need Unity and are the
+// button's or `bun run gspro:export -- <course> arborist`). The Unity import
 // is left to Unity here (the button does it too). See
 // .claude/skills/grass-planting/SKILL.md for the loop.
 //
-//   bun run grass:zones -- <course> [--terrain inner|outer] [--dry-run] [--no-export]
+//   bun run grass:zones -- <course> [--terrain inner|outer] [--dry-run] [--no-export] [--no-arborist]
 //                          [--only <source>]   that generator and every one after it (keeps the zone stack order)
 //                          [--max-distance 75] [--spill 0.3] [--feather 4] [--noise 0] [--zone-type rough_tall]
+//                          [--far-start 30] [--far-weight 0.56] [--out-start 40]   thinner far from play; the <type>/far mix
 //                                              tall-rough tuning, passed to pipeline/grass_zones.py
 //
 // Inputs, found from the course: the Unity surface map in its GSPro export
@@ -30,11 +34,11 @@ import { TALL_GRASS, VEGETATION_GENERATORS } from '../server/services/vegetation
 
 const ROOT = path.resolve(import.meta.dir, '..');
 const PIPELINE = process.env.MAP_PIPELINE_DIR ?? path.join(ROOT, 'pipeline');
-const TALL_GRASS_TUNING = ['max-distance', 'spill', 'feather', 'band-feather', 'noise', 'zone-type', 'building-margin', 'road-margin', 'path-margin'];
+const TALL_GRASS_TUNING = ['max-distance', 'spill', 'feather', 'band-feather', 'noise', 'zone-type', 'building-margin', 'road-margin', 'path-margin', 'far-start', 'far-weight', 'out-start'];
 
 function usage(message?: string): never {
     if (message) console.error(`error: ${message}\n`);
-    console.error('usage: bun run grass:zones -- <course> [--terrain inner|outer] [--dry-run] [--no-export] '
+    console.error('usage: bun run grass:zones -- <course> [--terrain inner|outer] [--dry-run] [--no-export] [--no-arborist] '
         + `[--only ${VEGETATION_GENERATORS.map((g) => g.source).join('|')}] [${TALL_GRASS_TUNING.map((p) => `--${p} <v>`).join('] [')}]`);
     process.exit(2);
 }
@@ -45,7 +49,7 @@ for (let i = 2; i < process.argv.length; i++) {
     const a = process.argv[i];
     if (!a.startsWith('--')) { positional.push(a); continue; }
     const name = a.slice(2);
-    if (name === 'dry-run' || name === 'no-export') { flags[name] = true; continue; }
+    if (name === 'dry-run' || name === 'no-export' || name === 'no-arborist') { flags[name] = true; continue; }
     const v = process.argv[++i];
     if (v === undefined) usage(`--${name} needs a value`);
     flags[name] = v;
@@ -80,13 +84,14 @@ try {
         dryRun: flags['dry-run'] === true,
         exportZones: flags['no-export'] !== true,
         unity: false,
+        arborist: flags['no-arborist'] === true ? false : 'lower',
         dbPath,
         extraArgs: { [TALL_GRASS.source]: tuning },
     });
     console.log(result.report.map((l) => `  ${l}`).join('\n'));
     if (!flags['dry-run'] && !flags['no-export']) {
         console.log(`next, in Unity: golfmap.zones.import {terrain: "${terrain}", package: "GolfMap lower vegetation"}, then golfmap.grass.apply`
-            + ' (or press Plant vegetation in the web Vegetation mode, which does it all)');
+            + ' (or press Plant for GSPro in the web Vegetation mode, which does it all)');
     }
 } catch (e) {
     console.error(`error: ${(e as Error).message}`);

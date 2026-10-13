@@ -66,7 +66,7 @@ namespace GolfMap.Editor
                 .OrderBy(s => SystemLabel(s) == "inner" ? 0 : SystemLabel(s) == "outer" ? 1 : 2).ToList();
         }
 
-        static readonly Dictionary<int, string> labels = new Dictionary<int, string>();
+        internal static readonly Dictionary<int, string> labels = new Dictionary<int, string>();
 
         // inner / outer from the active course's terrains, else the system's terrain name.
         internal static string SystemLabel(VegetationSystemPro s)
@@ -80,8 +80,9 @@ namespace GolfMap.Editor
                 var scene = EditorSceneManager.GetActiveScene();
                 var inner = GolfMapTreePlanter.RoleTerrain(scene, course.innerTerrainName, course.innerTerrainData, "inner");
                 var outer = GolfMapTreePlanter.RoleTerrain(scene, course.outerTerrainName, course.outerTerrainData, "outer");
-                if (inner && GolfMapZoneImporter.SystemMatchesTerrain(s, inner)) label = "inner";
-                else if (outer && GolfMapZoneImporter.SystemMatchesTerrain(s, outer)) label = "outer";
+                bool hasInner = inner && GolfMapZoneImporter.SystemMatchesTerrain(s, inner), hasOuter = outer && GolfMapZoneImporter.SystemMatchesTerrain(s, outer);
+                // One system holds both (GolfMapVspRig); inner/outer only for a scene not merged yet.
+                label = hasInner && hasOuter ? "course" : hasInner ? "inner" : hasOuter ? "outer" : null;
             }
             catch (Exception) { }
             if (label == null)

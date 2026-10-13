@@ -37,7 +37,7 @@ default to the only open editor.
 | `unity_console` | Console since a sequence number, filtered by type/text; `clear`. |
 | `unity_menu` | Run a menu item (returns the console output it caused), or list script menus under a prefix. |
 | `unity_screenshot` | The Scene view's own render target (`mode: view`, default) or a fresh camera render (`mode: camera`); never screen pixels, so it works while Unity is covered. Pose via `from`/`at` (+ `eye` metres above the visible ground) or `pivot`/`rotation`/`size`; `warmup` frames pan the view by a hair so VSP redraws. The view stays where it was moved unless `restore: true` puts its pivot, rotation, size and orthographic flag back after the capture (the result then says `"restored": true`). |
-| `unity_scene` | `find` objects by name/component, `inspect` serialized fields, `select` for the user. Paths look like `/VegetationStudioPro/VegetationSystemPro#1`: `#n` picks among siblings with the same name. |
+| `unity_scene` | `find` objects by name/component, `inspect` serialized fields, `select` for the user. Saving has no tool of its own: `unity_command scene.save` saves the open scenes that are dirty. Paths look like `/VegetationStudioPro/VegetationSystemPro#1`: `#n` picks among siblings with the same name. |
 | `unity_command` | Any registered `[BridgeCommand]`; no name lists them. |
 
 ## Course exports and imports

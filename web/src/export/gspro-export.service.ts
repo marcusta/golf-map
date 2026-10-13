@@ -29,6 +29,7 @@ import { api } from '../api';
 import type {
     GsproExportApi, GsproExportSettings, GsproOrthoSource, CourseTerrain, TerrainSquare, GsproExportJob,
 } from '../../../shared/api/gspro-export.gen';
+import { courseMetaDiff, emptyCourseMeta, type GsproCourseMeta } from '../../../shared/gspro-course-meta';
 import { browserStorage, loadExclusions, saveExclusions, type ExclusionStorage } from './svg-exclusions';
 import {
     startBisect, answerBisect, undoBisect, bisectExclusions, bisectVariant, type SvgBisect,
@@ -56,6 +57,12 @@ export class GsproExportService {
     readonly dirDraft = new Signal<string>('');
     /** GSPro course folder text being edited (where the .GKD goes); empty = not set. */
     readonly courseDirDraft = new Signal<string>('');
+    /**
+     * The course details as shown in the form (name, location, designer,
+     * description, keywords): the ones kept with the course, else
+     * the ones in the `.GKD`, else blank. Saved when a field changes.
+     */
+    readonly metaDraft = new Signal<GsproCourseMeta>(emptyCourseMeta());
     readonly busy = new Signal<boolean>(false);
     /** Lines the exporter printed on the last successful run (SVG or ortho). */
     readonly report = new Signal<string[]>([]);
@@ -202,6 +209,7 @@ export class GsproExportService {
             // path the user did not choose — saving blank means "default".
             this.dirDraft.set(settings.isDefault ? '' : settings.dir);
             this.courseDirDraft.set(settings.courseDir ?? '');
+            this.metaDraft.set(this.metaBase(settings));
             this.orthoSources.set(sources);
             // Preselect what the map is showing (the pristine copy), else the
             // newest vintage — the list is newest first.
@@ -254,6 +262,8 @@ export class GsproExportService {
             const settings = await this.client.setCourseDir({ courseId, dir: dir || null });
             this.settings.set(settings);
             this.courseDirDraft.set(settings.courseDir ?? '');
+            // A folder with a .GKD in it brings that file's details, unless the course has its own.
+            if (!settings.meta) this.metaDraft.set(this.metaBase(settings));
             return true;
         } catch (e) {
             this.error.set(messageOf(e));
@@ -263,11 +273,101 @@ export class GsproExportService {
         }
     }
 
+    /** What the form shows before anything is typed: the course's details, else the `.GKD`'s, else blank. */
+    private metaBase(settings: GsproExportSettings): GsproCourseMeta {
+        return settings.meta ?? settings.gkdMeta ?? emptyCourseMeta(this.courseName.peek());
+    }
+
+    /** True when the form holds something the course does not keep yet. */
+    get metaEdited(): boolean {
+        const settings = this.settings.peek();
+        return !!settings && courseMetaDiff(this.metaDraft.peek(), this.metaBase(settings)).length > 0;
+    }
+
+    /**
+     * What the `.GKD` in the folder has differently from the details kept
+     * with the course (it was saved in GreenKeeper since) — the next export
+     * would write the course's over them. Empty when they agree, or when the
+     * course keeps none (the export then leaves the file's alone).
+     */
+    get gkdMetaDiff(): string[] {
+        const settings = this.settings.get();
+        return settings?.meta && settings.gkdMeta ? courseMetaDiff(settings.meta, settings.gkdMeta) : [];
+    }
+
+    /** Change fields of the course details and keep them with the course. */
+    async editMeta(patch: Partial<GsproCourseMeta>): Promise<boolean> {
+        this.metaDraft.set({ ...this.metaDraft.peek(), ...patch });
+        return this.saveMeta();
+    }
+
+    /**
+     * Keep the form's course details with the course. Quiet like the folder
+     * fields: leaving a field is often the click on the export button.
+     */
+    async saveMeta(): Promise<boolean> {
+        const courseId = this.courseId.peek();
+        if (!courseId) return false;
+        this.error.set('');
+        try {
+            const settings = await this.client.setMeta({ courseId, meta: this.metaDraft.peek() });
+            if (this.courseId.peek() !== courseId) return false;
+            this.settings.set(settings);
+            return true;
+        } catch (e) {
+            this.error.set(messageOf(e));
+            return false;
+        }
+    }
+
+    /**
+     * Take the course details from the `.GKD` in the GSPro course folder
+     * (typed in GreenKeeper) and keep them with the course; its ratings go
+     * onto the course's tee sets.
+     */
+    async readGkdMeta(): Promise<boolean> {
+        const courseId = this.courseId.peek();
+        if (!courseId) return false;
+        this.busy.set(true);
+        this.error.set('');
+        try {
+            const settings = await this.client.readGkdMeta({ courseId });
+            this.settings.set(settings);
+            this.metaDraft.set(this.metaBase(settings));
+            return true;
+        } catch (e) {
+            this.error.set(messageOf(e));
+            return false;
+        } finally {
+            this.busy.set(false);
+        }
+    }
+
+    /**
+     * Take only the tee sets' ratings from that `.GKD` onto the course's tee
+     * sets; the course details kept with the course stay as they are.
+     */
+    async readGkdRatings(): Promise<boolean> {
+        const courseId = this.courseId.peek();
+        if (!courseId) return false;
+        this.busy.set(true);
+        this.error.set('');
+        try {
+            this.settings.set(await this.client.readGkdRatings({ courseId }));
+            return true;
+        } catch (e) {
+            this.error.set(messageOf(e));
+            return false;
+        } finally {
+            this.busy.set(false);
+        }
+    }
+
     /**
      * Save the GSPro course folder, then write GreenKeeper's course file into
      * it: tees, pins, green centres, aim points, water hazards and the OOB
-     * ring, merged into the `.GKD` already there. Needs the inner heightmap
-     * exported first.
+     * ring, and the course details kept with the course, merged into the
+     * `.GKD` already there. Needs the inner heightmap exported first.
      */
     async runGkd(): Promise<boolean> {
         if (!this.courseId.peek()) return false;
@@ -275,6 +375,8 @@ export class GsproExportService {
             this.error.set('Set the GSPro course folder first — the course\'s folder under GSPro\'s Courses, where its .gspcrse is');
             return false;
         }
+        // Details typed but not kept yet (the field's own save may still be on its way) go first.
+        if (this.metaEdited && !(await this.saveMeta())) return false;
         if (!(await this.saveCourseDir())) return false;
         return this.runExport({ kind: 'gkd' });
     }

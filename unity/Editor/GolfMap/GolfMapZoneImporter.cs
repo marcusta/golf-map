@@ -243,7 +243,8 @@ namespace GolfMap.Editor
                 }
                 var c = GolfMapZones.Centroid(zone);
                 oz.centroid = WorldPos(c.x, c.y) + Vector3.up * 0.5f;
-                oz.label = zone.id + "  " + zone.zoneType + (zone.variant.Length > 0 ? " / " + GolfMapZones.VariantName(types[zone.zoneType], zone.variant) : "") + (zone.weight != 1 ? "  w " + GolfMapZones.F(zone.weight) : "");
+                oz.label = zone.id + "  " + zone.zoneType + (zone.variant.Length > 0 ? " / " + GolfMapZones.VariantName(types[zone.zoneType], zone.variant) : "") + (zone.weight != 1 ? "  w " + GolfMapZones.F(zone.weight) : "")
+                    + (zone.heightMax > 0 ? "  " + GolfMapZones.F(zone.heightMin) + "-" + GolfMapZones.F(zone.heightMax) + " m" : "");
                 overlayZones.Add(oz);
             }
         }

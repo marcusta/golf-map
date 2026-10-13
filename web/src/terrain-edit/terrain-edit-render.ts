@@ -11,6 +11,11 @@
 // Violet sits outside the course-feature palette (greens, sands, blues) so an
 // edit is never mistaken for a feature; disabled edits render dimmed.
 //
+// A recipe edit has no ring of its own: it is drawn on its feature (the
+// view's `recipes`), filled and outlined solid in its recipe's colour with
+// the recipe name in the pill, so the bunkers, ponds and creeks that have a
+// recipe stand out from the ones still on the course default.
+//
 // A site carries hundreds of edits and ~150k outline vertices (the generated
 // creek and pond digs are dense), so each outline is simplified for display,
 // and with a GlyphViewport the pills exist only for the edits in view when
@@ -103,26 +108,39 @@ function ringLngLat(ring: ReadonlyArray<{ x: number; y: number }>): Position[] {
 // ── GeoJSON ──────────────────────────────────────────────────────────────
 
 /** The site's edit polygons as a WGS84 FeatureCollection. */
-export function terrainEditGeojson(edits: readonly TerrainEdit[]): FeatureCollection {
-    const features: Feature[] = edits
-        .filter(edit => edit.rings.length > 0) // a recipe edit: its feature is the shape
-        .map(edit => ({
+export function terrainEditGeojson(edits: readonly TerrainEdit[], recipes: TerrainEditView['recipes'] = {}): FeatureCollection {
+    const features: Feature[] = [];
+    for (const edit of edits) {
+        // A recipe edit: its feature is the shape.
+        const mark = edit.rings.length === 0 ? recipes[edit.id] : undefined;
+        const rings = mark ? mark.rings : edit.rings;
+        if (rings.length === 0) continue;
+        features.push({
             type: 'Feature',
-            properties: { role: 'edit', enabled: edit.enabled },
-            geometry: { type: 'Polygon', coordinates: edit.rings.map(ringLngLat) },
-        }));
+            properties: mark
+                ? { role: 'recipe', enabled: edit.enabled, color: mark.color }
+                : { role: 'edit', enabled: edit.enabled },
+            geometry: { type: 'Polygon', coordinates: rings.map(ringLngLat) },
+        });
+    }
     return { type: 'FeatureCollection', features };
+}
+
+/** The rings an edit is drawn with: its own, or its feature's for a recipe edit. */
+function shownRings(edit: TerrainEdit, recipes: TerrainEditView['recipes']): ReadonlyArray<ReadonlyArray<{ x: number; y: number }>> {
+    return edit.rings.length > 0 ? edit.rings : recipes[edit.id]?.rings ?? [];
 }
 
 /** The highlighted edit and the features selected for "Shape in Blender", one polygon each. */
 function terrainEditMarkGeojson(view: TerrainEditView): Feature[] {
     const features: Feature[] = [];
     const highlight = view.highlightId ? view.edits.find(e => e.id === view.highlightId) : undefined;
-    if (highlight && highlight.rings.length > 0) {
+    const highlightRings = highlight ? shownRings(highlight, view.recipes) : [];
+    if (highlightRings.length > 0) {
         features.push({
             type: 'Feature',
             properties: { role: 'highlight' },
-            geometry: { type: 'Polygon', coordinates: highlight.rings.map(ringLngLat) },
+            geometry: { type: 'Polygon', coordinates: highlightRings.map(ringLngLat) },
         });
     }
     for (const rings of view.selection) {
@@ -184,9 +202,11 @@ export function terrainEditDraftGeojson(draft: readonly Point[], cursor: Point |
     return { type: 'FeatureCollection', features };
 }
 
-/** Vertex-average centroid of an edit's outer ring (glyph marker anchor). */
-export function editLabelAnchor(edit: TerrainEdit): { x: number; y: number } | null {
-    const ring = edit.rings[0];
+/** Vertex-average centroid of an edit's outer ring (glyph marker anchor); `rings` replaces the edit's own (a recipe edit's feature). */
+export function editLabelAnchor(
+    edit: TerrainEdit, rings: ReadonlyArray<ReadonlyArray<{ x: number; y: number }>> = edit.rings,
+): { x: number; y: number } | null {
+    const ring = rings[0];
     if (!ring || ring.length === 0) return null;
     let x = 0;
     let y = 0;
@@ -219,6 +239,23 @@ function editLayers(): OverlayLayerSpec[] {
                 'line-color': EDIT_COLOR,
                 'line-width': 2.5,
                 'line-dasharray': [2, 1.5],
+                'line-opacity': dim(0.95, 0.4),
+            },
+        },
+        {
+            // A feature with a recipe of its own, in the recipe's colour.
+            id: 'terrain-edit-recipe-fill',
+            type: 'fill',
+            filter: role('recipe'),
+            paint: { 'fill-color': ['get', 'color'] as unknown as string, 'fill-opacity': dim(0.4, 0.12) },
+        },
+        {
+            id: 'terrain-edit-recipe-outline',
+            type: 'line',
+            filter: role('recipe'),
+            paint: {
+                'line-color': ['get', 'color'] as unknown as string,
+                'line-width': 2.5,
                 'line-opacity': dim(0.95, 0.4),
             },
         },
@@ -306,16 +343,18 @@ interface GlyphEntry {
 }
 
 /** Everything the pill element shows; a change restyles it. */
-function glyphLabel(edit: TerrainEdit, name: string): string {
-    return `${edit.op}|${name}|${paramsSummary(edit)}|${edit.enabled}`;
+function glyphLabel(edit: TerrainEdit, name: string, color: string): string {
+    return `${edit.op}|${name}|${paramsSummary(edit)}|${edit.enabled}|${color}`;
 }
 
-function styleGlyph(el: HTMLElement, edit: TerrainEdit, name: string): void {
+/** `recipeColor`: the pill of a recipe edit, solid in its recipe's colour. */
+function styleGlyph(el: HTMLElement, edit: TerrainEdit, name: string, recipeColor?: string): void {
+    const color = recipeColor ?? EDIT_COLOR;
     el.textContent = `${OP_GLYPHS[edit.op]} ${name}`;
     el.title = paramsSummary(edit);
     el.style.cssText =
-        `background: ${GLYPH_BG}; color: ${EDIT_COLOR}; font: 600 10px/1.5 system-ui, sans-serif;` +
-        `padding: 0 5px; border: 1px dashed ${EDIT_COLOR}; border-radius: 4px;` +
+        `background: ${GLYPH_BG}; color: ${color}; font: 600 10px/1.5 system-ui, sans-serif;` +
+        `padding: 0 5px; border: 1px ${recipeColor ? 'solid' : 'dashed'} ${color}; border-radius: 4px;` +
         'pointer-events: none; white-space: nowrap;' +
         (edit.enabled ? '' : 'opacity: 0.45;');
 }
@@ -338,6 +377,7 @@ export class TerrainEditOverlayRenderer implements TerrainEditRenderer {
     private lastHighlightId: string | null = null;
     private lastLabels: TerrainEditView['labels'] | null = null;
     private lastSelection: TerrainEditView['selection'] | null = null;
+    private lastRecipes: TerrainEditView['recipes'] | null = null;
     private glyphs = new Map<string, GlyphEntry>();
     /** The last view drawn, for the glyph refresh after a camera move. */
     private lastView: TerrainEditView | null = null;
@@ -369,11 +409,11 @@ export class TerrainEditOverlayRenderer implements TerrainEditRenderer {
         const glyphsStale = view.labels !== this.lastLabels
             || (this.viewport !== null && view.highlightId !== this.lastHighlightId);
         if (!this.editsAdded) {
-            map.addOverlayLayer(TERRAIN_EDIT_OVERLAY_ID, terrainEditGeojson(view.edits), editLayers());
+            map.addOverlayLayer(TERRAIN_EDIT_OVERLAY_ID, terrainEditGeojson(view.edits, view.recipes), editLayers());
             this.editsAdded = true;
             this.syncGlyphs(map, view);
-        } else if (view.edits !== this.lastEdits) {
-            map.updateOverlayData(TERRAIN_EDIT_OVERLAY_ID, terrainEditGeojson(view.edits));
+        } else if (view.edits !== this.lastEdits || view.recipes !== this.lastRecipes) {
+            map.updateOverlayData(TERRAIN_EDIT_OVERLAY_ID, terrainEditGeojson(view.edits, view.recipes));
             this.syncGlyphs(map, view);
         } else if (glyphsStale) {
             this.syncGlyphs(map, view);
@@ -390,7 +430,7 @@ export class TerrainEditOverlayRenderer implements TerrainEditRenderer {
             this.draftAdded = true;
         } else if (view.draft !== this.lastDraft || cursor !== this.lastCursor
             || view.highlightId !== this.lastHighlightId || view.selection !== this.lastSelection
-            || (view.highlightId !== null && view.edits !== this.lastEdits)) {
+            || (view.highlightId !== null && (view.edits !== this.lastEdits || view.recipes !== this.lastRecipes))) {
             map.updateOverlayData(TERRAIN_EDIT_DRAFT_OVERLAY_ID, terrainEditLiveGeojson(view, cursor));
         }
         this.lastEdits = view.edits;
@@ -399,6 +439,7 @@ export class TerrainEditOverlayRenderer implements TerrainEditRenderer {
         this.lastHighlightId = view.highlightId;
         this.lastLabels = view.labels;
         this.lastSelection = view.selection;
+        this.lastRecipes = view.recipes;
     }
 
     reset(): void {
@@ -424,6 +465,7 @@ export class TerrainEditOverlayRenderer implements TerrainEditRenderer {
         this.lastHighlightId = null;
         this.lastLabels = null;
         this.lastSelection = null;
+        this.lastRecipes = null;
         this.lastView = null;
         this.watching?.stop();
         this.watching = null;
@@ -442,7 +484,8 @@ export class TerrainEditOverlayRenderer implements TerrainEditRenderer {
     private syncGlyphs(map: MapService, view: TerrainEditView): void {
         const seen = new Set<string>();
         for (const edit of view.edits) {
-            const anchor = editLabelAnchor(edit);
+            const mark = edit.rings.length === 0 ? view.recipes[edit.id] : undefined;
+            const anchor = editLabelAnchor(edit, mark?.rings);
             if (!anchor) continue;
             const existing = this.glyphs.get(edit.id);
             const moved = !existing || existing.anchor.x !== anchor.x || existing.anchor.y !== anchor.y;
@@ -452,7 +495,7 @@ export class TerrainEditOverlayRenderer implements TerrainEditRenderer {
             if (this.viewport && edit.id !== view.highlightId && !this.viewport.shows(map, lngLat!)) continue;
             seen.add(edit.id);
             const name = view.labels[edit.id] ?? edit.op;
-            const label = glyphLabel(edit, name);
+            const label = glyphLabel(edit, name, mark?.color ?? '');
             const entry = existing;
             if (entry) {
                 if (moved) {
@@ -460,13 +503,13 @@ export class TerrainEditOverlayRenderer implements TerrainEditRenderer {
                     entry.anchor = anchor;
                 }
                 if (entry.label !== label) {
-                    styleGlyph(entry.el, edit, name);
+                    styleGlyph(entry.el, edit, name, mark?.color);
                     entry.label = label;
                 }
                 continue;
             }
             const el = document.createElement('div');
-            styleGlyph(el, edit, name);
+            styleGlyph(el, edit, name, mark?.color);
             const marker = this.createMarker(el, lngLat!, map);
             this.glyphs.set(edit.id, { marker, el, anchor, label });
             this.markersCreated++;

@@ -84,8 +84,26 @@ export const CREEK_BANKS: VegetationGenerator = {
     },
 };
 
+/**
+ * The floor under the trees (pipeline/woodland_floor_zones.py): heath, bilberry, herb or fern by
+ * tree kind and terrain, plus the brush along a stand's rim. Above the tall rough, which it
+ * replaces under the trees, and below the creek banks.
+ */
+export const WOODLAND_FLOOR: VegetationGenerator = {
+    source: 'woodland-floor',
+    label: 'woodland floor',
+    script: 'woodland_floor_zones.py',
+    zoneTypes: ['woodland_floor'],
+    command(inputs) {
+        // The terrain's DEM and planted trees sit next to the surface map: nothing to go on without it.
+        if (!inputs.surfaces) return { skip: NO_SURFACE_MAP };
+        const { args, notes } = clearanceArgs(inputs);
+        return { args: ['--surfaces', inputs.surfaces, ...args], notes };
+    },
+};
+
 /** Every generator, in zone-stack order (later = on top). */
-export const VEGETATION_GENERATORS: readonly VegetationGenerator[] = [TALL_GRASS, CREEK_BANKS];
+export const VEGETATION_GENERATORS: readonly VegetationGenerator[] = [TALL_GRASS, WOODLAND_FLOOR, CREEK_BANKS];
 
 /** The generators a run from `from` (a source) covers: it and every one after it, which keeps the stack order. */
 export function generatorsFrom(from: string | undefined, all: readonly VegetationGenerator[] = VEGETATION_GENERATORS): VegetationGenerator[] {

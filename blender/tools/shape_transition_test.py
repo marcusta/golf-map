@@ -32,9 +32,30 @@ assert st.weights(5,0,ts,4)[0]==1
 hairpin=[(0,0),(20,0),(20,3),(0,3)]
 s,l,d=st.project((5,2.9),hairpin)
 assert s>30 and d<.11
+# The grid index answers as project() does inside its band, None beyond it.
+import random
+rnd=random.Random(1)
+wavy=[(x*.7,3*math.sin(x*.2)) for x in range(200)]+hairpin
+index=st.LineIndex(wavy,1.25)
+for _ in range(4000):
+    q=(rnd.uniform(-3,143),rnd.uniform(-6,6))
+    full=st.project(q,wavy)
+    assert index.project(q)==(full if full[2]<=1.25 else None)
 assert st.weights(3,.5,spec,4) != st.weights(3,.5,dict(spec,seed=321),4)
 for vals in samples:
     assert all(sum(round(x*255) for x in st.byte_weights(v)[:3])==255 for v in vals)
+# Wear: packed in the two tracks, loose on the crown and the shoulders; one band on a footpath.
+two=dict(tracks=2,trackWidthM=.75,trackSpacingM=1.6,strength=1,seed=5)
+# A 2.2 m path keeps a loose string down the middle between its tracks.
+narrow=dict(tracks=2,trackWidthM=.53,trackSpacingM=1.1,edgeM=.12,strength=1,seed=5)
+assert all(st.wear(a,0,narrow,2.2)<.05 and max(st.wear(a,.5,narrow,2.2),st.wear(a,.6,narrow,2.2))>.5 for a in range(0,200,7))
+assert all(st.wear(a,.8,two,3.5)>.5 and st.wear(a,-.8,two,3.5)>.5 for a in range(0,200,7))
+assert all(st.wear(a,0,two,3.5)<.05 and st.wear(a,1.7,two,3.5)==0 for a in range(0,200,7))
+one=dict(tracks=1,trackWidthM=.9,trackSpacingM=0,strength=.8,seed=5)
+assert all(st.wear(a,0,one,2)>.4 and st.wear(a,.95,one,2)==0 for a in range(0,200,7))
+# Worn green leaves the sum (MAHS black); red and blue keep their bytes.
+assert st.byte_weights((.2,.6,.2),.5)==(51/255,76/255,51/255,1.)
+assert st.byte_weights((0,1,0),1)==(0,0,0,1.)
 print('path transition pure math passed')
 
 try:
@@ -185,3 +206,23 @@ for pattern in ('soft-fade','wheel-tracks','overgrown-gravel'):
     scene.render.filepath=os.path.join(out,pattern+'.png')
     bpy.ops.render.render(write_still=True)
 print('Rendered three actual vertex-colour pattern fixtures')
+
+# Wear alone (a gravel road with no transition): packed tracks leave the byte sum, no red on the road.
+for o in objects:
+    o.data=baseline[o.name].copy()
+    if 'golfmap_path_transition' in o: del o['golfmap_path_transition']
+entries[0]=dict(entries[0],transitions=[],wear=dict(tracks=2,trackWidthM=.75,trackSpacingM=1.6,strength=1,seed=5))
+assert set(st.apply(objects,entries,frame,.3))=={'Path','Fringe'}
+col=objects[0].data.color_attributes['Col']
+sums=[]
+for l in objects[0].data.loops:
+    r,g,b=(round(c*255) for c in col.data[l.index].color_srgb[:3])
+    assert r==0 and b==0
+    v=objects[0].data.vertices[l.vertex_index].co
+    if 1<v.x<7: sums.append((abs(v.y),g))
+assert min(g for y,g in sums if .7<y<.9)<120 and all(g==255 for y,g in sums if y<.05 or y>1.85)
+for o in objects:
+    o.data.materials.clear(); o.data.materials.append(material)
+scene.render.filepath=os.path.join(out,'wear.png')
+bpy.ops.render.render(write_still=True)
+print('path wear fixture passed')

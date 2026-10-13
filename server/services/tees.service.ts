@@ -2,15 +2,19 @@ import type { Kysely, Selectable } from 'kysely';
 import { sql } from 'kysely';
 import type { Database, TeesTable } from '../db/schema';
 import { VersionConflictError } from '@basics/core/server/version-conflict';
-import { NotFoundError } from '@basics/core/server/auth';
+import { ConflictError, NotFoundError } from '@basics/core/server/auth';
 
 // --- Output types ---
 
 export interface Tee {
     id: string;
     holeId: string;
+    /** The course tee set it belongs to; null for one written without a set and not adopted yet. */
+    teeSetId: string | null;
     name: string;
     color: string | null;
+    /** Its set exists for GSPro alone: the course guide leaves the tee out. */
+    gsproOnly: boolean;
     lat: number;
     lon: number;
     elevation: number | null;
@@ -26,8 +30,10 @@ function toTee(row: TeeRow): Tee {
     return {
         id: row.id,
         holeId: row.hole_id,
+        teeSetId: row.tee_set_id,
         name: row.name,
         color: row.color,
+        gsproOnly: row.gspro_only === 1,
         lat: row.lat,
         lon: row.lon,
         elevation: row.elevation,
@@ -59,7 +65,7 @@ export class TeesService {
             .innerJoin('holes', 'holes.id', 'tees.hole_id')
             .where('holes.course_id', '=', courseId)
             .select([
-                'tees.id', 'tees.hole_id', 'tees.name', 'tees.color',
+                'tees.id', 'tees.hole_id', 'tees.tee_set_id', 'tees.name', 'tees.color', 'tees.gspro_only',
                 'tees.lat', 'tees.lon', 'tees.elevation', 'tees.sort_order',
                 'tees.version', 'tees.created_at', 'tees.updated_at',
             ]);
@@ -68,8 +74,8 @@ export class TeesService {
     // --- Queries (write) ---
 
     private insertTee(values: {
-        id: string; hole_id: string; name: string; color: string | null;
-        lat: number; lon: number; elevation: number | null; sort_order: number;
+        id: string; hole_id: string; tee_set_id: string | null; name: string; color: string | null;
+        gspro_only: number; lat: number; lon: number; elevation: number | null; sort_order: number;
         version?: number;
     }, trx: Kysely<Database> = this.db) {
         return trx.insertInto('tees').values({ ...values, version: values.version ?? 1 });
@@ -95,9 +101,31 @@ export class TeesService {
         return rows.map((r) => toTee(r as TeeRow));
     }
 
+    /**
+     * A tee set of the hole's course, for a tee's name and colour. 409 when
+     * the set is another course's.
+     */
+    private async teeSetFor(holeId: string, teeSetId: string): Promise<{ id: string; name: string; color: string | null; gspro_only: number }> {
+        const set = await this.db.selectFrom('course_tee_sets')
+            .innerJoin('holes', 'holes.course_id', 'course_tee_sets.course_id')
+            .select(['course_tee_sets.id', 'course_tee_sets.name', 'course_tee_sets.color', 'course_tee_sets.gspro_only'])
+            .where('course_tee_sets.id', '=', teeSetId).where('holes.id', '=', holeId).executeTakeFirst();
+        if (!set) throw new ConflictError(`Tee set ${teeSetId} is not one of this course's`);
+        return set;
+    }
+
+    /**
+     * Add a tee to a hole. With `teeSetId` it takes that set's name and
+     * colour; without, the given `name`/`color` (and TeeSetsService adopts
+     * it into the set of that name later).
+     */
     async create(input: {
-        holeId: string; name: string; color?: string; lat: number; lon: number; elevation?: number;
+        holeId: string; teeSetId?: string; name?: string; color?: string; lat: number; lon: number; elevation?: number;
     }): Promise<Tee> {
+        const set = input.teeSetId ? await this.teeSetFor(input.holeId, input.teeSetId) : null;
+        const name = set?.name ?? input.name?.trim();
+        if (!name) throw new ConflictError('A tee needs a tee set or a name');
+        const color = set ? set.color : input.color ?? null;
         const id = crypto.randomUUID();
         const maxRow = await this.db
             .selectFrom('tees')
@@ -109,8 +137,10 @@ export class TeesService {
         await this.insertTee({
             id,
             hole_id: input.holeId,
-            name: input.name,
-            color: input.color ?? null,
+            tee_set_id: set?.id ?? null,
+            name,
+            color,
+            gspro_only: set?.gspro_only ?? 0,
             lat: input.lat,
             lon: input.lon,
             elevation: input.elevation ?? null,
@@ -120,8 +150,10 @@ export class TeesService {
         return {
             id,
             holeId: input.holeId,
-            name: input.name,
-            color: input.color ?? null,
+            teeSetId: set?.id ?? null,
+            name,
+            color,
+            gsproOnly: set?.gspro_only === 1,
             lat: input.lat,
             lon: input.lon,
             elevation: input.elevation ?? null,
@@ -131,13 +163,21 @@ export class TeesService {
     }
 
     async update(id: string, version: number, input: {
-        name?: string; color?: string; lat?: number; lon?: number; elevation?: number;
+        teeSetId?: string; name?: string; color?: string; lat?: number; lon?: number; elevation?: number;
     }): Promise<Tee> {
         const row = await this.byId(id).executeTakeFirst();
         if (!row) throw new NotFoundError(`Tee not found: ${id}`);
         if (row.version !== version) throw new VersionConflictError('tees', id);
 
         const dbInput: Record<string, unknown> = {};
+        if (input.teeSetId !== undefined) {
+            // Moved to another of the course's sets: it takes that set's name, colour and GSPro-only mark.
+            const set = await this.teeSetFor(row.hole_id, input.teeSetId);
+            input = { ...input, name: set.name, color: set.color ?? undefined };
+            dbInput.tee_set_id = set.id;
+            dbInput.color = set.color;
+            dbInput.gspro_only = set.gspro_only;
+        }
         if (input.name !== undefined) dbInput.name = input.name;
         if (input.color !== undefined) dbInput.color = input.color;
         if (input.lat !== undefined) dbInput.lat = input.lat;

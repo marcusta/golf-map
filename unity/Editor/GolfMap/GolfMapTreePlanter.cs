@@ -603,7 +603,7 @@ namespace GolfMap.Editor
                 int meshRenderers=CheckRenderers(a.name,prefab,shaderIssues);
                 if(meshRenderers==0)throw new Exception("No usable mesh renderers: "+a.name);
                 if(mode==Mode.PersistentStorage){var issue=VspRenderIssue(a,prefab);if(issue!=null)renderIssues.Add(issue);}
-                biomePrefabs.Add(a.guid,prefab);
+                biomePrefabs.Add(a.guid,GolfMapTreeColliders.Planted(Course,prefab));
             }
             // A look with its own materials plants its generated copy of each shape.
             foreach(var group in biome.species)foreach(var look in group.looks){

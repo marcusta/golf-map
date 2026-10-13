@@ -72,11 +72,12 @@ namespace GolfMap.Bridge
             return new Dictionary<string, object> { { "compiling", EditorApplication.isCompiling } };
         }
 
-        [BridgeCommand("asset.reimport", "Force-reimport assets edited on disk that a refresh left alone (e.g. a .mat whose YAML was changed outside Unity while the editor held it loaded), then repaint the Scene view.", args = "paths (asset paths, comma-separated)")]
+        [BridgeCommand("asset.reimport", "Force-reimport assets edited on disk that a refresh left alone (e.g. a .mat whose YAML was changed outside Unity while the editor held it loaded), then repaint the Scene view.", args = "paths (asset paths, comma-separated), path (one asset path, for a name with a comma in it)")]
         static object Reimport(BridgeArgs a)
         {
             var paths = (a.String("paths") ?? "").Split(',').Select(p => p.Trim()).Where(p => p.Length > 0).ToList();
-            if (paths.Count == 0) throw new BridgeError("paths is required.");
+            if (a.Has("path")) paths.Add(a.String("path"));
+            if (paths.Count == 0) throw new BridgeError("paths or path is required.");
             foreach (var p in paths) AssetDatabase.ImportAsset(p, ImportAssetOptions.ForceUpdate | ImportAssetOptions.ForceSynchronousImport);
             SceneView.RepaintAll();
             return paths.Select(p => (object)new Dictionary<string, object> { { "path", p }, { "loaded", AssetDatabase.LoadMainAssetAtPath(p) != null } }).ToList();
@@ -215,6 +216,22 @@ namespace GolfMap.Bridge
                     try { c.Value.Invoke(c.Key, null); }
                     catch (TargetInvocationException e) { Debug.LogException(e.InnerException ?? e); }
                 }
+        }
+
+        [BridgeCommand("scene.save", "Save the open scenes that have unsaved changes (File > Save), without a dialog. Returns each open scene with whether it was dirty and whether it was saved.", args = "")]
+        static object SceneSave(BridgeArgs a)
+        {
+            var rows = new List<object>();
+            for (int i = 0; i < SceneManager.sceneCount; i++)
+            {
+                var scene = SceneManager.GetSceneAt(i);
+                bool dirty = scene.isDirty;
+                if (dirty && string.IsNullOrEmpty(scene.path)) throw new BridgeError("Scene '" + scene.name + "' has never been saved: save it once in Unity to give it a file.");
+                bool saved = dirty && UnityEditor.SceneManagement.EditorSceneManager.SaveScene(scene);
+                if (dirty && !saved) throw new BridgeError("Could not save " + scene.path + ".");
+                rows.Add(new Dictionary<string, object> { { "scene", scene.path }, { "wasDirty", dirty }, { "saved", saved } });
+            }
+            return rows;
         }
 
         [BridgeCommand("selection", "Get the selection, or select (and ping) the object at path.", args = "path")]

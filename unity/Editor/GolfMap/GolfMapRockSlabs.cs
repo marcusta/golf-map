@@ -26,6 +26,24 @@ namespace GolfMap.Editor
         const string SpecFile = "rock-slabs.json";   // GolfMapCourses.Folder ends with a slash
         const string DefaultPhysics = "Assets/Resources/Physics/GSPstone.physicMaterial";
 
+        // OPCD's channel store off every slab of the scene; returns how many had one. OPCD's Set Default Materials
+        // reads every store of the scene on each run, whatever is selected, and logs some 40 "Material doesn't
+        // have a ... property" errors per slab that carries one (the rock material has no MAHS channels). Called
+        // before each such run and by golfmap.slabs.materials.
+        public static int StripChannelStores(UnityEngine.SceneManagement.Scene scene)
+        {
+            int n = 0;
+            foreach (var f in UnityEngine.Object.FindObjectsOfType<MeshFilter>())
+            {
+                if (f.gameObject.scene != scene || !IsSlab(f.name)) continue;
+                var store = f.GetComponent("MeshChannelMaterialsStore");
+                if (store == null) continue;
+                Undo.DestroyObjectImmediate(store);
+                n++;
+            }
+            return n;
+        }
+
         public static bool IsSlab(string name)
         {
             return GolfMapSurfaces.IsCourseMesh(name) && GolfMapSurfaces.Classify(name) == GolfMapSurfaces.Surface.Slab;
@@ -93,6 +111,15 @@ namespace GolfMap.Editor
                 if (c != null && c.sharedMaterial != phys)
                 {
                     if (!dryRun) { Undo.RecordObject(c, "Rock slab physics"); c.sharedMaterial = phys; }
+                    did = true;
+                }
+                // OPCD's channel store, left by a Set Default Materials that took the slab for the surface it was cut
+                // from: on the rock material it makes OPCD log "Material doesn't have a color property
+                // '_RedOverallColor'" (and the other MAHS channels) whenever it reads the store again.
+                var store = f.GetComponent("MeshChannelMaterialsStore");
+                if (store != null)
+                {
+                    if (!dryRun) Undo.DestroyObjectImmediate(store);
                     did = true;
                 }
                 if (did) changed++;

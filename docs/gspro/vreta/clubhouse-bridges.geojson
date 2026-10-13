@@ -154,6 +154,80 @@
     "license": "own",
     "surface": "bridge"
    }
+  },
+  {
+   "type": "Feature",
+   "geometry": {
+    "type": "Polygon",
+    "coordinates": [
+     [
+      [
+       529646.99,
+       6488539.82
+      ],
+      [
+       529650.89,
+       6488551.6
+      ],
+      [
+       529646.71,
+       6488552.98
+      ],
+      [
+       529642.81,
+       6488541.2
+      ],
+      [
+       529646.99,
+       6488539.82
+      ]
+     ]
+    ]
+   },
+   "properties": {
+    "type": "path",
+    "source": "props-bridges",
+    "source_ref": "bridge_rope_cart",
+    "license": "own",
+    "surface": "bridge"
+   }
+  },
+  {
+   "type": "Feature",
+   "geometry": {
+    "type": "Polygon",
+    "coordinates": [
+     [
+      [
+       529675.16,
+       6488552.89
+      ],
+      [
+       529662.5,
+       6488544.66
+      ],
+      [
+       529666.09,
+       6488539.13
+      ],
+      [
+       529678.76,
+       6488547.35
+      ],
+      [
+       529675.16,
+       6488552.89
+      ]
+     ]
+    ]
+   },
+   "properties": {
+    "type": "path",
+    "source": "props-bridges",
+    "source_ref": "jetty",
+    "license": "own",
+    "surface": "bridge"
+   }
   }
  ]
 }

@@ -618,7 +618,7 @@ namespace GolfMap.Editor
                 foreach (var prefab in LookPrefabs(course, e))
                 {
                     List<Slot> slots;
-                    if (treeSlots.TryGetValue(prefab, out slots)) foreach (var s in slots) if (s.system.VegetationSystemBounds.size.x < 3000) ids.Add(s.item.VegetationItemID);
+                    if (treeSlots.TryGetValue(prefab, out slots)) foreach (var s in slots) if (s.package.PackageName != "GolfMap imported trees (billboards)") ids.Add(s.item.VegetationItemID);
                 }
             var spots = new List<Vector3>();
             if (ids.Count == 0) { problem = "None planted in the inner area yet (a new look needs a Plant)."; return spots; }

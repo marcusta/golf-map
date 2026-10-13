@@ -1,0 +1,49 @@
+{
+  "format": "golfmap-perf-categories-v1",
+  "comment": "The categories of the performance ranking, shared by the editor (GolfMapPerf.cs reads this file beside it) and the game (unity/ArboristMod/perf.ts sends the renderer rules to the mod). kind renderers: match is a regex on the object's hierarchy path (/Root/Child/Object), tried top to bottom, the first that matches wins; a renderer no rule matches falls into 'other:<root object>'. Keep the patterns to what .NET and JavaScript read alike (no inline flags, no lookbehind). The course-mesh rules follow GolfMapSurfaces.Classify's order (blend, slab, water, deep, semi, rough, fairway, green, tee, bunker), with the paths (GolfMapPathMaterials.IsPathMesh) first. kind component: every enabled component whose full type name contains `component`. kind vsp: one vegetation type of the Vegetation Studio systems whose path contains vspSystems[system] (in the editor every system of the scene is 'course'); type Object is Objects and LargeObjects, Billboard the far-tree billboards. kind shadows: all shadows (QualitySettings.shadows). Tests: unity/perf-rank.test.ts.",
+  "vspSystems": { "course": "/VegetationStudioPro", "arborist": "/MainGameObjects" },
+  "categories": [
+    { "id": "water", "label": "Water planes and creeks", "group": "Water", "kind": "renderers", "match": "^/Waterplanes(/|$)|/[^/]*[Ww]ater[Pp]lane|^/GolfMap Creeks(/|$)" },
+
+    { "id": "mesh.path", "label": "Course meshes: paths", "group": "Course meshes", "kind": "renderers", "match": "/(Spline_|Gap_Issue)[^/]*Concrete" },
+    { "id": "mesh.blend", "label": "Course meshes: blend strips", "group": "Course meshes", "kind": "renderers", "match": "/Gap_Issue|/Spline_[^/]*(_-_Blend|_B_)" },
+    { "id": "mesh.slab", "label": "Course meshes: rock slabs", "group": "Course meshes", "kind": "renderers", "match": "/Spline_[^/]*_Rock_-_" },
+    { "id": "mesh.water", "label": "Course meshes: lake and creek beds", "group": "Course meshes", "kind": "renderers", "match": "/Spline_[^/]*(Water|Creek|Lake)" },
+    { "id": "mesh.deep", "label": "Course meshes: deep rough", "group": "Course meshes", "kind": "renderers", "match": "/Spline_[^/]*Deep" },
+    { "id": "mesh.semi", "label": "Course meshes: semi rough", "group": "Course meshes", "kind": "renderers", "match": "/Spline_[^/]*Semi" },
+    { "id": "mesh.rough", "label": "Course meshes: rough", "group": "Course meshes", "kind": "renderers", "match": "/Spline_[^/]*Rough" },
+    { "id": "mesh.fairway", "label": "Course meshes: fairway", "group": "Course meshes", "kind": "renderers", "match": "/Spline_[^/]*Fairway" },
+    { "id": "mesh.green", "label": "Course meshes: green", "group": "Course meshes", "kind": "renderers", "match": "/Spline_[^/]*Green" },
+    { "id": "mesh.tee", "label": "Course meshes: tee", "group": "Course meshes", "kind": "renderers", "match": "/Spline_[^/]*Tee" },
+    { "id": "mesh.bunker", "label": "Course meshes: bunker", "group": "Course meshes", "kind": "renderers", "match": "/Spline_[^/]*Bunker" },
+    { "id": "mesh.other", "label": "Course meshes: other", "group": "Course meshes", "kind": "renderers", "match": "/Spline_" },
+
+    { "id": "props.vehicles", "label": "Props: vehicles", "group": "Props", "kind": "renderers", "match": "^/GolfMap Props/Vehicles(/|$)" },
+    { "id": "props.buildings", "label": "Props: buildings", "group": "Props", "kind": "renderers", "match": "^/GolfMap Props/Buildings(/|$)" },
+    { "id": "props.structures", "label": "Props: structures", "group": "Props", "kind": "renderers", "match": "^/GolfMap Props/Structures(/|$)" },
+    { "id": "props.small", "label": "Props: small props", "group": "Props", "kind": "renderers", "match": "^/GolfMap Props/Props(/|$)" },
+    { "id": "props.other", "label": "Props: other groups", "group": "Props", "kind": "renderers", "match": "^/GolfMap Props/[^/]+(/|$)" },
+    { "id": "buildings", "label": "Planted buildings (surroundings)", "group": "Props", "kind": "renderers", "match": "/GolfMap Buildings(/|$)" },
+
+    { "id": "stone", "label": "Stone walls and rocks", "group": "Stone", "kind": "renderers", "match": "^/GolfMap Walls(/|$)|^/[^/]*[Rr]ock" },
+    { "id": "powerlines", "label": "Power lines", "group": "Other built", "kind": "renderers", "match": "^/GolfMap Power Lines(/|$)" },
+    { "id": "wispy", "label": "Wispy rough", "group": "Grass", "kind": "renderers", "match": "^/GolfMap Wispy Rough(/|$)" },
+
+    { "id": "stix", "label": "Stix 3D grass", "group": "Grass", "kind": "component", "component": "GrassShader.GrassRenderer" },
+
+    { "id": "vsp.course.grass", "label": "Course VSP: grass", "group": "Vegetation", "kind": "vsp", "system": "course", "type": "Grass" },
+    { "id": "vsp.course.plant", "label": "Course VSP: plants", "group": "Vegetation", "kind": "vsp", "system": "course", "type": "Plant" },
+    { "id": "vsp.course.tree", "label": "Course VSP: trees", "group": "Vegetation", "kind": "vsp", "system": "course", "type": "Tree" },
+    { "id": "vsp.course.billboard", "label": "Course VSP: tree billboards", "group": "Vegetation", "kind": "vsp", "system": "course", "type": "Billboard" },
+    { "id": "vsp.course.object", "label": "Course VSP: objects", "group": "Vegetation", "kind": "vsp", "system": "course", "type": "Object" },
+    { "id": "vsp.arborist.grass", "label": "Arborist: grass", "group": "Vegetation", "kind": "vsp", "system": "arborist", "type": "Grass" },
+    { "id": "vsp.arborist.plant", "label": "Arborist: plants", "group": "Vegetation", "kind": "vsp", "system": "arborist", "type": "Plant" },
+    { "id": "vsp.arborist.tree", "label": "Arborist: trees", "group": "Vegetation", "kind": "vsp", "system": "arborist", "type": "Tree" },
+    { "id": "vsp.arborist.billboard", "label": "Arborist: tree billboards", "group": "Vegetation", "kind": "vsp", "system": "arborist", "type": "Billboard" },
+    { "id": "vsp.arborist.object", "label": "Arborist: objects", "group": "Vegetation", "kind": "vsp", "system": "arborist", "type": "Object" },
+
+    { "id": "terrain", "label": "Terrains", "group": "Terrain", "kind": "component", "component": "UnityEngine.Terrain" },
+    { "id": "shadows", "label": "Shadows (all off)", "group": "Lighting", "kind": "shadows" },
+    { "id": "post", "label": "Post-processing (volumes off)", "group": "Lighting", "kind": "component", "component": "PostProcessing.PostProcessVolume" }
+  ]
+}

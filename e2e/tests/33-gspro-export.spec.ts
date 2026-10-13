@@ -26,9 +26,11 @@ test('actions menu exports to GSPro; the folder is per course and remembered', a
     await expect(row).toContainText('Export to GSPro');
     await row.click();
 
-    const panel = page.locator('.gspro-export');
+    // The export is a dialog over the page: header (folder, terrains), one
+    // tab per group of files, a status footer.
+    const panel = page.locator(tid('gspro-dialog'));
     await expect(panel).toBeVisible();
-    const dir = panel.locator('input[type="text"]');
+    const dir = panel.locator(tid('gspro-dir'));
 
     // Untouched course: blank field, the default offered as the placeholder
     // and named in the hint.
@@ -38,8 +40,9 @@ test('actions menu exports to GSPro; the folder is per course and remembered', a
 
     // No persisted orthophoto for the seed course: the picker stays hidden,
     // the hint explains, and the JPEG buttons cannot be pressed.
+    await panel.locator(tid('gspro-tab-textures')).click();
     await expect(panel).toContainText('build its map first');
-    await expect(panel.locator('select')).toBeHidden();
+    await expect(panel.locator(tid('gspro-ortho-source'))).toBeHidden();
     await expect(panel.locator('.gspro-export__run-ortho')).toBeDisabled();
     await expect(panel.locator('.gspro-export__run-outer-ortho')).toBeDisabled();
 
@@ -57,8 +60,17 @@ test('actions menu exports to GSPro; the folder is per course and remembered', a
     // Export saves the typed folder before it runs; the run itself fails here
     // (no pipeline in the isolated API), which is what surfaces the error.
     await dir.fill('D:/gspro_courses/e2e/opcd');
-    await panel.locator('.gspro-export__run').first().click();
+    await panel.locator(tid('gspro-tab-course')).click();
+    await panel.locator(tid('gspro-run-svg')).click();
     await expect(panel.locator('.error')).toBeVisible();
+
+    // The SVG test variants are a narrow panel beside the map, not part of
+    // the dialog: the features they list are picked and shown on the map.
+    await panel.locator(tid('gspro-open-svg')).click();
+    await expect(panel).toBeHidden();
+    await expect(page.locator(tid('gspro-svg-panel'))).toBeVisible();
+    await page.locator(tid('gspro-svg-back')).click();
+    await expect(panel).toBeVisible();
 
     await panel.locator('.gspro-export__header button').click();
     await expect(panel).not.toBeVisible();

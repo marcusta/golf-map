@@ -147,12 +147,13 @@ export class AnalysisOverlayRenderer implements AnalysisRenderer {
                 existing.updateImage({ url, coordinates });
             } else {
                 raw.addSource(HEAT_SOURCE_ID, { type: 'image', url, coordinates });
+                // Under the markers (tees, pins, aim points), over the course.
                 raw.addLayer({
                     id: HEAT_LAYER_ID,
                     type: 'raster',
                     source: HEAT_SOURCE_ID,
                     paint: { 'raster-fade-duration': 0 },
-                } satisfies RasterLayerSpecification);
+                } satisfies RasterLayerSpecification, map.drapedLayerSlot());
                 this.heatAdded = true;
             }
             this.renderedFor = { grid: view.grid, mode: view.mode };

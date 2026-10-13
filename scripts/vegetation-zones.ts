@@ -13,11 +13,12 @@
 //                                                        one zone per Polygon feature (EPSG:3006); a feature's
 //                                                        `properties.variant` picks its mix
 //   bun run zones -- set <course> <zoneId|prefix> [--variant key|''] [--weight x] [--feather m] [--noise m]
-//                        [--blend replace|mix] [--also 'type[/variant][=weight], ...'|'']
+//                        [--blend replace|mix] [--also 'type[/variant][=weight], ...'|''] [--edge-blend m|default]
+//                        [--height min-max|none]
 //   bun run zones -- remove <course> <zoneId|prefix>
 //   bun run zones -- update <course> <zoneId|prefix>...  re-rasterize just those zones' area into the exported masks
 //                                                        and respawn it in the open Unity project (the web's
-//                                                        "Update in Unity"; GsproExportService.updateZones)
+//                                                        "Update for GSPro"; GsproExportService.updateZones)
 //   bun run zones -- bind <course> <zoneType> [--variant key] --palette <grass-palette.json>   bindings = that palette's items
 //   bun run zones -- bind <course> <zoneType> [--variant key] <item>[=maxDensity] ...        bindings given directly
 //                                                        (`--name <label>` names the variant, e.g. for the creek panel)
@@ -38,6 +39,11 @@
 // taking their share (reeds in a pond's palette). `--also` gives the zone more
 // palettes on the same footprint, each at the zone's weight times its own
 // (shared/features/zone-layers.ts); '' clears them.
+// `--edge-blend` (add and set) is how wide the zone's mix fades into the
+// vegetation beside it, in metres: 0 = a hard border, `default` = unset (the
+// pipeline's default: 8 m for a drawn zone that replaces, else 0; D-VZ16).
+// `--height <min>-<max>` (add and set) is how tall the zone's bushes grow, in
+// metres (one number = that height, `none` = the palette's sizes; D-VZ17).
 // Reads data/app.sqlite (DB_PATH) like the server.
 import '../server/env-paths';
 import * as path from 'node:path';
@@ -58,6 +64,7 @@ import {
     ZONE_BLENDS, ZONE_BLEND_ATTRIBUTE, ZONE_EXTRA_PALETTES_ATTRIBUTE, formatZonePalettes, parseZonePalettes, zoneBlendOf,
     zoneExtraPalettesOf,
 } from '../shared/features/zone-layers';
+import { ZONE_HEIGHT_MAX_ATTRIBUTE, ZONE_HEIGHT_MIN_ATTRIBUTE, parseZoneHeight } from '../shared/features/zone-height';
 
 const ROOT = path.resolve(import.meta.dir, '..');
 const dataDir = process.env.DATA_DIR ?? path.join(ROOT, 'data');
@@ -65,8 +72,8 @@ const dbPath = process.env.DB_PATH ?? path.join(dataDir, 'app.sqlite');
 
 function usage(message?: string): never {
     if (message) console.error(`error: ${message}\n`);
-    console.error('usage: bun run zones -- types|list <course> | add <course> <zoneType> (--from-feature <id> | --from-geojson <file>) [--variant --weight --feather --noise --blend --also]\n'
-        + '       | set <course> <zoneId> [--variant --weight --feather --noise --blend --also] | remove <course> <zoneId> | update <course> <zoneId>...\n'
+    console.error('usage: bun run zones -- types|list <course> | add <course> <zoneType> (--from-feature <id> | --from-geojson <file>) [--variant --weight --feather --noise --blend --also --edge-blend --height]\n'
+        + '       | set <course> <zoneId> [--variant --weight --feather --noise --blend --also --edge-blend --height] | remove <course> <zoneId> | update <course> <zoneId>...\n'
         + '       | bind <course> <zoneType> [--variant <key> [--name <label>]] (--palette <grass-palette.json> | <item>[=maxDensity]...)\n'
         + '       | creeks <course> | creek <course> <creekId> --palette <default|variant|none> [--cover 0-1] [--max m] [--wet m]');
     process.exit(2);
@@ -141,6 +148,22 @@ function zoneAttributes(base: FeatureAttributes, variant?: string): FeatureAttri
     for (const k of ['weight', 'feather', 'noise']) {
         const v = num(k);
         if (v !== undefined) out[k] = v;
+    }
+    if (flags['edge-blend'] === 'default') delete out.edgeBlend;
+    else {
+        const edgeBlend = num('edge-blend');
+        if (edgeBlend !== undefined) out.edgeBlend = edgeBlend;
+    }
+    // `--height 2-3` (or one height, or `none`): how tall the zone's bushes grow, in metres.
+    if (flags['height'] !== undefined) {
+        const parsed = parseZoneHeight(flags['height']);
+        if ('error' in parsed) usage(`--height: ${parsed.error}`);
+        delete out[ZONE_HEIGHT_MIN_ATTRIBUTE];
+        delete out[ZONE_HEIGHT_MAX_ATTRIBUTE];
+        if (parsed.height) {
+            out[ZONE_HEIGHT_MIN_ATTRIBUTE] = parsed.height.min;
+            out[ZONE_HEIGHT_MAX_ATTRIBUTE] = parsed.height.max;
+        }
     }
     if (variant !== undefined) out.zoneVariant = variant;
     return out;

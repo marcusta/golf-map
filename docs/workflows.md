@@ -36,28 +36,30 @@ Order (each later step invalidates the ones after it, never the ones before):
    - Terrain changed but no new meshes: `unity_command golfmap.terrain.conform {terrain: "inner"}` alone (`golfmap.terrain.restore {backup}` undoes).
    - Never OPCD's right-click "Conform Mesh To Terrain": it moves the meshes down instead.
    - Done when `<course>/refresh-report.json` shows every step ok; its `pending` list is what remains.
-10. **After conform** (redo all of these after any later terrain change): **Plant vegetation** (workflow 2), `golfmap.props.place` (workflow 4 first), anything checked by screenshot. Done when the `pending` steps are done and verified in a screenshot.
+10. **After conform** (redo all of these after any later terrain change): **Plant for GSPro** (workflow 2), `golfmap.props.place` (workflow 4 first), anything checked by screenshot. Done when the `pending` steps are done and verified in a screenshot.
 11. **Save the scene** (ask the user; the commands mark it dirty, never save). Done when the title bar loses the `*`.
 
 A terrain change after step 9 = back to step 4 (capture), then 5-11 in order. Unity sculpts and anything hand-placed in the scene are the only things a re-run can lose.
 
-## 2. New vegetation area in the web editor → visible in Unity
+## 2. New vegetation area in the web editor → visible in Unity and GSPro
 
 > "I drew a vegetation area… but it doesn't show up. What more is needed?" / "When I add a new veg area in golf-map editor, what is the way to get it to show in Unity?"
 
-Drawing stores the zone in `data/app.sqlite` only; nothing reaches Unity until it is exported and imported.
+Drawing stores the zone in `data/app.sqlite` only; nothing reaches Unity or the Arborist file until it is exported and imported.
 Batch: the user prefers several zone edits, then one update/replant, not one per edit.
 
 1. **Draw** in web Vegetation mode: pick the zone type (and variant) in the command bar's zone-type picker, draw. Done when the zone shows in the stack panel with the intended type/variant.
 2. **Check the type grows something**: a zone type or variant with no items bound plants nothing (the planting report warns "binds no items"). Bind: `bun run zones -- bind <course> <type> [--variant <v>] --palette <file>` or `<item>=<weight> ...` ([grass-planting skill](../.claude/skills/grass-planting/SKILL.md)). Done when the variant picker no longer says Default is empty for it.
 3. Repeat 1-2 for every area in the batch.
-4. **Into Unity**, with the course's Unity project open:
-   - Only drawn zones changed, item bindings unchanged: select the zones, command bar **Update in Unity** (`vegetation-update` job: `gspro.py zones-patch` → `golfmap.zones.patch`, only their window respawns). Done when the result dialog reports the zones patched and no terrain skipped.
-   - Bindings changed, a new item, generated zones stale, the first planting, or Update says to: command bar **Plant vegetation** (job `vegetation`).
-     It runs the generators → `zones:inner` export → `golfmap.zones.import {terrain: "inner", package: "GolfMap lower vegetation"}` → `golfmap.grass.apply`, a second round for new items.
-     CLI without Unity: `bun run grass:zones -- <course>`, then those two `unity_command`s (import, apply, import, apply for a new item).
-     Done when the report says imported + applied with no unbound-item warnings.
-   - The outer terrain is not refreshed by Plant vegetation: `bun run gspro:export -- <course> zones:outer`, then `golfmap.zones.import {terrain: "outer"}` + `golfmap.grass.apply {terrain: "outer"}`. <!-- VERIFY: whether the user plants zones on the outer at all -->
+4. **Into Unity and the Arborist file**, with the course's Unity project open. GSPro draws the vegetation from two places: the course's own VSP (grass, the trees and plants kept there) and `arboristdata.dat` in the GSPro course folder (bushes, the woodland floor, most trees; [arborist.md](gspro/arborist.md)). Both buttons write both:
+   - Only drawn zones changed, item bindings unchanged: select the zones, command bar **Update for GSPro** (`vegetation-update` job: `gspro.py zones-patch` → `golfmap.zones.patch`, only their window respawns → `arborist.py lower`, about 10 s). Done when the result dialog reports the zones patched, no terrain skipped and "Arborist lower vegetation written".
+   - Bindings changed, a new item, generated zones stale, the first planting, or Update says to: command bar **Plant for GSPro** (job `vegetation`).
+     It runs the generators → `zones:inner` export → `golfmap.zones.import {terrain: "inner", package: "GolfMap lower vegetation"}` → `golfmap.grass.apply`, a second round for new items → `arborist.py lower` → `golfmap.trees.dump` + `arborist.py trees`.
+     Unity not open: the zones are exported, the Arborist file gets its lower vegetation, its trees stay as they were, and the report says so.
+     CLI without Unity: `bun run grass:zones -- <course>` (zones export + `arborist.py lower`), then those two `unity_command`s (import, apply, import, apply for a new item); the Arborist file alone: `bun run gspro:export -- <course> arborist`.
+     Done when the report says imported + applied with no unbound-item warnings, and "Arborist lower vegetation written" and "Arborist trees written" (a course without `docs/gspro/<course>/arborist-species.json`: "Arborist: not used by this course").
+   - A warning that the trees Arborist draws in place of the course's own changed: run the two `golfmap.vsp.trees.trim` commands it names, then save and build ([arborist.md](gspro/arborist.md), "The ring rule").
+   - The outer terrain is not refreshed by Plant for GSPro: `bun run gspro:export -- <course> zones:outer`, then `golfmap.zones.import {terrain: "outer"}` + `golfmap.grass.apply {terrain: "outer"}`. <!-- VERIFY: whether the user plants zones on the outer at all -->
 5. **Verify**: `unity_screenshot` over the zone with `warmup` 20-80 (an unfocused 2018 editor never ticks VSP on its own); `golfmap.vsp` lists the item spawning with mask rules. Done when the grass/bushes are visible in the screenshot.
    - Bare where the mask says it should grow: run `golfmap.terrain.conform` (grass buried under the meshes).
    - VSP throws `JobHandle.Complete()` every frame: `golfmap.vsp.reset` or any `unity_sync push`.

@@ -3413,6 +3413,24 @@
    }
   },
   {
+   "id": "h12-stone-16",
+   "e": 529986.0,
+   "n": 6487328.7,
+   "yawDeg": 110,
+   "lengthM": 4.2,
+   "topM": 1.2,
+   "prefab": "Assets/NatureManufacture Assets/Meadow Environment Dynamic Nature/Rocks/Rocks/Prefabs/prefab_Rock_01.prefab",
+   "tint": [
+    0.66,
+    0.67,
+    0.7
+   ],
+   "materialFloats": {
+    "_SmoothnessPower": 0.35,
+    "_MetallicPower": 0.0
+   }
+  },
+  {
    "id": "h4-tee-stone-01",
    "e": 529747.0,
    "n": 6487834.5,

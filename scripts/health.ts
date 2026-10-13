@@ -38,6 +38,12 @@ const REQUIRED_TABLES = [
     'map_build_jobs',
     'terrain_edits',
     'tapscore_published_scores',
+    'cleanup_areas',
+    'course_feature_history',
+    'course_tee_sets',
+    'course_zone_types',
+    'site_photos',
+    'terrain_edit_history',
 ];
 
 console.log(`Validating DB at ${dbPath}...`);

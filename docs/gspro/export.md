@@ -18,7 +18,7 @@ gravel/dirt centerline has valid transitions; Blender reads this sidecar and det
 paints the existing path/fringe meshes before Unity refresh.
 
 Detail moved out of `server/AGENTS.md` and `pipeline/AGENTS.md`; those keep the summary.
-Chain: web export panel (`web/src/export/`) → `GsproExportService` (`server/services/gspro-export.service.ts`)
+Chain: web export dialog (`web/src/export/`: tabs Terrain, Textures, Course, Tees, GreenKeeper, plus the SVG test-variant panel beside the map) → `GsproExportService` (`server/services/gspro-export.service.ts`)
 → `pipeline/gspro.py <kind>` → files in the course's export folder → Unity importers (`unity/`).
 
 ## Server: `GsproExportService` (builder mode only)
@@ -155,7 +155,7 @@ the next 10 m (`SIDE_STEP_M`) so a hand-typed area is never a decimal-metre terr
   The accumulators are one float32 frame per slot plus the budget (64 MB each at 4096). `--exclude-square`
   works as for trees: zeroed in the masks and cut from the polygons. Unknown zone types are warned about
   and skipped. An unknown variant is warned about and falls back to Default.
-- `zones-patch` — the quick path for some zones (the web's **Update in Unity**, `bun run zones -- update`):
+- `zones-patch` — the quick path for some zones (the web's **Update for GSPro**, `bun run zones -- update`):
   `--zones-json` (a terrain's zones export) `--ids` (zone ids) `--course` re-rasterizes only the window those
   zones cover, now and in that export (its rows), plus any exported zone the course no longer has.
   `render_zone_masks(window=)` gives exactly the full render's pixels there, since each zone's crop is only
@@ -192,13 +192,32 @@ the next 10 m (`SIDE_STEP_M`) so a hand-typed area is never a decimal-metre terr
   (`GKD_OOB_INSET_M`) inside the drawn `oob` ring or, with none drawn, the file's own `pOOB`; one
   entirely beyond it is left out. Positions are Unity world metres exactly as `trees` writes them — x/z from the
   square's south-west corner, y the ground above the terrain's zero, read off `--dem` (default: the
-  `--sidecar`'s own GeoTIFF) so they sit on the imported heightmap. The app's free-form tee names map
-  onto the GKD's eight sets by name then colour (`--tee-map NAME=TEESET` for the rest); a tee's
+  `--sidecar`'s own GeoTIFF) so they sit on the imported heightmap. A tee goes on the GKD set
+  its course tee set says (`course_tee_sets.gspro_tee`, migration 030, picked in the export dialog's Tees tab; NULL = not exported), whatever the club calls the set; a tee without a set, or a
+  database from before the column, is matched by name then colour (`--tee-map NAME=TEESET` overrides both); a tee's
   `Distance` is the walk through the aim points the tee has not already passed to the green centre
-  (the `Par3` set goes straight there), and `TeeTypeTotalDistance` sums them. Four pins per green,
-  the green centre standing in for the days a green has no pin for. The file is **merged**: everything
-  GreenKeeper owns (name, location, designer, keywords, ratings, range, scene folder) is carried over
-  from the file at `--out` or `--template`, and the original is kept once as `<out>.GKD.bak`;
+  (the `Par3` set goes straight there), and `TeeTypeTotalDistance` sums them. A set a hole has no tee
+  for (and a missing aim point) is a disabled row, a hole with no tee a disabled hole; tees under 1 m
+  apart share the position furthest from the hole and tees within 6 m that stand under 0.7 m off the
+  line of play are put on it (`_gkd_tidy_tees`, see `pipeline/README.md`). Four pins per green,
+  the green centre standing in for the days a green has no pin for. The file is **merged**: the header
+  (range, wind, stimp, scene folder) is carried over from the file at `--out` or `--template`, and the
+  original is kept once as `<out>.GKD.bak`. The **course details** — name, city/state/country, designer,
+  homage, description (`CourseInfo`), keywords, difficulty — round-trip:
+  `GsproCourseMeta` (`shared/gspro-course-meta.ts`) in migration 028's nullable `courses.gspro_meta_json`,
+  edited in the panel's "Course details" (`setMeta`, saved per field) and written into the header by the
+  export; `readGkdMeta` ("Read the course details from the .GKD") stores the ones in the folder's `.GKD`
+  after an edit in GreenKeeper. `settings` returns both (`meta`, `gkdMeta`) and the panel names what
+  differs. NULL = none kept: the form shows the file's and the export leaves them alone. Each tee set's
+  **rating/slope** (`<set>SR`) comes from the course's tee sets instead — `course_tee_sets` (migration 029,
+  `TeeSetsService`, Furniture › Tee sets): a men's and a women's course rating and slope per set and
+  `gspro_rating` saying which of the two the GKD gets; a set lands on the GKD set its tees do
+  (`gspro_tee`, `_load_gkd_ratings`), sets without that rating leave the file's value. `readGkdMeta` also writes the
+  file's ratings back onto the sets (`settings.gkdRatings` lists the ones that differ); `readGkdRatings`
+  (the Tees tab's "Read the ratings from the .GKD") takes the ratings alone and leaves the kept details. A set marked
+  `gspro_only` (Furniture › Tee sets, "GSPro only": a Junior or Par3 set the club does not have) is
+  exported like any other; the mark, copied onto its tees (`tees.gspro_only`), is for the course guide
+  to leave it out, and the course length (`CoursesService.loadHoleGeometry`) already does.
   `--no-merge` starts from a bare v4.1 file. The app runs it as the `gkd` export kind (`exportGkd`, the
   panel's "GreenKeeper course file" section, `bun run gspro:export -- <course> gkd [--course-dir <folder>]`):
   it writes into the course's **GSPro course folder** — migration 021's nullable `courses.gspro_course_dir`,

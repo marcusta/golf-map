@@ -1,6 +1,7 @@
 import { Type, type Static } from '@sinclair/typebox';
 import { requireAuth } from '@basics/core/server/auth';
 import type { GsproExportService } from '../services/gspro-export.service';
+import { GKD_KEYWORDS } from '../../shared/gspro-course-meta';
 
 // --- Input schemas ---
 
@@ -14,7 +15,23 @@ const SetDirInput = Type.Object({
     dir: Type.Union([Type.String(), Type.Null()]),
 });
 
-const TerrainInput = Type.Union([Type.Literal('inner'), Type.Literal('outer')]);
+/** The course details the .GKD export writes (`GsproCourseMeta`); null clears them. */
+const SetMetaInput = Type.Object({
+    courseId: Type.String(),
+    meta: Type.Union([Type.Null(), Type.Object({
+        courseName: Type.String({ maxLength: 200 }),
+        city: Type.String({ maxLength: 200 }),
+        state: Type.String({ maxLength: 200 }),
+        country: Type.String({ maxLength: 200 }),
+        designer: Type.String({ maxLength: 200 }),
+        homage: Type.String({ maxLength: 200 }),
+        description: Type.String({ maxLength: 4000 }),
+        difficulty: Type.Number({ minimum: 0 }),
+        keywords: Type.Array(Type.Union(GKD_KEYWORDS.map(k => Type.Literal(k))), { maxItems: GKD_KEYWORDS.length }),
+    })]),
+});
+
+const TerrainInput =Type.Union([Type.Literal('inner'), Type.Literal('outer')]);
 
 /** One export to start; the fields a kind needs are checked by the service (409). */
 const StartInput = Type.Object({
@@ -22,7 +39,7 @@ const StartInput = Type.Object({
     kind: Type.Union([
         Type.Literal('svg'), Type.Literal('ortho'), Type.Literal('outer-ortho'),
         Type.Literal('dem'), Type.Literal('unity-terrain'), Type.Literal('unity-sculpt'), Type.Literal('unity-ortho'), Type.Literal('hillshade'), Type.Literal('trees'), Type.Literal('buildings'),
-        Type.Literal('zones'), Type.Literal('vegetation'), Type.Literal('vegetation-update'), Type.Literal('creeks'), Type.Literal('gkd'),
+        Type.Literal('zones'), Type.Literal('vegetation'), Type.Literal('vegetation-update'), Type.Literal('arborist'), Type.Literal('creeks'), Type.Literal('gkd'),
     ]),
     /** `ortho`: a `source` file name from `orthoSources`. */
     source: Type.Optional(Type.String()),
@@ -48,7 +65,7 @@ const StartInput = Type.Object({
     excludeFeatureIds: Type.Optional(Type.Array(Type.String({ minLength: 1 }), { maxItems: 200000 })),
     /** `svg`: variant name; the file becomes `<course>-<variant>.svg` instead of overwriting `<course>.svg`. */
     variant: Type.Optional(Type.String({ maxLength: 60 })),
-    /** `vegetation-update`: the vegetation_zone feature ids to update in Unity (re-rasterize their area, patch the masks, respawn there). */
+    /** `vegetation-update`: the vegetation_zone feature ids to update for GSPro (re-rasterize their area, patch the masks, respawn there in Unity, rewrite the Arborist file's lower vegetation). */
     zoneIds: Type.Optional(Type.Array(Type.String({ minLength: 1 }), { maxItems: 5000 })),
 });
 
@@ -60,7 +77,8 @@ const JobInput = Type.Object({
 
 /**
  * GSPro SVG, orthophoto, DEM/heightmap, hillshade and tree exports for the inner and outer terrains,
- * run as jobs the panel polls. Builder-only (see routes.ts): it writes files to an
+ * the vegetation planting (`vegetation`: generators, zones export, Unity, the Arborist file; `vegetation-update`
+ * for some zones; `arborist` for the Arborist file alone), run as jobs the panel polls. Builder-only (see routes.ts): it writes files to an
  * operator-chosen folder and shells out to the pipeline, neither of which exists on the serve box.
  */
 export function createGsproExportApi(svc: GsproExportService) {
@@ -86,6 +104,33 @@ export function createGsproExportApi(svc: GsproExportService) {
             path: '/gspro-export/course-dir',
             fn: (input: Static<typeof SetDirInput>) => svc.setCourseDir(input.courseId, input.dir),
             schema: SetDirInput,
+            middleware: mw,
+        },
+        /** Keep the course details (name, location, designer, description, keywords) the .GKD export writes. */
+        setMeta: {
+            method: 'POST' as const,
+            path: '/gspro-export/meta',
+            fn: (input: Static<typeof SetMetaInput>) => svc.setMeta(input.courseId, input.meta),
+            schema: SetMetaInput,
+            middleware: mw,
+        },
+        /**
+         * Take those details from the .GKD in the course's GSPro folder (what was typed in GreenKeeper), and
+         * its ratings onto the course's tee sets.
+         */
+        readGkdMeta: {
+            method: 'POST' as const,
+            path: '/gspro-export/meta/read-gkd',
+            fn: (input: Static<typeof CourseInput>) => svc.readGkdMeta(input.courseId),
+            schema: CourseInput,
+            middleware: mw,
+        },
+        /** Take only the tee sets' ratings from that .GKD; the course details stay. */
+        readGkdRatings: {
+            method: 'POST' as const,
+            path: '/gspro-export/ratings/read-gkd',
+            fn: (input: Static<typeof CourseInput>) => svc.readGkdRatings(input.courseId),
+            schema: CourseInput,
             middleware: mw,
         },
         terrain: {

@@ -1,3 +1,4 @@
+import { emptyCourseMeta, type GsproCourseMeta } from '../../shared/gspro-course-meta';
 import { test, expect, afterEach } from 'bun:test';
 import { di } from '@basics/core/client/core';
 import { _reset } from '@basics/core/client/error-report';
@@ -38,11 +39,21 @@ const TERRAIN: CourseTerrain = {
     },
 };
 
+const GKD_META: GsproCourseMeta = {
+    ...emptyCourseMeta('Vreta'), city: 'Linköping', country: 'Sweden', designer: 'Fandorm',
+    description: 'Oak parkland.', difficulty: 4.9, keywords: ['Parkland'],
+};
+
 function fakeApi(dir: string | null, run?: () => never, sources: GsproOrthoSource[] = SOURCES, terrain: CourseTerrain | null = TERRAIN) {
     let courseDir: string | null = null;
+    let meta: GsproCourseMeta | null = null;
+    // What GreenKeeper saved into the scene folder's .GKD.
+    const gkd = { meta: GKD_META as GsproCourseMeta | null, ratings: [] as string[] };
+    const metaCalls: (GsproCourseMeta | null)[] = [];
     const settings = (): GsproExportSettings => ({
         dir: dir ?? DEFAULT_DIR, isDefault: dir === null, defaultDir: DEFAULT_DIR,
         courseDir, gkdFile: courseDir ? `${courseDir.split('\\').pop()}.GKD` : null,
+        meta, gkdMeta: courseDir ? gkd.meta : null, gkdRatings: courseDir ? gkd.ratings : [],
     });
     const gkdCalls: (string | null)[] = [];
     const orthoCalls: string[] = [];
@@ -57,6 +68,8 @@ function fakeApi(dir: string | null, run?: () => never, sources: GsproOrthoSourc
         async settings() { return settings(); },
         async setDir() { return settings(); },
         async setCourseDir({ dir: next }) { courseDir = next; return settings(); },
+        async setMeta({ meta: next }) { meta = next; metaCalls.push(next); return settings(); },
+        async readGkdMeta() { meta = gkd.meta; gkd.ratings = []; return settings(); },
         async runGkd() {
             if (run) run();
             gkdCalls.push(courseDir);
@@ -105,7 +118,7 @@ function fakeApi(dir: string | null, run?: () => never, sources: GsproOrthoSourc
         },
     };
     const api = jobApi(handlers);
-    return { api, svgCalls, orthoCalls, outerCalls, demCalls, hillshadeCalls, treesCalls, zonesCalls, floorCalls, gkdCalls };
+    return { api, svgCalls, orthoCalls, outerCalls, demCalls, hillshadeCalls, treesCalls, zonesCalls, floorCalls, gkdCalls, metaCalls, gkd };
 }
 
 
@@ -118,7 +131,7 @@ function fakeApi(dir: string | null, run?: () => never, sources: GsproOrthoSourc
 function jobApi(h: Record<string, (input: any) => Promise<any>>, current: () => Promise<GsproExportJob | null> = async () => null): GsproExportApi {
     let last: GsproExportJob | null = null;
     return {
-        settings: h.settings, setDir: h.setDir, setCourseDir: h.setCourseDir, orthoSources: h.orthoSources, terrain: h.terrain,
+        settings: h.settings, setDir: h.setDir, setCourseDir: h.setCourseDir, setMeta: h.setMeta, readGkdMeta: h.readGkdMeta, orthoSources: h.orthoSources, terrain: h.terrain,
         async start(input) {
             const { courseId, kind } = input;
             const result = kind === 'svg' ? await h.run({ courseId, excludeFeatureIds: input.excludeFeatureIds, variant: input.variant })
@@ -142,12 +155,12 @@ function jobApi(h: Record<string, (input: any) => Promise<any>>, current: () => 
 }
 
 async function mount(dir: string | null = null, run?: () => never, sources?: GsproOrthoSource[], terrain?: CourseTerrain | null) {
-    const { api, orthoCalls, outerCalls, demCalls, hillshadeCalls, treesCalls, zonesCalls, floorCalls, gkdCalls } = fakeApi(dir, run, sources, terrain);
+    const { api, orthoCalls, outerCalls, demCalls, hillshadeCalls, treesCalls, zonesCalls, floorCalls, gkdCalls, metaCalls, gkd } = fakeApi(dir, run, sources, terrain);
     const svc = new GsproExportService(api, 1);
     di.set(GsproExportService, svc);
     const host = document.createElement('div');
     new GsproExportPanelComponent({}).mount(host);
-    return { host, svc, orthoCalls, outerCalls, demCalls, hillshadeCalls, treesCalls, zonesCalls, floorCalls, gkdCalls };
+    return { host, svc, orthoCalls, outerCalls, demCalls, hillshadeCalls, treesCalls, zonesCalls, floorCalls, gkdCalls, metaCalls, gkd };
 }
 
 test('the panel stays hidden until a course opens it', async () => {
@@ -213,7 +226,7 @@ test('a failure shows the error section and the run button recovers', async () =
     expect(error.parentElement?.className).not.toContain('hidden');
     expect(error.textContent).toContain('no map area');
 
-    const button = host.querySelector('.gspro-export__run') as HTMLButtonElement;
+    const button = host.querySelector('[data-testid=gspro-run-svg]') as HTMLButtonElement;
     expect(button.disabled).toBe(false);
     expect(button.textContent).toBe('Export SVG');
 });
@@ -234,7 +247,7 @@ test('the vintage picker lists the persisted orthophotos and preselects the one 
     expect(host.textContent).toContain('8192 × 8192');
 
     const button = host.querySelector('.gspro-export__run-ortho') as HTMLButtonElement;
-    expect(button.textContent).toBe('Export inner orthophoto JPEG');
+    expect(button.title).toBe('Export inner orthophoto JPEG');
     expect(button.disabled).toBe(false);
 });
 
@@ -296,7 +309,7 @@ test('the outer orthophoto export uses the picked vintage\'s collection', async 
     await svc.openFor('course-1', 'Vreta');
 
     const button = host.querySelector('.gspro-export__run-outer-ortho') as HTMLButtonElement;
-    expect(button.textContent).toBe('Export outer orthophoto JPEG');
+    expect(button.title).toBe('Export outer orthophoto JPEG');
     expect(button.disabled).toBe(false);
     expect(host.textContent).toContain('5000 m outer square');
 
@@ -319,8 +332,8 @@ test('the DEM buttons export the inner and the outer terrain', async () => {
 
     const inner = host.querySelector('.gspro-export__run-inner-dem') as HTMLButtonElement;
     const outer = host.querySelector('.gspro-export__run-outer-dem') as HTMLButtonElement;
-    expect(inner.textContent).toBe('Export inner heightmap (RAW + GeoTIFF)');
-    expect(outer.textContent).toBe('Export outer heightmap (RAW + GeoTIFF)');
+    expect(inner.title).toBe('Export inner heightmap (RAW + GeoTIFF)');
+    expect(outer.title).toBe('Export outer heightmap (RAW + GeoTIFF)');
     expect(inner.disabled).toBe(false);
     expect(outer.disabled).toBe(false);
     expect(host.textContent).toContain('TIF → RAW step, done');
@@ -340,8 +353,8 @@ test('the hillshade buttons render the inner and the outer terrain', async () =>
 
     const inner = host.querySelector('.gspro-export__run-inner-hillshade') as HTMLButtonElement;
     const outer = host.querySelector('.gspro-export__run-outer-hillshade') as HTMLButtonElement;
-    expect(inner.textContent).toBe('Export inner hillshade JPEG');
-    expect(outer.textContent).toBe('Export outer hillshade JPEG');
+    expect(inner.title).toBe('Export inner hillshade JPEG');
+    expect(outer.title).toBe('Export outer hillshade JPEG');
     expect(host.textContent).toContain('hillshade of the terrain');
 
     inner.click();
@@ -358,8 +371,8 @@ test('the trees buttons export the inner and the outer terrain', async () => {
 
     const inner = host.querySelector('.gspro-export__run-inner-trees') as HTMLButtonElement;
     const outer = host.querySelector('.gspro-export__run-outer-trees') as HTMLButtonElement;
-    expect(inner.textContent).toBe('Export inner trees');
-    expect(outer.textContent).toBe('Export outer trees');
+    expect(inner.title).toBe('Export inner trees');
+    expect(outer.title).toBe('Export outer trees');
     expect(host.textContent).toContain('unity-trees file');
 
     inner.click();
@@ -389,7 +402,7 @@ test('a course with no map area says why the terrains are unavailable and cannot
     }
     // The rest of the panel still works: folder + SVG export are unaffected.
     expect((host.querySelector('input[type="text"]') as HTMLInputElement).placeholder).toBe(DEFAULT_DIR);
-    expect((host.querySelector('.gspro-export__run') as HTMLButtonElement).disabled).toBe(false);
+    expect((host.querySelector('[data-testid=gspro-run-svg]') as HTMLButtonElement).disabled).toBe(false);
     expect(await svc.runDem('inner')).toBe(true);  // the server is the judge; the button just guards
     expect(demCalls).toEqual(['inner']);
     expect(outerCalls).toEqual([]);
@@ -427,7 +440,7 @@ test('the cleaned section has the one-step button into Unity, enabled once a vin
     const { host, svc } = await mount();
     await svc.openFor('course-1', 'Vreta');
     const button = host.querySelector('[data-testid="gspro-unity-ortho"]') as HTMLButtonElement;
-    expect(button.textContent).toBe('Inner cleaned photo → Unity meshes');
+    expect(button.title).toBe('Inner cleaned photo → Unity meshes');
     expect(button.disabled).toBe(false);
 });
 
@@ -437,8 +450,8 @@ test('the vegetation zone buttons export the inner and the outer terrain', async
 
     const inner = host.querySelector('.gspro-export__run-inner-zones') as HTMLButtonElement;
     const outer = host.querySelector('.gspro-export__run-outer-zones') as HTMLButtonElement;
-    expect(inner.textContent).toBe('Export inner vegetation zones');
-    expect(outer.textContent).toBe('Export outer vegetation zones');
+    expect(inner.title).toBe('Export inner vegetation zones');
+    expect(outer.title).toBe('Export outer vegetation zones');
     inner.click();
     await new Promise(r => setTimeout(r, 0));
     await new Promise(r => setTimeout(r, 0));
@@ -483,6 +496,49 @@ test('the GKD export without a course folder says what to set', async () => {
     expect(await svc.runGkd()).toBe(false);
     expect(svc.error.peek()).toMatch(/Set the GSPro course folder first/);
     expect(gkdCalls).toEqual([]);
+});
+
+test('course details show from the .GKD, are kept when one changes, and a GreenKeeper edit is read back in', async () => {
+    const { host, svc, metaCalls, gkd } = await mount();
+    await svc.openFor('course-1', 'Vreta');
+    const input = (id: string) => host.querySelector(`[data-testid="gspro-meta-${id}"]`) as HTMLInputElement;
+    const hint = () => host.querySelector('[data-testid="gspro-meta-hint"]')!.textContent;
+    const read = host.querySelector('[data-testid="gspro-meta-read"]') as HTMLButtonElement;
+    const tick = () => new Promise(r => setTimeout(r, 0));
+
+    // No folder, nothing kept: a blank form under the course's own name.
+    expect(input('courseName').value).toBe('Vreta');
+    expect(input('designer').value).toBe('');
+    expect(read.className).toContain('hidden');
+
+    // The folder's .GKD brings what was typed in GreenKeeper; nothing is kept until a field changes.
+    svc.courseDirDraft.set(SCENE);
+    await svc.saveCourseDir();
+    expect(input('designer').value).toBe('Fandorm');
+    expect(input('description').value).toBe('Oak parkland.');
+    expect((host.querySelector('.gspro-export__keywords input:checked')!.parentElement as HTMLElement).textContent).toContain('Parkland');
+    expect(hint()).toContain('shown from the .GKD');
+    expect(metaCalls).toEqual([]);
+
+    input('designer').value = 'Marcus';
+    input('designer').dispatchEvent(new Event('change'));
+    await tick();
+    expect(metaCalls).toEqual([{ ...GKD_META, designer: 'Marcus' }]);
+    expect(hint()).toContain('The .GKD has a different designer');
+    expect(read.className).not.toContain('hidden');
+
+    // Saved in GreenKeeper again: read it in, and the two agree.
+    gkd.meta = { ...GKD_META, designer: 'Fandorm', homage: 'Vreta Kloster GK' };
+    gkd.ratings = ['Yellow 71.5/135'];
+    await svc.saveCourseDir();
+    expect(hint()).toContain('The .GKD rates Yellow 71.5/135, which the course\'s tee sets do not.');
+    read.click();
+    await tick();
+    await tick();
+    expect(input('designer').value).toBe('Fandorm');
+    expect(input('homage').value).toBe('Vreta Kloster GK');
+    expect(hint()).toBe('');
+    expect(read.className).toContain('hidden');
 });
 
 // --- SVG test variants ---

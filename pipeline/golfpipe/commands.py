@@ -2105,6 +2105,104 @@ def cmd_trees_stems(lidar_paths: list[Path], out: Path, tiles_dir: Path, course_
     return stems
 
 
+def cmd_rock_candidates(lidar_paths: list[Path], out: Path, bbox_3006=None, dem_path=None, tiles_dir: Path | None = None,
+                        orthos: dict | None = None, known_paths=(), buildings_path: Path | None = None,
+                        near_path: Path | None = None, near_m: float = 35.0, resolution: float = 1.0):
+    """Rock candidates of a box as GeoJSON points, best first (golfpipe/rocks.py: found in the
+    lidar, ranked with the photos).
+
+    The photos are every ortho vintage tiles_dir/manifest.json lists (the active one in
+    tiles_dir/ortho, the others in tiles_dir/ortho/<collection>) plus `orthos` (name -> XYZ webp
+    pyramid directory); with none the candidates come from the lidar alone, all "medium".
+    known_paths: golfmap-walls-v1 specs whose `boulders` are already placed (marked `known`).
+    buildings_path: the fetch-buildings survey; a candidate on a footprint is dropped.
+    near_path: GeoJSON of the course's features (as fetch-roads --near); a candidate farther than
+    near_m from all of them is dropped."""
+    import json
+    import time
+    import laspy
+    from golfpipe import rocks as rocks_mod
+    from golfpipe import trees_stems as trees_stems_mod
+
+    if not np.isfinite(resolution) or resolution <= 0:
+        raise ValueError("resolution must be positive")
+    if bbox_3006 is None:
+        if dem_path is None:
+            raise ValueError("rock-candidates needs --bbox or --dem")
+        bbox_3006 = _dem_bbox_3006(dem_path)
+    if len(bbox_3006) != 4 or not np.all(np.isfinite(bbox_3006)) or bbox_3006[0] >= bbox_3006[2] or bbox_3006[1] >= bbox_3006[3]:
+        raise ValueError("bbox must have increasing finite EPSG:3006 bounds")
+    started = time.monotonic()
+    touching = [p for p in lidar_paths if _touches(_lidar_bounds_3006(p), bbox_3006)]
+    print("Gridding ground returns (mean z) ...")
+    ground_sum, ground_count, transform, _ = grid_dem_mod.grid_lidar_points(
+        touching, bbox_3006, resolution=resolution, classes=grid_dem_mod.DEFAULT_CLASSES)
+    collector = rocks_mod.Collector(grid_dem_mod.build_dem_grid(ground_sum, ground_count), transform)
+    print(f"Collecting the returns {rocks_mod.MIN_HEIGHT_M:g}-{rocks_mod.MAX_HEIGHT_M:g} m over the ground ...")
+    e_min, n_min, e_max, n_max = bbox_3006
+    for path in touching:
+        with laspy.open(str(path)) as reader:
+            for chunk in reader.chunk_iterator(grid_dem_mod.DEFAULT_CHUNK_SIZE):
+                x = np.asarray(chunk.x, dtype=np.float64)
+                y = np.asarray(chunk.y, dtype=np.float64)
+                inside = (x >= e_min) & (x < e_max) & (y >= n_min) & (y < n_max)
+                if inside.any():
+                    collector.add(x[inside], y[inside], np.asarray(chunk.z, dtype=np.float64)[inside],
+                                  np.asarray(chunk.classification)[inside], np.asarray(chunk.number_of_returns)[inside],
+                                  np.asarray(chunk.return_number)[inside])
+    points = collector.finish()
+    candidates = rocks_mod.detect(points, cell_m=resolution)
+    print(f"{points.x.size:,} band returns -> {len(candidates):,} solid squat clusters")
+
+    pyramids = {}
+    if tiles_dir is not None:
+        manifest_path = tiles_dir / "manifest.json"
+        manifest = json.loads(manifest_path.read_text()) if manifest_path.exists() else {}
+        for vintage in manifest.get("orthoVintages") or []:
+            name = vintage["collection"]
+            pyramids[name] = tiles_dir / "ortho" if name == manifest.get("activeOrtho") else tiles_dir / "ortho" / name
+        if not pyramids and (tiles_dir / "ortho").is_dir():
+            pyramids["ortho"] = tiles_dir / "ortho"
+    pyramids.update({name: Path(directory) for name, directory in (orthos or {}).items()})
+    photos = {}
+    for name, directory in pyramids.items():
+        if not (directory / str(trees_stems_mod.LEAF_OFF_ZOOM)).is_dir():
+            print(f"Photo {name}: no zoom {trees_stems_mod.LEAF_OFF_ZOOM} tiles in {directory}; skipped", file=sys.stderr)
+            continue
+        photos[name] = (lambda east, north, directory=directory, cache={}:
+                        trees_stems_mod.sample_ortho_points(directory, east, north, cache=cache))
+    print("Photos: " + (", ".join(photos) if photos else "none (lidar alone)"))
+
+    known = []
+    for path in known_paths:
+        known.extend(rocks_mod.known_rocks(json.loads(Path(path).read_text(encoding="utf-8"))))
+    from shapely.geometry import Point, shape
+    from shapely.ops import unary_union
+    footprints = near = None
+    if buildings_path is not None:
+        survey = json.loads(Path(buildings_path).read_text(encoding="utf-8"))
+        footprints = unary_union([shape(f["geometry"]) for f in survey["features"] if f.get("geometry")]).buffer(1.0)
+    if near_path is not None:
+        from rasterio.warp import transform as warp_transform
+        near = roads_mod.near_area_3006(json.loads(Path(near_path).read_text(encoding="utf-8")),
+                                        lambda lons, lats: warp_transform("EPSG:4326", "EPSG:3006", list(lons), list(lats)), near_m)
+        if near is None:
+            print(f"No course features in {near_path}: keeping the whole box")
+
+    def keep(candidate):
+        at = Point(candidate.x, candidate.y)
+        return (footprints is None or not footprints.contains(at)) and (near is None or near.contains(at))
+    assessed = rocks_mod.assess(candidates, photos, bbox_3006, known=known, keep=keep)
+    out.parent.mkdir(parents=True, exist_ok=True)
+    source_ref = ",".join(p.name for p in touching)
+    out.write_text(json.dumps(rocks_mod.feature_collection(assessed, source_ref, list(photos)), separators=(",", ":")) + "\n")
+    tiers = {tier: sum(1 for c in assessed if c.confidence == tier) for tier in rocks_mod.CONFIDENCE_ORDER}
+    print(f"Wrote {len(assessed):,} rock candidates ({tiers['high']:,} high, {tiers['medium']:,} medium, {tiers['low']:,} low; "
+          f"{sum(1 for c in assessed if c.known):,} on a known rock, {len(candidates) - len(assessed):,} on buildings or away from play dropped) "
+          f"to {out} in {time.monotonic() - started:.1f} s")
+    return assessed
+
+
 def cmd_canopy(
     lidar_paths: list[Path],
     dem_path: Path | None,

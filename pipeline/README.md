@@ -984,10 +984,24 @@ puts it) — read off `--dem` (by default the sidecar's own GeoTIFF), so every
 point lands on the imported heightmap.
 
 - **Tee sets.** The GKD has eight (`Black White Green Blue Yellow Red Junior
-  Par3`); the app names a tee whatever the course calls it, so each is
-  matched on its name and then its colour, with a few aliases
-  (`championship`→Black, `ladies`→Red, …). Anything else is skipped with a
-  warning naming it — give it a slot with `--tee-map NAME=TEESET`.
+  Par3`); the app names a tee whatever the course calls it, so each tee
+  goes on the set its course tee set says (`course_tee_sets.gspro_tee`,
+  picked in the app's GSPro export panel; empty = not exported). A tee
+  without a set, or a database from before that column, is matched on its
+  name and then its colour, with a few aliases (`championship`→Black,
+  `ladies`→Red, …). Anything left is skipped with a warning naming it;
+  `--tee-map NAME=TEESET` overrides all of it.
+- **No tee, no row to play.** A set the hole has no tee for, and an aim point
+  it does not have, is written disabled with no position (GreenKeeper's own
+  form), so GSPro offers only the tees the app has. A hole with no tee at all
+  is written disabled, with a warning.
+- **Tidy tees.** So the tee markers look kept: tees drawn under 1 m apart
+  (`GKD_TEE_SAME_M`) are one tee box and all get the position of the one
+  furthest from the hole; then tees within 6 m of each other (`GKD_TEE_ROW_M`,
+  chains count) that stand under 0.7 m (`GKD_TEE_ROW_OFFSET_M`) off the line
+  from the longest of them to its first aim point — the green centre where it
+  has none — are moved sideways onto that line. Only the GKD moves; the app's
+  tees stay as drawn. Distances are measured from the tidied positions.
 - **Distances.** A tee's scorecard distance is the walk on the ground plane
   from the tee through the hole's aim points to the green centre. An aim
   point the tee is already past (no closer to the green than the tee itself)
@@ -1035,10 +1049,18 @@ point lands on the imported heightmap.
   is one flat point list, so an island in a pond is inside its hazard, which
   is what the Rules say anyway. Drop zones and island greens stay
   GreenKeeper's to place.
-- **Merging.** GreenKeeper owns the course's identity and setup — name,
-  location, designer, keywords, slope/rating, the driving range, the scene
-  folder name — and those are carried over from the file at `--out` (or
-  `--template`) untouched; only `Holes`, `Hazards`, `pOOB`,
+- **Merging.** The header is carried over from the file at `--out` (or
+  `--template`) untouched, except the course details the app keeps for the
+  course in `courses.gspro_meta_json` — name, location (`CityTown`,
+  `StateCountyProvince`, `Country` and the joined `Location`), designer,
+  homage, `CourseInfo`, the `Keyword*` flags with `KeywordsString` and
+  `DifficultyRating` — which are written from there (`_gkd_apply_meta`). A
+  course with none kept (NULL) leaves those to the file too. The `<set>SR`
+  ratings come from the course's tee sets (`course_tee_sets`: men's and
+  women's rating and slope, `gspro_rating` picks which; `_load_gkd_ratings`),
+  each on the GKD set its tees map to; a set without that rating leaves the
+  file's. The driving range, wind, stimp, firmness and the scene
+  folder name are always GreenKeeper's. Besides that only `Holes`, `Hazards`, `pOOB`,
   `TeeTypeTotalDistance`, the counts, `CoursePar` and `altitudeV2` are
   replaced. The original is kept as `<out>.GKD.bak` on the first run and
   never overwritten after that. `--no-merge` starts from a bare v4.1 file

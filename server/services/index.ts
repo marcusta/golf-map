@@ -9,6 +9,7 @@ import { SitesService } from './sites.service';
 import { CoursesService } from './courses.service';
 import { HolesService } from './holes.service';
 import { TeesService } from './tees.service';
+import { TeeSetsService } from './tee-sets.service';
 import { GreensService } from './greens.service';
 import { PinsService } from './pins.service';
 import { AimPointsService } from './aim-points.service';
@@ -63,6 +64,7 @@ export function createServices(db: Kysely<Database>, config: ServicesConfig = {}
     const coursesService = new CoursesService(db);
     const holesService = new HolesService(db);
     const teesService = new TeesService(db);
+    const teeSetsService = new TeeSetsService(db);
     const greensService = new GreensService(db);
     const pinsService = new PinsService(db);
     const aimPointsService = new AimPointsService(db);
@@ -108,6 +110,7 @@ export function createServices(db: Kysely<Database>, config: ServicesConfig = {}
         coursesService,
         holesService,
         teesService,
+        teeSetsService,
         greensService,
         pinsService,
         aimPointsService,

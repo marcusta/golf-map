@@ -31,6 +31,7 @@ namespace GolfMap.Editor
         public List<GolfMapZoneItem> items;
         public List<GolfMapZoneType> zoneTypes;
         public List<GolfMapZone> zones;
+        public GolfMapZoneHeight height; // the bush-height mask; no file = no zone sets a height
         // Not in the file: consistency notes found while loading (unknown slot keys and
         // the like). They do not stop an import; the summary and the report list them.
         [NonSerialized] public List<string> warnings = new List<string>();
@@ -42,6 +43,17 @@ namespace GolfMap.Editor
         public string file;              // PNG next to the JSON
         public int resolution;           // square, pixels
         public List<string> channels;    // VSP item name per channel R, G, B, A ("" = unused)
+    }
+
+    // The bush-height mask (D-VZ17): a grey PNG, 0 = no height set, else the intended height
+    // as value / 256 x rangeM metres, and the items that can grow where a height is set.
+    [Serializable]
+    public class GolfMapZoneHeight
+    {
+        public string file;              // PNG next to the JSON
+        public int resolution;           // square, pixels
+        public float rangeM;
+        public List<string> items;       // VSP item names; the bushes among them get a height-driven twin
     }
 
     // One VSP item and the mask channel holding its baked density.
@@ -89,6 +101,7 @@ namespace GolfMap.Editor
         public float weight = 1;
         public float feather = 2;
         public float noise;
+        public float heightMin, heightMax;   // metres its bushes are scaled to; 0 = the palette's sizes
         public List<GolfMapZoneRing> rings;
     }
 
@@ -116,6 +129,21 @@ namespace GolfMap.Editor
         public const string ItemGroupPrefix = GroupPrefix + "item:";
 
         public static string GroupName(string item) { return ItemGroupPrefix + item; }
+
+        // The one group on the bush-height mask, and the name of a bush item's height-driven
+        // twin: the same prefab with its own random size taken out, scaled by that mask.
+        public const string HeightGroupName = GroupPrefix + "height";
+        public const string TwinSuffix = " @height";
+        // Metres a full height-mask pixel stands for (pipeline/gspro.py ZONE_HEIGHT_RANGE_M).
+        public const float HeightRangeM = 12.8f;
+
+        public static string TwinName(string item) { return item + TwinSuffix; }
+
+        public static bool IsTwinName(string name) { return name != null && name.EndsWith(TwinSuffix, StringComparison.Ordinal); }
+
+        public static string TwinBase(string name) { return name.Substring(0, name.Length - TwinSuffix.Length); }
+
+        public static bool HasHeight(GolfMapZoneFile file) { return file != null && file.height != null && !string.IsNullOrEmpty(file.height.file); }
 
         public static bool IsGroupName(string name) { return name != null && name.StartsWith(GroupPrefix, StringComparison.Ordinal); }
 
@@ -160,6 +188,17 @@ namespace GolfMap.Editor
                 int w, h;
                 if (!ReadPngSize(png, out w, out h)) throw new Exception("Not a PNG: " + png);
                 if (w != mask.resolution || h != mask.resolution) throw new Exception(mask.file + " is " + w + "x" + h + ", expected " + mask.resolution + " square");
+            }
+
+            if (HasHeight(file))
+            {
+                var png = Path.Combine(folder, file.height.file);
+                if (!File.Exists(png)) throw new Exception("Height mask PNG missing: " + png);
+                int w, h;
+                if (!ReadPngSize(png, out w, out h)) throw new Exception("Not a PNG: " + png);
+                if (w != file.height.resolution || h != file.height.resolution) throw new Exception(file.height.file + " is " + w + "x" + h + ", expected " + file.height.resolution + " square");
+                if (Mathf.Abs(file.height.rangeM - HeightRangeM) > 1e-3f) throw new Exception("height.rangeM is " + F(file.height.rangeM) + ", this importer reads " + F(HeightRangeM));
+                if (file.height.items == null) file.height.items = new List<string>();
             }
 
             // Zone types first: item sources are checked against their slot keys.

@@ -2006,7 +2006,7 @@
    ]
   },
   "golf_cart": {
-   "prefab": "Assets/CESimgolf 3D Assets/Course Items/Golf Cart/golf-cart-ezgo.prefab",
+   "prefab": "Assets/GolfMap/Vreta/Props/VehiclesLowPoly/Golf Cart.prefab",
    "axis": "x",
    "category": "vehicle",
    "collider": "box",
@@ -2049,6 +2049,99 @@
      "height": 2.3,
      "roofRise": 1.3,
      "open": 4
+    }
+   ]
+  },
+  "course_toilet": {
+   "category": "building",
+   "parts": [
+    {
+     "kind": "building",
+     "length": 1.3,
+     "width": 2.0,
+     "wall": "falu_red_vertical",
+     "trim": "white_trim",
+     "plinth": {
+      "h": 0.15,
+      "mat": "concrete"
+     },
+     "roof": {
+      "type": "mono",
+      "low": 2.3,
+      "high": 2.9,
+      "overhang": 0.3,
+      "gableOverhang": 0.2,
+      "thick": 0.16,
+      "mat": "roof_metal_charcoal"
+     },
+     "openings": [
+      {
+       "side": "+y",
+       "at": 0.0,
+       "w": 0.9,
+       "h": 2.0,
+       "sill": 0.15,
+       "kind": "door",
+       "mat": "door_white",
+       "lamp": false
+      }
+     ]
+    },
+    {
+     "kind": "box",
+     "c": [
+      0.0,
+      1.06,
+      1.7
+     ],
+     "s": [
+      0.24,
+      0.04,
+      0.24
+     ],
+     "mat": "window_dark"
+    },
+    {
+     "kind": "box",
+     "c": [
+      0.0,
+      1.2,
+      0.07
+     ],
+     "s": [
+      0.9,
+      0.4,
+      0.15
+     ],
+     "mat": "concrete"
+    },
+    {
+     "kind": "box",
+     "c": [
+      0.67,
+      0.4,
+      0.73
+     ],
+     "s": [
+      0.04,
+      0.5,
+      1.15
+     ],
+     "mat": "galvanised"
+    },
+    {
+     "kind": "box",
+     "c": [
+      0.68,
+      0.72,
+      2.45
+     ],
+     "s": [
+      0.06,
+      0.25,
+      0.25
+     ],
+     "mat": "white_trim"
     }
    ]
   },
@@ -6764,10 +6857,14 @@
      "kind": "bridge_rope",
      "length": 10.0,
      "width": 1.8,
-     "deck": 0.4,
+     "deck": 0.15,
      "steps": [
-      1,
-      3
+      0,
+      0
+     ],
+     "ramps": [
+      1.2,
+      1.2
      ],
      "pileDepth": 3.0
     }
@@ -6782,20 +6879,54 @@
     }
    ]
   },
+  "bridge_rope_cart": {
+   "category": "structure",
+   "parts": [
+    {
+     "kind": "bridge_rope",
+     "length": 10.0,
+     "width": 2.0,
+     "deck": 0.15,
+     "steps": [
+      0,
+      0
+     ],
+     "ramps": [
+      1.2,
+      1.2
+     ],
+     "pileDepth": 1.6
+    }
+   ]
+  },
+  "jetty": {
+   "category": "structure",
+   "parts": [
+    {
+     "kind": "jetty",
+     "length": 11.7,
+     "width": 4.2,
+     "ramp": 3.4,
+     "rampWidth": 3.6,
+     "pileDepth": 2.6,
+     "deckZ": -0.19
+    }
+   ]
+  },
   "car_hatch_white": {
-   "prefab": "Assets/Vehicles/Prefabs/Hatchback White.prefab",
+   "prefab": "Assets/GolfMap/Vreta/Props/VehiclesLowPoly/Hatchback White.prefab",
    "axis": "z",
    "category": "vehicle",
    "collider": "box"
   },
   "car_sedan_white": {
-   "prefab": "Assets/Vehicles/Prefabs/Small Sedan White.prefab",
+   "prefab": "Assets/GolfMap/Vreta/Props/VehiclesLowPoly/Sedan.prefab",
    "axis": "z",
    "category": "vehicle",
    "collider": "box"
   },
   "car_hatch_silver": {
-   "prefab": "Assets/Vehicles/Prefabs/Hatchback White.prefab",
+   "prefab": "Assets/GolfMap/Vreta/Props/VehiclesLowPoly/Hatchback White.prefab",
    "axis": "z",
    "category": "vehicle",
    "collider": "box",
@@ -6821,7 +6952,7 @@
    ]
   },
   "car_sedan_silver": {
-   "prefab": "Assets/Vehicles/Prefabs/Small Sedan White.prefab",
+   "prefab": "Assets/GolfMap/Vreta/Props/VehiclesLowPoly/Sedan.prefab",
    "axis": "z",
    "category": "vehicle",
    "collider": "box",
@@ -6838,7 +6969,7 @@
    ]
   },
   "car_hatch_grey": {
-   "prefab": "Assets/Vehicles/Prefabs/Hatchback White.prefab",
+   "prefab": "Assets/GolfMap/Vreta/Props/VehiclesLowPoly/Hatchback White.prefab",
    "axis": "z",
    "category": "vehicle",
    "collider": "box",
@@ -6864,7 +6995,7 @@
    ]
   },
   "car_sedan_grey": {
-   "prefab": "Assets/Vehicles/Prefabs/Small Sedan White.prefab",
+   "prefab": "Assets/GolfMap/Vreta/Props/VehiclesLowPoly/Sedan.prefab",
    "axis": "z",
    "category": "vehicle",
    "collider": "box",
@@ -6881,13 +7012,13 @@
    ]
   },
   "car_hatch_black": {
-   "prefab": "Assets/Vehicles/Prefabs/Hatchback Black.prefab",
+   "prefab": "Assets/GolfMap/Vreta/Props/VehiclesLowPoly/Hatchback Black.prefab",
    "axis": "z",
    "category": "vehicle",
    "collider": "box"
   },
   "car_sedan_black": {
-   "prefab": "Assets/Vehicles/Prefabs/Small Sedan White.prefab",
+   "prefab": "Assets/GolfMap/Vreta/Props/VehiclesLowPoly/Sedan.prefab",
    "axis": "z",
    "category": "vehicle",
    "collider": "box",
@@ -6904,7 +7035,7 @@
    ]
   },
   "car_hatch_blue": {
-   "prefab": "Assets/Vehicles/Prefabs/Hatchback White.prefab",
+   "prefab": "Assets/GolfMap/Vreta/Props/VehiclesLowPoly/Hatchback White.prefab",
    "axis": "z",
    "category": "vehicle",
    "collider": "box",
@@ -6930,7 +7061,7 @@
    ]
   },
   "car_sedan_blue": {
-   "prefab": "Assets/Vehicles/Prefabs/Small Sedan White.prefab",
+   "prefab": "Assets/GolfMap/Vreta/Props/VehiclesLowPoly/Sedan.prefab",
    "axis": "z",
    "category": "vehicle",
    "collider": "box",
@@ -6947,7 +7078,7 @@
    ]
   },
   "car_hatch_red": {
-   "prefab": "Assets/Vehicles/Prefabs/Hatchback White.prefab",
+   "prefab": "Assets/GolfMap/Vreta/Props/VehiclesLowPoly/Hatchback White.prefab",
    "axis": "z",
    "category": "vehicle",
    "collider": "box",
@@ -6973,7 +7104,7 @@
    ]
   },
   "car_sedan_red": {
-   "prefab": "Assets/Vehicles/Prefabs/Small Sedan White.prefab",
+   "prefab": "Assets/GolfMap/Vreta/Props/VehiclesLowPoly/Sedan.prefab",
    "axis": "z",
    "category": "vehicle",
    "collider": "box",
@@ -7081,6 +7212,21 @@
    "n": 6487649.5,
    "yawDeg": 90.0,
    "ground": "median"
+  },
+  {
+   "asset": "gazebo",
+   "e": 529993.0,
+   "n": 6487902.0,
+   "yawDeg": 225.0,
+   "ground": "median"
+  },
+  {
+   "asset": "course_toilet",
+   "e": 529779.88,
+   "n": 6487551.97,
+   "yawDeg": 225.0,
+   "ground": "median",
+   "dz": -0.075
   },
   {
    "asset": "range_house",
@@ -8432,17 +8578,19 @@
   },
   {
    "asset": "tee_sign_14",
-   "e": 529777.54,
-   "n": 6487566.17,
+   "e": 529795.14,
+   "n": 6487569.23,
    "yawDeg": 170.13,
-   "ground": "centre"
+   "ground": "centre",
+   "dz": 0.355
   },
   {
    "asset": "bench_stone",
-   "e": 529777.29,
-   "n": 6487567.65,
+   "e": 529794.89,
+   "n": 6487570.71,
    "yawDeg": 170.13,
-   "ground": "centre"
+   "ground": "centre",
+   "dz": -0.022
   },
   {
    "asset": "tee_sign_15",
@@ -8642,6 +8790,20 @@
    "ground": "max"
   },
   {
+   "asset": "bridge_rope_cart",
+   "e": 529646.85,
+   "n": 6488546.4,
+   "yawDeg": 18.3,
+   "ground": "max"
+  },
+  {
+   "asset": "jetty",
+   "e": 529676.96,
+   "n": 6488550.12,
+   "yawDeg": 237.0,
+   "ground": "centre"
+  },
+  {
    "asset": "car_hatch_silver",
    "e": 530221.19,
    "n": 6487627.13,
@@ -8670,20 +8832,6 @@
    "ground": "centre"
   },
   {
-   "asset": "car_sedan_white",
-   "e": 530227.16,
-   "n": 6487613.37,
-   "yawDeg": 246.6,
-   "ground": "centre"
-  },
-  {
-   "asset": "car_hatch_white",
-   "e": 530228.15,
-   "n": 6487611.07,
-   "yawDeg": 66.6,
-   "ground": "centre"
-  },
-  {
    "asset": "car_sedan_silver",
    "e": 530231.14,
    "n": 6487604.19,
@@ -8698,45 +8846,10 @@
    "ground": "centre"
   },
   {
-   "asset": "car_hatch_silver",
-   "e": 530233.13,
-   "n": 6487599.61,
-   "yawDeg": 246.6,
-   "ground": "centre"
-  },
-  {
    "asset": "car_hatch_black",
    "e": 530234.12,
    "n": 6487597.31,
    "yawDeg": 246.6,
-   "ground": "centre"
-  },
-  {
-   "asset": "car_sedan_blue",
-   "e": 530235.12,
-   "n": 6487595.02,
-   "yawDeg": 246.6,
-   "ground": "centre"
-  },
-  {
-   "asset": "car_sedan_black",
-   "e": 530236.11,
-   "n": 6487592.72,
-   "yawDeg": 246.6,
-   "ground": "centre"
-  },
-  {
-   "asset": "car_hatch_silver",
-   "e": 530237.11,
-   "n": 6487590.43,
-   "yawDeg": 246.6,
-   "ground": "centre"
-  },
-  {
-   "asset": "car_hatch_white",
-   "e": 530238.1,
-   "n": 6487588.14,
-   "yawDeg": 66.6,
    "ground": "centre"
   },
   {
@@ -8747,66 +8860,10 @@
    "ground": "centre"
   },
   {
-   "asset": "car_sedan_white",
-   "e": 530241.08,
-   "n": 6487581.26,
-   "yawDeg": 246.6,
-   "ground": "centre"
-  },
-  {
-   "asset": "car_hatch_grey",
-   "e": 530243.07,
-   "n": 6487576.67,
-   "yawDeg": 246.6,
-   "ground": "centre"
-  },
-  {
-   "asset": "car_sedan_grey",
-   "e": 530245.06,
-   "n": 6487572.08,
-   "yawDeg": 246.6,
-   "ground": "centre"
-  },
-  {
-   "asset": "car_hatch_grey",
-   "e": 530246.06,
-   "n": 6487569.79,
-   "yawDeg": 66.6,
-   "ground": "centre"
-  },
-  {
-   "asset": "car_sedan_red",
-   "e": 530238.19,
-   "n": 6487631.75,
-   "yawDeg": 246.8,
-   "ground": "centre"
-  },
-  {
-   "asset": "car_hatch_grey",
-   "e": 530239.18,
-   "n": 6487629.46,
-   "yawDeg": 246.8,
-   "ground": "centre"
-  },
-  {
-   "asset": "car_hatch_grey",
-   "e": 530242.13,
-   "n": 6487622.56,
-   "yawDeg": 246.8,
-   "ground": "centre"
-  },
-  {
    "asset": "car_hatch_white",
    "e": 530243.12,
    "n": 6487620.26,
    "yawDeg": 66.8,
-   "ground": "centre"
-  },
-  {
-   "asset": "car_sedan_grey",
-   "e": 530244.1,
-   "n": 6487617.97,
-   "yawDeg": 246.8,
    "ground": "centre"
   },
   {
@@ -8817,44 +8874,9 @@
    "ground": "centre"
   },
   {
-   "asset": "car_sedan_white",
-   "e": 530248.04,
-   "n": 6487608.77,
-   "yawDeg": 246.8,
-   "ground": "centre"
-  },
-  {
    "asset": "car_sedan_silver",
    "e": 530249.03,
    "n": 6487606.48,
-   "yawDeg": 246.8,
-   "ground": "centre"
-  },
-  {
-   "asset": "car_sedan_grey",
-   "e": 530251.0,
-   "n": 6487601.88,
-   "yawDeg": 246.8,
-   "ground": "centre"
-  },
-  {
-   "asset": "car_hatch_silver",
-   "e": 530251.98,
-   "n": 6487599.58,
-   "yawDeg": 246.8,
-   "ground": "centre"
-  },
-  {
-   "asset": "car_hatch_white",
-   "e": 530252.96,
-   "n": 6487597.29,
-   "yawDeg": 246.8,
-   "ground": "centre"
-  },
-  {
-   "asset": "car_hatch_grey",
-   "e": 530254.93,
-   "n": 6487592.69,
    "yawDeg": 246.8,
    "ground": "centre"
   },
@@ -8873,44 +8895,9 @@
    "ground": "centre"
   },
   {
-   "asset": "car_hatch_silver",
-   "e": 530257.89,
-   "n": 6487585.8,
-   "yawDeg": 246.8,
-   "ground": "centre"
-  },
-  {
-   "asset": "car_hatch_grey",
-   "e": 530258.87,
-   "n": 6487583.5,
-   "yawDeg": 246.8,
-   "ground": "centre"
-  },
-  {
-   "asset": "car_sedan_white",
-   "e": 530234.67,
-   "n": 6487627.53,
-   "yawDeg": 246.8,
-   "ground": "centre"
-  },
-  {
    "asset": "car_hatch_red",
    "e": 530235.66,
    "n": 6487625.23,
-   "yawDeg": 246.8,
-   "ground": "centre"
-  },
-  {
-   "asset": "car_sedan_white",
-   "e": 530236.64,
-   "n": 6487622.93,
-   "yawDeg": 246.8,
-   "ground": "centre"
-  },
-  {
-   "asset": "car_hatch_white",
-   "e": 530238.61,
-   "n": 6487618.33,
    "yawDeg": 246.8,
    "ground": "centre"
   },
@@ -8936,27 +8923,6 @@
    "ground": "centre"
   },
   {
-   "asset": "car_hatch_grey",
-   "e": 530242.55,
-   "n": 6487609.14,
-   "yawDeg": 246.8,
-   "ground": "centre"
-  },
-  {
-   "asset": "car_sedan_white",
-   "e": 530244.52,
-   "n": 6487604.55,
-   "yawDeg": 246.8,
-   "ground": "centre"
-  },
-  {
-   "asset": "car_sedan_silver",
-   "e": 530247.48,
-   "n": 6487597.65,
-   "yawDeg": 246.8,
-   "ground": "centre"
-  },
-  {
    "asset": "car_sedan_black",
    "e": 530248.46,
    "n": 6487595.36,
@@ -8967,27 +8933,6 @@
    "asset": "car_hatch_grey",
    "e": 530249.45,
    "n": 6487593.06,
-   "yawDeg": 246.8,
-   "ground": "centre"
-  },
-  {
-   "asset": "car_hatch_black",
-   "e": 530251.42,
-   "n": 6487588.46,
-   "yawDeg": 246.8,
-   "ground": "centre"
-  },
-  {
-   "asset": "car_hatch_black",
-   "e": 530252.4,
-   "n": 6487586.16,
-   "yawDeg": 246.8,
-   "ground": "centre"
-  },
-  {
-   "asset": "car_sedan_silver",
-   "e": 530254.37,
-   "n": 6487581.57,
    "yawDeg": 246.8,
    "ground": "centre"
   },
@@ -9006,27 +8951,6 @@
    "ground": "centre"
   },
   {
-   "asset": "car_hatch_white",
-   "e": 530259.71,
-   "n": 6487627.26,
-   "yawDeg": 248.7,
-   "ground": "centre"
-  },
-  {
-   "asset": "car_sedan_grey",
-   "e": 530260.61,
-   "n": 6487624.93,
-   "yawDeg": 248.7,
-   "ground": "centre"
-  },
-  {
-   "asset": "car_sedan_white",
-   "e": 530262.42,
-   "n": 6487620.27,
-   "yawDeg": 248.7,
-   "ground": "centre"
-  },
-  {
    "asset": "car_sedan_white",
    "e": 530264.24,
    "n": 6487615.61,
@@ -9034,79 +8958,9 @@
    "ground": "centre"
   },
   {
-   "asset": "car_sedan_blue",
-   "e": 530266.05,
-   "n": 6487610.95,
-   "yawDeg": 248.7,
-   "ground": "centre"
-  },
-  {
    "asset": "car_hatch_grey",
    "e": 530266.95,
    "n": 6487608.62,
-   "yawDeg": 248.7,
-   "ground": "centre"
-  },
-  {
-   "asset": "car_sedan_grey",
-   "e": 530267.86,
-   "n": 6487606.29,
-   "yawDeg": 248.7,
-   "ground": "centre"
-  },
-  {
-   "asset": "car_sedan_grey",
-   "e": 530268.77,
-   "n": 6487603.96,
-   "yawDeg": 248.7,
-   "ground": "centre"
-  },
-  {
-   "asset": "car_hatch_white",
-   "e": 530270.58,
-   "n": 6487599.3,
-   "yawDeg": 248.7,
-   "ground": "centre"
-  },
-  {
-   "asset": "car_sedan_white",
-   "e": 530271.48,
-   "n": 6487596.97,
-   "yawDeg": 248.7,
-   "ground": "centre"
-  },
-  {
-   "asset": "car_sedan_grey",
-   "e": 530272.39,
-   "n": 6487594.64,
-   "yawDeg": 68.7,
-   "ground": "centre"
-  },
-  {
-   "asset": "car_sedan_grey",
-   "e": 530273.3,
-   "n": 6487592.31,
-   "yawDeg": 248.7,
-   "ground": "centre"
-  },
-  {
-   "asset": "car_hatch_black",
-   "e": 530252.42,
-   "n": 6487632.47,
-   "yawDeg": 248.7,
-   "ground": "centre"
-  },
-  {
-   "asset": "car_sedan_grey",
-   "e": 530255.14,
-   "n": 6487625.48,
-   "yawDeg": 248.7,
-   "ground": "centre"
-  },
-  {
-   "asset": "car_hatch_grey",
-   "e": 530256.95,
-   "n": 6487620.82,
    "yawDeg": 248.7,
    "ground": "centre"
   },
@@ -9132,27 +8986,6 @@
    "ground": "centre"
   },
   {
-   "asset": "car_hatch_black",
-   "e": 530262.39,
-   "n": 6487606.84,
-   "yawDeg": 248.7,
-   "ground": "centre"
-  },
-  {
-   "asset": "car_sedan_grey",
-   "e": 530263.29,
-   "n": 6487604.51,
-   "yawDeg": 248.7,
-   "ground": "centre"
-  },
-  {
-   "asset": "car_sedan_black",
-   "e": 530264.2,
-   "n": 6487602.18,
-   "yawDeg": 248.7,
-   "ground": "centre"
-  },
-  {
    "asset": "car_sedan_grey",
    "e": 530265.11,
    "n": 6487599.85,
@@ -9160,79 +8993,9 @@
    "ground": "centre"
   },
   {
-   "asset": "car_sedan_white",
-   "e": 530266.92,
-   "n": 6487595.19,
-   "yawDeg": 248.7,
-   "ground": "centre"
-  },
-  {
-   "asset": "car_sedan_black",
-   "e": 530267.82,
-   "n": 6487592.86,
-   "yawDeg": 248.7,
-   "ground": "centre"
-  },
-  {
-   "asset": "car_hatch_grey",
-   "e": 530268.73,
-   "n": 6487590.53,
-   "yawDeg": 248.7,
-   "ground": "centre"
-  },
-  {
-   "asset": "car_sedan_black",
-   "e": 530268.9,
-   "n": 6487639.8,
-   "yawDeg": 249.5,
-   "ground": "centre"
-  },
-  {
-   "asset": "car_sedan_white",
-   "e": 530269.78,
-   "n": 6487637.46,
-   "yawDeg": 249.5,
-   "ground": "centre"
-  },
-  {
    "asset": "car_sedan_grey",
    "e": 530270.66,
    "n": 6487635.12,
-   "yawDeg": 249.5,
-   "ground": "centre"
-  },
-  {
-   "asset": "car_hatch_silver",
-   "e": 530272.41,
-   "n": 6487630.43,
-   "yawDeg": 249.5,
-   "ground": "centre"
-  },
-  {
-   "asset": "car_sedan_grey",
-   "e": 530273.29,
-   "n": 6487628.09,
-   "yawDeg": 249.5,
-   "ground": "centre"
-  },
-  {
-   "asset": "car_sedan_grey",
-   "e": 530275.04,
-   "n": 6487623.41,
-   "yawDeg": 249.5,
-   "ground": "centre"
-  },
-  {
-   "asset": "car_sedan_black",
-   "e": 530275.91,
-   "n": 6487621.07,
-   "yawDeg": 69.5,
-   "ground": "centre"
-  },
-  {
-   "asset": "car_hatch_blue",
-   "e": 530276.79,
-   "n": 6487618.73,
    "yawDeg": 249.5,
    "ground": "centre"
   },
@@ -9247,20 +9010,6 @@
    "asset": "car_sedan_grey",
    "e": 530279.42,
    "n": 6487611.7,
-   "yawDeg": 249.5,
-   "ground": "centre"
-  },
-  {
-   "asset": "car_hatch_silver",
-   "e": 530280.29,
-   "n": 6487609.36,
-   "yawDeg": 249.5,
-   "ground": "centre"
-  },
-  {
-   "asset": "car_sedan_red",
-   "e": 530282.05,
-   "n": 6487604.68,
    "yawDeg": 249.5,
    "ground": "centre"
   }

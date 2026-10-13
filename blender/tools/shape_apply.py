@@ -729,6 +729,38 @@ def boundary_edges(obj):
     return idx, ev.reshape(-1, 2)[idx], co
 
 
+SEGMENT_GRID_M = 2.0
+
+
+def _segment_grid(a, b, pad, cell=SEGMENT_GRID_M):
+    """Segments a[i]-b[i] (XY) in a uniform grid: returns lookup(x, y) -> ascending indices of the segments
+    whose box, grown by `pad`, covers the cell of (x, y), or None. Every segment within `pad` of the point is
+    among them."""
+    cells, long = {}, []  # long: a segment over too many cells to list is offered to every point
+    if len(a):
+        lo = np.floor((np.minimum(a[:, :2], b[:, :2]) - pad) / cell).astype(np.int64)
+        hi = np.floor((np.maximum(a[:, :2], b[:, :2]) + pad) / cell).astype(np.int64)
+        for i, (x0, y0, x1, y1) in enumerate(np.concatenate([lo, hi], axis=1).tolist()):
+            if (x1 - x0 + 1) * (y1 - y0 + 1) > 1024:
+                long.append(i)
+                continue
+            for cx in range(x0, x1 + 1):
+                for cy in range(y0, y1 + 1):
+                    cells.setdefault((cx, cy), []).append(i)
+    arrays = {}
+    everywhere = np.array(long, dtype=np.int64) if long else None
+
+    def lookup(x, y):
+        key = (math.floor(x / cell), math.floor(y / cell))
+        if key not in arrays:
+            got = np.array(cells[key], dtype=np.int64) if key in cells else None
+            if everywhere is not None:
+                got = everywhere if got is None else np.union1d(got, everywhere)
+            arrays[key] = got
+        return arrays[key]
+    return lookup
+
+
 def weld_tjunctions(names, tol=1e-3):
     """Close the T-junctions around the named meshes (Afrod's cutcartpaths adds boundary vertices a
     neighbour does not have): every boundary vertex of theirs with no coincident partner that lies within
@@ -783,6 +815,7 @@ def weld_tjunctions(names, tol=1e-3):
         a, b = np.concatenate(seg_a), np.concatenate(seg_b)
         ab = b[:, :2] - a[:, :2]
         L2 = np.maximum((ab ** 2).sum(axis=1), 1e-18)
+        near_segments = _segment_grid(a, b, 2.0 * tol)
         own = boundary_points(obj)
         own_kd = KDTree(len(own))
         for i, p in enumerate(own):
@@ -801,16 +834,24 @@ def weld_tjunctions(names, tol=1e-3):
                     snaps.setdefault(o_owner[jj], {})[o_index[jj]] = pt
                 found += 1
                 continue
-            t = np.clip(((p[:2] - a[:, :2]) * ab).sum(axis=1) / L2, 0.0, 1.0)
-            q = a[:, :2] + ab * t[:, None]
+            # Only the segments whose padded box holds p can be within tol of it: the same arithmetic on those,
+            # in the same order, as on all of them (a road blend spanning the course has thousands of such
+            # vertices and every mesh of the course as neighbour: minutes per call when each met every segment).
+            s = near_segments(float(p[0]), float(p[1]))
+            if s is None:
+                continue
+            sa, sab, sL2 = a[s, :2], ab[s], L2[s]
+            t = np.clip(((p[:2] - sa) * sab).sum(axis=1) / sL2, 0.0, 1.0)
+            q = sa + sab * t[:, None]
             d = np.hypot(q[:, 0] - p[0], q[:, 1] - p[1])
-            Ls = np.sqrt(L2)
+            Ls = np.sqrt(sL2)
             ok = (d <= tol) & (t * Ls > SEAM_XY) & ((1 - t) * Ls > SEAM_XY)  # interior of the edge
             if not ok.any():
                 continue
-            k = int(np.flatnonzero(ok)[np.argmin(d[ok])])
+            j = int(np.flatnonzero(ok)[np.argmin(d[ok])])
+            k = int(s[j])
             found += 1
-            inserts.setdefault(seg_owner[k], {}).setdefault(seg_edge[k], []).append((float(t[k]), tuple(float(c) for c in p)))
+            inserts.setdefault(seg_owner[k], {}).setdefault(seg_edge[k], []).append((float(t[j]), tuple(float(c) for c in p)))
     import bmesh
     split = {}
     for name in sorted(inserts):

@@ -59,6 +59,20 @@ describe('playingLength', () => {
         expect(playingLength(t, [a1, a2], green).meters).toBe(Math.round(direct));
     });
 
+    test('a forward tee skips the aim points it is already past; a Par3 tee skips them all', () => {
+        const a1 = aim(LAT + 0.0008, LON, { id: 'a1', sortOrder: 0 });
+        const a2 = aim(LAT + 0.0016, LON + 0.0006, { id: 'a2', sortOrder: 1 });
+        const green = { lat: LAT + 0.0024, lon: LON };
+        // Placed between the two aim points: the first is behind it.
+        const forward = tee({ lat: LAT + 0.0012, lon: LON });
+        const viaSecond = pathMeters([{ lat: forward.lat, lon: forward.lon }, { lat: a2.lat, lon: a2.lon }, green]);
+        const direct = pathMeters([{ lat: forward.lat, lon: forward.lon }, green]);
+
+        expect(playingLength(forward, [a1, a2], green).meters).toBe(Math.round(viaSecond));
+        expect(playingLength(forward, [a1, a2], green, true).meters).toBe(Math.round(direct));
+        expect(Math.round(viaSecond)).toBeGreaterThan(Math.round(direct));
+    });
+
     test('no green center → tee→aims only, flagged approximate', () => {
         const t = tee();
         const a = aim(LAT + 0.001, LON);
@@ -107,6 +121,7 @@ function fakeGreensApi(rows: Green[]) {
 }
 const emptyPins = { async listByGreen() { return []; }, async listByCourse() { return []; }, async create() { throw 0; }, async update() { throw 0; }, async remove() { return { ok: true }; }, async setActive() { throw 0; } } as any;
 const emptyAims = { async listByHole() { return []; }, async create() { throw 0; }, async update() { throw 0; }, async remove() { return { ok: true }; }, async reorder() { return { ok: true }; } } as any;
+const noTeeSets = { async listByCourse() { return []; } } as any;
 
 describe('active-tee radio resolution', () => {
     test('default (no active name) checks the first tee by sortOrder; setActive flips it', async () => {
@@ -114,7 +129,7 @@ describe('active-tee radio resolution', () => {
             tee({ id: 'tA', name: 'White', sortOrder: 0 }),
             tee({ id: 'tB', name: 'Yellow', sortOrder: 1 }),
         ];
-        const svc = new FurnitureService(fakeTeesApi(tees), fakeGreensApi([]), emptyPins, emptyAims);
+        const svc = new FurnitureService(fakeTeesApi(tees), fakeGreensApi([]), emptyPins, emptyAims, undefined, noTeeSets);
         await svc.load('c1', ['h1']);
 
         // Panel binds: radio.checked = lineOriginTee(holeId)?.id === tee.id
@@ -131,7 +146,7 @@ describe('active-tee radio resolution', () => {
             tee({ id: 'h2w', holeId: 'h2', name: 'White', sortOrder: 0 }),
             // hole 2 has NO yellow tee
         ];
-        const svc = new FurnitureService(fakeTeesApi(tees), fakeGreensApi([]), emptyPins, emptyAims);
+        const svc = new FurnitureService(fakeTeesApi(tees), fakeGreensApi([]), emptyPins, emptyAims, undefined, noTeeSets);
         await svc.load('c1', ['h1', 'h2']);
 
         svc.setActiveTeeName('yellow'); // lower-case

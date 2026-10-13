@@ -314,6 +314,11 @@ course meshes and lifts the inside out as one new object. Hand layer, one op per
   the rock material Unity puts on a slab needs them. Unity: `golfmap.slabs.materials` (`GolfMapRockSlabs.cs`) gives
   every `*_Rock_-_Mesh` the material and physics material of `<course>/rock-slabs.json`; `golfmap.course.refresh`
   runs it after the mesh sync (step `slabs.materials`), so a re-synced slab keeps its rock look and `GSPstone`.
+  A slab must not carry OPCD's `MeshChannelMaterialsStore`: OPCD's Set Default Materials reads every store of the
+  scene on each run and logs ~40 "Material doesn't have a ... property" errors (`_RedHeightTexture`,
+  `_TerrainSize`, `_RedOverallColor` ...) per slab that has one. Slabs are left out of that menu's selection, and
+  the store is removed by `slabs.materials` and before each Set Default Materials our tools run
+  (`GolfMapRockSlabs.StripChannelStores`); `golfmap.materials.audit` lists any that has one.
 - **Border**: both sides share the cut's vertices, so there is no gap and no T-junction; custom normals come from the
   smooth normals before the cut on both sides. Run `border` = `{vertices, unmatched, maxAbsDz}` (0 unmatched
   expected), `areaCheckM2` (area before - inside - outside, 0 expected), `sources[]` (per source mesh: faces and area
@@ -324,6 +329,14 @@ course meshes and lifts the inside out as one new object. Hand layer, one op per
 - **Keep the outline off other meshes' edges**: a corner that pokes 1 cm into the next mesh takes a sliver of it
   (report `sources[]` with a tiny `areaOutM2`). Move the corner.
 - **Reach** (`plan_units`): one unit per op; reads = every Spline mesh within 1 m of the outline's box.
+- **Time**: about 10-20 s a slab where a course-wide road blend is under the outline's box, nearly all of it
+  `weld_tjunctions` (it gathers the boundary of every neighbour of every mesh under the box). The weld looks up
+  the neighbour edges near each unpartnered vertex in a 2 m grid (`_segment_grid`): before 2026-10-11 it measured
+  each against every edge, 260 s a slab after the path transitions on Vreta and 673 s inside the edge fade (now
+  28 s). Same positions, colours, seams and weld counts as the all-edges arithmetic on the path ops and four slabs.
+- **Not reproducible to the bit**: two runs of the same code gave another FBX fingerprint for a slab's source mesh
+  (`Spline_Outer_Deep_Sat_2_1_piece1_-_Mesh` under hall-208; positions and colours equal), so something other
+  than those two differs. Not found yet; it costs a re-export of that mesh, no gap.
 - **Vreta** (`vreta_svg_1985`, two slabs east of hole 11's green, out of `Spline_Outer_Deep_Sat_3_5_piece2_-_Mesh`):
   41.6 m² / 92 faces and 54.2 m² / 115 faces, border 57 and 61 vertices with 0 unmatched, 0 new seam gaps and 0
   T-junctions over the course, 1.9 s each, op-cache replay 0.1 s with the fresh apply's all-mesh hash. The op only
@@ -385,7 +398,8 @@ heights):
 
 ## Shaping: path transitions
 
-`golfmap.path_transition` runs after path surface splitting and edge fade. Worker sync
+`golfmap.path_transition` runs last: after path surface splitting, edge fade and the rock slab cut-outs (a
+road's box spans the course, so every cut-out reads the road meshes; painted first, a paint tweak re-cut every slab). Worker sync
 diffs the sidecar's transition content as well as the generated op, so edits and
 removals replay this paint operation even when the generated op itself is unchanged.
 Other sidecar metadata does not trigger this replay. The worker clears cached
@@ -414,6 +428,18 @@ vertices copy the path's actual bytes;
 the fringe otherwise retains its transverse grass ramp. No faces transfer between
 objects and no original vertex moves. Existing UVs, corner colours, material indices,
 smooth flags and source corner normals interpolate onto new triangles.
+
+**Wear.** An entry may also carry `wear` (`tracks` 1 or 2, `trackWidthM`, `trackSpacingM`, `edgeM` = how far past
+the track's width it fades out, `strength`, `seed`; `pipeline/gspro.py` `_path_wear` writes it for every gravel
+centreline path of 1.4 m or wider: from 1.8 m two wheel tracks with loose gravel on both shoulders and in a string
+down the middle, one trodden band below; the generated op then asks for `maxEdgeM` 0.2 so the string survives), with or without transitions. `shape_transition.wear` gives the share
+of the path surface that is packed at a station and lateral distance (ragged, wandering, coming and going, none on
+the outer 0.2 m), and that share of the green byte is removed: the bytes then sum to less than 255, which is MAHS's
+black, where Unity draws the surface's `tracks` look (unity/README.md "Worn gravel"). Red and blue are not touched,
+so Stix grass and transition dirt stay as they were. A worn path outside its transitions is sampled as all path; a
+transition of any entry wins over another entry's wear. Wear refines the whole path to `maxEdgeM`.
+
+Centrelines are indexed in a grid of band-sized cells (`LineIndex`), and paint is memoised per position.
 
 Refinement bisects shared interior edges instead of using bmesh n-gon triangulation,
 avoiding new collinear slivers. Existing object boundaries remain unchanged, so their
@@ -647,3 +673,39 @@ python docs/gspro/vreta/clubhouse-props.gen.py        # measurements -> docs/gsp
   app, tee lengths from the club's card, hole view from the 2025 ortho, sign + bench spot by the yellow tee) writes
   the pictures to `data/props/<site>/hole-signs/` and `hole-signs.json`; run it before `clubhouse-props.gen.py`.
 - **Then in Unity:** `golfmap.props.place` (GolfMap > Props), see [unity/README.md](../unity/README.md#course-props).
+
+## Low-poly vehicles
+
+A vehicle pack's prefab is 30-43 renderers a car (every door, window and wheel part its own object), each
+casting a shadow. Parked cars are background props, so the course places merged copies instead: 2 renderers
+(`<id>_body`, `<id>_details`), the pack's own materials on the slots (recolours by material name keep working),
+same origin, size and axes as the pack's prefab. Three steps, all headless, work files in the git-ignored
+`tree-export/vehicles-lowpoly/` (`--work`):
+
+```
+python blender/tools/vehicle_prefabs.py --project <Unity project> --prefab "Assets/Vehicles/Prefabs/Small Sedan White.prefab" --prefab "Assets/Vehicles/Prefabs/Hatchback White.prefab" --prefab "Assets/Vehicles/Prefabs/Hatchback Black.prefab" --prefab "Assets/CESimgolf 3D Assets/Course Items/Golf Cart/golf-cart-ezgo.prefab"
+blender -b --factory-startup --python blender/tools/vehicle_models.py
+blender -b --factory-startup --python blender/tools/vehicle_models_10k.py
+```
+
+- `vehicle_prefabs.py` (plain Python) reads the prefabs' YAML and `.meta` GUIDs into `prefabs.json`: hierarchy,
+  transforms, mesh and material per renderer. `--spec <props spec>` instead of `--prefab` takes the prefabs of the
+  spec's `vehicle` assets (a spec that still names the pack's prefabs, not the low-poly ones).
+- `vehicle_models.py` rebuilds each prefab in its root space from the source FBX meshes and merges it:
+  `<id>_lowpoly.fbx` (sedan 19 341, hatchback 26 129, golf cart 3 956 triangles: only hidden parts dropped),
+  `vehicles-lowpoly.json`, `renders/<id>_compare.png`. The golf cart's prefab uses this file.
+- `vehicle_models_10k.py` makes the cars' background versions (`sedan_tocus_10k.fbx` 11 177, `hatchback_10k.fbx`
+  10 405 triangles; from 19 483 and 26 423): faces no outside viewer can see removed by a ray test, the cabin
+  lining behind the glass and the underside reduced, the hatchback's rims rebuilt as plain spoked rims; and
+  writes `vehicles.json` (`golfmap-vehicles-v1`: prefab name, FBX, source prefab, slots, `castShadows`).
+  `--shadows body` lets the bodies cast shadows; the default `none` is what Vreta uses.
+- What the scripts know about a pack (hidden parts, body materials, reduction per part) is in their `MODELS`
+  lists; a new vehicle prefab needs an entry in both, and in `PREFABS` of the 10k script. Look at the compare
+  sheet of every model after a change: collapse on spoked rims fills the gaps, planar dissolve wipes the sedan's
+  door strips and makes tyres lumpy (all three are off for that reason).
+- Unity mesh order facts the rebuild relies on (checked against `golfmap.props.measure`: bounds equal to 0.1 mm):
+  Unity negates x on FBX import, a mesh's submeshes follow the first use of each material in polygon order, and
+  with `bake_space_transform` Blender (x, y, z) arrives as Unity (-x, z, -y).
+- **Then in Unity:** copy the FBX files named in `vehicles.json` and `vehicles.json` itself into
+  `<course>/Props/VehiclesLowPoly/`, run `golfmap.vehicles.build`, point the spec's vehicle assets at
+  `<course>/Props/VehiclesLowPoly/<name>.prefab` (see [unity/README.md](../unity/README.md#course-props)).

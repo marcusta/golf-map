@@ -230,6 +230,27 @@ def test_soften_takes_the_fine_detail_off_turf_and_undrawn_ground_but_not_off_a_
     assert "not softened" in summary
 
 
+def test_a_grass_track_is_turf_in_the_tinted_twin_while_a_gravel_path_stays_the_photo():
+    """Its mesh is a rough on the satellite material: softened and tinted like
+    the rough round it, with no edge band, where a hard path keeps the photo."""
+    extent = gspro._square_3006_extent(BBOX)
+    track, gravel = _row("path", _rect(0.1, 0.3, 0.4, 0.7)), _row("path", _rect(0.6, 0.3, 0.9, 0.7))
+    track["attributes_json"] = json.dumps({"surface": "grass"})
+    gravel["attributes_json"] = json.dumps({"surface": "gravel"})
+    rows = [_row("rough", _rect(0.0, 0.0, 1.0, 1.0)), track, gravel]
+    px_m = (extent[2] - extent[0]) / SIZE
+
+    out, summary = gspro._tint_terrain(_striped(), extent, rows, gspro._parse_tints(None), soften_m=8 * px_m)
+    assert _contrast(out, 0.25, 0.5) < 10      # the track: as the rough
+    assert _contrast(out, 0.75, 0.5) == 255    # gravel: the photo as it was
+    assert "masked off path 1" in summary
+
+    photo = np.full((FILL_SIZE, FILL_SIZE, 3), 90, dtype=np.uint8)
+    rows = _path_rows("grass") + [_box_row("path", 10, 18, 90, 22)]
+    _, summary = gspro._fill_hazard_edges(photo, FILL_EXTENT, rows, gspro.EdgeFill())
+    assert "path 1 " in summary
+
+
 def test_the_tinted_twin_is_written_at_its_own_smaller_size(tmp_path):
     (tmp_path / "a").mkdir(), (tmp_path / "b").mkdir()
     dark, tinted = _run(tmp_path / "a", [("fairway", 1, 0, [_rect(0.0, 0.0, 1.0, 1.0)], "bezier")], tint_size=32)

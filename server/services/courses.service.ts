@@ -186,6 +186,7 @@ export class CoursesService {
                 .selectFrom('tees')
                 .select(['hole_id', 'lat', 'lon'])
                 .where('hole_id', 'in', holeIds)
+                .where('gspro_only', '=', 0)  // a tee the club does not have is not the course's length
                 .orderBy('hole_id')
                 .orderBy('sort_order')
                 .orderBy('id')

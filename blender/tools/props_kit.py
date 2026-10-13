@@ -1848,7 +1848,10 @@ def net_poles(g, s):
             g.beam((a[0], a[1], (z0 + z1) / 2), (b[0], b[1], (z0 + z1) / 2), 0.02, 0.02, "galvanised")
         q = [(a[0], a[1], 0.05), (b[0], b[1], 0.05), (b[0], b[1], h), (a[0], a[1], h)]
         g.poly(q, "net")
-        g.poly(list(reversed(q)), "net")
+        # the back side 4 mm behind: on the same corners the build's weld merges the two faces into one,
+        # and the net showed from the outside only
+        ox, oy = (b[1] - a[1]) / L * 0.004, -(b[0] - a[0]) / L * 0.004
+        g.poly([(x + ox, y + oy, z) for x, y, z in reversed(q)], "net")
 
 
 def target_flag(g, s):
@@ -1857,7 +1860,7 @@ def target_flag(g, s):
     m = s.get("mat", "target_flag_red")
     q = [(0, 0, h - 0.4), (0.5, 0, h - 0.4), (0.5, 0, h), (0, 0, h)]
     g.poly(q, m)
-    g.poly(list(reversed(q)), m)
+    g.poly([(x, 0.004, z) for x, _, z in reversed(q)], m)   # off the front's corners, or the weld merges them (net_poles)
 
 
 def distance_board(g, s):
@@ -2164,6 +2167,7 @@ def bridge_rope(g, s):
     of loose cross planks at height `deck` on three stringers, white fascia boards, square posts at the deck
     edges carrying two sagging hemp ropes per bay with a knot where each rope meets a post, piles under
     every post pair (`pileDepth` below the origin), and railway-sleeper steps down to the ground at each end (`steps` = [-x count, +x count]).
+    `ramps` = [-x run, +x run] in metres puts a plank ramp at that end instead of its steps (a low deck a trolley rolls over).
     Origin on the bank ground (placed with ground "max"); the creek bed is below z = 0."""
     import random
     L, W = s["length"], s.get("width", 1.8)
@@ -2197,9 +2201,23 @@ def bridge_rope(g, s):
                     g.pipe(p, q, 0.022, rope, seg=6)
             for x in xs:
                 g.sphere((x, d * (yp + 0.09), zr), 0.06, rope, seg=8, rings=5)
+    # plank ramps for trolleys: cross planks on two sloping bearers, from the deck down to `rampFoot` (in the ground)
+    ramps = s.get("ramps", [0, 0])
+    foot = s.get("rampFoot", -0.1)
+    for sgn, run in zip((-1, 1), ramps):
+        if not run:
+            continue
+        x0, slope = sgn * L / 2, math.hypot(run, h - foot)
+        g.push(Matrix.Translation((x0, 0, h)) @ Matrix.Rotation(sgn * math.atan2(h - foot, run), 4, "Y"))
+        m = int(slope / pitch)
+        for i in range(m):
+            g.box((sgn * pitch * (i + 0.5), 0, -pt / 2), (pw, W, pt), deck, rz=r.uniform(-0.6, 0.6))
+        for y in (-W / 2 + 0.1, W / 2 - 0.1):
+            g.box((sgn * slope / 2, y, -pt - 0.06), (slope, 0.07, 0.12), sleeper)
+        g.pop()
     # sleeper steps: treads with grass between, splayed edging sleepers along both sides
-    for sgn, cnt in zip((-1, 1), s.get("steps", [1, 3])):
-        if not cnt:
+    for sgn, cnt, run in zip((-1, 1), s.get("steps", [1, 3]), ramps):
+        if not cnt or run:
             continue
         rise, run = h / (cnt + 1), 0.42
         x0 = sgn * L / 2
@@ -2209,6 +2227,37 @@ def bridge_rope(g, s):
         x1 = x0 + sgn * (0.35 + (cnt - 1) * run)
         for d in (-1, 1):
             g.beam((x0, d * (W / 2 + 0.22), h - rise - 0.1), (x1, d * (W / 2 + 0.22 + 0.08 * cnt), 0.02), 0.22, 0.2, sleeper)
+
+
+def jetty(g, s):
+    """Timber jetty out over a pond along +x. Origin on the bank top at the land end: a boarded gangway `ramp` long
+    and `rampWidth` wide runs from z = 0 down to the deck at z = `deckZ`, then a level deck `length` x `width` of
+    cross planks on stringers, a cross beam and two piles (`pileDepth` below the deck) every ~3 m, and a few newer,
+    paler boards across each end of the deck."""
+    import random
+    L, W, R = s["length"], s.get("width", 4.0), s.get("ramp", 3.0)
+    z, RW = s.get("deckZ", -0.2), s.get("rampWidth", s.get("width", 4.0) - 0.6)
+    r = random.Random(s.get("seed", 5))
+    deck, pale, sleeper = s.get("deckMat", "wood_deck_grey"), s.get("newMat", "wood_grey"), "wood_sleeper"
+    pt, pitch, pw, sz = 0.035, 0.155, 0.14, 0.2
+    n = int(L / pitch)
+    for i in range(n):
+        x = R + (L - n * pitch) / 2 + pitch * (i + 0.5)
+        g.box((x, 0, z - pt / 2 + r.uniform(-0.004, 0.004)), (pw, W, pt), pale if i < 3 or i >= n - 3 else deck, rz=r.uniform(-0.5, 0.5))
+    for k in range(4):
+        g.box((R + L / 2, -W / 2 + 0.15 + k * (W - 0.3) / 3, z - pt - sz / 2), (L - 0.1, 0.08, sz), sleeper)
+    for d in (-1, 1):
+        g.box((R + L / 2, d * (W / 2 - 0.02), z - pt - 0.11), (L, 0.04, 0.22), sleeper)
+    rows = max(2, int(round(L / 3.0)) + 1)
+    for k in range(rows):
+        x = R + 0.25 + k * (L - 0.5) / (rows - 1)
+        g.box((x, 0, z - pt - sz - 0.07), (0.12, W, 0.14), sleeper)
+        for d in (-1, 1):
+            g.pipe((x, d * (W / 2 - 0.2), z - s.get("pileDepth", 2.5)), (x, d * (W / 2 - 0.2), z - pt - sz), 0.1, sleeper, seg=8)
+    # gangway: boards along the slope, its land end let 5 cm into the bank
+    g.beam((-0.3, 0, -0.08), (R + 0.02, 0, z - 0.03), RW, 0.06, pale)
+    for d in (-1, 1):
+        g.beam((-0.3, d * (RW / 2 - 0.1), -0.2), (R, d * (RW / 2 - 0.1), z - 0.15), 0.08, 0.18, sleeper)
 
 
 def marker_post(g, s):
@@ -2235,7 +2284,7 @@ BUILDERS = {
     "rock": rock, "boulder": boulder, "stones": stones, "drape": drape, "range_mat": range_mat, "net_poles": net_poles, "target_flag": target_flag,
     "distance_board": distance_board, "banner": banner, "power_pole": power_pole, "car": car,
     "golf_cart": golf_cart, "car2": car2, "bridge_wood": bridge_wood, "bridge_brick": bridge_brick,
-    "bridge_rope": bridge_rope, "marker_post": marker_post, "trolley_rack": trolley_rack,
+    "bridge_rope": bridge_rope, "jetty": jetty, "marker_post": marker_post, "trolley_rack": trolley_rack,
 }
 
 

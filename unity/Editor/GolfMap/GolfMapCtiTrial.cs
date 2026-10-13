@@ -280,10 +280,17 @@ namespace GolfMap.Editor
         }
 
         // CTI's per-material wind response (x: primary bending, y: branch turbulence, z: edge flutter).
-        // Forst ships 1/1/1, which under the scene's wind looked like a storm (2026-09-27). The global
-        // wind stays as it is for the other trees. Leaves and bark take the same value so the leaves
-        // stay on their branches. VSP's CTI controller does not override this property.
-        static readonly Vector4 WindMultipliers = new Vector4(0.5f, 0.5f, 0.5f, 0);
+        // Forst ships 1/1/1, which under the scene's wind looked like a storm (2026-09-27); 0.5 still
+        // moved more than the other trees (2026-10-11). The global wind stays as it is for the other
+        // trees. Leaves and bark take the same value so the leaves stay on their branches. VSP's CTI
+        // controller does not override this property.
+        static readonly Vector4 WindMultipliers = new Vector4(0.1f, 0, 0, 0);
+
+        // The leaves' own motion, which the multipliers do not scale: twigs tumbling around their
+        // branch (_TumbleStrength) and leaf turbulence (_LeafTurbulence), both driven by the wind
+        // strength alone. LeafMotion scales Forst's values (1 = as shipped).
+        const float LeafMotion = 0f;
+        const float ForstTumbleStrength = 0.03f, ForstOakLeafTurbulence = 0.26f, ForstBirchLeafTurbulence = 0.1f;
 
         // The trial materials: stock-named CTI shader, wind from script, the damped wind multipliers and
         // trial.json's texture overrides (prepare-cti-maps.py's tinted / no-spec copies).
@@ -300,6 +307,17 @@ namespace GolfMap.Editor
                 {
                     to.SetVector("_BaseWindMultipliers", WindMultipliers);
                     log.Add(s.to + " _BaseWindMultipliers -> " + WindMultipliers);
+                }
+                if (to.HasProperty("_TumbleStrength") && to.HasProperty("_LeafTurbulence") && shader.name == "CTI/LOD Leaves")
+                {
+                    bool oak = s.to.Contains("Oak");
+                    float tumble = ForstTumbleStrength * LeafMotion, turbulence = (oak ? ForstOakLeafTurbulence : ForstBirchLeafTurbulence) * LeafMotion;
+                    if (to.GetFloat("_TumbleStrength") != tumble || to.GetFloat("_LeafTurbulence") != turbulence)
+                    {
+                        to.SetFloat("_TumbleStrength", tumble);
+                        to.SetFloat("_LeafTurbulence", turbulence);
+                        log.Add(s.to + " _TumbleStrength -> " + tumble + ", _LeafTurbulence -> " + turbulence);
+                    }
                 }
                 foreach (var tex in s.textures ?? new Tex[0])
                 {

@@ -4,6 +4,7 @@ import { createSitesClient } from '../../shared/api/sites.gen';
 import { createCoursesClient } from '../../shared/api/courses.gen';
 import { createHolesClient } from '../../shared/api/holes.gen';
 import { createTeesClient } from '../../shared/api/tees.gen';
+import { createTeeSetsClient } from '../../shared/api/tee-sets.gen';
 import { createGreensClient } from '../../shared/api/greens.gen';
 import { createPinsClient } from '../../shared/api/pins.gen';
 import { createAimPointsClient } from '../../shared/api/aim-points.gen';
@@ -43,6 +44,7 @@ export const api = {
     courses: createCoursesClient(API_BASE),
     holes: createHolesClient(API_BASE),
     tees: createTeesClient(API_BASE),
+    teeSets: createTeeSetsClient(API_BASE),
     greens: createGreensClient(API_BASE),
     pins: createPinsClient(API_BASE),
     aimPoints: createAimPointsClient(API_BASE),

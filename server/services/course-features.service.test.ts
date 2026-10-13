@@ -1400,6 +1400,39 @@ describe('CourseFeaturesService — vegetation_zone', () => {
         expect((await svc.findById(zone.id)).version).toBe(2);
     });
 
+    test('heightMin and heightMax are a range in metres, both or neither', async () => {
+        const { db } = await createTestDb(seedCourse);
+        const svc = new CourseFeaturesService(db);
+        const tall = { ...zoneAttributes, heightMin: 2, heightMax: 3 };
+
+        const zone = await svc.create({
+            courseId: TEST_COURSE_ID, holeId: null, type: 'vegetation_zone', geometry: squareGeometry(), attributes: tall,
+        });
+        expect(zone.attributes).toEqual(tall);
+        const fixed = await svc.update(zone.id, 1, { attributes: { ...zoneAttributes, heightMin: 2.5, heightMax: 2.5 } });
+        expect(fixed.attributes).toEqual({ ...zoneAttributes, heightMin: 2.5, heightMax: 2.5 });
+        const cleared = await svc.update(zone.id, 2, { attributes: zoneAttributes });
+        expect(cleared.attributes).toEqual(zoneAttributes);
+
+        const bad: Record<string, unknown>[] = [
+            { heightMin: 2 },
+            { heightMax: 3 },
+            { heightMin: 3, heightMax: 2 },
+            { heightMin: 0, heightMax: 2 },
+            { heightMin: 2, heightMax: 12.5 },
+            { heightMin: '2', heightMax: 3 },
+        ];
+        for (const patch of bad) {
+            await expect(svc.create({
+                courseId: TEST_COURSE_ID, holeId: null, type: 'vegetation_zone',
+                geometry: squareGeometry(), attributes: { ...zoneAttributes, ...patch } as never,
+            })).rejects.toBeInstanceOf(InvalidFeatureError);
+            await expect(svc.update(zone.id, 3, { attributes: { ...zoneAttributes, ...patch } as never }))
+                .rejects.toBeInstanceOf(InvalidFeatureError);
+        }
+        expect((await svc.findById(zone.id)).version).toBe(3);
+    });
+
     test('rejects out-of-range weight / feather / noise on create and update', async () => {
         const { db } = await createTestDb(seedCourse);
         const svc = new CourseFeaturesService(db);

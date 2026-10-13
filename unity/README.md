@@ -464,6 +464,15 @@ mix), and variants share items, so the pipeline bakes each item's final density 
 type/variant slots binding it, times their `maxDensity`, clipped to 1) into its own channel and
 the importer gives every item exactly one density and one include rule against it.
 
+**Bush height** (`GolfMapZoneImporterHeight.cs`, D-VZ17): when a zone sets `heightMin`/`heightMax`, the
+export has a `height` block and `<stem>-height.png`. The importer adds the group `golfmap-zone:height`
+and, for every bush (prefab) item the block names, a twin item `<item> @height` (min = max scale 1, no
+noise scale) with a density and an include rule on the item's own group, an exclude rule where the
+height mask is 0 and a scale rule on it (`ScaleMultiplier` = 12.8 / the prefab's height at scale 1).
+The item itself is excluded where the mask is above 0. The report lists the twins with the measured
+heights, and items whose prefab gave no height. `golfmap.grass.apply` refreshes a twin from its item;
+twins no export needs are removed at import.
+
 1. Pick the zones JSON, **Load and check**. The importer validates the format, the plot,
    that every mask PNG exists and is square at `resolution`, that `items[]` texture/channel
    agree with `masks[].channels`, and the zone types, variants and zones (an unknown variant
@@ -754,18 +763,21 @@ Links-style deep rough on part of a deep-rough mesh: a rough-height floor with t
 it, both Stix 3D grass coloured from the ortho. Where: hand-drawn vegetation zones of type `rough_wispy` ("Wispy
 rough", a default zone type; it binds no VSP items, so on top of the tall rough it only takes that grass away).
 `golfmap.wispy.build` (`GolfMapWispyRough.cs`) reads the outlines from the inner zones export, so update the zone
-in Unity first (web "Update in Unity" / `bun run zones -- update <course> <zone>`).
+in Unity first (web "Update for GSPro" / `bun run zones -- update <course> <zone>`).
 
 - **Its own mesh.** `GrassRenderer` draws the `MeshFilter` beside it and needs no `MeshRenderer`, so each zone gets
   an object under `GolfMap Wispy Rough` whose mesh (`<course>/WispyRough/<zone id>.asset`) is the deep course
   meshes' triangles under the zone, painted for Stix alone (blade chance = red), fading over the zone's feather
   (centred on the outline). The course meshes, their paint and materials are not touched, and nothing is
   tessellated outside the zone. Vertex spacing (~1.2 m) limits the edge and the drifts.
-- **Two renderers, so the wisps are added.** The floor is the rough's own Stix material (the same asset the rough
-  meshes use): the sward is the rough's blade for blade and runs on from a rough beside the zone without a seam.
+- **Two renderers, so the wisps are added.** The floor is `<course>/Grass/<rough> Wispy Floor.mat`, the rough's Stix
+  material with the blades `floor` times as long (default 1.3: 0.18 m against the rough's 0.14 m; rebuilt from the
+  rough's on every run), and it grows on the rough meshes under the zone too, over their own sward - two layers of
+  floor grass there. `floor: 1` is the first version: the rough's own material asset, on deep rough only (blade
+  for blade the rough's, but it read as plain rough: "golvet något högre", Marcus 2026-10-11).
   The wisps are a child object `Wisps` on a second copy of the mesh (`<zone id>-wisps.asset`, red = weight x drift
   noise: `patch`/`patchM`) with `<course>/Grass/<rough> Wispy.mat`, rebuilt from the rough's material on every run:
-  the same blade made longer (`wispMin`/`wispMax` 0.15-0.30 m), thinner (`wispWidth` 6 mm), paler
+  the same blade made longer (`wispMin`/`wispMax` 0.20-0.38 m; 0.15-0.30 read as too short), thinner (`wispWidth` 6 mm), paler
   (`wispColor`/`wispSecColor`, multipliers on the ortho colour; defaults `1.3,1.25,1.0` / `0.95,0.88,0.62`) and
   spaced wider (`wisp` 0.15 = wisps per floor blade; 7 % at 4 mm read as too few and too thin beyond ~4 m).
   The first version put both in one material as two grass types; a blade point is then one type or the other, so
@@ -776,13 +788,15 @@ in Unity first (web "Update in Unity" / `bun run zones -- update <course> <zone>
   VSP's grass patch is 0.4 m tall and both `height` and `verticalOffset` are in its own units, scaled together:
   the tips stand `(0.4 + verticalOffset) x height x scale` over the ground, so the offset must stay above -0.4
   (the first try, -0.6, hung every tuft under the mesh). Vreta: `Wispy rough - sunk wisps` (Grass Textures2/041,
-  height 1.4, offset -0.22 = 55 % buried, spacing 0.9) and `- sunk seed tips` (Rustic Grass_06, height 1.6,
-  offset -0.24, spacing 2.0), scale 0.7-1.6 plus height waves: tips of roughly 0.18-0.4 m. Bind with
+  height 1.6, offset -0.22 = 55 % buried, spacing 0.46) and `- sunk seed tips` (Rustic Grass_06, height 1.85,
+  offset -0.24, spacing 1.1), scale 0.7-1.6 plus height waves: tips of roughly 0.2-0.47 m. Density noise scale
+  5 / 8: at 9 / 16 the tips stood in drifts with bare floor between, and more of them only filled the drifts
+  (history: spacing 0.9 / 2.0, then 0.65 / 1.5 at height 1.4 / 1.6 - too few and too short). Bind with
   `bun run zones -- bind <course> rough_wispy --palette <file>`. Cream tints (`#a39c7e`, white point 0.85) on 0.6-0.8 wide
   cards read as pale clumps up close and as bright speckle from 50 m, where the Stix floor has faded out; now
-  straw-green (`#7c8a58` / `#8c8a64`, white point 0.75), cards 0.45 / 0.4 wide, spacing 0.65 / 1.5.
-- **On a rough mesh** the zone gets the wisps only (the rough has its Stix floor already); deep rough gets floor
-  and wisps. Other surfaces under a zone get nothing.
+  straw-green (`#7c8a58` / `#8c8a64`, white point 0.75), cards 0.45 / 0.4 wide.
+- **On a rough mesh** the zone gets the longer floor and the wisps like deep rough (with `floor: 1` the wisps
+  only: the rough has its Stix floor already). Other surfaces under a zone get nothing.
 - **Tall grass still in the zone?** A hand-drawn replace zone takes the ground from the *generated* zones only;
   drawn zones add up (D-VZ14), so an older hand-drawn `rough_tall` zone under it keeps planting. Remove it, then
   export the zones again before judging in Unity.
@@ -881,6 +895,18 @@ strips; only red grows Stix grass, so blue dirt stays bare. `only=<names>` optio
 scopes planting and removal to those objects. Removing transition paint and running
 the normal refresh also removes obsolete path GrassRenderers. Course `.blend`
 files, orthophotos and the Unity scene are not saved by this workflow.
+
+### Worn gravel (wheel tracks)
+
+A surface of `Paths/path-surfaces.json` may carry a `tracks` look: the same keys as the surface (what it leaves
+out is the surface's own) plus `blendStrength` (1.5). `golfmap.paths.materials` draws it on the black channel of
+that surface's red-grass / green-path strip materials (black is free there: the paint sums to one). The paint comes
+from Blender: `golfmap.path_transition` takes the path's green out where the export's `wear` says wheels or feet
+have packed the stones (blender/README.md "Shaping: path transitions"), on every gravel path drawn as a centreline
+of 1.4 m or wider - two tracks from 1.8 m, one trodden middle below. Vreta's gravel: the Ground032 stones at 1.5 m
+a repeat instead of 3.5, flatter normals, tint `#66625a`, the Ground032 height map so stones show through. A worn piece carries green paint, so it wears its road's
+strip material; with no red on it, it gets no Stix renderer. A gravel path drawn as an outline has no
+centreline and stays unworn.
 
 ## Vertex paint
 
@@ -1207,6 +1233,17 @@ mesh. `GolfMap > Waterplanes > Build for all lakes` does every `*_Water_Base_Lak
   `<Props>/Materials/Recolor/`, swapped in on that asset's instances (grey/silver cars from a white body). The prefab's
   own root scale is kept (packs modelled in cm scale the root); `collider: box` adds one box to a prefab without
   colliders. Import pack subsets by dependency (prefab + what it references, with `.meta`), never over existing GUIDs.
+- Low-poly vehicles (`GolfMapVehicles.cs`): the vehicle pack's prefabs are 30-43 renderers a car, so the spec
+  places merged copies. `golfmap.vehicles.build` reads `<course>/Props/VehiclesLowPoly/vehicles.json` (from
+  `blender/tools/vehicle_models_10k.py`, [blender/README.md](../blender/README.md#low-poly-vehicles)) and makes
+  one prefab per entry beside it: the FBX under an empty root, each slot filled with the material of that name
+  from the pack's prefab (so `recolor` still finds `BodyMat 5`, `Tocus_Body White`, `Cart Color` ...), Cast
+  Shadows per object from the manifest. Re-running replaces the prefabs in place; scene instances follow.
+  Compare old and new with `golfmap.props.measure` (size and centre must match) before placing.
+- `golfmap.props.stats` (`group=Vehicles`, `transforms=true`): objects, renderers, shadow casters, triangles
+  and materials per group and asset under `GolfMap Props`, missing materials, and per object position, yaw and
+  height above the ground. Triangles are counted from each mesh's submeshes: in a built course static batching
+  gives every renderer the whole combined mesh, and a sum of `sharedMesh.triangles` there is ~90x too high.
 - Manifest materials can be `fade` (translucent Standard, e.g. ball-stop netting) or `cutout`.
 - `golfmap.props.clear` deletes `GolfMap Props`.
 
@@ -1288,6 +1325,12 @@ the stone in).
   it. After removing wall ground, the terrain it lowered stays down: `golfmap.terrain.conform` with `x0/z0/x1/z1` raises it
   back in that area only; then `golfmap.surfaces.export` and `bun run grass:zones` so the grass returns.
 
+## Hole navigator
+
+`GolfMap > Scene View > Hole navigator` (`Editor/GolfMap/GolfMapHoleNavigator.cs`) is fast travel in the Scene view: a row per hole with a button per stop (**Tee**, **Aim 1..n**, **Green**). A click puts the eye over that point, 5 m above the ground (the toolbar's `m up`), tilted 10° down and looking along the direction of play: from the tee to the first aim point ahead of it (else the green), from an aim point to the next stop. **Green** stands 15 m behind the green centre and looks back down the hole (towards the last aim point, else the tee). `<` and `>` step through the course in playing order. **Tee** is the back tee unless the toolbar picks a tee by name.
+
+The stops come from `<export folder>/<prefix>-holes.json` (golfmap-holes-v1: every tee, aim point and green centre in EPSG:3006, no heights). Write it again after they move in golf-map: `bun run py gspro.py holes --course <course> --out <export folder>/<prefix>-holes.json`. The window reloads the file when it gets focus. Bridge: `golfmap.holes {hole, point, tee, heightM}`, or no arguments for the list.
+
 ## Power lines
 
 `golfmap.powerlines.build` (`Editor/GolfMap/GolfMapPowerLines.cs`) builds the course's `power_line` features (drawn in golf-map's Draw mode, one point per pole structure) as H-frame wooden pole lines under `GolfMap Power Lines`: two poles and a crossarm at every point, three hanging insulators, three sagging wires between structures.
@@ -1298,3 +1341,29 @@ the stone in).
 4. Meshes (`<line> poles/insulators/wires.asset`) and the three Standard materials go to `<course>/PowerLines/`. The materials are made once and then kept (`resetMaterials: true` puts the built-in look back). The poles carry a MeshCollider with `GSPwood`; the wires have no collider.
 
 A rebuild replaces everything under `GolfMap Power Lines`. The trees export keeps survey stems out of the corridor (docs/gspro/export.md, `trees`); replant after drawing or moving a line.
+
+## Performance ranking
+
+What costs the most frame time on the course, ranked, per category, with the geometry behind it. Two measurers with the same categories and the same result file (`golfmap-perf-rank-v1`):
+
+| | where | run |
+|---|---|---|
+| Unity editor | `Editor/GolfMap/GolfMapPerf.cs`, `GolfMapPerfWindow.cs` | `GolfMap > Performance Ranking`, or `unity_command golfmap.perf.report {rounds: 3, json: "<file>"}` |
+| GSPro | `ArboristMod/perf.ts` (through the mod's `scene.geometry`, `scene.hide`, `veg.draw`, `fps`) | `bun unity/ArboristMod/perf.ts --rank --course <Course> --json <file> --md <file>` |
+
+- **Categories** are rules in `Editor/GolfMap/GolfMapPerfCategories.json`, never object lists: course meshes by surface (`mesh.fairway`, `mesh.rough`, `mesh.path` ...), props by group, stone walls and rocks, water, power lines, wispy rough (regexes on the hierarchy path); Stix 3D grass, terrains and post-processing volumes (component types); the VSP systems per type (`vsp.course.grass|plant|tree|billboard|object`, in the game also `vsp.arborist.*`); all shadows. A renderer no rule catches is `other:<root object>` (numbered roots and `(Clone)` copies together: `FlagAssembly_#`, `teeMarker#`); the `other` rows under 0.5 % of the scene's triangles and renderers fold into one `other:small` row whose members are in the JSON. The report states what share of the renderers and triangles the rules caught. `other` rows are counted but only timed when asked for (`only: "other"`, `--only other`), which leaves about 30 timed rows. A new kind of object on a course = a new line in that file (tests: `bun test unity/perf-rank.test.ts`).
+- **Viewpoints**: `docs/gspro/<course>/perf-views.json` (`golfmap-perf-views-v1`: name, position, rotation as pitch/yaw/roll, `eye` = metres over the ground). The game script reads it there; the editor reads a copy in the course folder (`Assets/GolfMap/<Course>/perf-views.json`) and measures the Scene view as it stands when there is none (`current: true`, the window's "current view only").
+- **Geometry** per category: objects, renderers, triangles (every LOD level, and LOD0 alone), distinct meshes and materials, shadow casters, LODGroups; for VSP the items and stored instances, and in the editor what the camera drew of each type at each viewpoint (`inView`).
+- **Cost**: frame time with everything on, then with exactly one category off, a fresh baseline every `baselineEvery` cases, `rounds` times over. A case is compared with the baselines just before and after it; the saving is the median over the rounds, in **milliseconds per frame** (they add up; the fps and the share of the frame are derived from it at that viewpoint). Overall = the mean over the viewpoints.
+- `golfmap.perf.report` arguments: `views` (file), `view` (part of a name), `current`, `rounds` (0 = geometry only), `frames` per reading, `settle` frames at a new viewpoint, `width`/`height`, `only` (ids or their first part, or group names: `mesh`, `vsp`, `props.vehicles`, `Vegetation`), `json`. `golfmap.perf.hide {category}` / `golfmap.perf.show` switch one category off in the scene to look at the course without it (the window's Hide / Select buttons); nothing is saved, and a scene save or script reload puts it back.
+- Side by side: `bun unity/ArboristMod/perf.ts --md <out.md> --from <editor.json> <game.json>`. The markdown opens with a summary (the five largest costs overall, each viewpoint's baseline and its three largest); tables are ordered by measured saving, then triangles, the `other` rows last.
+- The game run ends with "Game left as found: yes" (`conditions.restoreCheck` in the JSON): nothing left hidden by `scene.hide` / `veg.draw`, shadow setting, quality level and vSync as at the start.
+
+Reading the numbers:
+
+- **The editor's are for ranking and geometry, the game's for fps.** The editor times the Scene view camera rendered off screen: no frame-rate cap, no GSPro systems (the Arborist vegetation, GSPro's sky and UI are not there), another field of view. Its triangle counts are the real meshes; a built course has static batches (below).
+- **"not measurable"**: the saving is no larger than the noise (the median difference between one baseline and the next at that viewpoint) or than half the spread of its own rounds. A single 5 s reading in GSPro swings by several fps: raise `--rounds` before acting on a small number.
+- **"at the cap"** (game): GSPro runs with vSync and sets it again every frame, so the frame rate stops at the display's refresh rate. A viewpoint whose baseline is at the cap measures nothing; a saving that reaches the cap is a floor (`>=`). Use a heavier viewpoint or a higher resolution; the script does not change the game's resolution. The script finds the cap by looking straight up at the sky for a moment (the display's reported refresh rate has been wrong) and puts the camera back; `--cap <fps>` overrides. If the sky reading is unsteady or no display refresh rate, the cap is unknown, nothing is marked "at the cap", and the script warns that something else is using the graphics card: those timings are not the game's own.
+- **Static batching** (game): a batched renderer's mesh is the whole combined mesh, counted once per category, so those triangle counts are upper bounds (`<=` in the tables, `batchedRenderers` in the JSON).
+- **VSP**: the game's rows (`veg.draw`) stop the drawing only, the cells stay loaded and culled; the editor's rows hide the items (`GolfMapVegPerf`), so they include VSP's CPU work for the type. Never measure after a `veg.set`: a refreshed system reloads its cells for minutes.
+- Measure the game with Unity and Arborist closed (`pwsh unity/ArboristMod/apps.ps1 close`): they take the graphics card.

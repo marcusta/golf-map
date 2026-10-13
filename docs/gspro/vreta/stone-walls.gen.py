@@ -443,6 +443,9 @@ SURVEY_STONES = {
         (530031.0, 6487414.1, 1.0, 0.4, 60, "s_rock_04"), (530046.8, 6487401.0, 1.2, 0.5, 300, "s_rock_05"),
         (530045.7, 6487396.8, 1.0, 0.4, 240, "s_rock_06"), (530013.8, 6487254.5, 1.5, 0.6, 90, "m_rock_02"),
         (530038.1, 6487211.1, 1.5, 0.6, 30, "m_rock_03"),
+        # the boulder in the rough edge right of the fairway, 7 m NW of a birch (Marcus, 2026-10-11; missed by the
+        # scan): about 4 x 3.5 m with a cast shadow in the 2025 ortho, a lichen-grey wedge about 1.7 m high in photo b7d05c93
+        (529986.0, 6487328.7, 4.2, 1.2, 110, "Rock_01"),   # top 1.7 showed the prefab's base plate on the downhill side (ground under it spans 0.5 m)
     ],
     "h4-tee": [   # 20 m south of hole 4's back tees: two big boulders (8 x 4.5 m and 5.5 x 4 m) and the stones round them
         (529747.0, 6487834.5, 8.5, 2.0, 45, "Rock_01"), (529754.25, 6487837.75, 5.5, 1.6, 80, "Rock_03"),

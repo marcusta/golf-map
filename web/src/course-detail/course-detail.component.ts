@@ -117,8 +117,9 @@ export class CourseDetailComponent extends Component {
         // GeoJSON draft-import wizard (pipeline fetch-water / fetch-osm /
         // detect-trees output) — same dock-over-the-map behavior.
         this.spawn(GeojsonImportPanelComponent, this.ref(frag, 'editorCanvas'));
-        // GSPro/OPCD SVG export — the outbound counterpart to the importers,
-        // opened from the same ⋯ menu, docked the same way.
+        // GSPro/OPCD export — the outbound counterpart to the importers,
+        // opened from the same ⋯ menu: a dialog over the page, and its SVG
+        // test-variant panel docked the same way as the importers.
         this.spawn(GsproExportPanelComponent, this.ref(frag, 'editorCanvas'));
         // The course's vegetation zone-type table — same ⋯ menu, same dock.
         this.spawn(ZoneTypesPanelComponent, this.ref(frag, 'editorCanvas'));

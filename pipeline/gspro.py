@@ -32,9 +32,13 @@ Commands:
              course: holes, tee boxes, pin positions, green centres and aim
              points from the app's tables, penalty areas and the out-of-bounds
              ring from its drawn features, all as Unity world positions on one
-             terrain square. Merges into the existing .GKD, keeping everything
-             GreenKeeper owns.
-  svg        Export a course's drawn features from the app database as a
+             terrain square. Merges into the existing .GKD: the course details
+             the app keeps (name, location, designer, description, keywords)
+             and its tee sets' ratings go into the header, the rest of it
+             stays GreenKeeper's.
+  holes      Write a course's tees, aim points and green centres (EPSG:3006)
+             for the Unity hole navigator.
+  svg      Export a course's drawn features from the app database as a
              layered, fill-only SVG in the GSPro/OPCD trace palette: one
              Inkscape layer per hole, shapes named <type>_<n>, fills from
              the OPCD v4 palette.
@@ -56,6 +60,7 @@ Downloads need LANTMATERIET_USER/LANTMATERIET_PASS (loaded from the repo-root
 
 from __future__ import annotations
 
+import zlib
 import argparse
 import json
 import math
@@ -1683,7 +1688,7 @@ def _fill_hazard_edges(hwc: np.ndarray, extent: Extent, rows: list, fill: EdgeFi
     height, width = hwc.shape[:2]
     px = (extent[2] - extent[0]) / width
     by_type, counts = {}, {}
-    for row in rows:
+    for row in _grass_tracks_as_turf(rows):
         if row["type"] not in fill.types:
             continue
         shape = _feature_shape(json.loads(row["geometry_json"]), min(0.05, px / 4))
@@ -1803,6 +1808,15 @@ def _row_surface(row) -> str | None:
         return json.loads(raw).get("surface")
     except (ValueError, AttributeError):
         return None
+
+
+def _grass_tracks_as_turf(rows: list) -> list:
+    """`rows` with every `surface: grass` track retyped GRASS_TRACK_FILL: its
+    mesh is a rough on the satellite material, so in the `-meshes` file it is
+    turf (softened, tinted, no edge band), not a path kept as photographed -
+    that left it a dark grey strip with every wheel mark in the tinted green."""
+    return [{**{k: r[k] for k in r.keys()}, "type": GRASS_TRACK_FILL}
+            if r["type"] == "path" and _row_surface(r) == GRASS_TRACK_SURFACE else r for r in rows]
 
 
 def _fill_path_shadows(hwc: np.ndarray, extent: Extent, rows: list) -> tuple[np.ndarray, str]:
@@ -2084,6 +2098,7 @@ def _tint_terrain(hwc: np.ndarray, extent: Extent, rows: list, tints: dict[str, 
     water tint instead of the green; across the feathered shoreline the
     result runs from one to the other. Chunked by rows."""
     size = hwc.shape[0]
+    rows = _grass_tracks_as_turf(rows)
     alpha, plate, sharp, stats = _render_tint_masks(rows, tints, extent, size)
     a_all = np.asarray(alpha)
     sigma_px = soften_m / 2.0 * size / (extent[2] - extent[0])
@@ -2304,7 +2319,29 @@ def _transition_centerline(centerline: dict) -> list:
     return out
 
 
+PATH_WEAR_MIN_WIDTH_M = 1.4     # narrower gravel stays loose all over
+PATH_WEAR_TWO_TRACKS_M = 1.8    # from this width on: two wheel tracks; below, one trodden middle
+PATH_WEAR_EDGE_M = 0.12         # how far past a track's width the packed look fades out (a soft edge would close the middle string)
+
+
+def _path_wear(surface: str, width: float, feature_id: str) -> dict | None:
+    """Where traffic has packed a gravel path's stones into the fines (blender/README.md "Shaping: path
+    transitions", wear): two wheel tracks on a road, one trodden band on a footpath. Metres from the centreline."""
+    if surface != "gravel" or width < PATH_WEAR_MIN_WIDTH_M:
+        return None
+    import zlib
+    seed = zlib.crc32(feature_id.encode("utf-8")) & 0x7FFFFFFF
+    if width < PATH_WEAR_TWO_TRACKS_M:
+        return {"tracks": 1, "trackWidthM": round(width * 0.45, 2), "trackSpacingM": 0, "edgeM": PATH_WEAR_EDGE_M,
+                "strength": 0.8, "seed": seed}
+    # Loose gravel on both shoulders and in a string down the middle, the two tracks between them.
+    return {"tracks": 2, "trackWidthM": round(min(0.7, width * 0.24), 2),
+            "trackSpacingM": round(min(1.6, width * 0.5), 2), "edgeM": PATH_WEAR_EDGE_M, "strength": 1, "seed": seed}
+
+
 def _path_transition_entries(rows: list, feature_shapes: dict) -> list:
+    """The sidecar's `transitions`: per gravel / dirt path feature with a centreline, its end and section
+    transitions and, on gravel, its wear. A feature with neither has no entry."""
     entries = []
     for row in rows:
         surface = _row_surface(row)
@@ -2316,7 +2353,12 @@ def _path_transition_entries(rows: list, feature_shapes: dict) -> list:
         centerline = geometry.get("centerline")
         if geometry.get("crs") != "EPSG:3006":
             continue
-        if not isinstance(transitions, list) or not transitions or not centerline:
+        if not centerline:
+            continue
+        if not isinstance(transitions, list):
+            transitions = []
+        wear = _path_wear(surface, centerline["widthM"], row["id"])
+        if not transitions and not wear:
             continue
         line = _transition_centerline(centerline)
         length = sum(math.dist(a, b) for a, b in zip(line, line[1:]))
@@ -2354,10 +2396,11 @@ def _path_transition_entries(rows: list, feature_shapes: dict) -> list:
             except (KeyError, TypeError, ValueError):
                 continue
         for shape in sorted(feature_shapes.get(row["id"], [])):
-            if valid:
+            if valid or wear:
                 entries.append({"featureId": row["id"], "shape": shape, "surface": surface,
                                 "widthM": centerline["widthM"], "lengthM": length,
-                                "centerline3006": [list(p) for p in line], "transitions": valid})
+                                "centerline3006": [list(p) for p in line], "transitions": valid,
+                                **({"wear": wear} if wear else {})})
     return sorted(entries, key=lambda e: (e["shape"], e["featureId"]))
 
 
@@ -3239,13 +3282,19 @@ def shaping_global(db_path: Path, course_ident: str) -> tuple[dict, dict]:
     if soft:
         ops.append({"id": SHAPING_EDGE_FADE_ID, "op": "golfmap.path_edge_fade", "select": {"type": "path"}})
 
-    if _path_transition_entries(rows, {r["id"]: ["eligible"] for r in paths}):
-        ops.append({"id": "paths-transitions", "op": "golfmap.path_transition", "select": {"type": "path"}})
-
     # After every op that moves or cuts meshes: a slab is cut out of the final surface, whatever lies under it.
     slab_ops, slab_stats = _rock_slab_ops(rows)
     ops += slab_ops
     stats.update(slab_stats)
+
+    # Last of all: the transition and wear paint only refines and paints the path meshes in place, and a road's
+    # box spans the course, so every cut-out reads it - painted before them, a paint tweak would re-cut every slab.
+    entries = _path_transition_entries(rows, {r["id"]: ["eligible"] for r in paths})
+    if entries:
+        op = {"id": "paths-transitions", "op": "golfmap.path_transition", "select": {"type": "path"}}
+        if any("wear" in e for e in entries):
+            op["maxEdgeM"] = SHAPING_WEAR_MAX_EDGE_M
+        ops.append(op)
 
     doc = {
         "format": SHAPING_LAYER_FORMAT,
@@ -3258,6 +3307,7 @@ def shaping_global(db_path: Path, course_ident: str) -> tuple[dict, dict]:
     return doc, stats
 
 
+SHAPING_WEAR_MAX_EDGE_M = 0.2   # the middle string between two tracks is ~0.3 m wide on a 2 m path
 SHAPING_SPLIT_ID = "paths-surfaces"
 SHAPING_EDGE_FADE_ID = "paths-edge-fade"
 SHAPING_EDGE_FADE_SURFACES = ("gravel", "dirt")   # shape_edgefade.SURFACES
@@ -3698,6 +3748,20 @@ DEFAULT_ZONE_SEED = 0
 # replace takes its share of the ground from them, mix plants over them.
 ZONE_BLEND_REPLACE = "replace"
 ZONE_BLEND_MIX = "mix"
+# How wide a zone's mix fades into the vegetation next to it (attribute
+# `edgeBlend`, metres, centred on the drawn edge; D-VZ16). Absent: this for a
+# zone drawn by hand that replaces, 0 for generated and mix zones. 0 on a
+# drawn replace zone = a hard border, also against a neighbour that blends.
+# The mixes are diffused with a Gaussian of edgeBlend / ZONE_BLEND_SIGMAS
+# (so nearly all of the change lies within the width), inside a band of
+# ZONE_BLEND_BAND widths around the zone's edge, in tiles of ZONE_BLEND_TILE_PX.
+# The line where two mixes are even wanders: each mix is weighted by
+# exp(ZONE_BLEND_WANDER x its own value noise, one value per ZONE_NOISE_CELL_M).
+DEFAULT_ZONE_EDGE_BLEND_M = 8.0
+ZONE_BLEND_SIGMAS = 4.0
+ZONE_BLEND_BAND = 3.0
+ZONE_BLEND_WANDER = 1.2
+ZONE_BLEND_TILE_PX = 1024
 # Curve flattening for the raster, in mask pixels (0.5 m at 4096 over 2 km),
 # and for the exported polygons, in metres (they are simplified afterwards).
 ZONE_FLATTEN_PX = 0.25
@@ -3707,6 +3771,23 @@ ZONE_FLATTEN_M = 0.25
 # feather so the edge wanders instead of fizzing.
 ZONE_NOISE_CELL_M = 6.0
 ZONE_CHANNELS = 4
+# Bush height (D-VZ17): a zone's `heightMin`/`heightMax` (metres) go into one
+# more mask, `<stem>-height.png`, 8-bit grey at 1/ZONE_HEIGHT_DOWNSCALE of the
+# density masks' resolution: 0 = no height set there, else the intended height
+# as `value / 256 x ZONE_HEIGHT_RANGE_M` (5 cm steps) - VSP's scale rule reads
+# value / 256 (TextureMask.cs). Inside a zone the height varies between its
+# min and max with value noise, one value every ZONE_HEIGHT_NOISE_CELL_M metres,
+# stretched by ZONE_HEIGHT_SPREAD so both ends of the range are reached and
+# raised to ZONE_HEIGHT_SKEW: most of a zone stays in the lower part of its
+# range, with bumps of taller bushes a few metres across. An even spread
+# between min and max read as one level line along a hedge (Vreta, hole 5).
+ZONE_HEIGHT_RANGE_M = 12.8
+ZONE_HEIGHT_MAX_M = 12.0
+ZONE_HEIGHT_DOWNSCALE = 2
+ZONE_HEIGHT_NOISE_CELL_M = 3.0
+ZONE_HEIGHT_SPREAD = 0.75
+ZONE_HEIGHT_SKEW = 2.2
+ZONE_HEIGHT_SEED = 0x48454947
 
 
 @dataclass
@@ -3730,6 +3811,11 @@ class ZoneType:
     def slots(self) -> list[tuple[str, list[dict]]]:
         """(slot key, items) for the Default mix, then each variant in order."""
         return [(self.key, self.items)] + [(zone_slot(self.key, v.key), v.items) for v in self.variants]
+
+
+def _zone_blend_reach(edge_blend: float) -> float:
+    """Half the band a zone's edge blend works in (a hard zone closes the default's band)."""
+    return ZONE_BLEND_BAND * max(edge_blend, DEFAULT_ZONE_EDGE_BLEND_M) / 2.0
 
 
 def zone_slot(zone_type: str, variant: str = "") -> str:
@@ -3764,10 +3850,27 @@ class ZoneSpec:
     generated: bool = False  # written by a generator (course_features.generated), not drawn
     blend: str = ZONE_BLEND_REPLACE  # ZONE_BLEND_MIX: over the zones below it instead of taking their share
     extras: list[ZonePalette] = field(default_factory=list)  # more palettes on the same footprint
+    edge_blend: float = 0.0  # metres its mix fades into its neighbours over; <= feather: no blend
+    height: tuple[float, float] | None = None  # (min, max) metres its bushes are scaled to; None = the palette's sizes
 
     @property
     def slot(self) -> str:
         return zone_slot(self.zone_type, self.variant)
+
+    @property
+    def blends(self) -> bool:
+        return self.edge_blend > 0.0
+
+    @property
+    def hard(self) -> bool:
+        """Drawn, replacing and without an edge blend: its border stays as drawn."""
+        return not self.generated and self.blend != ZONE_BLEND_MIX and not self.blends
+
+    @property
+    def reach(self) -> float:
+        """How far from its drawn edge the zone can change a pixel, in metres
+        (its feather and noise, or the blend band it opens or closes)."""
+        return max(self.feather / 2.0 + self.noise, _zone_blend_reach(self.edge_blend))
 
     def layers(self) -> list[tuple[str, float, bool]]:
         """(slot, weight factor, takes the ground) per palette the zone
@@ -3801,6 +3904,21 @@ def _zone_number(attrs: dict, key: str, default: float, zone_id: str) -> float:
         return float(value)
     except (TypeError, ValueError):
         raise SystemExit(f"error: zone {zone_id}: {key} is not a number ({value!r})") from None
+
+
+def _zone_height(attrs: dict, zone_id: str) -> tuple[float, float] | None:
+    """A zone's `heightMin`/`heightMax` as (min, max) metres, None when it has
+    none. The server validates them (both or neither, 0 < min <= max <=
+    ZONE_HEIGHT_MAX_M); a pair that still is not that is dropped with a warning."""
+    lo, hi = attrs.get("heightMin"), attrs.get("heightMax")
+    if lo is None and hi is None:
+        return None
+    ok = all(isinstance(v, (int, float)) and not isinstance(v, bool) for v in (lo, hi))
+    if not ok or not 0.0 < lo <= hi <= ZONE_HEIGHT_MAX_M:
+        print(f"  warning: zone {zone_id}: heightMin/heightMax {lo!r}/{hi!r} are not 0 < min <= max <= "
+              f"{ZONE_HEIGHT_MAX_M:g} m; no bush height")
+        return None
+    return float(lo), float(hi)
 
 
 def _zone_type_items(raw_items) -> list[dict]:
@@ -3910,7 +4028,8 @@ def _load_zones(db_path: Path, course_ident: str) -> tuple[sqlite3.Row, list[Zon
     features on top, each group by sort_order — the same order the SVG/tint
     loader uses), with `zoneType`, `zoneVariant` ("" = Default), `weight`,
     `feather`, `noise` read from attributes_json (defaults 1, 2 m, 0 m when
-    absent; weight clamped to 0..1). The variant is not checked against the
+    absent; weight clamped to 0..1) and `edgeBlend` (absent:
+    DEFAULT_ZONE_EDGE_BLEND_M for a drawn replace zone, else 0). The variant is not checked against the
     type here; cmd_zones falls unknown ones back to the Default mix."""
     conn = _open_course_db(db_path)
     course = _resolve_course(conn, course_ident)
@@ -3933,6 +4052,8 @@ def _load_zones(db_path: Path, course_ident: str) -> tuple[sqlite3.Row, list[Zon
         attrs = json.loads(r["attributes_json"]) if r["attributes_json"] else {}
         if not isinstance(attrs, dict):
             attrs = {}
+        mixes = attrs.get("blend") == ZONE_BLEND_MIX
+        edge_default = 0.0 if r["generated"] or mixes else DEFAULT_ZONE_EDGE_BLEND_M
         zones.append(ZoneSpec(
             id=str(r["id"]),
             zone_type=str(attrs.get("zoneType") or ""),
@@ -3942,8 +4063,10 @@ def _load_zones(db_path: Path, course_ident: str) -> tuple[sqlite3.Row, list[Zon
             geometry=json.loads(r["geometry_json"]),
             variant=str(attrs.get("zoneVariant") or ""),
             generated=bool(r["generated"]),
-            blend=ZONE_BLEND_MIX if attrs.get("blend") == ZONE_BLEND_MIX else ZONE_BLEND_REPLACE,
+            blend=ZONE_BLEND_MIX if mixes else ZONE_BLEND_REPLACE,
             extras=_zone_extra_palettes(attrs.get("extraPalettes"), str(r["id"])),
+            edge_blend=max(0.0, _zone_number(attrs, "edgeBlend", edge_default, r["id"])),
+            height=_zone_height(attrs, str(r["id"])),
         ))
     return course, types, zones
 
@@ -4081,7 +4204,8 @@ def _px_rect(rect: Extent, extent: Extent, size: int) -> tuple[int, int, int, in
 
 def render_zone_masks(zones: list[ZoneSpec], extent: Extent, size: int, seed: int = DEFAULT_ZONE_SEED,
                       exclude: Extent | None = None,
-                      window: tuple[int, int, int, int] | None = None) -> tuple[dict[str, np.ndarray], int]:
+                      window: tuple[int, int, int, int] | None = None,
+                      planted: set[str] | None = None) -> tuple[dict[str, np.ndarray], int]:
     """Per slot (`<type>` for a type's Default mix, `<type>/<variant>` for a
     variant — ZoneSpec.slot), a float32 size×size weight raster in the
     north-up frame of the terrain texture (only slots that have a zone get
@@ -4113,7 +4237,21 @@ def render_zone_masks(zones: list[ZoneSpec], extent: Extent, size: int, seed: in
     full render has there, since every zone's weight is still computed over
     its own whole crop (the distance field needs the whole polygon) and the
     stack is resolved per pixel. Only zones whose crop reaches the window
-    count, and only their slots get a raster (the zones-patch step)."""
+    count, and only their slots get a raster (the zones-patch step).
+
+    Edge blend (D-VZ16): around the edge of a zone with an `edge_blend`, the
+    mixes diffuse into each other. Each slot is blurred (a Gaussian of
+    edge_blend / ZONE_BLEND_SIGMAS), weighted by its own noise so the border
+    wanders, and every pixel's slots are then scaled to sum to what they did
+    before. So the blend changes which mix grows near the edge, never how
+    much: a mix only reaches where something grew already, beside bare ground
+    (a path, mown rough) the zone ends exactly where it did, and a zone with
+    nothing to blend with is unchanged. A drawn replace zone without an edge
+    blend keeps its border as drawn. `planted` = the slots that bind items
+    (None: all): only they blend. A slot nothing grows from is bare ground to
+    the blend - an itemless zone lying over a path (Vreta's old lidar woodland
+    proposals) otherwise hands its weight there to the mixes blending beside
+    it, and they grow across the path."""
     e0, n0, e1, n1 = extent
     px_m = (e1 - e0) / size
     scale = 1.0 / px_m
@@ -4121,26 +4259,209 @@ def render_zone_masks(zones: list[ZoneSpec], extent: Extent, size: int, seed: in
     def to_px(xy: Pt) -> Pt:
         return ((xy[0] - e0) * scale, (n1 - xy[1]) * scale)
 
-    wy0, wy1, wx0, wx1 = window if window is not None else (0, size, 0, size)
-    shape = (wy1 - wy0, wx1 - wx0)
+    flat: list[tuple[ZoneSpec, list[list[Pt]]]] = []
+    for z in zones:
+        curve = z.geometry.get("curveType") or "bezier"
+        flat.append((z, [p for p in (_ring_px(r, curve, to_px, ZONE_FLATTEN_PX) for r in z.geometry.get("rings") or [])
+                         if len(p) >= 3]))
     noise = _ValueNoise(seed, e1 - e0) if any(z.noise > 0 for z in zones) else None
-    channels: dict[str, np.ndarray] = {}
-    outside = 0
+    exclude_px = _px_rect(exclude, extent, size) if exclude is not None else None
+    channels, outside = _resolve_zone_stack(flat, size, px_m, noise, exclude_px, window)
 
-    def weight_in_window(z: ZoneSpec) -> tuple[tuple[int, int, int, int], np.ndarray] | None | str:
-        """The zone's weight over its crop's overlap with the window, in window
-        coordinates; None when it misses the window, "outside" when it misses the frame."""
+    blending = [(z, polys) for z, polys in flat if z.blends and polys]
+    if not blending:
+        return channels, outside
+    wy0, wy1, wx0, wx1 = window if window is not None else (0, size, 0, size)
+    widths = sorted({z.edge_blend for z, _ in blending})
+    # A blurred pixel reads the stack this far around it (scipy's Gaussian is cut at 4 sigma).
+    halo = int(4.0 * widths[-1] / ZONE_BLEND_SIGMAS / px_m + 0.5) + 1
+    wander: dict[str, _ValueNoise] = {}
+    step = ZONE_BLEND_TILE_PX
+    tiles: set[tuple[int, int]] = set()
+    for z, polys in blending:
+        pad = _zone_blend_reach(z.edge_blend) / px_m + 3
+        xs = [x for p in polys for x, _ in p]
+        ys = [y for p in polys for _, y in p]
+        bx0, bx1 = max(wx0, int(min(xs) - pad)), min(wx1, int(max(xs) + pad) + 1)
+        by0, by1 = max(wy0, int(min(ys) - pad)), min(wy1, int(max(ys) + pad) + 1)
+        if bx1 > bx0 and by1 > by0:
+            tiles.update((ty, tx) for ty in range((by0 - wy0) // step, (by1 - 1 - wy0) // step + 1)
+                         for tx in range((bx0 - wx0) // step, (bx1 - 1 - wx0) // step + 1))
+    for ty, tx in sorted(tiles):
+        tile = (wy0 + ty * step, min(wy1, wy0 + (ty + 1) * step), wx0 + tx * step, min(wx1, wx0 + (tx + 1) * step))
+        around = (max(0, tile[0] - halo), min(size, tile[1] + halo), max(0, tile[2] - halo), min(size, tile[3] + halo))
+        plain, _ = _resolve_zone_stack(flat, size, px_m, noise, exclude_px, around)
+        for slot in plain:
+            if slot not in wander:
+                wander[slot] = _ValueNoise(zlib.crc32(slot.encode("utf-8")) ^ (seed & 0xFFFFFFFF), e1 - e0)
+        blended = _blend_zone_tile(plain, around, tile, flat, widths, size, px_m, wander, planted)
+        for slot, arr in blended.items():
+            # A slot that only grows in the halo outside a window has no raster yet, and the
+            # blur can still carry it into the tile.
+            held = channels.setdefault(slot, np.zeros((wy1 - wy0, wx1 - wx0), dtype=np.float32))
+            held[tile[0] - wy0:tile[1] - wy0, tile[2] - wx0:tile[3] - wx0] = arr
+    return channels, outside
+
+
+def render_zone_heights(zones: list[ZoneSpec], extent: Extent, size: int, seed: int = DEFAULT_ZONE_SEED,
+                        exclude: Extent | None = None,
+                        window: tuple[int, int, int, int] | None = None) -> np.ndarray:
+    """The bush-height mask (D-VZ17): a uint8 size x size raster in the masks'
+    north-up frame (or its `window`, y0, y1, x0, x1 in this raster's pixels),
+    0 where no zone sets a height and else the intended height as
+    `round(metres / ZONE_HEIGHT_RANGE_M x 256)`, at least 1.
+
+    A zone with a height covers every pixel its weight reaches (its feather
+    ramp and edge noise included, a pixel more than the density masks so no
+    bush at its rim falls outside). Inside it the height is value noise
+    between its min and max, skewed towards the min so the max shows as bumps,
+    the same field for every zone so two zones with the same range meet
+    without a step. Where zones with a height overlap, the
+    one with the larger weight there decides. `exclude` is zeroed."""
+    e0, n0, e1, n1 = extent
+    px_m = (e1 - e0) / size
+    scale = 1.0 / px_m
+    wy0, wy1, wx0, wx1 = window if window is not None else (0, size, 0, size)
+    out = np.zeros((wy1 - wy0, wx1 - wx0), dtype=np.uint8)
+    tall = [z for z in zones if z.height is not None]
+    if not tall:
+        return out
+
+    def to_px(xy: Pt) -> Pt:
+        return ((xy[0] - e0) * scale, (n1 - xy[1]) * scale)
+
+    edge_noise = _ValueNoise(seed, e1 - e0) if any(z.noise > 0 for z in tall) else None
+    waves = _ValueNoise(ZONE_HEIGHT_SEED ^ (seed & 0xFFFFFFFF), e1 - e0, ZONE_HEIGHT_NOISE_CELL_M)
+    best = np.zeros(out.shape, dtype=np.float32)
+    for z in tall:
         curve = z.geometry.get("curveType") or "bezier"
         polys = [p for p in (_ring_px(r, curve, to_px, ZONE_FLATTEN_PX) for r in z.geometry.get("rings") or [])
                  if len(p) >= 3]
+        crop = _zone_weight_crop(polys, size, px_m, max(z.weight, 1e-3), z.feather + 2.0 * px_m, z.noise, edge_noise,
+                                 clip=window) if polys else None
+        if crop is None:
+            continue
+        (y0, y1, x0, x1), w = crop
+        cy0, cy1, cx0, cx1 = max(y0, wy0), min(y1, wy1), max(x0, wx0), min(x1, wx1)
+        if cy1 <= cy0 or cx1 <= cx0:
+            continue
+        w = w[cy0 - y0:cy1 - y0, cx0 - x0:cx1 - x0]
+        rows, cols = slice(cy0 - wy0, cy1 - wy0), slice(cx0 - wx0, cx1 - wx0)
+        take = w > best[rows, cols]
+        if not take.any():
+            continue
+        lo, hi = z.height
+        t = np.clip(0.5 + ZONE_HEIGHT_SPREAD * waves.sample(cy0, cy1, cx0, cx1, px_m), 0.0, 1.0) ** ZONE_HEIGHT_SKEW
+        value = np.clip(np.round((lo + (hi - lo) * t) / ZONE_HEIGHT_RANGE_M * 256.0), 1, 255).astype(np.uint8)
+        out[rows, cols] = np.where(take, value, out[rows, cols])
+        best[rows, cols] = np.where(take, w, best[rows, cols])
+    if exclude is not None:
+        y0, y1, x0, x1 = _px_rect(exclude, extent, size)
+        y0, y1, x0, x1 = max(y0, wy0) - wy0, min(y1, wy1) - wy0, max(x0, wx0) - wx0, min(x1, wx1) - wx0
+        if y1 > y0 and x1 > x0:
+            out[y0:y1, x0:x1] = 0
+    return out
+
+
+def zone_height_meta(zones: list[ZoneSpec], items: list["ZoneItem"], out: Path, resolution: int) -> dict | None:
+    """The export's `height` block, None when no zone sets a height: the mask
+    file next to `out`, its resolution, the metres a full pixel stands for and
+    the items that can grow in a zone with a height (every item of a palette
+    such a zone plants). Unity gives the bushes among them a height-driven
+    twin; the grass items are named too and left alone there."""
+    slots = {slot for z in zones if z.height is not None for slot, _, _ in z.layers()}
+    names = [i.item for i in items if set(i.sources) & slots]
+    if not names:
+        return None
+    return {"file": f"{out.stem}-height.png", "resolution": max(1, resolution // ZONE_HEIGHT_DOWNSCALE),
+            "rangeM": ZONE_HEIGHT_RANGE_M, "items": names}
+
+
+def _zone_edge_band(polys: list[list[Pt]], width_m: float, tile: tuple[int, int, int, int], size: int,
+                    px_m: float) -> tuple[tuple[slice, slice], np.ndarray] | None:
+    """How much of the blend applies around one zone's drawn edge, over a
+    tile: 1 within half of ZONE_BLEND_BAND x width_m / 2 of the edge, down to
+    0 at that distance, as ((rows, cols) of the tile, values)."""
+    band_m = ZONE_BLEND_BAND * width_m
+    crop = _zone_weight_crop(polys, size, px_m, 1.0, band_m, 0.0, None, clip=tile)
+    if crop is None:
+        return None
+    (y0, y1, x0, x1), w = crop
+    cy0, cy1, cx0, cx1 = max(y0, tile[0]), min(y1, tile[1]), max(x0, tile[2]), min(x1, tile[3])
+    if cy1 <= cy0 or cx1 <= cx0:
+        return None
+    w = w[cy0 - y0:cy1 - y0, cx0 - x0:cx1 - x0]
+    return ((slice(cy0 - tile[0], cy1 - tile[0]), slice(cx0 - tile[2], cx1 - tile[2])),
+            np.clip(2.0 - 4.0 * np.abs(0.5 - w), 0.0, 1.0).astype(np.float32))
+
+
+def _blend_zone_tile(plain: dict[str, np.ndarray], around: tuple[int, int, int, int], tile: tuple[int, int, int, int],
+                     flat: list[tuple[ZoneSpec, list[list[Pt]]]], widths: list[float], size: int, px_m: float,
+                     wander: dict[str, "_ValueNoise"], planted: set[str] | None = None) -> dict[str, np.ndarray]:
+    """One tile's slots with the edge blends applied (render_zone_masks):
+    `plain` is the stack over `around`, the tile grown by the blur's reach.
+    Slots are walked in sorted order so a window gives the frame's floats."""
+    from scipy.ndimage import gaussian_filter
+
+    inner = (slice(tile[0] - around[0], tile[1] - around[0]), slice(tile[2] - around[2], tile[3] - around[2]))
+    shape = (tile[1] - tile[0], tile[3] - tile[2])
+    out = {slot: plain[slot][inner].copy() for slot in sorted(plain)}
+    slots = [slot for slot in sorted(plain) if planted is None or slot in planted]   # the rest: as they are
+    if not slots:
+        return out
+    total = np.zeros(shape, dtype=np.float32)
+    for slot in slots:
+        total += out[slot]
+
+    def bands(members, width_m: float) -> np.ndarray:
+        acc = np.zeros(shape, dtype=np.float32)
+        for polys in members:
+            got = _zone_edge_band(polys, width_m, tile, size, px_m)
+            if got is not None:
+                np.maximum(acc[got[0]], got[1], out=acc[got[0]])
+        return acc
+
+    keep = bands([polys for z, polys in flat if z.hard and polys], DEFAULT_ZONE_EDGE_BLEND_M)
+    weights = {slot: np.exp(np.float32(ZONE_BLEND_WANDER) * wander[slot].sample(*tile, px_m)) for slot in slots}
+    for width in widths:
+        band = bands([polys for z, polys in flat if z.edge_blend == width and polys], width) * (1.0 - keep)
+        if not band.any():
+            continue
+        sigma_px = width / ZONE_BLEND_SIGMAS / px_m
+        spread = {slot: gaussian_filter(plain[slot], sigma_px, mode="nearest", truncate=4.0)[inner] * weights[slot]
+                  for slot in slots}
+        spread_total = np.zeros(shape, dtype=np.float32)
+        for slot in slots:
+            spread_total += spread[slot]
+        has = spread_total > 1e-6
+        share = np.divide(total, spread_total, out=np.zeros(shape, dtype=np.float32), where=has)
+        for slot in slots:
+            out[slot] += band * np.where(has, spread[slot] * share - out[slot], 0.0)
+    return out
+
+
+def _resolve_zone_stack(flat: list[tuple[ZoneSpec, list[list[Pt]]]], size: int, px_m: float,
+                        noise: "_ValueNoise | None", exclude_px: tuple[int, int, int, int] | None,
+                        window: tuple[int, int, int, int] | None) -> tuple[dict[str, np.ndarray], int]:
+    """render_zone_masks' stack (before the edge blends) over the frame or a
+    window of it, from the zones' rings already in frame pixels."""
+    wy0, wy1, wx0, wx1 = window if window is not None else (0, size, 0, size)
+    shape = (wy1 - wy0, wx1 - wx0)
+    channels: dict[str, np.ndarray] = {}
+    outside = 0
+
+    def weight_in_window(z: ZoneSpec, polys: list[list[Pt]]) -> tuple[tuple[int, int, int, int], np.ndarray] | None | str:
+        """The zone's weight over its crop's overlap with the window, in window
+        coordinates; None when it misses the window, "outside" when it misses the frame."""
+        feather = z.feather
         if polys and window is not None:
             # The crop's own padding (_zone_weight_crop), checked before its distance transforms.
-            pad = (z.feather / 2.0 + z.noise) / px_m + 3
+            pad = (feather / 2.0 + z.noise) / px_m + 3
             xs = [x for p in polys for x, _ in p]
             ys = [y for p in polys for _, y in p]
             if min(xs) - pad >= wx1 or max(xs) + pad < wx0 or min(ys) - pad >= wy1 or max(ys) + pad < wy0:
                 return None
-        crop = _zone_weight_crop(polys, size, px_m, z.weight, z.feather, z.noise, noise, clip=window) if polys else None
+        crop = _zone_weight_crop(polys, size, px_m, z.weight, feather, z.noise, noise, clip=window) if polys else None
         if crop is None:
             return "outside"
         (y0, y1, x0, x1), w = crop
@@ -4152,10 +4473,10 @@ def render_zone_masks(zones: list[ZoneSpec], extent: Extent, size: int, seed: in
     # Drawn zones first: each palette adds (same palette: the maximum), whatever the order;
     # a replace zone's weight is ground the generated fill below does not get.
     claimed = np.zeros(shape, dtype=np.float32)
-    for z in zones:
+    for z, polys in flat:
         if z.generated:
             continue
-        got = weight_in_window(z)
+        got = weight_in_window(z, polys)
         if got is None:
             continue
         if got == "outside":
@@ -4170,8 +4491,8 @@ def render_zone_masks(zones: list[ZoneSpec], extent: Extent, size: int, seed: in
 
     # Generated zones under them, from the top of their stack down, sharing what is left.
     remaining = np.clip(1.0 - claimed, 0.0, 1.0).astype(np.float32)
-    for z in reversed([z for z in zones if z.generated]):
-        got = weight_in_window(z)
+    for z, polys in reversed([f for f in flat if f[0].generated]):
+        got = weight_in_window(z, polys)
         if got is None:
             continue
         if got == "outside":
@@ -4187,8 +4508,8 @@ def render_zone_masks(zones: list[ZoneSpec], extent: Extent, size: int, seed: in
                 sub_left -= new - sub_held
                 np.maximum(sub_left, 0.0, out=sub_left)
             sub_held[...] = new
-    if exclude is not None:
-        y0, y1, x0, x1 = _px_rect(exclude, extent, size)
+    if exclude_px is not None:
+        y0, y1, x0, x1 = exclude_px
         y0, y1, x0, x1 = max(y0, wy0) - wy0, min(y1, wy1) - wy0, max(x0, wx0) - wx0, min(x1, wx1) - wx0
         if y1 > y0 and x1 > x0:
             for arr in channels.values():
@@ -4309,7 +4630,7 @@ def _prepare_zones(db_path: Path, course_ident: str) -> tuple[sqlite3.Row, list[
     if sections:
         zones = [z for z in zones if z.id not in sections]
         print(f"  {len(sections)} creek section(s) (hand-drawn {CREEK_SECTION_ZONE_TYPE} zones near a creek or water) "
-              f"not rasterized: they pick the palette of those banks, which Plant vegetation plants: "
+              f"not rasterized: they pick the palette of those banks, which Plant for GSPro plants: "
               f"{', '.join(sorted(i[:8] for i in sections))}")
     if not types:
         raise SystemExit(f"error: course {course['name']} ({course['id']}) has no zone types "
@@ -4375,8 +4696,11 @@ def _zone_row(z: ZoneSpec, square, excl, e0: float, n0: float, simplify_m: float
         "weight": z.weight,
         "feather": z.feather,
         "noise": z.noise,
+        "edgeBlend": z.edge_blend,
         "blend": z.blend,
         "extraPalettes": [{"zoneType": e.zone_type, "variant": e.variant, "weight": e.weight} for e in z.extras],
+        # Only on a zone that sets one, so rows from before bush heights still compare equal.
+        **({"heightMin": z.height[0], "heightMax": z.height[1]} if z.height is not None else {}),
         "rings": rings,
     }
 
@@ -4406,7 +4730,9 @@ def cmd_zones(bbox, db_path: Path, course_ident: str, sidecar_path: Path, out: P
     `exclude`, simplified to `simplify_m`) for the Scene-view overlay.
     Zones whose type is not in the course's table are skipped with a
     warning, and so are extra palettes whose type is not; a variant not in
-    its type falls back to the Default mix with a warning."""
+    its type falls back to the Default mix with a warning. When a zone sets
+    a bush height, `<out stem>-height.png` and the `height` block are
+    written too (render_zone_heights); else a stale one is removed."""
     from shapely.geometry import box
 
     if resolution <= 0:
@@ -4420,9 +4746,18 @@ def cmd_zones(bbox, db_path: Path, course_ident: str, sidecar_path: Path, out: P
     course, types, known, unknown = _prepare_zones(db_path, course_ident)
 
     out.parent.mkdir(parents=True, exist_ok=True)
-    slots, outside_raster = render_zone_masks(known, extent, resolution, seed=seed, exclude=exclude)
     items = zone_items(types)
+    slots, outside_raster = render_zone_masks(known, extent, resolution, seed=seed, exclude=exclude,
+                                              planted={slot for i in items for slot, _ in i.bindings})
     masks = _write_zone_masks(slots, items, resolution, out)
+    height = zone_height_meta(known, items, out, resolution)
+    height_path = out.with_name(f"{out.stem}-height.png")
+    if height is not None:
+        Image.fromarray(render_zone_heights(known, extent, height["resolution"], seed=seed, exclude=exclude)
+                        ).save(height_path, format="PNG")
+    elif height_path.is_file():
+        height_path.unlink()
+        print(f"  removed stale mask {height_path.name}")
 
     square = box(e0, n0, e1, n1)
     excl = box(*exclude) if exclude is not None else None
@@ -4455,6 +4790,8 @@ def cmd_zones(bbox, db_path: Path, course_ident: str, sidecar_path: Path, out: P
         "zoneTypes": _zone_types_json(types),
         "zones": rows,
     }
+    if height is not None:
+        doc["height"] = height
     out.write_text(json.dumps(doc, separators=(",", ":")) + "\n", encoding="utf-8")
 
     per_slot = {slot: sum(1 for r in rows if zone_slot(r["zoneType"], r["variant"]) == slot)
@@ -4469,17 +4806,26 @@ def cmd_zones(bbox, db_path: Path, course_ident: str, sidecar_path: Path, out: P
     extra = sum(len(r["extraPalettes"]) for r in rows)
     if mixing or extra:
         print(f"  {mixing} zone(s) mix over the zones below them, {extra} extra palette(s) on zone footprints")
+    blending = [r["edgeBlend"] for r in rows if r["edgeBlend"] > 0]
+    if blending:
+        widths = f"{min(blending):g}" + (f"-{max(blending):g}" if max(blending) > min(blending) else "")
+        print(f"  {len(blending)} zone(s) blend into their neighbours over {widths} m (edgeBlend)")
     print(f"  masks {resolution}² at {side / resolution:.3f} m/px, noise seed {seed}, "
           f"polygons simplified to {simplify_m:g} m, one channel per item: "
           f"{len(items)} item(s) in {len(masks)} texture(s)")
     for i in items:
         print(f"    {masks[i.texture]['file']} {'RGBA'[i.channel]}: {i.item} <- {', '.join(i.sources)}")
+    if height is not None:
+        tall = [r for r in rows if "heightMin" in r]
+        span = f" ({min(r['heightMin'] for r in tall):g}-{max(r['heightMax'] for r in tall):g} m)" if tall else ""
+        print(f"  {len(tall)} zone(s) on the square set a bush height{span}: {height['file']} "
+              f"{height['resolution']}², {len(height['items'])} item(s) can grow there")
     print(f"  plot origin {e0:.0f},{n0:.0f} (EPSG:3006), height range {doc['plot']['minM']:.2f}..{doc['plot']['maxM']:.2f} m from {sidecar_path.name}")
 
 
 # --- Command: zones-patch ---------------------------------------------------
 # Re-rasterize only the part of a terrain's zone masks that some zones cover
-# (the web's "Update in Unity" on selected zones), instead of the whole
+# (the web's "Update for GSPro" on selected zones), instead of the whole
 # square: the window around the zones as they are now and as the last export
 # drew them (their rows in the zones JSON), plus zones that export had and
 # the course no longer has. The window renders exactly what a full export
@@ -4528,7 +4874,8 @@ def _row_rect(row: dict, e0: float, n0: float) -> Extent | None:
     nodes = [n for r in row.get("rings") or [] for n in r.get("nodes") or []]
     if not nodes:
         return None
-    pad = float(row.get("feather", DEFAULT_ZONE_FEATHER_M)) / 2.0 + float(row.get("noise", DEFAULT_ZONE_NOISE_M))
+    pad = max(float(row.get("feather", DEFAULT_ZONE_FEATHER_M)) / 2.0 + float(row.get("noise", DEFAULT_ZONE_NOISE_M)),
+              _zone_blend_reach(float(row.get("edgeBlend", 0.0))))
     xs, zs = [e0 + n["x"] for n in nodes], [n0 + n["z"] for n in nodes]
     return (min(xs) - pad, min(zs) - pad, max(xs) + pad, max(zs) + pad)
 
@@ -4539,7 +4886,7 @@ def _zone_rect(z: ZoneSpec) -> Extent | None:
     if geom is None or geom.is_empty:
         return None
     x0, y0, x1, y1 = geom.bounds
-    pad = z.feather / 2.0 + z.noise
+    pad = z.reach
     return (x0 - pad, y0 - pad, x1 + pad, y1 + pad)
 
 
@@ -4588,7 +4935,8 @@ def cmd_zones_patch(db_path: Path, course_ident: str, zones_json: Path, zone_ids
     renamed = 0
     if unseen:
         def signature(row: dict) -> str:
-            return json.dumps({k: v for k, v in row.items() if k != "id"}, sort_keys=True)
+            # An export from before edge blends has no edgeBlend: such a row had none.
+            return json.dumps({"edgeBlend": 0.0, **{k: v for k, v in row.items() if k != "id"}}, sort_keys=True)
         pool: dict[str, list[str]] = {}
         for r in gone:
             pool.setdefault(signature(r), []).append(r["id"])
@@ -4627,13 +4975,21 @@ def cmd_zones_patch(db_path: Path, course_ident: str, zones_json: Path, zone_ids
         raise ZonesLayoutChanged(
             f"the zone types' item bindings changed since {zones_json.name} was exported, so the mask "
             "channels may have moved; a patch cannot follow - export (plant) the whole terrain")
+    # Which items have a height-driven twin in Unity is part of the layout too.
+    height = zone_height_meta(known, items, zones_json, size)
+    if window is not None and height != prev.get("height"):
+        raise ZonesLayoutChanged(
+            f"the palettes that grow in a zone with a bush height changed since {zones_json.name} was exported "
+            "(the first height on a palette, or the last one gone), so Unity needs other items; "
+            "a patch cannot follow - export (plant) the whole terrain")
 
     if window is None:
         print(f"Nothing to patch on the {side:g} m {plot.get('terrain') or ''} square: the zones do not reach it")
     else:
         y0, y1, x0, x1 = window
         px_m = side / size
-        slots, _ = render_zone_masks(known, extent, size, seed=seed, exclude=exclude, window=window)
+        slots, _ = render_zone_masks(known, extent, size, seed=seed, exclude=exclude, window=window,
+                                     planted={slot for i in items for slot, _ in i.bindings})
         # Items that can differ in the window: those of a slot a zone paints there now, or one a
         # zone of the export painted there. Every other item is 0 there before and after.
         before = {slot for r in prev_rows if (rr := _row_rect(r, e0, n0)) is not None
@@ -4659,6 +5015,20 @@ def cmd_zones_patch(db_path: Path, course_ident: str, zones_json: Path, zone_ids
             rgba[y0:y1, x0:x1] = new
             Image.fromarray(rgba).save(path, format="PNG")
             record["textures"].append(mask["file"])
+        if height is not None:
+            down = size // height["resolution"]
+            hy0, hy1, hx0, hx1 = y0 // down, -(-y1 // down), x0 // down, -(-x1 // down)
+            path = zones_json.with_name(height["file"])
+            grey = np.array(Image.open(path).convert("L"))
+            if grey.shape != (height["resolution"], height["resolution"]):
+                raise SystemExit(f"error: {path.name} is {grey.shape[1]}x{grey.shape[0]}, the export says "
+                                 f"{height['resolution']}; export the zones again")
+            new = render_zone_heights(known, extent, height["resolution"], seed=seed, exclude=exclude,
+                                      window=(hy0, hy1, hx0, hx1))
+            if not np.array_equal(new, grey[hy0:hy1, hx0:hx1]):
+                grey[hy0:hy1, hx0:hx1] = new
+                Image.fromarray(grey).save(path, format="PNG")
+                record["textures"].append(height["file"])
         record["changed"] = bool(record["textures"])
         record["window"] = {"y0": y0, "y1": y1, "x0": x0, "x1": x1, "resolution": size}
         record["region"] = {"x0": round(x0 * px_m, 3), "z0": round(side - y1 * px_m, 3),
@@ -4667,7 +5037,7 @@ def cmd_zones_patch(db_path: Path, course_ident: str, zones_json: Path, zone_ids
         print(f"Patched {zones_json.name}: {len(record['zones'])} zone(s)"
               + (f", {len(gone)} removed" if gone else "")
               + f", window {x1 - x0}x{y1 - y0} px ({(x1 - x0) * px_m:.0f} x {(y1 - y0) * px_m:.0f} m)"
-              + f", {len(record['textures'])} of {len(masks)} texture(s) changed"
+              + f", {len(record['textures'])} of {len(masks) + (height is not None)} texture(s) changed"
               + (f": {', '.join(record['textures'])}" if record["textures"] else ""))
     # The zones' rows as the masks now have them (patched, or the same zone under a new
     # id); the others keep the export's.
@@ -4698,21 +5068,44 @@ def cmd_zones_patch(db_path: Path, course_ident: str, zones_json: Path, zone_ids
 # the terrain's own zero — the sidecar's `minM`, which is where the heightmap
 # puts the inner terrain's floor when the importer drops it at 0,0,0.
 #
-# The file is MERGED, not rewritten: GreenKeeper owns the course metadata
-# (name, location, designer, keywords, ratings, the scene folder name) and
-# this command replaces only what the app is the source of truth for.
+# The file is MERGED, not rewritten: this command replaces only what the app
+# is the source of truth for. That includes the course details (name,
+# location, designer, description, keywords) once the app keeps them for the
+# course (courses.gspro_meta_json, typed in the export panel or read back
+# from a .GKD saved in GreenKeeper) and the ratings of the course's tee sets
+# (course_tee_sets); until then, and for the rest of the
+# header (the range, wind, stimp, the scene folder name), the file's own stay.
 GKD_VERSION = 4.1
 GKD_HOLE_COUNT = 18
 # The tee sets a GKD carries, in file order, and the three pseudo-tees that
 # share a hole's `Tees` list: the two aim points and the green centre.
 GKD_TEE_TYPES = ("Black", "White", "Green", "Blue", "Yellow", "Red", "Junior", "Par3")
+# The tee sets with a course/slope rating (`<set>SR`); Par3 is spelled PAR3 there.
+GKD_RATING_TEES = (*GKD_TEE_TYPES[:-1], "PAR3")
+GKD_KEYWORDS = ("BeginnerFriendly", "Coastal", "Desert", "Fantasy", "Heathland", "Historic", "Links",
+                "LowPoly", "MajorVenue", "Mountain", "Parkland", "TourStop", "Training", "Tropical")
+# GKD header key -> the field of the app's course details (GsproCourseMeta,
+# shared/gspro-course-meta.ts) it is written from.
+GKD_META_TEXT = {
+    "CourseName": "courseName", "CityTown": "city", "StateCountyProvince": "state", "Country": "country",
+    "Designer": "designer", "Homage": "homage", "CourseInfo": "description",
+}
 GKD_AIM_TYPES = ("AimPoint1", "AimPoint2")
 GKD_GREEN_CENTER = "GreenCenterPoint"
+# Tidy tees (`_gkd_tidy_tees`): tees drawn closer than GKD_TEE_SAME_M are one
+# tee box and share one position; tees within GKD_TEE_ROW_M of each other
+# that stand less than GKD_TEE_ROW_OFFSET_M off the line of play are put on it.
+GKD_TEE_SAME_M = 1.0
+GKD_TEE_ROW_M = 6.0
+GKD_TEE_ROW_OFFSET_M = 0.7
 # GreenKeeper keeps exactly four pin positions per hole, one per tournament day.
 GKD_PIN_DAYS = ("Thursday", "Friday", "Saturday", "Sunday")
-# The app's tee `name`/`color` -> the GKD tee set. The app is free-form (a tee
-# is whatever the course calls it), the GKD is these eight slots; anything
-# else needs --tee-map.
+# The app's tee `name`/`color` -> the GKD tee set, for a tee whose course tee
+# set does not say (`course_tee_sets.gspro_tee`, which the app fills from this
+# same match when a set is made — shared/tee-sets.ts, keep the two in step).
+# The app is free-form (a tee is whatever the course calls it), the GKD is
+# these eight slots; anything else needs a GSPro tee picked in the app, or
+# --tee-map.
 GKD_TEE_ALIASES = {
     "black": "Black", "championship": "Black", "tiger": "Black",
     "white": "White", "men": "White", "mens": "White",
@@ -4849,6 +5242,25 @@ def _gkd_tee_type(name: str | None, color: str | None, overrides: dict[str, str]
     return None
 
 
+def _gkd_set_tee_type(row, overrides: dict[str, str]) -> str | None:
+    """The GKD tee set of a tee (or tee set) row. --tee-map wins; then, when
+    the row's course tee set says (`set_id`, from a database with
+    `course_tee_sets.gspro_tee`, server migration 030), that set's GSPro tee
+    — None for a set the app keeps out of GSPro; otherwise the name/colour
+    match."""
+    for raw in (row["name"], row["color"]):
+        key = (raw or "").strip().lower()
+        if key in overrides:
+            return overrides[key]
+    if row["set_id"] is not None:
+        return row["gspro_tee"] if row["gspro_tee"] in GKD_TEE_TYPES else None
+    return _gkd_tee_type(row["name"], row["color"], overrides)
+
+
+def _has_column(conn: sqlite3.Connection, table: str, column: str) -> bool:
+    return any(r[1] == column for r in conn.execute(f"PRAGMA table_info({table})"))
+
+
 def _parse_tee_map(pairs: list[str] | None) -> dict[str, str]:
     """--tee-map "mens tees"=White -> {"mens tees": "White"}."""
     out: dict[str, str] = {}
@@ -4890,6 +5302,71 @@ def _gkd_tee_distance(tee: dict, aims: list[dict], green: dict | None, tee_type:
     return sum(_gkd_flat(points[i], points[i + 1]) for i in range(len(points) - 1))
 
 
+def _gkd_tee_groups(positions: list[dict], within_m: float, strict: bool = False) -> list[list[int]]:
+    """Indices of `positions` grouped so that every tee is within `within_m`
+    of another in its group (chains count: A-B and B-C make one group)."""
+    groups: list[list[int]] = []
+    for i, position in enumerate(positions):
+        near = [g for g in groups
+                if any((d := _gkd_flat(position, positions[j])) < within_m or (not strict and d == within_m)
+                       for j in g)]
+        for g in near:
+            groups.remove(g)
+        groups.append([j for g in near for j in g] + [i])
+    return groups
+
+
+def _gkd_tidy_tees(placed: dict[str, dict], aims: list[dict], green: dict | None, on_ground) -> tuple[int, int]:
+    """Square up one hole's tees in place, so the tee markers GSPro sets out
+    look kept; returns how many were (stacked, lined up).
+
+    Tees drawn under GKD_TEE_SAME_M apart are one tee box played by several
+    sets: they all go onto the one furthest from the hole. Then tees within
+    GKD_TEE_ROW_M of each other that already stand nearly in a row — under
+    GKD_TEE_ROW_OFFSET_M off the line from the longest of them to its first
+    aim point (the green centre where it has none, a par 3) — are moved
+    sideways onto that line. "Longest" is the walk to the green, the same for
+    every set (the Par3 set's straight shot would misorder them)."""
+    if green is None:
+        return 0, 0
+
+    def length(tee_type: str) -> float:
+        return _gkd_tee_distance(placed[tee_type], aims, green, "")
+
+    stacked = lined_up = 0
+    types = list(placed)
+    for group in _gkd_tee_groups([placed[t] for t in types], GKD_TEE_SAME_M, strict=True):
+        if len(group) < 2:
+            continue
+        members = [types[i] for i in group]
+        back = placed[max(members, key=length)]
+        for tee_type in members:
+            if placed[tee_type] != back:
+                placed[tee_type] = dict(back)
+                stacked += 1
+
+    for group in _gkd_tee_groups([placed[t] for t in types], GKD_TEE_ROW_M):
+        if len(group) < 2:
+            continue
+        members = [types[i] for i in group]
+        back = placed[max(members, key=length)]
+        to_green = _gkd_flat(back, green)
+        target = next((a for a in aims if _gkd_flat(a, green) < to_green), green)
+        run = _gkd_flat(back, target)
+        if run == 0:
+            continue
+        dx, dz = (target["x"] - back["x"]) / run, (target["z"] - back["z"]) / run
+        for tee_type in members:
+            tee = placed[tee_type]
+            along = (tee["x"] - back["x"]) * dx + (tee["z"] - back["z"]) * dz
+            off = (tee["x"] - back["x"]) * dz - (tee["z"] - back["z"]) * dx
+            # Under a millimetre off is in the row already (and what a stacked tee is).
+            if 0.001 < abs(off) < GKD_TEE_ROW_OFFSET_M:
+                placed[tee_type] = on_ground(back["x"] + along * dx, back["z"] + along * dz)
+                lined_up += 1
+    return stacked, lined_up
+
+
 def _gkd_pins(pins: list[dict], place) -> list:
     """The four tournament days for one green. A pin the course named after
     a day takes that day (an app that models pin sheets keeps its own names);
@@ -4920,10 +5397,15 @@ def _load_gkd_course(db_path: Path, course_ident: str) -> tuple[sqlite3.Row, lis
     holes = [dict(r) for r in conn.execute(
         "SELECT id, number, par, stroke_index FROM holes WHERE course_id = ? ORDER BY number",
         (course["id"],))]
+    # A tee's GKD tee set is its course tee set's (`_gkd_set_tee_type`); a
+    # database from before the sets had one gives every tee no set.
+    tees_sql = ("SELECT t.name, t.color, t.lat, t.lon, s.id AS set_id, s.gspro_tee FROM tees t "
+                "LEFT JOIN course_tee_sets s ON s.id = t.tee_set_id WHERE t.hole_id = ? ORDER BY t.sort_order, t.name"
+                if _has_column(conn, "course_tee_sets", "gspro_tee") else
+                "SELECT name, color, lat, lon, NULL AS set_id, NULL AS gspro_tee FROM tees "
+                "WHERE hole_id = ? ORDER BY sort_order, name")
     for hole in holes:
-        hole["tees"] = [dict(r) for r in conn.execute(
-            "SELECT name, color, lat, lon FROM tees WHERE hole_id = ? ORDER BY sort_order, name",
-            (hole["id"],))]
+        hole["tees"] = [dict(r) for r in conn.execute(tees_sql, (hole["id"],))]
         hole["aims"] = [dict(r) for r in conn.execute(
             "SELECT lat, lon, label FROM aim_points WHERE hole_id = ? ORDER BY sort_order",
             (hole["id"],))]
@@ -4937,6 +5419,67 @@ def _load_gkd_course(db_path: Path, course_ident: str) -> tuple[sqlite3.Row, lis
     if not holes:
         raise SystemExit(f"error: course {course['name']} ({course['id']}) has no holes")
     return course, holes
+
+
+def _load_gkd_meta(db_path: Path, course_id: str) -> "dict | None":
+    """The course details the app keeps for a course (`courses.gspro_meta_json`,
+    the server's GsproCourseMeta); None when it keeps none, or the database
+    predates the column."""
+    conn = _open_course_db(db_path)
+    try:
+        row = conn.execute("SELECT gspro_meta_json FROM courses WHERE id = ?", (course_id,)).fetchone()
+    except sqlite3.OperationalError:
+        return None
+    finally:
+        conn.close()
+    return json.loads(row[0]) if row and row[0] else None
+
+
+def _gkd_apply_meta(doc: dict, meta: dict) -> None:
+    """Write the app's course details into a GKD's header. Only these keys:
+    the rest of the header (wind, stimp, firmness, the range, the splash
+    image) stays as GreenKeeper left it."""
+    for key, field in GKD_META_TEXT.items():
+        doc[key] = str(meta.get(field) or "")
+    # GreenKeeper's own spelling, empty parts included: "Linköping, , Sweden".
+    doc["Location"] = ", ".join(doc[k] for k in ("CityTown", "StateCountyProvince", "Country"))
+    doc["DifficultyRating"] = float(meta.get("difficulty") or 0.0)
+    on = [k for k in GKD_KEYWORDS if k in (meta.get("keywords") or [])]
+    for keyword in GKD_KEYWORDS:
+        doc["Keyword" + keyword] = keyword in on
+    doc["KeywordsString"] = ", ".join(on)
+
+
+def _load_gkd_ratings(db_path: Path, course_id: str, tee_map: dict[str, str]) -> dict[str, str]:
+    """The course's tee-set ratings as GKD header values: `{"YellowSR":
+    "71.5/135"}`. Each of the app's tee sets (`course_tee_sets`, server
+    migration 029) keeps a men's and a women's course rating and slope and
+    says which of the two GSPro shows; a set lands on the GKD set its tees
+    do (`_gkd_set_tee_type`, the first of the course's sets to claim it). Sets
+    without that rating, and a database from before the table, give nothing."""
+    conn = _open_course_db(db_path)
+    try:
+        mapped = "id AS set_id, gspro_tee" if _has_column(conn, "course_tee_sets", "gspro_tee") \
+            else "NULL AS set_id, NULL AS gspro_tee"
+        rows = conn.execute(
+            f"SELECT name, color, rating_men, slope_men, rating_women, slope_women, gspro_rating, {mapped} "
+            "FROM course_tee_sets WHERE course_id = ? ORDER BY sort_order, name", (course_id,)).fetchall()
+    except sqlite3.OperationalError:
+        return {}
+    finally:
+        conn.close()
+    out: dict[str, str] = {}
+    claimed: set[str] = set()
+    for row in rows:
+        tee_type = _gkd_set_tee_type(row, tee_map)
+        if tee_type is None or tee_type in claimed:
+            continue
+        claimed.add(tee_type)
+        who = "women" if row["gspro_rating"] == "women" else "men"
+        rating, slope = row["rating_" + who], row["slope_" + who]
+        if rating is not None and slope is not None:
+            out[GKD_RATING_TEES[GKD_TEE_TYPES.index(tee_type)] + "SR"] = f"{float(rating):.1f}/{int(slope)}"
+    return out
 
 
 def _load_gkd_outlines(db_path: Path, course_ident: str) -> list[sqlite3.Row]:
@@ -5117,15 +5660,13 @@ def _gkd_skeleton(course: sqlite3.Row, scene: str) -> dict:
         "FairwayFirmnessDefault": 0, "GreenFirmnessDefault": 0,
         "DefaultStimp": 2, "MaxStimp": 5, "design": True, "region": 1,
         "CameraDistance": 5000, "AllowNonZeroTeeBoxes": False,
-        **{"Keyword" + k: False for k in (
-            "BeginnerFriendly", "Coastal", "Desert", "Fantasy", "Heathland", "Historic", "Links",
-            "LowPoly", "MajorVenue", "Mountain", "Parkland", "TourStop", "Training", "Tropical")},
+        **{"Keyword" + k: False for k in GKD_KEYWORDS},
         "KeywordsString": "", "BenchMarkComplete": False, "PerformanceScore": 0,
         "unitOfMeasure": 1, "altitude": 0.0, "altitudeV2": 0.0,
         "HasRange": False,
         "RangeTee": {"x": 0.0, "y": 0.0, "z": 0.0}, "RangeAim": {"x": 0.0, "y": 0.0, "z": 0.0},
         "IsMiniGolf": False, "CoursePar": 72,
-        **{t + "SR": "0.0/0" for t in (*GKD_TEE_TYPES[:-1], "PAR3")},
+        **{t + "SR": "0.0/0" for t in GKD_RATING_TEES},
         "DifficultyRating": 3.5, "hazardCount": 0, "teeTypeCount": 0,
         "pOOB": {"pointCount": 0, "coords": []}, "CourseInfo": "",
         "Holes": [], "Hazards": [], "TeeTypeTotalDistance": [],
@@ -5149,9 +5690,12 @@ def cmd_gkd(bbox, db_path: Path, course_ident: str, sidecar_path: Path, out: Pat
     drawn penalty area as drawn; neither line ever cuts inside what it must
     hold. Positions are Unity world metres on that terrain, the heights read
     off the export DEM so they sit on the ground the heightmap built.
-    Everything GreenKeeper owns — the course name and location, the
-    designer, keywords, slope/rating, the range — is carried over from the
-    file being replaced (or --template) untouched."""
+    The course details — name, location, designer, description, keywords —
+    are the app's when it keeps any for the course
+    (`courses.gspro_meta_json`), and each tee set's rating/slope is the
+    course tee set's when it has one (`course_tee_sets`); the rest of the
+    header (the range, wind, stimp), and those too when the app keeps none,
+    are carried over from the file being replaced (or --template) untouched."""
     from shapely.geometry import Polygon, box
     from shapely.ops import unary_union
 
@@ -5181,10 +5725,16 @@ def cmd_gkd(bbox, db_path: Path, course_ident: str, sidecar_path: Path, out: Pat
     else:
         doc = _gkd_skeleton(course, out.stem)
     old_holes = {h.get("HoleNumber"): h for h in doc.get("Holes") or []}
+    meta = _load_gkd_meta(db_path, course["id"])
+    if meta is not None:
+        _gkd_apply_meta(doc, meta)
+    ratings = _load_gkd_ratings(db_path, course["id"], tee_map or {})
+    doc.update(ratings)
 
     outside: list[str] = []
     unmapped: dict[str, int] = {}
-    extra_aims = no_green = no_pins = 0
+    extra_aims = no_green = no_pins = stacked = lined_up = 0
+    no_tees: list[int] = []
 
     def place(lat, lon, what: str) -> "dict | None":
         xs, ys = transform_points(WGS84, SWEREF99, [float(lon)], [float(lat)])
@@ -5218,7 +5768,7 @@ def cmd_gkd(bbox, db_path: Path, course_ident: str, sidecar_path: Path, out: Pat
 
         placed: dict[str, dict] = {}
         for tee in hole["tees"]:
-            tee_type = _gkd_tee_type(tee["name"], tee["color"], tee_map)
+            tee_type = _gkd_set_tee_type(tee, tee_map)
             if tee_type is None:
                 label = tee["name"] or tee["color"] or "(unnamed)"
                 unmapped[label] = unmapped.get(label, 0) + 1
@@ -5226,7 +5776,15 @@ def cmd_gkd(bbox, db_path: Path, course_ident: str, sidecar_path: Path, out: Pat
             position = place(tee["lat"], tee["lon"], f"hole {number} {tee_type} tee")
             if position is not None and tee_type not in placed:
                 placed[tee_type] = position
+        if not placed:
+            no_tees.append(number)
+        moved = _gkd_tidy_tees(placed, [a for a in aims if a], centre,
+                               lambda x, z: _gkd_pos(ground, e0, n0, x + e0, z + n0))
+        stacked, lined_up = stacked + moved[0], lined_up + moved[1]
 
+        # A set the hole has no tee for, and an aim point it does not have,
+        # is a disabled row with no position — how GreenKeeper itself writes
+        # one. Enabled, it is a tee GSPro offers with nowhere to stand.
         tees = []
         for tee_type in GKD_TEE_TYPES:
             position = placed.get(tee_type)
@@ -5235,11 +5793,12 @@ def cmd_gkd(bbox, db_path: Path, course_ident: str, sidecar_path: Path, out: Pat
             totals[tee_type] += distance
             if position is not None:
                 used_tee_types.add(tee_type)
-            tees.append({"TeeType": tee_type, "Enabled": True,
+            tees.append({"TeeType": tee_type, "Enabled": position is not None,
                          "Distance": round(distance, 4), "Position": position})
         for i, name in enumerate(GKD_AIM_TYPES):
-            tees.append({"TeeType": name, "Enabled": True, "Distance": 0.0,
-                         "Position": aims[i] if i < len(aims) else None})
+            position = aims[i] if i < len(aims) else None
+            tees.append({"TeeType": name, "Enabled": position is not None, "Distance": 0.0,
+                         "Position": position})
         # GreenKeeper writes the green centre disabled: it is the hole's
         # measuring point, not somewhere you can play from.
         tees.append({"TeeType": GKD_GREEN_CENTER, "Enabled": False, "Distance": 0.0, "Position": centre})
@@ -5253,7 +5812,8 @@ def cmd_gkd(bbox, db_path: Path, course_ident: str, sidecar_path: Path, out: Pat
         pins = [p or centre or {"x": 0.0, "y": 0.0, "z": 0.0} for p in pins]
 
         gkd_holes.append({
-            "Enabled": True, "HoleNumber": number,
+            # No tee, no hole: there is nowhere to play it from.
+            "Enabled": bool(placed), "HoleNumber": number,
             "Par": int(hole["par"] or 4), "Index": int(hole["stroke_index"] or 0),
             "Tees": tees,
             "Pins": [{"Day": day, "Position": position} for day, position in zip(GKD_PIN_DAYS, pins)],
@@ -5373,6 +5933,9 @@ def cmd_gkd(bbox, db_path: Path, course_ident: str, sidecar_path: Path, out: Pat
     print(f"  {len(played)} holes, par {par}, on the {e1 - e0:g} m "
           f"{sidecar.get('terrain') or 'terrain'} square from {course['name']} ({course['id']})")
     print(f"  tee sets {sets}")
+    if stacked or lined_up:
+        print(f"  tees tidied: {stacked} put on the tee under {GKD_TEE_SAME_M:g} m behind it, "
+              f"{lined_up} moved up to {GKD_TEE_ROW_OFFSET_M:g} m sideways into a row")
     print(f"  {len(hazards)} hazards ({sum(1 for h in hazards if h['innerOOB'])} inner OOB, "
           f"{sum(h['pointCount'] for h in hazards)} points), "
           + (f"boundary {len(boundary)} points" if boundary
@@ -5382,11 +5945,19 @@ def cmd_gkd(bbox, db_path: Path, course_ident: str, sidecar_path: Path, out: Pat
           f"up to {bank_max_m:g} m; hazard nodes every {node_spacing_m:g} m or closer, OOB within {simplify_m:g} m")
     print(f"  heights from {dem_path.name}, terrain zero {float(sidecar['minM']):.2f} m, "
           f"altitude {doc.get('altitudeV2', 0):.1f} m")
-    if template_path is not None:
-        print(f"  metadata kept from {template_path.name} (course name, location, keywords, ratings, range)")
+    if meta is not None:
+        print("  course details (name, location, designer, description, keywords) from the app"
+              + (f"; the rest of the header kept from {template_path.name}" if template_path is not None else ""))
+    elif template_path is not None:
+        print(f"  metadata kept from {template_path.name} (course name, location, keywords, range)")
+    if ratings:
+        print("  ratings from the course's tee sets: "
+              + ", ".join(f"{key[:-2]} {value}" for key, value in ratings.items()))
     for name, count in sorted(unmapped.items()):
-        print(f"  warning: {count} tee(s) named {name!r} are not one of "
-              f"{', '.join(GKD_TEE_TYPES)}; skipped (see --tee-map)")
+        print(f"  warning: {count} tee(s) named {name!r} have no GSPro tee "
+              f"({', '.join(GKD_TEE_TYPES)}); skipped (pick one for the tee set in the app, or --tee-map)")
+    if no_tees:
+        print(f"  warning: hole(s) {', '.join(str(n) for n in no_tees)} have no tee and were written disabled")
     if no_pins:
         print(f"  warning: {no_pins} hole(s) have no pins; all four days sit on the green centre")
     if no_green:
@@ -5408,6 +5979,41 @@ def cmd_gkd(bbox, db_path: Path, course_ident: str, sidecar_path: Path, out: Pat
               f"({'the drawn `oob` ring' if boundary else 'the boundary already in the file'})")
     for what in outside:
         print(f"  warning: {what} falls outside the square; left unplaced")
+
+
+# --- Command: holes -----------------------------------------------------------
+# Where each hole is played from and to, for Unity's hole navigator
+# (GolfMapHoleNavigator.cs): every tee, every aim point (a GKD holds two) and
+# the green centre in EPSG:3006. No heights: the navigator stands on the
+# ground the scene has.
+
+HOLES_FORMAT = "golfmap-holes-v1"
+
+
+def cmd_holes(course_ident: str, out: Path, db_path: Path | None = None) -> None:
+    """Write the course's holes (tees, aim points, green centre; EPSG:3006) for Unity's hole navigator."""
+    course, holes = _load_gkd_course(db_path or DEFAULT_DB, course_ident)
+
+    def point(lat, lon, **extra) -> "dict | None":
+        if lat is None or lon is None:
+            return None
+        xs, ys = transform_points(WGS84, SWEREF99, [float(lon)], [float(lat)])
+        return {**extra, "e": round(xs[0], 2), "n": round(ys[0], 2)}
+
+    rows = []
+    for hole in holes:
+        tees = [point(t["lat"], t["lon"], name=t["name"] or t["color"] or "", color=t["color"] or "") for t in hole["tees"]]
+        aims = [point(a["lat"], a["lon"], label=a["label"] or "") for a in hole["aims"]]
+        green = point(hole["green"]["center_lat"], hole["green"]["center_lon"]) if hole["green"] else None
+        if green is None:
+            print(f"  warning: hole {hole['number']} has no green centre")
+        rows.append({"number": int(hole["number"]), "par": int(hole["par"] or 0),
+                     "tees": [t for t in tees if t], "aims": [a for a in aims if a], "green": green})
+    out.parent.mkdir(parents=True, exist_ok=True)
+    out.write_text(json.dumps({"format": HOLES_FORMAT, "crs": "EPSG:3006", "course": course["name"], "holes": rows},
+                              indent=1) + "\n", encoding="utf-8")
+    print(f"Wrote {out}")
+    print(f"  {len(rows)} hole(s), {sum(len(r['tees']) for r in rows)} tee(s), {sum(len(r['aims']) for r in rows)} aim point(s)")
 
 
 # --- creeks: R.A.M. splines at the water surface ------------------------------
@@ -5695,6 +6301,11 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--out", required=True, help="output golfmap-power-lines-v1 JSON path (<export folder>/<prefix>-power-lines.json)")
     p.add_argument("--db", default=str(DEFAULT_DB), help=f"app database (default {DEFAULT_DB})")
 
+    p = sub.add_parser("holes", help="write the course's tees, aim points and green centres for Unity's hole navigator")
+    p.add_argument("--course", required=True, help="course id or name substring")
+    p.add_argument("--out", required=True, help="output golfmap-holes-v1 JSON path (<export folder>/<prefix>-holes.json)")
+    p.add_argument("--db", default=str(DEFAULT_DB), help=f"app database (default {DEFAULT_DB})")
+
     p = sub.add_parser("buildings", help="write the unity-buildings-v1 file for one terrain from a fetch-buildings survey")
     _add_area(p)
     p.add_argument("--survey", required=True, help="buildings.geojson (golfpipe fetch-buildings output)")
@@ -5832,6 +6443,9 @@ def main(argv: list[str] | None = None) -> int:
         return 0
     if args.command == "power-lines":
         cmd_power_lines(args.course, Path(args.out), Path(args.db))
+        return 0
+    if args.command == "holes":
+        cmd_holes(args.course, Path(args.out), Path(args.db))
         return 0
     bbox, extent = _resolve_area(args)
 

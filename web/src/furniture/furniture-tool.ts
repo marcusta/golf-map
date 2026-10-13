@@ -3,6 +3,12 @@ import type { EditorTool, HelpSection } from '../editor/tool';
 import { FURNITURE_TOOL_ID } from './furniture.service';
 import { FurnitureToolService } from './furniture-tool.service';
 import { FurniturePanelComponent } from './furniture-panel.component';
+import { AnalysisOverlayRenderer } from '../analysis/analysis-overlay';
+
+// Draws the green's slope/height while pins are placed (pin-terrain.ts). Its
+// own instance: the renderer keeps per-map bookkeeping, and Green analysis
+// has one too (the two tools are never active together).
+const pinTerrainRenderer = new AnalysisOverlayRenderer();
 
 // Help-modal content (D27) — the sole home of furniture interaction hints.
 const HELP: HelpSection[] = [
@@ -17,8 +23,10 @@ const HELP: HelpSection[] = [
         title: 'Placement',
         shortcuts: [
             { keys: 'Pick a hole, arm, click map', desc: 'Place a tee/pin/aim-point/green point' },
-            { keys: 'Shift-click', desc: 'Place several in a row (stay armed)' },
-            { keys: 'Esc', desc: 'Cancel placing' },
+            { keys: 'Click again', desc: 'Tees and pins stay armed: the next tee set or hole, the next pin day' },
+            { keys: 'Shift-click', desc: 'Aim and green points: place several in a row (stay armed)' },
+            { keys: 'Drag a marker', desc: 'Move it, also while placing' },
+            { keys: 'Esc', desc: 'Finish placing' },
         ],
     },
     {
@@ -57,7 +65,7 @@ export const furnitureTool: EditorTool = {
     panel: FurniturePanelComponent,
     help: HELP,
     attach: ctx => di.get(FurnitureToolService).attach(ctx),
-    activate: ctx => di.get(FurnitureToolService).activate(ctx),
+    activate: ctx => di.get(FurnitureToolService).activate(ctx, pinTerrainRenderer),
     deactivate: () => di.get(FurnitureToolService).deactivate(),
     onEscape: () => di.get(FurnitureToolService).onEscape(),
 };

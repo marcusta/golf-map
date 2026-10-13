@@ -6,7 +6,7 @@ import { COURSE_SCOPE, FeaturesService, ROUGHS_SCOPE_KEY, fillScopeOptions, scop
 import { isRoughsLayerType } from '../../../shared/render/stack-key';
 import { DrawToolService, OFFSET_PRESETS } from './draw-tool.service';
 import { FEATURE_STYLES } from './feature-palette';
-import { ZoneTypesService, type ZoneAttributes } from '../zones/zone-types.service';
+import { ZONE_EDGE_BLEND_DEFAULT_M, ZoneTypesService, type ZoneAttributes } from '../zones/zone-types.service';
 import { generatedHeightLabel, isGeneratedFeature, provenanceBadgeLabel } from './generated-features';
 import type { CourseFeature } from '../../../shared/api/course-features.gen';
 import {
@@ -21,6 +21,7 @@ import {
     BANK_VEG_WET_SUFFIX,
 } from '../../../shared/features/creek-vegetation';
 import { formatZonePalettes, zoneExtraPalettesOf, type ZoneBlend, type ZonePalette } from '../../../shared/features/zone-layers';
+import { ZONE_HEIGHT_LIMIT_M, editZoneHeight, zoneHeightOf } from '../../../shared/features/zone-height';
 import {
     SUGGESTED_TREE_SPECIES, TREE_AREA_IGNORE_KIND_ATTRIBUTE, TREE_AREA_NAME_ATTRIBUTE, TREE_AREA_SPECIES_ATTRIBUTE, TREE_AREA_TYPE,
     formatSpeciesMix, speciesMixOf, treeAreaIgnoresKind, treeAreaNameOf, type TreeSpeciesShare,
@@ -89,6 +90,16 @@ const tpl = template(`
             </label>
             <label class="zone-field">Edge noise (m)
                 <input bind="zoneNoise" type="number" min="0" step="0.25" data-testid="zone-noise" />
+            </label>
+            <label class="zone-field" title="How wide this zone's mix fades into the vegetation next to it, around its edge. Only the mix changes: beside a path or mown rough the zone ends where it is drawn. 0 = a hard border. Empty = the default.">Blend into neighbours (m)
+                <input bind="zoneEdgeBlend" type="number" min="0" step="0.5" data-testid="zone-edge-blend" />
+            </label>
+            <label class="zone-field" title="How tall the bushes in this zone grow, in metres: each one is scaled to a height between the two. Only bushes, not the grass. Empty = the sizes of the palette.">Bush height (m)
+                <span class="zone-height">
+                    <input bind="zoneHeightMin" type="number" min="0" step="0.5" placeholder="min" data-testid="zone-height-min" />
+                    <span>to</span>
+                    <input bind="zoneHeightMax" type="number" min="0" step="0.5" placeholder="max" data-testid="zone-height-max" />
+                </span>
             </label>
             <label class="zone-field" title="Zones you draw always add up with each other, whatever their hole or order. This says what the zone does to the generated vegetation (tall rough, creek banks, lidar) under it: Replace takes its weight of that ground, Add grows on top of it (rocks in tall rough).">Generated vegetation under it
                 <select bind="zoneBlend" data-testid="zone-blend-select">
@@ -327,6 +338,13 @@ export class SelectionPanelComponent extends Component {
             }
             & .zone-field {
                 ${field()}
+            }
+            & .zone-height {
+                display: flex;
+                align-items: center;
+                gap: ${s('xs')};
+                font-weight: 400;
+                & input { flex: 1 1 0; min-width: 0; }
             }
             & .move-hint {
                 display: none;
@@ -644,6 +662,27 @@ export class SelectionPanelComponent extends Component {
             zoneNoise: {
                 value: () => String(this.zoneAttributes().noise),
                 onchange: (e: Event) => this.saveZone({ noise: numberOf(e, 0) }),
+            },
+            zoneEdgeBlend: {
+                value: () => String(this.zoneAttributes().edgeBlend ?? ''),
+                // Absent: a drawn zone that replaces blends by default, one that adds or was generated does not.
+                placeholder: () => this.zoneAttributes().blend === 'mix' || this.zoneSelection()?.generated
+                    ? '0' : String(ZONE_EDGE_BLEND_DEFAULT_M),
+                onchange: (e: Event) => {
+                    const raw = (e.target as HTMLInputElement).value.trim();
+                    const m = Number(raw);
+                    this.saveZone({ edgeBlend: raw !== '' && Number.isFinite(m) ? Math.max(0, m) : undefined });
+                },
+            },
+            zoneHeightMin: {
+                max: () => String(ZONE_HEIGHT_LIMIT_M),
+                value: () => String(this.zoneAttributes().heightMin ?? ''),
+                onchange: (e: Event) => this.saveZoneHeight('min', (e.target as HTMLInputElement).value),
+            },
+            zoneHeightMax: {
+                max: () => String(ZONE_HEIGHT_LIMIT_M),
+                value: () => String(this.zoneAttributes().heightMax ?? ''),
+                onchange: (e: Event) => this.saveZoneHeight('max', (e.target as HTMLInputElement).value),
             },
             zoneBlend: {
                 value: () => this.zoneAttributes().blend,
@@ -1023,6 +1062,12 @@ export class SelectionPanelComponent extends Component {
      * server-side, so every zone key goes every time — the others come from
      * `zoneAttributes()`, which is the values on screen.
      */
+    /** One end of the bush height was typed: the other follows (shared/features/zone-height.ts). */
+    private saveZoneHeight(end: 'min' | 'max', raw: string): void {
+        const height = editZoneHeight(zoneHeightOf(this.zoneAttributes()), end, raw);
+        this.saveZone({ heightMin: height?.min, heightMax: height?.max });
+    }
+
     private saveZone(patch: Partial<ZoneAttributes>): void {
         const zone = this.zoneSelection();
         if (!zone) return;

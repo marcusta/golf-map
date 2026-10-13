@@ -10,8 +10,11 @@ Read first for foliage/material problems: [tree rendering fixes](../docs/tree-re
 - Per-tool agent notes (bunker/paint/path rules, sync, refresh, creeks, props, walls, zone CLI, palette bridge): [docs/unity-tool-notes.md](../docs/unity-tool-notes.md).
 - Grass (where it grows, palette, loop): `.claude/skills/grass-planting/SKILL.md`; palette-building facts in its `references/unity-grass-palette.md`.
 - Multi-step loops (Heightmap → Unity / sculpt capture / conform order, zones → plant, props/walls hand-edit capture before re-place): [docs/workflows.md](../docs/workflows.md).
+- Arborist (a Unity player, not the editor): the mod in [ArboristMod/](ArboristMod/README.md) has its own bridge and `call.ts`; the `unity` MCP tools never reach it. Start at [docs/gspro/arborist.md](../docs/gspro/arborist.md).
+- Course build without the GSP > Build Course window: `golfmap.course.build` (`Editor/GolfMap/GolfMapCourseBuild.cs`; saves the scene, runs OPCD's builder, about 12 minutes during which the editor does not answer: call with a long timeout).
+- What costs frame rate, ranked per category, in the editor and in GSPro: [README.md](README.md#performance-ranking) (`golfmap.perf.report`, `ArboristMod/perf.ts --rank`; categories are rules in `Editor/GolfMap/GolfMapPerfCategories.json`).
 - Script copies, project paths, versions: [install.json](install.json), `unity/mcp/README.md`, root AGENTS.md.
-- Matcher tests: `bun test unity/building-matching.test.mjs`. Course-less compile check: `unity/check-planter.ps1 [-UnityProject <path>]` (add new files to its list; writes `tree-export/`).
+- Matcher tests: `bun test unity/building-matching.test.mjs`; performance ranking model: `bun test unity/perf-rank.test.ts`. Course-less compile check: `unity/check-planter.ps1 [-UnityProject <path>]` (add new files to its list; writes `tree-export/`).
 - New bridge commands: `[BridgeCommand]` static methods in `Editor/GolfMap/GolfMapBridgeCommands.cs` or beside the tool they wrap; keep `Editor/GolfMapBridge/` free of `GolfMap.Editor` references.
 
 ## Workflow (every session)

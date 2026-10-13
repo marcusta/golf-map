@@ -173,7 +173,7 @@ not rasterized), whatever their blend; their extra palettes are ignored with the
 **D-VZ13. Update selected zones without planting everything.** Added 2026-09-27. Planting runs
 the generators, rasterizes every zone into all the 4096 masks, and has Unity reimport all of them
 and respawn the whole terrain. For an edit to a few drawn zones only their area needs any of that.
-"Update in Unity" on the selected zones re-rasterizes the window they cover, now and in the last
+"Update for GSPro" (until 2026-10-13 "Update in Unity") on the selected zones re-rasterizes the window they cover, now and in the last
 export (the rows of the zones JSON, so a moved zone's old spot clears), plus zones that export has
 and the course no longer has. The window is exact: each zone's weight still comes from its own
 crop, clipped only to the window plus its `feather / 2 + noise`, beyond which a pixel's weight does
@@ -183,8 +183,9 @@ VSP's cache only in the window. On Vreta a 68 m zone took 2.4 s in the pipeline 
 whole job with nothing to change, against minutes for a planting. The channel layout cannot move
 in a patch: when the zone types' item bindings changed since a terrain's export, that terrain is
 skipped (the outer, which planting does not refresh, often is), and when every terrain is, the
-job asks for Plant vegetation. Unity must be open first, so the export and the scene cannot drift
-apart silently.
+job asks for Plant for GSPro. Unity must be open first, so the export and the scene cannot drift
+apart silently. Since 2026-10-13 the job then writes the Arborist file's lower vegetation again
+(`arborist.py lower`, about 10 s on Vreta), since that file carries the inner masks themselves.
 Revised 2026-09-27: a hand-drawn creek_bank zone is a creek section only within a creek's or
 water's bank reach + 10 m of it (`gspro.creek_section_ids`, the creek-bank generator's own
 `near_sections` reach); farther away it plants its palette like any zone. A section plants
@@ -216,6 +217,84 @@ panel calls it "Hole (folder)", the Vegetation stack panel defaults to "All zone
 heading per hole and each zone named by what it plants ("Creek bank · Vass (common reed) + 1 ·
 adds"), and zones get no raise/lower verbs.
 
+**D-VZ15. The woodland floor is generated per floor type from the trees and the terrain.** Added
+2026-10-10. The lidar stands of D-VZ10 say where a wood is, and stay as they are: they paint the
+floor texture. They never planted anything, because `woodland_floor` had no items and the tall
+rough sits above them in the stack. So under the trees there was tall rough near play and bare
+ground beyond it.
+A third generator, `pipeline/woodland_floor_zones.py` (source `woodland-floor`), now writes the
+planting. It runs between the tall rough and the creek banks, so the floor takes the ground from
+the tall rough under the trees and a creek bank takes it from the floor. Where the floor is comes
+from the planted trees (canopy closure from their crowns), not from the stand polygons: a stand of
+123 ha is one polygon, and a clearing in it should keep the tall rough.
+What grows is one of four variants per point, chosen from the conifer share of the trees around it
+and from the terrain (`pipeline/terrain_fields.py`: knoll or hollow, wetness, slope): `heath`,
+`bilberry`, `herb`, `fern`. They follow the ground-vegetation types Swedish forestry sorts stands
+by. Each patch holds pockets of the other three, since one floor per area read as too uniform.
+Two more are mix zones (D-VZ12): `edge`, the brush along a stand's rim, and `brush`, saplings and
+low bushes in drifts inside closed forest. Nothing is planted further than 50 m from play.
+The terrain was tried first as a driver of the open tall rough and dropped there: on Vreta's 20 ha
+of open deep rough, wetness and terrain position rank-correlate only about 0.1 with greenness in
+the orthophoto. Under the trees it separates cleanly: 84 % of the hand-drawn rock slabs sit on
+knolls (34 % of the deep rough does), and canopy cover falls from 64 % in the driest fifth of the
+ground to 21 % in the wettest.
+Deadwood and stones are not in it: VSP in GSPro takes foliage shaders only (section 8).
+
+**D-VZ16. A zone's mix blends into its neighbours; its coverage does not move.** Added 2026-10-11.
+Patched fields (hand-drawn `rough_tall/<variant>` zones tiling a deep rough) met each other and
+the generated tall rough along a line: they were drawn with a 0.5 m feather, because a feather is
+centred on the edge and a wide one spills the grass onto the path or mown rough beside the field
+and thins it inside. So the two jobs are split. `feather` still says how the zone ends against
+nothing. `edgeBlend` (metres) says how wide its mix fades into whatever grows next to it.
+After the stack is resolved, the slots are diffused around the edge of every zone that has an
+edge blend (`render_zone_masks`, `_blend_zone_tile`): each slot is blurred with a Gaussian of
+`edgeBlend / 4`, and every pixel's slots are scaled back to the sum they had. So only the mix
+changes. A mix reaches only where something grew already: two tiled patches cross-fade with a
+constant total, a patch and the generated fill beside it grade into each other, and beside bare
+ground nothing changes. Each slot's blurred weight is also multiplied by `exp(1.2 x its own value
+noise)`, so the line where two mixes are even wanders by a few metres instead of following the
+drawn edge. The blend works within `1.5 x edgeBlend` of the zone's edge, in 1024 px tiles, only
+where such a zone reaches.
+Absent, `edgeBlend` is 8 m for a drawn zone that replaces and 0 for generated and mix zones. A
+drawn replace zone set to 0 keeps its border as drawn, also against a neighbour that blends (it
+closes the band within 12 m of its edge). Set it in the selection panel ("Blend into neighbours",
+empty = default) or `bun run zones -- set <course> <zone> --edge-blend <m|default>`. The zone rows
+carry `edgeBlend`; Unity ignores it.
+The first version rendered the stack a second time with the blend as each zone's feather and
+scaled it to the plain stack's sum, 4 m wide. Two things were wrong with it: a linear 4 m ramp
+along a smooth outline still read as a line, and inside a field's rim against mown rough the
+generated tall rough under the patch came back in (the patch gave up half its weight at its own
+edge, and the fill under it took it). On Vreta's inner square 63 zones blend and the export
+takes about 2 minutes (78 s before the blur).
+
+**D-VZ17. A zone sets how tall its bushes grow.** Added 2026-10-11. A hedge that screens a green
+is 2 to 3 m and closed; the same willows in a thicket by a ditch are knee to head high with
+openings. Sizes were per item (`minScale`/`maxScale` times a noise scale), so a height meant a
+palette per height, in scale factors nobody can read as metres. A zone now has `heightMin` and
+`heightMax` (metres, both or neither, at most 12; `shared/features/zone-height.ts`): "Bush height"
+in the selection panel, `--height 2-3` in the zones CLI.
+The export writes one more mask, `<stem>-height.png`, 8-bit grey at half the density masks'
+resolution: 0 where no zone sets a height, else the height as `value / 256 x 12.8 m`
+(`render_zone_heights`). Inside a zone the height is value noise between min and max, one value
+every 3 m, skewed towards the min (power 2.2): most bushes stay low and the max shows as bumps a
+few metres across. An even spread read as one level line along the hedge. Where two heights
+overlap, the zone with the larger weight decides.
+In Unity the height is VSP's texture mask scale rule (`Scale *= value / 256 x ScaleMultiplier`,
+applied before the item's own random scale). A mask can only multiply and an item's own size
+varies several times over, so the item cannot be held in a range. Each bush (prefab) item that a
+zone with a height can plant gets a twin, `<item> @height`: a copy with min = max scale 1 and no
+noise scale, on the item's own density mask, with `ScaleMultiplier = 12.8 / the prefab's height at
+scale 1` (LOD0 mesh top plus the vertical offset, measured by the importer). The twin is excluded
+where the height mask is 0 and the item where it is above 0, so one of the two grows at any point.
+Texture grass keeps its size. The export's `height` block names the mask and the items of every
+palette such a zone plants; when that list changes (the first height on a palette, the last one
+gone) a patch stops and asks for Plant for GSPro, since Unity needs other items. After that,
+changing a height or moving the zone is an "Update for GSPro".
+Limits: one range for every species in the zone; a height changes size, not spacing, so a closed
+screen still needs a dense palette (Vreta's `shrub/dense`); a prefab with no readable LOD0 mesh
+keeps the palette's sizes (reported at import); the palette editor's live edits reach a twin at the
+next Apply.
+
 ## 4. VSPro mechanics used
 
 - A texture mask group binds one texture channel over a world rectangle. A texture
@@ -243,6 +322,8 @@ A new area feature, `vegetation_zone`, in the feature stack. Fields:
 | `weight` | zone strength inside the polygon, 0 to 1, default 1 |
 | `feather` | crossfade width in metres at the edge, default 2 |
 | `noise` | edge noise amplitude in metres, default 0 |
+| `edgeBlend` | width in metres over which the mix fades into neighbouring vegetation (D-VZ16); absent = 8 for a drawn replace zone, else 0 |
+| `heightMin`, `heightMax` | metres the zone's bushes are scaled to (D-VZ17); both or neither, absent = the palette's sizes |
 
 The course holds a zone-type table: `key`, display name, colour for the editor, the
 VSPro binding (texture index and channel) and the item bindings from D-VZ9. The table
@@ -564,14 +645,21 @@ eyes. Why: drawn zones add up with each other (D-VZ14), and an old hand-drawn
 tall-rough zone under a new wispy one was invisible among the generated bands
 (Vreta, 2026-10-10).
 
-The command bar's **Plant vegetation** (Vegetation mode only) runs the
+The command bar's **Plant for GSPro** (Vegetation mode only; "Plant vegetation"
+until 2026-10-13) runs the
 server's `vegetation` export job through `zones/plant-vegetation.service.ts`
 (start, or follow the planting already running; poll to the end): every
-vegetation generator, the zones export and the import into the open Unity
-project. Then the features reload and the job's report is shown. With zones
-selected, **Update in Unity** (`update-zones-btn`, `PlantVegetationService.update`)
+vegetation generator, the zones export, the import into the open Unity
+project, and the Arborist file in the GSPro course folder (its lower
+vegetation from the zones export; its trees out of the Unity scene, so only
+with Unity open; [gspro/arborist.md](gspro/arborist.md), "Who writes the file").
+Then the features reload and the job's report is shown; the result dialog's
+body says in one line each what Unity and the Arborist file got
+(`arboristOutcome`). With zones
+selected, **Update for GSPro** (`update-zones-btn`, `PlantVegetationService.update`)
 runs the `vegetation-update` job for just them (`GsproExportService.updateZones`:
-`gspro.py zones-patch` per exported terrain, then `golfmap.zones.patch`). It runs
+`gspro.py zones-patch` per exported terrain, then `golfmap.zones.patch`, then
+`arborist.py lower` when the inner masks changed). It runs
 no generators and has no confirm; the result dialog warns when a terrain was
 skipped. A zone
 type whose Default mix binds nothing starts new and retyped zones on its

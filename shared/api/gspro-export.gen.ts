@@ -5,6 +5,9 @@ export interface GsproExportSettings {
     dir: string;
     courseDir: null | string;
     gkdFile: null | string;
+    meta: null | { courseName: string; city: string; state: string; country: string; designer: string; homage: string; description: string; difficulty: number; keywords: ('BeginnerFriendly' | 'Coastal' | 'Desert' | 'Fantasy' | 'Heathland' | 'Historic' | 'Links' | 'LowPoly' | 'MajorVenue' | 'Mountain' | 'Parkland' | 'TourStop' | 'Training' | 'Tropical')[] };
+    gkdMeta: null | { courseName: string; city: string; state: string; country: string; designer: string; homage: string; description: string; difficulty: number; keywords: ('BeginnerFriendly' | 'Coastal' | 'Desert' | 'Fantasy' | 'Heathland' | 'Historic' | 'Links' | 'LowPoly' | 'MajorVenue' | 'Mountain' | 'Parkland' | 'TourStop' | 'Training' | 'Tropical')[] };
+    gkdRatings: string[];
     isDefault: boolean;
     defaultDir: string;
 }
@@ -24,7 +27,7 @@ export interface GsproOrthoSource {
 export interface GsproExportJob {
     id: string;
     courseId: string;
-    kind: 'svg' | 'ortho' | 'outer-ortho' | 'dem' | 'unity-terrain' | 'unity-sculpt' | 'unity-ortho' | 'hillshade' | 'trees' | 'buildings' | 'zones' | 'vegetation' | 'vegetation-update' | 'creeks' | 'gkd';
+    kind: 'svg' | 'ortho' | 'outer-ortho' | 'dem' | 'unity-terrain' | 'unity-sculpt' | 'unity-ortho' | 'hillshade' | 'trees' | 'buildings' | 'zones' | 'vegetation' | 'vegetation-update' | 'arborist' | 'creeks' | 'gkd';
     label: string;
     status: 'running' | 'succeeded' | 'failed';
     startedAt: string;
@@ -63,9 +66,12 @@ export interface GsproExportApi {
     settings(input: { courseId: string }): Promise<GsproExportSettings>;
     setDir(input: { courseId: string; dir: null | string }): Promise<GsproExportSettings>;
     setCourseDir(input: { courseId: string; dir: null | string }): Promise<GsproExportSettings>;
+    setMeta(input: { courseId: string; meta: null | { description: string; courseName: string; city: string; state: string; country: string; designer: string; homage: string; difficulty: number; keywords: ('BeginnerFriendly' | 'Coastal' | 'Desert' | 'Fantasy' | 'Heathland' | 'Historic' | 'Links' | 'LowPoly' | 'MajorVenue' | 'Mountain' | 'Parkland' | 'TourStop' | 'Training' | 'Tropical')[] } }): Promise<GsproExportSettings>;
+    readGkdMeta(input: { courseId: string }): Promise<GsproExportSettings>;
+    readGkdRatings(input: { courseId: string }): Promise<GsproExportSettings>;
     terrain(input: { courseId: string }): Promise<CourseTerrain>;
     orthoSources(input: { courseId: string }): Promise<GsproOrthoSource[]>;
-    start(input: { source?: string; collection?: string; terrain?: 'inner' | 'outer'; darken?: number; tint?: boolean; tintOpacity?: number; forestFloor?: boolean; floorColor?: string; floorMix?: number; removeBuildings?: boolean; excludeFeatureIds?: string[]; variant?: string; zoneIds?: string[]; courseId: string; kind: 'svg' | 'ortho' | 'outer-ortho' | 'dem' | 'unity-terrain' | 'unity-sculpt' | 'unity-ortho' | 'hillshade' | 'trees' | 'buildings' | 'zones' | 'vegetation' | 'vegetation-update' | 'creeks' | 'gkd' }): Promise<GsproExportJob>;
+    start(input: { source?: string; collection?: string; terrain?: 'inner' | 'outer'; darken?: number; tint?: boolean; tintOpacity?: number; forestFloor?: boolean; floorColor?: string; floorMix?: number; removeBuildings?: boolean; excludeFeatureIds?: string[]; variant?: string; zoneIds?: string[]; courseId: string; kind: 'svg' | 'ortho' | 'outer-ortho' | 'dem' | 'unity-terrain' | 'unity-sculpt' | 'unity-ortho' | 'hillshade' | 'trees' | 'buildings' | 'zones' | 'vegetation' | 'vegetation-update' | 'arborist' | 'creeks' | 'gkd' }): Promise<GsproExportJob>;
     job(input: { jobId: string }): Promise<GsproExportJob>;
     current(input: { courseId: string }): Promise<null | GsproExportJob>;
 }
@@ -84,6 +90,15 @@ export function createGsproExportClient(baseUrl: string): GsproExportApi {
         },
         async setCourseDir(input) {
             return apiFetch({ method: 'POST', url: `${baseUrl}/gspro-export/course-dir`, body: input });
+        },
+        async setMeta(input) {
+            return apiFetch({ method: 'POST', url: `${baseUrl}/gspro-export/meta`, body: input });
+        },
+        async readGkdMeta(input) {
+            return apiFetch({ method: 'POST', url: `${baseUrl}/gspro-export/meta/read-gkd`, body: input });
+        },
+        async readGkdRatings(input) {
+            return apiFetch({ method: 'POST', url: `${baseUrl}/gspro-export/ratings/read-gkd`, body: input });
         },
         async terrain(input) {
             const params = new URLSearchParams();

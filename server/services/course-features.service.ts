@@ -11,6 +11,7 @@ import { centerlineError, centerlineGeometry } from '../../shared/features/cente
 import { pathTransitionsError, type PathTransition } from '../../shared/features/path-transitions';
 import { bankVegProblem, takesBankVeg } from '../../shared/features/creek-vegetation';
 import { ZONE_BLENDS, ZONE_BLEND_ATTRIBUTE, ZONE_EXTRA_PALETTES_ATTRIBUTE, parseZonePalettes } from '../../shared/features/zone-layers';
+import { zoneHeightProblem } from '../../shared/features/zone-height';
 import { TREE_AREA_TYPE, treeAreaProblem } from '../../shared/features/tree-areas';
 import { ROCK_SLAB_TYPE, rockSlabProblem } from '../../shared/features/rock-slab';
 import { KERB_FILLETS_ATTRIBUTE, ROAD_JUNCTIONS_SOURCE, junctionFillets, kerbFilletsOn } from '../../shared/features/road-junctions';
@@ -380,7 +381,11 @@ export const VEGETATION_ZONE_DEFAULTS = { weight: 1, feather: 2, noise: 0 } as c
  * against the zone-type table — the pipeline falls back to Default for a key
  * the type does not have. `blend`, when present, is one of ZONE_BLENDS;
  * `extraPalettes`, when present, is a string parseZonePalettes accepts (its
- * types and variants are not checked against the table either).
+ * types and variants are not checked against the table either). `edgeBlend`,
+ * when present, is metres >= 0: how wide the zone's mix fades into the
+ * vegetation beside it (absent = the pipeline's default, 0 = no blend; D-VZ16).
+ * `heightMin` and `heightMax`, both or neither, are the height in metres the
+ * zone's bushes are scaled to (shared/features/zone-height.ts, D-VZ17).
  */
 function assertValidVegetationZoneAttributes(attributes: FeatureAttributes | null | undefined): void {
     const zoneType = attributes?.zoneType;
@@ -406,6 +411,7 @@ function assertValidVegetationZoneAttributes(attributes: FeatureAttributes | nul
         weight: [0, 1],
         feather: [0, Infinity],
         noise: [0, Infinity],
+        edgeBlend: [0, Infinity],
     };
     for (const [key, [min, max]] of Object.entries(ranges)) {
         const value = attributes![key];
@@ -415,6 +421,8 @@ function assertValidVegetationZoneAttributes(attributes: FeatureAttributes | nul
             throw new InvalidFeatureError(`attributes.${key} must be a number ${bound}`);
         }
     }
+    const height = zoneHeightProblem(attributes);
+    if (height) throw new InvalidFeatureError(height);
 }
 
 /** `tree_area` attributes: a species mix string, optional ignoreKind and name (shared/features/tree-areas.ts). */

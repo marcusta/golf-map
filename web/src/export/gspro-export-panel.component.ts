@@ -1,11 +1,21 @@
-// Floating panel for the GSPro/OPCD exports: the course SVG, the square
-// orthophoto JPEGs (8192 px, quality 92), the square DEM GeoTIFFs + Unity
-// .raw heightmaps and the hillshade JPEGs for the two GSPro terrains — the
-// INNER one the map was built over and the 5 km OUTER one centred on it —
-// and GreenKeeper's .GKD, written into the course's own GSPro folder.
-// Spawned once by CourseDetailComponent; hidden
-// until the command bar's ⋯ menu calls GsproExportService.openFor(). Docks
-// at the map's right edge like the import wizards.
+// The GSPro/OPCD export dialog: the course SVG, the square orthophoto JPEGs
+// (8192 px, quality 92), the square DEM GeoTIFFs + Unity .raw heightmaps and
+// the hillshade JPEGs for the two GSPro terrains — the INNER one the map was
+// built over and the 5 km OUTER one centred on it — and GreenKeeper's .GKD,
+// written into the course's own GSPro folder. Spawned once by
+// CourseDetailComponent; hidden until the command bar's ⋯ menu calls
+// GsproExportService.openFor().
+//
+// Two surfaces, one at a time (`view`):
+// - the dialog, over the whole page: folder and terrains in its head, one
+//   tab per group of files (Terrain, Textures, Course, Tees, GreenKeeper),
+//   each a matrix of file rows by inner/outer terrain with its settings
+//   beside it, and a footer that always shows the running job, the last
+//   result and the last error;
+// - the SVG test-variant panel (leave features out, bisect a failing Blender
+//   build), docked at the map's right edge like the import wizards: it picks
+//   features from the map and marks them on it, so it cannot cover it. The
+//   Course tab opens it and it leads back.
 //
 // The folder is a typed path, not an OS picker: the file is written by the
 // SERVER (which runs the pipeline), and a browser folder chooser would name a
@@ -27,6 +37,10 @@ import { CourseDetailService } from '../course-detail/course-detail.service';
 import { MapService } from '../map/map.service';
 import { pathSurfaceOf } from '../../../shared/features/path-surface';
 import type { CourseFeature } from '../../../shared/api/course-features.gen';
+import { GKD_KEYWORDS, type GsproCourseMeta } from '../../../shared/gspro-course-meta';
+import { GKD_TEE_TYPES, gkdRating, type GkdTeeType } from '../../../shared/tee-sets';
+import { FurnitureService } from '../furniture/furniture.service';
+import { teeFill } from '../furniture/furniture-overlay';
 import { icon } from '../ui/icons';
 import { infoTip, infoTipStyles, attachInfoTips } from '../ui/info-tip';
 
@@ -108,57 +122,231 @@ const TIP = {
     gkd: 'GreenKeeper\'s course file, which GSPro reads for tee boxes (by tee colour), pins, green centres, aim points, water '
         + 'hazards and the out-of-bounds line, as positions on the inner terrain. Water is staked at least 0.5 m outside the '
         + 'water and out to where its bank ends (up to 3 m); drawn penalty areas go in as drawn. It is merged into the .GKD '
-        + 'already in the folder, so the course name, location, ratings and range you set in GreenKeeper stay; the first '
+        + 'already in the folder, so the range, wind and green speed you set in GreenKeeper stay; the first '
         + 'run keeps the original as .GKD.bak. Export the inner heightmap first, and close the course in GreenKeeper while '
         + 'exporting or it will save its own copy over this one.',
+    meta: 'What GSPro shows for the course: name, location, designer, description and keywords. The same fields as in '
+        + 'GreenKeeper, kept with the course here and written into the .GKD by the export. A course with none kept shows the '
+        + 'ones in the .GKD, and the export leaves those alone until you change one here. After editing them in GreenKeeper, '
+        + 'read them in from the .GKD before the next export or it writes these over them. Each tee set\'s course rating and '
+        + 'slope are not here: they are the course\'s tee sets\' (Furniture › Tee sets), and the export writes the one each '
+        + 'set says GSPro shows.',
+    tees: 'GSPro has eight tee types and one rating for each. Pick which one each of the course\'s tee sets is exported '
+        + 'as, whatever the club calls it, and which of its two ratings GSPro shows; a set left at "Not in GSPro" is not '
+        + 'exported. A type goes to one set only: picking it moves it from the set that had it. The sets, their ratings '
+        + 'and the sets that exist for GSPro alone (Junior, Par3) are made in Furniture › Tee sets.',
     courseDir: 'The course\'s folder under GSPro\'s Courses (e.g. C:\\GSProV1\\Core\\GSP\\Courses\\<scene>), the one holding '
         + 'its .gspcrse — not the export folder. Saved with the course.',
 };
 
+/** The one-line text fields of the course details, in form order. */
+const META_TEXT: [keyof GsproCourseMeta & string, string][] = [
+    ['courseName', 'Course name'], ['city', 'City / town'], ['state', 'State / county / province'],
+    ['country', 'Country'], ['designer', 'Designer'], ['homage', 'Homage'],
+];
+
+/** `BeginnerFriendly` -> `Beginner friendly`. */
+const spaced = (name: string) => name.replace(/(?<=[a-z])(?=[A-Z])/g, ' ').replace(/ ./g, c => c.toLowerCase());
+
+/** The dialog's tabs, in order: what is exported, grouped by what it is made from. */
+const TABS = [
+    ['terrain', 'Terrain'], ['textures', 'Textures'], ['course', 'Course'], ['tees', 'Tees'], ['greenkeeper', 'GreenKeeper'],
+] as const;
+type TabId = typeof TABS[number][0];
+
+/** An export button; its text and long name (title) come from the wiring. */
+const runBtn = (bind: string, cls: string, testid = '') =>
+    `<button bind="${bind}" type="button" class="gspro-export__run gspro-export__run-${cls}"${testid ? ` data-testid="${testid}"` : ''}></button>`;
+
+/** One row of an export matrix: what it is, then the inner terrain's cell and the outer's. */
+const matrixRow = (label: string, tip: string, inner: string, outer = '<span></span>') => `
+    <div class="gspro-export__mlabel">${label} ${infoTip({ text: tip })}</div>
+    ${inner}
+    ${outer}`;
+
+const MATRIX_HEAD = `
+    <span></span>
+    <div class="gspro-export__mhead">Inner terrain</div>
+    <div class="gspro-export__mhead">Outer terrain</div>`;
+
 const tpl = template(`
     <div bind="root" class="gspro-export">
-        <div class="gspro-export__header">
-            <h3>Export to GSPro</h3>
-            <button bind="close" type="button" aria-label="Close" title="Close">${icon('x')}</button>
+        <div bind="modal" class="gspro-export__modal">
+            <div bind="backdrop" class="gspro-export__backdrop"></div>
+            <div class="gspro-export__dialog" role="dialog" aria-modal="true" aria-label="Export to GSPro" data-testid="gspro-dialog">
+                <div class="gspro-export__header">
+                    <h3>Export to GSPro</h3>
+                    <button bind="close" type="button" aria-label="Close" title="Close">${icon('x')}</button>
+                </div>
+
+                <div class="gspro-export__top">
+                    <div class="gspro-export__top-col">
+                        <label class="gspro-export__field">Folder on this machine
+                            <input bind="dir" type="text" spellcheck="false" autocomplete="off" data-testid="gspro-dir" />
+                        </label>
+                        <div bind="dirHint" class="hint"></div>
+                        <button bind="reset" type="button" class="gspro-export__link">Use the default folder</button>
+                    </div>
+                    <div class="gspro-export__top-col gspro-export__terrains">
+                        <div class="gspro-export__head">Terrains ${infoTip({ text: TIP.terrains })}</div>
+                        <div class="gspro-export__terrain"><b>Inner terrain</b> <span bind="innerTerrain"></span></div>
+                        <div class="gspro-export__terrain"><b>Outer terrain</b> <span bind="outerTerrain"></span></div>
+                        <div bind="terrainNote" class="hint gspro-export__warn"></div>
+                    </div>
+                </div>
+
+                <div bind="tabBar" class="gspro-export__tabs" role="tablist"></div>
+
+                <div class="gspro-export__body">
+                    <div bind="paneTerrain" class="gspro-export__pane" role="tabpanel" data-testid="gspro-pane-terrain">
+                        <div class="gspro-export__matrix">
+                            ${MATRIX_HEAD}
+                            ${matrixRow('Heightmap (RAW + GeoTIFF)', TIP.dem, runBtn('runInnerDem', 'inner-dem'), runBtn('runOuterDem', 'outer-dem'))}
+                            ${matrixRow('Heightmap into Unity', TIP.unityTerrain, runBtn('runInnerUnity', 'inner-unity', 'gspro-inner-unity'), runBtn('runOuterUnity', 'outer-unity', 'gspro-outer-unity'))}
+                            ${matrixRow('Unity sculpt back to golf-map', TIP.unitySculpt, runBtn('runInnerSculpt', 'inner-sculpt', 'gspro-inner-sculpt'), runBtn('runOuterSculpt', 'outer-sculpt', 'gspro-outer-sculpt'))}
+                            ${matrixRow('Hillshade JPEG', TIP.hillshade, runBtn('runInnerHillshade', 'inner-hillshade'), runBtn('runOuterHillshade', 'outer-hillshade'))}
+                        </div>
+                    </div>
+
+                    <div bind="paneTextures" class="gspro-export__pane" role="tabpanel" data-testid="gspro-pane-textures">
+                        <div class="gspro-export__cols">
+                            <div class="gspro-export__group">
+                                <div class="gspro-export__head">Photo ${infoTip({ text: TIP.ortho })}</div>
+                                <label bind="orthoField" class="gspro-export__field">Orthophoto
+                                    <select bind="orthoSource" data-testid="gspro-ortho-source"></select>
+                                </label>
+                                <div bind="orthoNote" class="hint gspro-export__warn"></div>
+                                <label class="gspro-export__field"><span class="gspro-export__label">Terrain texture brightness ${infoTip({ text: TIP.brightness })}</span>
+                                    <input bind="terrainDarken" type="text" inputmode="decimal" spellcheck="false" autocomplete="off" />
+                                </label>
+                                <div class="gspro-export__option">
+                                    <label class="gspro-export__check"><input bind="tintTerrain" type="checkbox" /> Mesh texture (grass surfaces tinted)</label>
+                                    ${infoTip({ text: TIP.tint })}
+                                </div>
+                                <label bind="tintOpacityField" class="gspro-export__field">Surface tint opacity
+                                    <input bind="tintOpacity" type="text" inputmode="decimal" spellcheck="false" autocomplete="off" />
+                                </label>
+                            </div>
+                            <div class="gspro-export__group">
+                                <div class="gspro-export__head">Cleaning ${infoTip({ text: TIP.clean })}</div>
+                                <div class="gspro-export__option">
+                                    <label class="gspro-export__check"><input bind="removeBuildings" type="checkbox" /> Remove buildings</label>
+                                    ${infoTip({ text: TIP.buildings })}
+                                </div>
+                                <div class="gspro-export__option">
+                                    <label class="gspro-export__check"><input bind="forestFloor" type="checkbox" /> Forest floor under woodland stands</label>
+                                    ${infoTip({ text: TIP.floor })}
+                                </div>
+                                <div bind="floorFields" class="gspro-export__floor">
+                                    <label class="gspro-export__field">Floor colour
+                                        <input bind="floorColor" type="color" />
+                                    </label>
+                                    <label class="gspro-export__field">Photo mix
+                                        <input bind="floorMix" type="text" inputmode="decimal" spellcheck="false" autocomplete="off" />
+                                    </label>
+                                </div>
+                            </div>
+                        </div>
+                        <div class="gspro-export__matrix">
+                            ${MATRIX_HEAD}
+                            ${matrixRow('Orthophoto JPEG', TIP.ortho, runBtn('runOrtho', 'ortho'), `<div class="gspro-export__row">
+                                ${runBtn('runOuterOrtho', 'outer-ortho')}
+                                ${infoTip({ bind: 'outerOrthoTip' })}
+                            </div>`)}
+                            ${matrixRow('Cleaned orthophoto', TIP.clean, runBtn('runCleanOrtho', 'clean-ortho'), runBtn('runCleanOuterOrtho', 'clean-outer-ortho'))}
+                            ${matrixRow('Cleaned photo into Unity', TIP.unityOrtho, runBtn('runUnityOrtho', 'unity-ortho', 'gspro-unity-ortho'))}
+                        </div>
+                    </div>
+
+                    <div bind="paneCourse" class="gspro-export__pane" role="tabpanel" data-testid="gspro-pane-course">
+                        <div class="gspro-export__matrix">
+                            ${MATRIX_HEAD}
+                            ${matrixRow('Course SVG', TIP.svg, `<button bind="run" type="button" class="gspro-export__run" data-testid="gspro-run-svg"></button>`)}
+                            <div class="gspro-export__mnote">
+                                <span bind="svgFileHint" class="hint"></span>
+                                <button bind="openSvg" type="button" class="gspro-export__link" data-testid="gspro-open-svg"><span bind="excludeSummary"></span></button>
+                            </div>
+                            ${matrixRow('Trees', TIP.trees, runBtn('runInnerTrees', 'inner-trees'), runBtn('runOuterTrees', 'outer-trees'))}
+                            ${matrixRow('Buildings', TIP.buildingsFile, runBtn('runInnerBuildings', 'inner-buildings'), runBtn('runOuterBuildings', 'outer-buildings'))}
+                            ${matrixRow('Vegetation zones', TIP.zones, runBtn('runInnerZones', 'inner-zones'), runBtn('runOuterZones', 'outer-zones'))}
+                            ${matrixRow('Creeks', TIP.creeks, runBtn('runCreeks', 'creeks'))}
+                        </div>
+                    </div>
+
+                    <div bind="paneTees" class="gspro-export__pane" role="tabpanel" data-testid="gspro-pane-tees">
+                        <div class="gspro-export__head">Tee sets in GSPro ${infoTip({ text: TIP.tees })}</div>
+                        <div class="gspro-export__tees gspro-export__tees-head">
+                            <span>Tee set</span><span>GSPro tee</span><span>Rating GSPro shows</span>
+                        </div>
+                        <div bind="teeRows" class="gspro-export__tees" data-testid="gspro-tee-sets"></div>
+                        <div bind="teeHint" class="hint"></div>
+                        <div bind="ratingsHint" class="hint gspro-export__warn" data-testid="gspro-ratings-hint"></div>
+                        <button bind="readGkdRatings" type="button" class="gspro-export__small gspro-export__fit" data-testid="gspro-ratings-read">Read the ratings from the .GKD</button>
+                    </div>
+
+                    <div bind="paneGreenkeeper" class="gspro-export__pane" role="tabpanel" data-testid="gspro-pane-greenkeeper">
+                        <div class="gspro-export__group">
+                            <div class="gspro-export__head">GreenKeeper course file (.GKD) ${infoTip({ text: TIP.gkd })}</div>
+                            <label class="gspro-export__field"><span class="gspro-export__label">GSPro course folder ${infoTip({ text: TIP.courseDir })}</span>
+                                <input bind="courseDir" type="text" spellcheck="false" autocomplete="off" placeholder="C:\\GSProV1\\Core\\GSP\\Courses\\<scene>" />
+                            </label>
+                            <div bind="gkdHint" class="hint"></div>
+                            <button bind="runGkd" type="button" class="gspro-export__run gspro-export__run-gkd gspro-export__primary gspro-export__fit"></button>
+                        </div>
+                        <div class="gspro-export__group gspro-export__meta" data-testid="gspro-meta">
+                            <div class="gspro-export__head">Course details ${infoTip({ text: TIP.meta })}</div>
+                            <div bind="metaHint" class="hint gspro-export__warn" data-testid="gspro-meta-hint"></div>
+                            <button bind="readGkdMeta" type="button" class="gspro-export__link" data-testid="gspro-meta-read">Read the course details from the .GKD</button>
+                            <div class="gspro-export__cols">
+                                ${META_TEXT.map(([key, label]) => `<label class="gspro-export__field">${label}
+                                    <input bind="meta_${key}" type="text" autocomplete="off" data-testid="gspro-meta-${key}" />
+                                </label>`).join('')}
+                            </div>
+                            <label class="gspro-export__field">Description
+                                <textarea bind="meta_description" rows="5" data-testid="gspro-meta-description"></textarea>
+                            </label>
+                            <label class="gspro-export__field gspro-export__narrow">Difficulty
+                                <input bind="meta_difficulty" type="text" inputmode="decimal" autocomplete="off" />
+                            </label>
+                            <div class="gspro-export__head">Keywords</div>
+                            <div class="gspro-export__keywords">
+                                ${GKD_KEYWORDS.map(k => `<label class="gspro-export__check"><input bind="kw_${k}" type="checkbox" /> ${spaced(k)}</label>`).join('')}
+                            </div>
+                        </div>
+                    </div>
+                </div>
+
+                <div class="gspro-export__footer" data-testid="gspro-status">
+                    <div bind="idleNote" class="hint">Nothing exported since the dialog opened.</div>
+                    <div bind="jobSection" class="gspro-export__section">
+                        <div bind="jobNote" class="gspro-export__job"></div>
+                    </div>
+                    <div bind="resultSection" class="gspro-export__section">
+                        <div bind="resultPath" class="gspro-export__path"></div>
+                        <ul bind="report" class="gspro-export__report"></ul>
+                    </div>
+                    <div bind="errorSection" class="gspro-export__section">
+                        <div bind="error" class="error"></div>
+                    </div>
+                </div>
+            </div>
         </div>
 
-        <div class="gspro-export__section">
-            <label class="gspro-export__field">Folder on this machine
-                <input bind="dir" type="text" spellcheck="false" autocomplete="off" />
-            </label>
-            <div bind="dirHint" class="hint"></div>
-            <button bind="reset" type="button" class="gspro-export__link">Use the default folder</button>
-        </div>
-
-        <div class="gspro-export__section gspro-export__terrains">
-            <div class="gspro-export__head">Terrains ${infoTip({ text: TIP.terrains })}</div>
-            <div class="gspro-export__terrain"><b>Inner terrain</b> <span bind="innerTerrain"></span></div>
-            <div class="gspro-export__terrain"><b>Outer terrain</b> <span bind="outerTerrain"></span></div>
-            <div bind="terrainNote" class="hint gspro-export__warn"></div>
-        </div>
-
-        <div bind="jobSection" class="gspro-export__section">
-            <div bind="jobNote" class="gspro-export__job"></div>
-        </div>
-
-        <div bind="resultSection" class="gspro-export__section">
-            <div bind="resultPath" class="gspro-export__path"></div>
-            <ul bind="report" class="gspro-export__report"></ul>
-        </div>
-
-        <div bind="errorSection" class="gspro-export__section">
-            <div bind="error" class="error"></div>
-        </div>
-
-        <div class="gspro-export__section actions">
-            <div class="gspro-export__head">Course SVG ${infoTip({ text: TIP.svg })}</div>
-            <label class="gspro-export__field"><span class="gspro-export__label">Variant name ${infoTip({ text: TIP.variant })}</span>
-                <input bind="svgVariant" type="text" spellcheck="false" autocomplete="off" placeholder="blank = the full SVG" data-testid="gspro-svg-variant" />
-            </label>
-            <div bind="svgFileHint" class="hint"></div>
-            <button bind="run" type="button" class="gspro-export__run"></button>
-            <details class="gspro-export__exclude">
-                <summary><span bind="excludeSummary"></span> ${infoTip({ text: TIP.exclude })}</summary>
+        <div bind="side" class="gspro-export__side" data-testid="gspro-svg-panel">
+            <div class="gspro-export__side-header">
+                <button bind="backToDialog" type="button" class="gspro-export__link" data-testid="gspro-svg-back">‹ Export to GSPro</button>
+                <button bind="closeSide" type="button" class="gspro-export__x" aria-label="Close" title="Close">${icon('x')}</button>
+            </div>
+            <div class="gspro-export__section">
+                <div class="gspro-export__head">SVG test variants ${infoTip({ text: TIP.exclude })}</div>
+                <label class="gspro-export__field"><span class="gspro-export__label">Variant name ${infoTip({ text: TIP.variant })}</span>
+                    <input bind="svgVariant" type="text" spellcheck="false" autocomplete="off" placeholder="blank = the full SVG" data-testid="gspro-svg-variant" />
+                </label>
+                <div bind="svgFileHintSide" class="hint"></div>
+                <button bind="runSide" type="button" class="gspro-export__run gspro-export__primary"></button>
+                <div bind="sideStatus" class="gspro-export__job" data-testid="gspro-svg-status"></div>
+            </div>
+            <div class="gspro-export__section gspro-export__exclude">
                 <div class="gspro-export__row">
                     <button bind="excludeSelected" type="button" class="gspro-export__small" data-testid="gspro-exclude-selected"></button>
                     <button bind="includeSelected" type="button" class="gspro-export__small"></button>
@@ -198,104 +386,7 @@ const tpl = template(`
                 <ul bind="featureList" class="gspro-export__features" data-testid="gspro-svg-features"></ul>
                 <div bind="listMore" class="hint"></div>
                 <button bind="clearExclusions" type="button" class="gspro-export__link">Clear all exclusions</button>
-            </details>
-        </div>
-
-        <div class="gspro-export__section actions">
-            <div class="gspro-export__head">Orthophoto textures ${infoTip({ text: TIP.ortho })}</div>
-            <label bind="orthoField" class="gspro-export__field">Orthophoto
-                <select bind="orthoSource" data-testid="gspro-ortho-source"></select>
-            </label>
-            <div bind="orthoNote" class="hint gspro-export__warn"></div>
-            <label class="gspro-export__field"><span class="gspro-export__label">Terrain texture brightness ${infoTip({ text: TIP.brightness })}</span>
-                <input bind="terrainDarken" type="text" inputmode="decimal" spellcheck="false" autocomplete="off" />
-            </label>
-            <div class="gspro-export__option">
-                <label class="gspro-export__check"><input bind="tintTerrain" type="checkbox" /> Mesh texture (grass surfaces tinted)</label>
-                ${infoTip({ text: TIP.tint })}
             </div>
-            <label bind="tintOpacityField" class="gspro-export__field">Surface tint opacity
-                <input bind="tintOpacity" type="text" inputmode="decimal" spellcheck="false" autocomplete="off" />
-            </label>
-            <button bind="runOrtho" type="button" class="gspro-export__run gspro-export__run-ortho"></button>
-            <div class="gspro-export__row">
-                <button bind="runOuterOrtho" type="button" class="gspro-export__run gspro-export__run-outer-ortho"></button>
-                ${infoTip({ bind: 'outerOrthoTip' })}
-            </div>
-        </div>
-
-        <div class="gspro-export__section actions">
-            <div class="gspro-export__head">Cleaned orthophoto textures ${infoTip({ text: TIP.clean })}</div>
-            <div class="gspro-export__option">
-                <label class="gspro-export__check"><input bind="removeBuildings" type="checkbox" /> Remove buildings</label>
-                ${infoTip({ text: TIP.buildings })}
-            </div>
-            <div class="gspro-export__option">
-                <label class="gspro-export__check"><input bind="forestFloor" type="checkbox" /> Forest floor under woodland stands</label>
-                ${infoTip({ text: TIP.floor })}
-            </div>
-            <div bind="floorFields" class="gspro-export__floor">
-                <label class="gspro-export__field">Floor colour
-                    <input bind="floorColor" type="color" />
-                </label>
-                <label class="gspro-export__field">Photo mix
-                    <input bind="floorMix" type="text" inputmode="decimal" spellcheck="false" autocomplete="off" />
-                </label>
-            </div>
-            <button bind="runCleanOrtho" type="button" class="gspro-export__run gspro-export__run-clean-ortho"></button>
-            <button bind="runCleanOuterOrtho" type="button" class="gspro-export__run gspro-export__run-clean-outer-ortho"></button>
-            <div class="gspro-export__head">Cleaned photo into Unity ${infoTip({ text: TIP.unityOrtho })}</div>
-            <button bind="runUnityOrtho" type="button" class="gspro-export__run gspro-export__run-unity-ortho" data-testid="gspro-unity-ortho"></button>
-        </div>
-
-        <div class="gspro-export__section actions">
-            <div class="gspro-export__head">Heightmaps ${infoTip({ text: TIP.dem })}</div>
-            <button bind="runInnerDem" type="button" class="gspro-export__run gspro-export__run-inner-dem"></button>
-            <button bind="runOuterDem" type="button" class="gspro-export__run gspro-export__run-outer-dem"></button>
-            <div class="gspro-export__head">Heightmap into Unity ${infoTip({ text: TIP.unityTerrain })}</div>
-            <button bind="runInnerUnity" type="button" class="gspro-export__run gspro-export__run-inner-unity" data-testid="gspro-inner-unity"></button>
-            <button bind="runOuterUnity" type="button" class="gspro-export__run gspro-export__run-outer-unity" data-testid="gspro-outer-unity"></button>
-            <div class="gspro-export__head">Unity sculpt back to golf-map ${infoTip({ text: TIP.unitySculpt })}</div>
-            <button bind="runInnerSculpt" type="button" class="gspro-export__run gspro-export__run-inner-sculpt" data-testid="gspro-inner-sculpt"></button>
-            <button bind="runOuterSculpt" type="button" class="gspro-export__run gspro-export__run-outer-sculpt" data-testid="gspro-outer-sculpt"></button>
-        </div>
-
-        <div class="gspro-export__section actions">
-            <div class="gspro-export__head">GreenKeeper course file (.GKD) ${infoTip({ text: TIP.gkd })}</div>
-            <label class="gspro-export__field"><span class="gspro-export__label">GSPro course folder ${infoTip({ text: TIP.courseDir })}</span>
-                <input bind="courseDir" type="text" spellcheck="false" autocomplete="off" placeholder="C:\\GSProV1\\Core\\GSP\\Courses\\<scene>" />
-            </label>
-            <div bind="gkdHint" class="hint"></div>
-            <button bind="runGkd" type="button" class="gspro-export__run gspro-export__run-gkd"></button>
-        </div>
-
-        <div class="gspro-export__section actions">
-            <div class="gspro-export__head">Hillshades ${infoTip({ text: TIP.hillshade })}</div>
-            <button bind="runInnerHillshade" type="button" class="gspro-export__run gspro-export__run-inner-hillshade"></button>
-            <button bind="runOuterHillshade" type="button" class="gspro-export__run gspro-export__run-outer-hillshade"></button>
-        </div>
-
-        <div class="gspro-export__section actions">
-            <div class="gspro-export__head">Trees ${infoTip({ text: TIP.trees })}</div>
-            <button bind="runInnerTrees" type="button" class="gspro-export__run gspro-export__run-inner-trees"></button>
-            <button bind="runOuterTrees" type="button" class="gspro-export__run gspro-export__run-outer-trees"></button>
-        </div>
-
-        <div class="gspro-export__section actions">
-            <div class="gspro-export__head">Buildings ${infoTip({ text: TIP.buildingsFile })}</div>
-            <button bind="runInnerBuildings" type="button" class="gspro-export__run gspro-export__run-inner-buildings"></button>
-            <button bind="runOuterBuildings" type="button" class="gspro-export__run gspro-export__run-outer-buildings"></button>
-        </div>
-
-        <div class="gspro-export__section actions">
-            <div class="gspro-export__head">Vegetation zones ${infoTip({ text: TIP.zones })}</div>
-            <button bind="runInnerZones" type="button" class="gspro-export__run gspro-export__run-inner-zones"></button>
-            <button bind="runOuterZones" type="button" class="gspro-export__run gspro-export__run-outer-zones"></button>
-        </div>
-
-        <div class="gspro-export__section actions">
-            <div class="gspro-export__head">Creeks ${infoTip({ text: TIP.creeks })}</div>
-            <button bind="runCreeks" type="button" class="gspro-export__run gspro-export__run-creeks"></button>
         </div>
     </div>
 `);
@@ -317,31 +408,48 @@ const LIST_LIMIT = 200;
 export class GsproExportPanelComponent extends Component {
     static styles = `
         .gspro-export {
-            /* Layout laws 01+02: self-positioned overlay at the top-right
-               corner inset, standard bucket, height hugs content. */
-            position: absolute;
-            top: ${OVERLAY_INSET};
-            right: ${OVERLAY_INSET};
-            width: ${OVERLAY_W.standard};
-            max-height: calc(100% - 2 * ${OVERLAY_INSET});
-            z-index: 6;
             display: none;
-            flex-direction: column;
-            overflow-y: auto;
-            ${glassPanel()}
-            padding: 0;
             font-size: 0.8rem;
             color: ${t('color-text-primary')};
-            &.show { display: flex; }
+            &.show { display: block; }
 
-            & .gspro-export__header {
+            /* ── The dialog: header, folder and terrains, tabs, the active
+               tab's pane (the only part that scrolls), status footer. ── */
+            & .gspro-export__modal {
+                position: fixed;
+                inset: 0;
+                z-index: 900;
+                display: flex;
+                align-items: center;
+                justify-content: center;
+                &.hidden { display: none; }
+            }
+            & .gspro-export__backdrop {
+                position: absolute;
+                inset: 0;
+                background: ${t('overlay-scrim')};
+            }
+            & .gspro-export__dialog {
+                position: relative;
+                display: flex;
+                flex-direction: column;
+                width: min(920px, calc(100vw - 48px));
+                height: min(760px, calc(100vh - 48px));
+                border: 1px solid ${t('color-border-subtle')};
+                border-radius: var(--radius-lg);
+                background: ${t('color-surface-card')};
+                box-shadow: var(--elev-3);
+                overflow: hidden;
+            }
+
+            & .gspro-export__header, & .gspro-export__side-header {
                 display: flex;
                 align-items: center;
                 justify-content: space-between;
-                padding: var(--space-3) var(--space-4);
+                padding: var(--space-3) var(--space-5);
                 border-bottom: 1px solid ${t('color-border-default')};
                 & h3 { margin: 0; ${panelTitle()} }
-                & button {
+                & > button:not(.gspro-export__link) {
                     display: inline-flex;
                     align-items: center;
                     justify-content: center;
@@ -351,14 +459,119 @@ export class GsproExportPanelComponent extends Component {
                 }
             }
 
-            & .gspro-export__section {
-                padding: var(--space-3) var(--space-4);
+            & .gspro-export__top {
+                display: grid;
+                grid-template-columns: 1fr 1fr;
+                gap: var(--space-5);
+                padding: var(--space-3) var(--space-5);
                 border-bottom: 1px solid ${t('color-border-default')};
+            }
+            & .gspro-export__top-col { display: flex; flex-direction: column; gap: var(--space-2); min-width: 0; }
+
+            & .gspro-export__tabs {
+                display: flex;
+                gap: var(--space-1);
+                padding: 0 var(--space-5);
+                border-bottom: 1px solid ${t('color-border-default')};
+                background: ${t('color-surface-sunken')};
+                & > button {
+                    padding: var(--space-3) var(--space-4);
+                    border: none;
+                    border-bottom: 2px solid transparent;
+                    margin-bottom: -1px;
+                    background: none;
+                    color: ${t('color-text-secondary')};
+                    font: inherit;
+                    font-size: 0.82rem;
+                    cursor: pointer;
+                    &:hover { color: ${t('color-text-primary')}; }
+                    &[aria-selected="true"] {
+                        color: ${t('color-text-primary')};
+                        font-weight: 600;
+                        border-bottom-color: ${t('color-accent-primary')};
+                        background: ${t('color-surface-card')};
+                    }
+                }
+            }
+
+            & .gspro-export__body { flex: 1; min-height: 0; overflow-y: auto; }
+            & .gspro-export__pane {
+                display: flex;
+                flex-direction: column;
+                gap: var(--space-4);
+                padding: var(--space-4) var(--space-5);
+                &.hidden { display: none; }
+            }
+
+            /* An export matrix: one row per file, a column per terrain. */
+            & .gspro-export__matrix {
+                display: grid;
+                grid-template-columns: minmax(0, 1fr) 11rem 11rem;
+                align-items: center;
+                gap: var(--space-2) var(--space-3);
+                & .gspro-export__run { width: 100%; }
+            }
+            & .gspro-export__mhead {
+                font-size: 0.72rem;
+                font-weight: 600;
+                color: ${t('color-text-secondary')};
+                text-align: center;
+            }
+            & .gspro-export__mlabel { display: flex; align-items: center; gap: ${s('xs')}; font-size: 0.82rem; }
+            & .gspro-export__mnote {
+                grid-column: 1 / -1;
+                display: flex;
+                flex-wrap: wrap;
+                align-items: baseline;
+                gap: ${s('xs')} ${s('md')};
+                margin-top: calc(-1 * var(--space-1));
+            }
+
+            /* Settings side by side, each group under its own head. */
+            & .gspro-export__cols { display: grid; grid-template-columns: 1fr 1fr; gap: var(--space-3) var(--space-5); }
+            & .gspro-export__group { display: flex; flex-direction: column; gap: var(--space-2); min-width: 0; }
+            & .gspro-export__narrow { max-width: 10rem; }
+            & .gspro-export__fit { align-self: flex-start; flex: none; }
+
+            & .gspro-export__footer {
+                max-height: 30%;
+                overflow-y: auto;
+                padding: var(--space-3) var(--space-5);
+                border-top: 1px solid ${t('color-border-default')};
+                background: ${t('color-surface-sunken')};
+                display: flex;
+                flex-direction: column;
+                gap: var(--space-2);
+                & .gspro-export__section { padding: 0; border: none; }
+            }
+
+            /* ── The SVG test-variant panel: narrow, docked at the map's
+               right edge, so the features it lists stay visible on the map. ── */
+            & .gspro-export__side {
+                /* Layout laws 01+02: self-positioned overlay at the top-right
+                   corner inset, standard bucket, height hugs content. */
+                position: absolute;
+                top: ${OVERLAY_INSET};
+                right: ${OVERLAY_INSET};
+                width: ${OVERLAY_W.standard};
+                max-height: calc(100% - 2 * ${OVERLAY_INSET});
+                z-index: 6;
+                display: none;
+                flex-direction: column;
+                overflow-y: auto;
+                ${glassPanel()}
+                padding: 0;
+                &.show { display: flex; }
+                & .gspro-export__side-header { padding: var(--space-3) var(--space-4); }
+                & .gspro-export__section { padding: var(--space-3) var(--space-4); border-bottom: 1px solid ${t('color-border-default')}; }
+                & .gspro-export__section:last-child { border-bottom: none; }
+            }
+
+            & .gspro-export__section {
                 display: flex;
                 flex-direction: column;
                 gap: var(--space-2);
                 &.hidden { display: none; }
-                &.actions:last-child { border-bottom: none; }
             }
 
             & .gspro-export__check {
@@ -368,7 +581,7 @@ export class GsproExportPanelComponent extends Component {
                 font-size: 12px;
             }
 
-            /* A section's name with its (i), and option rows that carry one. */
+            /* A group's name with its (i), and option rows that carry one. */
             & .gspro-export__head {
                 display: flex;
                 align-items: center;
@@ -410,6 +623,7 @@ export class GsproExportPanelComponent extends Component {
                 font-size: 0.7rem;
                 line-height: 1.4;
                 &:empty { display: none; }
+                &.hidden { display: none; }
             }
             & .gspro-export__warn { color: ${t('color-text-secondary')}; }
 
@@ -436,6 +650,8 @@ export class GsproExportPanelComponent extends Component {
                 font-size: 0.72rem;
                 line-height: 1.4;
                 color: ${t('color-text-secondary')};
+                &:empty { display: none; }
+                &.error { color: ${t('color-status-negative')}; }
             }
 
             & .gspro-export__path {
@@ -454,20 +670,34 @@ export class GsproExportPanelComponent extends Component {
                 & li { word-break: break-word; }
             }
 
-            & .gspro-export__exclude {
-                & > summary {
-                    cursor: pointer;
-                    display: flex;
-                    align-items: center;
-                    gap: ${s('xs')};
-                    font-size: 0.72rem;
-                    color: ${t('color-text-secondary')};
-                }
-                &[open] {
-                    display: flex;
-                    flex-direction: column;
-                    gap: var(--space-2);
-                }
+            & .gspro-export__exclude { display: flex; flex-direction: column; gap: var(--space-2); }
+            & .gspro-export__meta textarea { font: inherit; font-weight: 400; font-size: 0.75rem; line-height: 1.4; resize: vertical; }
+            /* One line per tee set: what the club calls it, GSPro's tee type, the rating GSPro shows. */
+            & .gspro-export__tees {
+                display: grid;
+                grid-template-columns: minmax(0, 1fr) 11rem 13rem;
+                align-items: center;
+                gap: ${s('xs')} ${s('md')};
+                font-size: 0.8rem;
+                &:empty { display: none; }
+                & select { min-width: 0; font-size: 0.78rem; padding: 3px ${s('xs')}; }
+            }
+            & .gspro-export__tees-head { font-size: 0.72rem; font-weight: 600; color: ${t('color-text-secondary')}; }
+            & .gspro-export__tee-row { display: contents; }
+            & .gspro-export__tee-name {
+                display: flex;
+                align-items: center;
+                gap: ${s('xs')};
+                min-width: 0;
+                /* The name wins the room; the "GSPro only" tag is what gets cut. */
+                & b { flex: 0 1 auto; min-width: 2.5rem; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-weight: 600; }
+                & i { flex: 1 1 0; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-style: normal; font-size: 0.7rem; color: ${t('color-text-tertiary')}; }
+            }
+            & .gspro-export__tee-dot { width: 10px; height: 10px; border-radius: 50%; flex: none; border: 1px solid ${t('color-border-default')}; }
+            & .gspro-export__keywords {
+                display: grid;
+                grid-template-columns: repeat(4, 1fr);
+                gap: ${s('xs')} ${s('sm')};
             }
             & .gspro-export__small {
                 flex: 1;
@@ -475,6 +705,7 @@ export class GsproExportPanelComponent extends Component {
                 padding: ${s('xs')} ${s('sm')};
                 font-size: 0.7rem;
                 &:disabled { opacity: 0.45; cursor: default; }
+                &.hidden { display: none; }
             }
             & .gspro-export__filters {
                 display: flex;
@@ -541,9 +772,18 @@ export class GsproExportPanelComponent extends Component {
             & .gspro-export__bisect-status { font-size: 0.72rem; line-height: 1.4; }
             & .gspro-export__links { display: flex; flex-wrap: wrap; gap: ${s('xs')} ${s('md')}; }
 
-            & .gspro-export__run { ${primaryBtn()} padding: ${s('sm')} ${s('md')}; }
+            /* An export button is quiet: a tab holds a dozen, and the status
+               footer says which one is running. The one-off actions (the
+               .GKD, an SVG variant) take the accent. */
+            & .gspro-export__run {
+                ${btn()}
+                padding: ${s('sm')} ${s('md')};
+                font-size: 0.78rem;
+                &:disabled { opacity: 0.45; cursor: default; }
+            }
+            & .gspro-export__primary { ${primaryBtn()} padding: ${s('sm')} ${s('md')}; }
             /* The recipe has no disabled look; a button waiting for its input must not read as ready. */
-            & .gspro-export__run:disabled { opacity: 0.45; cursor: default; }
+            & .gspro-export__primary:disabled { opacity: 0.45; cursor: default; }
         }
     `;
 
@@ -551,8 +791,18 @@ export class GsproExportPanelComponent extends Component {
     private features = this.inject(FeaturesService);
     private courseDetail = this.inject(CourseDetailService);
     private mapSvc = this.inject(MapService);
-    /** The panel element, measured so a located feature is framed clear of it. */
-    private root: HTMLElement | null = null;
+    /** The course's tee sets live with the furniture; this panel only says what GSPro makes of them. */
+    private furniture = this.inject(FurnitureService);
+    /** The SVG panel's element, measured so a located feature is framed clear of it. */
+    private sideEl: HTMLElement | null = null;
+    /**
+     * What is on screen: the dialog, or the narrow SVG test-variant panel
+     * (the one part of the export that works against the map, so it must not
+     * cover it).
+     */
+    private view = new Signal<'dialog' | 'svg'>('dialog');
+    /** The dialog's active tab; kept while the page lives. */
+    private tab = new Signal<TabId>('terrain');
 
     /** The exclusion list's filter (panel-local view state). */
     private filter = new Signal<SvgExclusionFilter>(NO_FILTER);
@@ -622,7 +872,7 @@ export class GsproExportPanelComponent extends Component {
                 south = Math.min(south, lat); n = Math.max(n, lat);
             }
         }
-        const panel = this.root?.offsetWidth ?? 0;
+        const panel = this.sideEl?.offsetWidth ?? 0;
         const padding = { top: 96, bottom: 96, left: 96, right: panel + 48 };
         if (Number.isFinite(w)) this.mapSvc.fitBounds([w, south, e, n], { maxZoom: 19, padding });
     }
@@ -635,9 +885,58 @@ export class GsproExportPanelComponent extends Component {
             if (terrain) return terrainLabel(terrain[kind]);
             return this.svc.terrainNote.get() ? '—' : 'Loading…';
         };
+        // The SVG export's button and file line, shown in the Course tab and in the SVG panel.
+        const svgRunLabel = () => {
+            const n = this.svc.svgExcluded.get().size;
+            return n ? `Export SVG without ${n} feature${n === 1 ? '' : 's'}` : 'Export SVG';
+        };
+        const svgFileHint = () => {
+            const file = variantFileName(this.svc.courseName.get(), this.svc.svgVariant.get());
+            if (!this.svc.svgVariant.get().trim() && this.svc.svgExcluded.get().size) {
+                return `Writes ${file}, over the full SVG. Name a variant to keep both.`;
+            }
+            return `Writes ${file}`;
+        };
         const frag = this.wire(tpl, {
             root: { className: () => (this.svc.courseId.get() ? 'gspro-export show' : 'gspro-export') },
             close: { onclick: () => this.svc.close() },
+            modal: { className: () => (this.view.get() === 'dialog' ? 'gspro-export__modal' : 'gspro-export__modal hidden') },
+            backdrop: { onclick: () => this.svc.close() },
+            side: { className: () => (this.view.get() === 'svg' ? 'gspro-export__side show' : 'gspro-export__side') },
+            openSvg: { onclick: () => this.view.set('svg') },
+            backToDialog: { onclick: () => this.view.set('dialog') },
+            closeSide: { onclick: () => this.svc.close() },
+            ...Object.fromEntries(TABS.map(([id]) => [`pane${id[0].toUpperCase()}${id.slice(1)}`, {
+                className: () => (this.tab.get() === id ? 'gspro-export__pane' : 'gspro-export__pane hidden'),
+            }])),
+            idleNote: {
+                className: () => (this.svc.job.get() || this.svc.lastPath.get() || this.svc.error.get() ? 'hint hidden' : 'hint'),
+            },
+            svgFileHintSide: () => svgFileHint(),
+            runSide: {
+                textContent: () => svgRunLabel(),
+                disabled: busy,
+                onclick: () => { void this.svc.run(); },
+            },
+            // The dialog's footer, in one line: the panel has no room for the report.
+            sideStatus: {
+                textContent: () => {
+                    this.svc.tick.get();
+                    const path = this.svc.lastPath.get();
+                    return this.svc.error.get() || (this.svc.job.get()?.status === 'running' ? jobLabel(this.svc.job.get()) : path ? `Wrote ${path}` : '');
+                },
+                className: () => (this.svc.error.get() ? 'gspro-export__job error' : 'gspro-export__job'),
+            },
+            ratingsHint: () => {
+                const ratings = this.svc.settings.get()?.gkdRatings ?? [];
+                return ratings.length ? `The .GKD rates ${ratings.join(', ')}, which the course's tee sets do not.` : '';
+            },
+            readGkdRatings: {
+                className: () => ((this.svc.settings.get()?.gkdRatings.length ?? 0) > 0
+                    ? 'gspro-export__small gspro-export__fit' : 'gspro-export__small gspro-export__fit hidden'),
+                disabled: busy,
+                onclick: () => { void this.svc.readGkdRatings().then(ok => { if (ok) void this.furniture.reloadTeeSets(); }); },
+            },
             dir: {
                 value: () => this.svc.dirDraft.get(),
                 placeholder: () => this.svc.settings.get()?.defaultDir ?? 'Downloads',
@@ -688,11 +987,7 @@ export class GsproExportPanelComponent extends Component {
             },
             error: () => this.svc.error.get(),
             run: {
-                textContent: () => {
-                    if (busy()) return 'Exporting…';
-                    const n = this.svc.svgExcluded.get().size;
-                    return n ? `Export SVG without ${n} feature${n === 1 ? '' : 's'}` : 'Export SVG';
-                },
+                textContent: () => svgRunLabel(),
                 disabled: busy,
                 onclick: () => { void this.svc.run(); },
             },
@@ -701,16 +996,12 @@ export class GsproExportPanelComponent extends Component {
                 disabled: busy,
                 oninput: (e: Event) => this.svc.setSvgVariant((e.target as HTMLInputElement).value),
             },
-            svgFileHint: () => {
-                const file = variantFileName(this.svc.courseName.get(), this.svc.svgVariant.get());
-                if (!this.svc.svgVariant.get().trim() && this.svc.svgExcluded.get().size) {
-                    return `Writes ${file}, over the full SVG. Name a variant to keep both.`;
-                }
-                return `Writes ${file}`;
-            },
+            svgFileHint: () => svgFileHint(),
+            // The way into the SVG panel, from the Course tab.
             excludeSummary: () => {
                 const n = this.svc.svgExcluded.get().size;
-                return n ? `Leave features out: ${n} excluded` : 'Leave features out (test variants)';
+                if (this.svc.svgBisect.get()) return 'Bisect in progress: open the SVG test variants…';
+                return n ? `${n} feature${n === 1 ? '' : 's'} left out: SVG test variants…` : 'Leave features out, find what breaks a build: SVG test variants…';
             },
             excludeSelected: {
                 textContent: () => `Exclude selected (${this.features.selectedIds.get().size})`,
@@ -857,27 +1148,32 @@ export class GsproExportPanelComponent extends Component {
                 oninput: (e: Event) => this.svc.floorMix.set((e.target as HTMLInputElement).value),
             },
             runOrtho: {
-                textContent: () => (busy() ? 'Exporting…' : 'Export inner orthophoto JPEG'),
+                textContent: 'Export',
+                title: 'Export inner orthophoto JPEG',
                 disabled: () => busy() || !this.svc.orthoSource.get(),
                 onclick: () => { void this.svc.runOrtho(); },
             },
             runOuterOrtho: {
-                textContent: () => (busy() ? 'Exporting…' : 'Export outer orthophoto JPEG'),
+                textContent: 'Export',
+                title: 'Export outer orthophoto JPEG',
                 disabled: () => busy() || !this.svc.orthoSource.get() || noTerrain(),
                 onclick: () => { void this.svc.runOuterOrtho(); },
             },
             runCleanOrtho: {
-                textContent: () => (busy() ? 'Exporting…' : 'Export inner cleaned orthophoto'),
+                textContent: 'Export',
+                title: 'Export inner cleaned orthophoto',
                 disabled: () => busy() || !this.svc.orthoSource.get(),
                 onclick: () => { void this.svc.runOrtho(true); },
             },
             runCleanOuterOrtho: {
-                textContent: () => (busy() ? 'Exporting…' : 'Export outer cleaned orthophoto'),
+                textContent: 'Export',
+                title: 'Export outer cleaned orthophoto',
                 disabled: () => busy() || !this.svc.orthoSource.get() || noTerrain(),
                 onclick: () => { void this.svc.runOuterOrtho(true); },
             },
             runUnityOrtho: {
-                textContent: () => (busy() ? 'Exporting…' : 'Inner cleaned photo → Unity meshes'),
+                textContent: '→ Unity',
+                title: 'Inner cleaned photo → Unity meshes',
                 disabled: () => busy() || !this.svc.orthoSource.get(),
                 onclick: () => { void this.svc.runUnityOrtho(); },
             },
@@ -888,32 +1184,38 @@ export class GsproExportPanelComponent extends Component {
                     + 'Fetched from Lantmäteriet the first time and kept with the course\'s map sources.';
             },
             runInnerDem: {
-                textContent: () => (busy() ? 'Exporting…' : 'Export inner heightmap (RAW + GeoTIFF)'),
+                textContent: 'Export',
+                title: 'Export inner heightmap (RAW + GeoTIFF)',
                 disabled: () => busy() || noTerrain(),
                 onclick: () => { void this.svc.runDem('inner'); },
             },
             runInnerUnity: {
-                textContent: () => (busy() ? 'Exporting…' : 'Inner heightmap → Unity'),
+                textContent: '→ Unity',
+                title: 'Inner heightmap → Unity',
                 disabled: () => busy() || noTerrain(),
                 onclick: () => { void this.svc.runUnityTerrain('inner'); },
             },
             runInnerSculpt: {
-                textContent: () => (busy() ? 'Capturing…' : 'Inner Unity sculpt → golf-map'),
+                textContent: 'Capture',
+                title: 'Inner Unity sculpt → golf-map',
                 disabled: () => busy() || noTerrain(),
                 onclick: () => { void this.svc.runUnitySculpt('inner'); },
             },
             runOuterSculpt: {
-                textContent: () => (busy() ? 'Capturing…' : 'Outer Unity sculpt → golf-map'),
+                textContent: 'Capture',
+                title: 'Outer Unity sculpt → golf-map',
                 disabled: () => busy() || noTerrain(),
                 onclick: () => { void this.svc.runUnitySculpt('outer'); },
             },
             runOuterUnity: {
-                textContent: () => (busy() ? 'Exporting…' : 'Outer heightmap → Unity'),
+                textContent: '→ Unity',
+                title: 'Outer heightmap → Unity',
                 disabled: () => busy() || noTerrain(),
                 onclick: () => { void this.svc.runUnityTerrain('outer'); },
             },
             runOuterDem: {
-                textContent: () => (busy() ? 'Exporting…' : 'Export outer heightmap (RAW + GeoTIFF)'),
+                textContent: 'Export',
+                title: 'Export outer heightmap (RAW + GeoTIFF)',
                 disabled: () => busy() || noTerrain(),
                 onclick: () => { void this.svc.runDem('outer'); },
             },
@@ -923,6 +1225,12 @@ export class GsproExportPanelComponent extends Component {
                 oninput: (e: Event) => this.svc.courseDirDraft.set((e.target as HTMLInputElement).value),
                 onchange: () => { void this.svc.saveCourseDir({ quiet: true }); },
             },
+            teeHint: () => {
+                const sets = this.furniture.teeSets.get();
+                if (sets.length === 0) return 'No tee sets yet: add them in Furniture › Tee sets.';
+                const out = sets.filter(set => !set.gsproTee).map(set => set.name);
+                return out.length ? `Not exported: ${out.join(', ')}.` : '';
+            },
             gkdHint: () => {
                 const settings = this.svc.settings.get();
                 const draft = this.svc.courseDirDraft.get().trim();
@@ -930,60 +1238,152 @@ export class GsproExportPanelComponent extends Component {
                 if (settings.courseDir === draft && settings.gkdFile) return `Writes ${settings.gkdFile} there.`;
                 return 'Saved with the course when you export.';
             },
+            ...Object.fromEntries(META_TEXT.map(([key]) => [`meta_${key}`, {
+                value: () => this.svc.metaDraft.get()[key] as string,
+                disabled: busy,
+                onchange: (e: Event) => { void this.svc.editMeta({ [key]: (e.target as HTMLInputElement).value }); },
+            }])),
+            meta_description: {
+                value: () => this.svc.metaDraft.get().description,
+                disabled: busy,
+                onchange: (e: Event) => { void this.svc.editMeta({ description: (e.target as HTMLTextAreaElement).value }); },
+            },
+            meta_difficulty: {
+                value: () => String(this.svc.metaDraft.get().difficulty),
+                disabled: busy,
+                onchange: (e: Event) => {
+                    const n = Number((e.target as HTMLInputElement).value.trim().replace(',', '.'));
+                    if (Number.isFinite(n) && n >= 0) void this.svc.editMeta({ difficulty: n });
+                    else this.svc.error.set('Difficulty must be a number, 0 or more');
+                },
+            },
+            ...Object.fromEntries(GKD_KEYWORDS.map(k => [`kw_${k}`, {
+                checked: () => this.svc.metaDraft.get().keywords.includes(k),
+                disabled: busy,
+                onchange: (e: Event) => {
+                    const on = new Set(this.svc.metaDraft.peek().keywords);
+                    if ((e.target as HTMLInputElement).checked) on.add(k); else on.delete(k);
+                    void this.svc.editMeta({ keywords: GKD_KEYWORDS.filter(x => on.has(x)) });
+                },
+            }])),
+            metaHint: () => {
+                const settings = this.svc.settings.get();
+                if (!settings?.gkdMeta) return '';
+                // Ratings are the tee sets': the file's differ until read in (or until the export writes the sets').
+                const ratings = settings.gkdRatings.length
+                    ? ` The .GKD rates ${settings.gkdRatings.join(', ')}, which the course's tee sets do not.`
+                    : '';
+                if (!settings.meta) return 'Course details shown from the .GKD. Change one, or read them in, to keep them with the course.' + ratings;
+                const diff = this.svc.gkdMetaDiff;
+                return (diff.length
+                    ? `The .GKD has a different ${diff.join(', ')} (saved in GreenKeeper?). The export writes the ones here over it.`
+                    : '') + ratings;
+            },
+            readGkdMeta: {
+                className: () => {
+                    const settings = this.svc.settings.get();
+                    const offer = !!settings?.gkdMeta
+                        && (!settings.meta || this.svc.gkdMetaDiff.length > 0 || settings.gkdRatings.length > 0);
+                    return offer ? 'gspro-export__link' : 'gspro-export__link hidden';
+                },
+                disabled: busy,
+                // The file's ratings went onto the tee sets too.
+                onclick: () => { void this.svc.readGkdMeta().then(ok => { if (ok) void this.furniture.reloadTeeSets(); }); },
+            },
             runGkd: {
                 textContent: () => (busy() ? 'Exporting…' : 'Export GreenKeeper course file'),
                 disabled: () => busy() || noTerrain() || !this.svc.courseDirDraft.get().trim(),
                 onclick: () => { void this.svc.runGkd(); },
             },
             runInnerHillshade: {
-                textContent: () => (busy() ? 'Exporting…' : 'Export inner hillshade JPEG'),
+                textContent: 'Export',
+                title: 'Export inner hillshade JPEG',
                 disabled: () => busy() || noTerrain(),
                 onclick: () => { void this.svc.runHillshade('inner'); },
             },
             runOuterHillshade: {
-                textContent: () => (busy() ? 'Exporting…' : 'Export outer hillshade JPEG'),
+                textContent: 'Export',
+                title: 'Export outer hillshade JPEG',
                 disabled: () => busy() || noTerrain(),
                 onclick: () => { void this.svc.runHillshade('outer'); },
             },
             runInnerTrees: {
-                textContent: () => (busy() ? 'Exporting…' : 'Export inner trees'),
+                textContent: 'Export',
+                title: 'Export inner trees',
                 disabled: () => busy() || noTerrain(),
                 onclick: () => { void this.svc.runTrees('inner'); },
             },
             runOuterTrees: {
-                textContent: () => (busy() ? 'Exporting…' : 'Export outer trees'),
+                textContent: 'Export',
+                title: 'Export outer trees',
                 disabled: () => busy() || noTerrain(),
                 onclick: () => { void this.svc.runTrees('outer'); },
             },
             runInnerBuildings: {
-                textContent: () => (busy() ? 'Exporting…' : 'Export inner buildings'),
+                textContent: 'Export',
+                title: 'Export inner buildings',
                 disabled: () => busy() || noTerrain(),
                 onclick: () => { void this.svc.runBuildings('inner'); },
             },
             runOuterBuildings: {
-                textContent: () => (busy() ? 'Exporting…' : 'Export outer buildings'),
+                textContent: 'Export',
+                title: 'Export outer buildings',
                 disabled: () => busy() || noTerrain(),
                 onclick: () => { void this.svc.runBuildings('outer'); },
             },
             runInnerZones: {
-                textContent: () => (busy() ? 'Exporting…' : 'Export inner vegetation zones'),
+                textContent: 'Export',
+                title: 'Export inner vegetation zones',
                 disabled: () => busy() || noTerrain(),
                 onclick: () => { void this.svc.runZones('inner'); },
             },
             runOuterZones: {
-                textContent: () => (busy() ? 'Exporting…' : 'Export outer vegetation zones'),
+                textContent: 'Export',
+                title: 'Export outer vegetation zones',
                 disabled: () => busy() || noTerrain(),
                 onclick: () => { void this.svc.runZones('outer'); },
             },
             runCreeks: {
-                textContent: () => (busy() ? 'Exporting…' : 'Export creeks'),
+                textContent: 'Export',
+                title: 'Export creeks',
                 disabled: () => busy() || noTerrain(),
                 onclick: () => { void this.svc.runCreeks(); },
             },
         });
 
-        this.root = this.ref(frag, 'root') as HTMLElement;
-        this.track(attachInfoTips(this.root));
+        const root = this.ref(frag, 'root') as HTMLElement;
+        this.sideEl = this.ref(frag, 'side') as HTMLElement;
+        this.track(attachInfoTips(root));
+
+        // Tabs: one button per pane.
+        const tabBar = this.ref(frag, 'tabBar');
+        for (const [id, label] of TABS) {
+            const button = document.createElement('button');
+            button.type = 'button';
+            button.textContent = label;
+            button.setAttribute('role', 'tab');
+            button.dataset.testid = `gspro-tab-${id}`;
+            button.addEventListener('click', () => this.tab.set(id));
+            this.track(effect(() => button.setAttribute('aria-selected', String(this.tab.get() === id))));
+            tabBar.appendChild(button);
+        }
+
+        // Opening shows the dialog, or the SVG panel while a bisect is waiting for its answer.
+        this.track(effect(() => {
+            if (this.svc.courseId.get()) this.view.set(this.svc.svgBisect.peek() ? 'svg' : 'dialog');
+        }));
+
+        // Esc closes the dialog, and only the dialog: with the SVG panel up
+        // the map's tools own the key.
+        const onKeyDown = (e: KeyboardEvent) => {
+            if (e.key !== 'Escape' || !this.svc.courseId.peek() || this.view.peek() !== 'dialog') return;
+            // An open (i) popup takes the key first: Esc closes that, not the dialog under it.
+            if (document.getElementById('info-tip-popup')?.style.display === 'block') return;
+            e.stopPropagation();
+            this.svc.close();
+        };
+        window.addEventListener('keydown', onKeyDown, true);
+        this.track(() => window.removeEventListener('keydown', onKeyDown, true));
 
         // The exclusions are marked on the map while the panel is open, and
         // the list needs the course's features even when Draw never loaded them.
@@ -1064,21 +1464,38 @@ export class GsproExportPanelComponent extends Component {
             f => f.id,
         );
 
-        // The job, result and error sit at the top of the panel; an export
-        // started from the bottom sections must not succeed or fail out of
-        // sight. Scroll whichever just changed into view.
-        const sections = {
-            error: this.ref(frag, 'errorSection') as HTMLElement,
-            result: this.ref(frag, 'resultSection') as HTMLElement,
-            job: this.ref(frag, 'jobSection') as HTMLElement,
-        };
-        this.track(effect(() => {
-            const error = this.svc.error.get();
-            const path = this.svc.lastPath.get();
-            const status = this.svc.job.get()?.status;
-            const target = error ? sections.error : path ? sections.result : status === 'running' ? sections.job : null;
-            if (target) queueMicrotask(() => target.scrollIntoView?.({ block: 'nearest', behavior: 'smooth' }));
-        }));
+        // The course's tee sets: which of GSPro's eight each is exported as,
+        // and which of its two ratings GSPro shows. Rows are kept per set.
+        this.$each(
+            this.ref(frag, 'teeRows'),
+            () => this.furniture.teeSets.get(),
+            (first, _i, track) => {
+                const row = document.createElement('div');
+                row.className = 'gspro-export__tee-row';
+                row.dataset.testid = 'gspro-tee-set';
+                row.innerHTML = '<span class="gspro-export__tee-name"><span class="gspro-export__tee-dot"></span><b></b><i></i></span>'
+                    + '<select aria-label="GSPro tee"></select><select aria-label="Rating GSPro shows"></select>';
+                const dot = row.querySelector('.gspro-export__tee-dot') as HTMLElement;
+                const [tee, rating] = [...row.querySelectorAll('select')];
+                tee.append(new Option('Not in GSPro', ''), ...GKD_TEE_TYPES.map(type => new Option(type, type)));
+                rating.append(new Option('', 'men'), new Option('', 'women'));
+                tee.onchange = () => { void this.furniture.updateTeeSet(first.id, { gsproTee: (tee.value || null) as GkdTeeType | null }); };
+                rating.onchange = () => { void this.furniture.updateTeeSet(first.id, { gsproRating: rating.value as 'men' | 'women' }); };
+                track(effect(() => {
+                    const set = this.furniture.teeSets.get().find(s => s.id === first.id) ?? first;
+                    dot.style.background = teeFill(set.color);
+                    row.querySelector('b')!.textContent = set.name;
+                    row.querySelector('i')!.textContent = set.gsproOnly ? 'GSPro only' : '';
+                    tee.value = set.gsproTee ?? '';
+                    rating.options[0].textContent = `Men ${gkdRating(set.ratingMen, set.slopeMen) ?? '–'}`;
+                    rating.options[1].textContent = `Women ${gkdRating(set.ratingWomen, set.slopeWomen) ?? '–'}`;
+                    rating.value = set.gsproRating;
+                    tee.disabled = rating.disabled = this.svc.busy.get();
+                }));
+                return row;
+            },
+            set => set.id,
+        );
 
         // One <option> per persisted vintage; the value is the server's
         // `source` handle, the label the collection plus what it is.

@@ -15,6 +15,8 @@ import {
     DEFAULT_FEATHER_M,
     DEFAULT_RADIUS_M,
     paramsSummary,
+    RECIPE_COLORS,
+    RECIPE_COLOR_OTHER,
     type TerrainEditRenderer,
     type TerrainEditView,
     type TerrainGeneratorKind,
@@ -1005,6 +1007,14 @@ describe('shape in Blender', () => {
             ['Not on this course', ['Recipe · not on this course · Pot bunker']],
         ]);
         expect(paramsSummary(h.svc.edits.get()[0])).toBe('Blender recipe pot');
+
+        // On the map: each loaded feature with a recipe, in its recipe's colour, labelled by the recipe.
+        const { recipes, labels } = h.svc.view.get();
+        expect(Object.fromEntries(Object.entries(recipes).map(([id, mark]) => [id, mark.color]))).toEqual({
+            'r-b': RECIPE_COLORS[1], 'r-p': RECIPE_COLORS[2], 'r-n': RECIPE_COLOR_OTHER,
+        });
+        expect(recipes['r-b'].rings[0].length).toBeGreaterThanOrEqual(4);
+        expect(labels).toMatchObject({ 'r-b': 'Pot bunker', 'r-p': 'Natural pond', 'r-n': 'no recipe', mine: 'Plane (drawn)' });
 
         h.svc.showEdit('r-b');
         expect(h.svc.selectedFeatureId.get()).toBe('b1');

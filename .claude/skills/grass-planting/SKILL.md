@@ -22,15 +22,19 @@ Every step is a CLI or a bridge command; the `unity` MCP server drives Unity
    ../data/sources/<site>/buildings.geojson --lidar ../data/sources/<site>/lidar/*.laz`) and
    `sources/<site>/roads-centerlines.geojson` (the app's road fetch / `fetch-roads
    --centerlines-out`). Golf-map `path` features count as roads too.
-3. **Zones by rule, into Unity - one click**: web Vegetation mode, **Plant vegetation** (command bar)
+3. **Zones by rule, into Unity and the Arborist file - one click**: web Vegetation mode, **Plant for GSPro** (command bar)
    runs every vegetation generator (`server/services/vegetation-generators.ts`: tall rough
-   `pipeline/grass_zones.py` source `tall-grass`, then creek/pond banks `pipeline/creek_bank_zones.py`
-   source `creek-bank`), replaces each one's generated zones (hand-drawn zones are never touched),
+   `pipeline/grass_zones.py` source `tall-grass`, then the woodland floor `pipeline/woodland_floor_zones.py`
+   source `woodland-floor`, then creek/pond banks `pipeline/creek_bank_zones.py` source `creek-bank`), replaces each one's generated zones (hand-drawn zones are never touched),
    exports `zones:inner`, and in the course's open Unity project runs `golfmap.zones.import` +
-   `golfmap.grass.apply` (export job kind `vegetation`, `GsproExportService.plantVegetation`); the
+   `golfmap.grass.apply` (export job kind `vegetation`, `GsproExportService.plantVegetation`), then
+   writes the Arborist file GSPro draws the bushes, the woodland floor's prefab plants and most trees
+   from: `arborist.py lower` from the zones export, and with Unity open `golfmap.trees.dump` +
+   `arborist.py trees` (`docs/gspro/arborist.md`, "Who writes the file"; a course without
+   `docs/gspro/<course>/arborist-species.json` skips it). The
    report says what each did and warns on zones whose mix binds no items. Unity not open = exported
-   only, reported. Same handler from the CLI: `bun run grass:zones -- <course> [--only <source>]
-   [--dry-run]` (no Unity step). A new kind of vegetation = one more strategy in
+   only and the Arborist trees left as they were, reported. Same handler from the CLI: `bun run grass:zones -- <course> [--only <source>]
+   [--dry-run] [--no-arborist]` (no Unity step, no Arborist trees). A new kind of vegetation = one more strategy in
    `VEGETATION_GENERATORS` (order = zone stack order; `--only X` re-runs X and every one after it).
 4. **Terrain under the meshes** (once per mesh rebuild or terrain re-import): `unity_command
    golfmap.terrain.conform {terrain: "inner"}` lifts the terrain to 1 cm under the course meshes (it
@@ -42,11 +46,11 @@ Every step is a CLI or a bridge command; the `unity` MCP server drives Unity
    between samples too. Do NOT use OPCD's right-click "Conform Mesh To Terrain" for this: it moves the
    playing-surface meshes down instead and re-exports their FBX. VSP MeshTerrain (plant on the meshes)
    works in the editor but bakes 7M triangles and is untested in GSPro's forked VSP runtime.
-5. **Unity** (done by Plant vegetation; by hand after the CLI): `unity_command golfmap.zones.import
+5. **Unity** (done by Plant for GSPro; by hand after the CLI): `unity_command golfmap.zones.import
    {terrain: "inner", package: "GolfMap lower vegetation", brief: true}` (`brief: true` keeps the result short: counts, not every group and rule) then `unity_command golfmap.grass.apply`.
    A **new item** (a species just added to a palette) needs one more round: import binds masks only to
    items that exist, apply creates the item but turns spawning on only once it has rules - so
-   import, apply ("added item ..."), import, apply. Plant vegetation repeats the round by itself when
+   import, apply ("added item ..."), import, apply. Plant for GSPro repeats the round by itself when
    apply reports an added/replaced item. The item also needs a mask channel first: re-export the zones
    (`grass:zones`) after binding it.
 6. **Verify** (below), then ask the user to **save the scene** (package list, VSP settings).
@@ -78,6 +82,17 @@ between deep rough and a semi becomes a thin, dipping band - it reads as a hole 
   area). Where a slab lies in mown rough, a ragged skirt of grass also grows out into the rough
   (`SLAB_SKIRT_M` 0.5 m x 0..2 by noise), so the rock's edge is broken up from both sides. The painted klippor (`rock`) keep their 0.2 m clearance;
 - times a 10 m ramp to 0 at the reach limit (75 m from rough/semi/fairway/green/tee/bunker);
+- **thinner far from play** (`Rules.far_start/far_ramp/far_weight`, `--far-start --far-weight`): from 30 m from
+  play (same six surfaces) the weight falls over 10 m to 0.56. The mask value is the density, so that is a
+  little over half the plants;
+- **the far mix** (`rough_tall/far`, `Rules.out_start/out_ramp`, `--out-start`): from 40 m from play the ordinary
+  mix hands over, across 40-50 m, to the type's `far` variant, written as its own nested bands above the ordinary
+  ones (it claims its share of the mask budget first, the ordinary mix keeps the rest, so the two cross-fade and
+  add up to the unthinned field). Only on a course whose zone type binds items to a variant `far`
+  (`bun run zones -- bind <course> rough_tall --variant far --name "..." --palette <file>`); without it the
+  ordinary mix grows to the reach limit and the run says so. The area is defined by distance from play, not by
+  the drawn `oob` ring: Vreta's ring holds the western holes only (half the fairways lie outside it). Hand-drawn
+  zones and the woodland floor sit above it as before;
 - times a 1.5 m ramp to 0 at buildings (+4 m);
 - paths and roads are **not in the weight field**: it runs on under them (the path mesh's `other` cells and
   OPCD's seam of single `blend` cells along it take the surface beside the path - as blend strips they
@@ -88,7 +103,15 @@ between deep rough and a semi becomes a thin, dipping band - it reads as a hole 
   half across it. On `gravel` and `dirt` paths a tuft grows a foot onto the path here and there: discs of
   ~0.4 m on the outline (big enough to hold one 0.5 m mask pixel), one per ~9 m of edge (`TUFT_*`); noise blobs of cells closed a 1.5 m path.
   Hard paths get none.
-Tune with `--max-distance --spill --band-feather --building-margin --road-margin --path-margin` (the clearances are constants).
+- the **verge** of a gravel or dirt path (`rough_tall/verge`, `VERGE_*` in grass_zones.py): an unmown strip of straw and
+  weeds beside it, written as `blend: mix` zones of the same source, so the tall rough under it keeps growing. Deep
+  rough only, 1.8 m x 0.4..1.6 by noise, 3/4 of the length, none within 4 m of semi/fairway/green/tee/bunker or 2 m
+  of water, its feet 0.35 m off the path. Mown rough is cut right up to the gravel: a verge there (first pass, 0.8 m)
+  read as weeds on a kept lawn, and with tufts of its own it closed a 2 m path. The mix is bound by name
+  (`zones -- bind <course> rough_tall --variant verge "<item>=<density>" ...`); Vreta: blond green foot 0.7, straw
+  blades 0.6, seed tips 0.5, wisps 0.4, tall green 0.3, dry umbels 0.2, brown tufts 0.12, dark seed stems 0.1,
+  thistle heads 0.08 (the first mix, without the green foot, read as brown bushes).
+Tune with `--max-distance --spill --band-feather --building-margin --road-margin --path-margin --far-start --far-weight --out-start` (the clearances are constants).
 History: grass first grew onto paths and tee boxes (not ok), then the margins left bare deep-rough bands
 (1 m path margin + ramp + noise, tee clearance through the rough: not ok either) - keep the borders tight. `ground.probe {x, z}` lists every collider and terrain height under a point, for "what is really here" questions.
 
@@ -129,6 +152,30 @@ Vreta's `rough_tall`: Rustic Grass_15 (dense green base, spacing 0.35), Rustic G
 sparse). Greens carry the look; straw/seed heads are accents - bright white/yellow reads as
 speckle from a distance.
 
+Vreta's `rough_tall/far` (2026-10-13, the ground beyond 40 m from play, ~150 000 m2 = a quarter of the tall
+rough): the Default mix's textures and tints (`Far rough - green base / tall green / dry straw`, own items: size
+and spacing are per item) as few, large cards - width 2.0 / 1.9 m (twice the Default's), height 0.75 / 1.2 / 1.15,
+spacing 1.15 / 2.4 / 3.6 m: about 0.9 instances per m2 against the Default's ~5. `distanceFalloff` 0.4 (instances
+drop out from 120 m instead of 225 m), `lodFactor` 12. Seen in Unity only from 40-80 m: reads as grass, no seam
+found; not seen in GSPro.
+
+**Uneven height (2026-10-13)**: a tall mix read as one even carpet at one height. VSP scales an instance by
+random(`minScale`, `maxScale`) x a Perlin wave (`noiseScaleMin..Max`, one lattice cell per `noiseScaleScale`
+metres, no offset), so items with the same `noiseScaleScale` rise and fall together, and Perlin values crowd
+the middle: 0.45..1.6 gives mostly 0.85..1.2. Now, per palette: the dense base varies in small patches
+(`noiseScaleScale` 6-7, range 0.35..1.7, random scale narrowed to 0.75..1.3 so the patches show), every other
+item has its own wave size (11, 13, 17, 19, 23, 29, 31 m) and a wider range (0.3..1.9), and the tall middle
+items stand in clumps (`noiseCutoff` 0.3-0.35 at a scale of their own: an instance spawns only where that noise
+is above the cutoff, about 10-15 % fewer). Spacing untouched, so never more instances. Not the low creek palette,
+not the woodland floor plants.
+
+**Thinner creek stands (2026-10-13, Marcus: "very thick" right of hole 6)**: `Creek reed - upright blades`
+spacing 0.38 -> 0.5, `broad leaves` 0.8 -> 1.0, `Creek thicket - grass base` 0.36 -> 0.48, `grass tall`
+0.65 -> 0.82, `grass fine` 0.8 -> 1.0, the two giants 1.25 -> 1.5: 39 % fewer visible reed instances at his
+spot. Items are shared by name (one VSP item per name), so `reed_wet`, `vass` and `thicket_wet` thinned with
+them; `lush_low` has its own items and did not. His three zones overlap there (reed + thicket both at full
+weight: drawn zones add up), which is half of why it was so thick.
+
 Vreta's `rough_tall/fresh` variant (taller, fresh green, blades read one by one): Grass Textures/grass14
 (base, spacing 0.3), grass24 (crossing blades), Grass Textures2/041 (tall wisps), Rustic Grass_06 (seed
 tips); 1.1-1.4 m cards, one tint for base and crossing, `randomDarkening` 0.1, scale 0.8-1.25 and density
@@ -160,6 +207,12 @@ white point and a bush's first `material` override still need `golfmap.vegpalett
   to a pixel west and south: grass 0.5 m onto the north/east side of every path, tee and green, bare on
   the other. At 4096 px over 2050 m an edge is still only good to +-0.25 m (one mask pixel).
 
+- Grass across a path although no zone overlaps it? Sample the item masks on the path (pixel = metres / (side / resolution),
+  rows from the north edge). Vreta 2026-10-11: an itemless zone (an old `lidar-woodland` proposal, `woodland_floor`
+  Default, weight 0.3) lay over the path, and the edge blend of a hand-drawn blond patch beside it handed that weight
+  to the blond mix. The blend now leaves slots that bind no items alone (`render_zone_masks(planted=...)`). A drawn
+  patch against a path also needs `--feather 0.5`: the feather is centred on the edge, so 2 m puts a metre of grass
+  on the gravel.
 - Bare line in the grass? Check the mask across it first (weight continuous = not the zones), then
   `ground.probe {x, z}` (mesh vs terrain height) and a screenshot with `hide: [mesh paths]` - grass
   visible with the mesh hidden means it is buried: run the terrain conform.
@@ -193,9 +246,13 @@ grass blue-grey). A prefab cannot be swapped under an existing item name (VSP ke
 model); use a new name.
 
 Vreta's `shrub` (the bush thicket by the water on hole 10, Unity x 1080-1142, z 576-639, zone `35686b1b` on the outline of the
-hand-drawn `rough_tall` zone `09585c23`): the palette holds only the bushes - NM Meadow grey willow
-02/03/04/01 (scale ~0.65-1.2, spacing 2.45-4.2 m), Mountain hazel 00 (low) and 04 cluster, a sparse
-maple bush 01. **The grass under the bushes is the tall rough's own items**, bound to `shrub` by name
+hand-drawn `rough_tall` zone `09585c23`): the palette holds only the bushes. Mix since 2026-10-11:
+grey willow 02/03/04/01 (spacing 3.6-5.5 m, each its own tint), hazel 00/04-cluster/01 (3.6-4.2 m),
+maple bush 01/02 (5 m), the cottonwood canopy as a bush (5 m) and a sparse birch sapling (11 m); scale
+~0.5-1.3 with height waves (`noiseScaleMin/Max` 0.65-1.4, scale 9), a different `noiseDensityScale`
+per item so species drift, the creek thicket's material blocks. The first mix was 3/4 willow at
+2.45-4.2 m, one tint (`#869acd`), scale 0.65-1.2 and no height waves: "the same bush over and over",
+blue-grey, in visible rows. **The grass under the bushes is the tall rough's own items**, bound to `shrub` by name
 (`bun run zones -- bind vreta shrub "Tall rough - green base=1" ... "Shrub thicket - grey willow round=1" ...`,
 not `--palette`, which would bind the bushes only). The shrub zone sits on top at weight 1 and takes
 the mask budget from the rough under it, but a shared item's channel is the sum of its slots, so the
@@ -326,6 +383,53 @@ there) or Draw's selection panel, or `bun run zones -- creek <course> <id> --pal
   sphere has no renderer (VSP colliders are off). Untinted it read yellow-lime: tint `#9a9ea4`. The path to the wooden footbridge stops at the ditch in
   the app, so the thicket closes the crossing; extend the path over the creek to keep it clear.
 
+## Woodland floor (`woodland_floor/<variant>` zones, pipeline/woodland_floor_zones.py)
+
+What grows under the trees, by which trees stand there and what the ground is like. Runs after the tall
+rough (it takes the ground from it under the trees) and before the creek banks; `--only woodland-floor`.
+Inputs sit next to the surface map: the DEM and the planted trees (`<prefix>-<terrain>-trees.json`; no
+trees file = no floor, with a warning). Rules, constants and the Vreta numbers behind them are in the
+module doc; in short:
+
+- **Where**: canopy closure (crown discs smoothed over 6 m) above 0.15..0.4, on deep rough only, with
+  the tall rough's clearances, within 50 m of play (`--reach`; the floor is geometry, and 150 m doubled
+  it), paths cut out. A lone tree or a loose row keeps the tall rough. Trees standing in mown rough get
+  no floor: the rough is the surface.
+- **Which floor** (variants, the forestry ground-vegetation types cut down to four): `fern` where water
+  gathers (wetness index, not on slopes), `heath` on dry knolls (terrain position, mostly under
+  conifers), else `bilberry` under conifers and `herb` under broadleaves. Patches of ~15 m with ragged,
+  cross-fading borders, and inside each patch pockets of ~5 m of the other floors at 40 % of the weight
+  (`POCKET_*`): one floor per area read as too uniform. Knoll/hollow and wetness come from
+  `pipeline/terrain_fields.py`.
+- **`edge`**: brush along a stand's rim towards open ground. **`brush`**: saplings and 0.5-1.5 m bushes
+  in drifts inside what is decidedly forest (crown cover over 25 m above 0.28..0.38; Vreta's planted
+  floor has a median of 0.31), not in a tree corridor between two holes. Spacing 3.5-6.5 m per item. Both are written as `blend: mix` zones, so the floor under them keeps growing.
+- **Tree kind** is the planted trees' `k` (leaf-off crown colour) and the tree species areas. Where the
+  kind is wrong the floor is wrong the same way the planted trees are: fix it with a tree area.
+- **Vreta's mixes** (2026-10-10, NM Mountain Environment plants): `heath` = heather x2, lingonberry, dry
+  bilberry, a pine seedling, tall rough straw at 0.25; `bilberry` = bilberry carpet and tall bilberry,
+  lingonberry 0.3, ferns 0.08, tall rough base 0.12; `herb` = tall rough base 0.5 / tall green 0.15,
+  ferns 0.1 + 0.05 (no bushes: herb is also what a corridor gets); `fern` = CESimgolf Common Fern x2
+  (scale 1.8-3.2: the prefab is 0.25 m tall; spacing 1.5 / 1.9, 0.9 read as too many), creek lush grass
+  0.5 / 0.25; `edge` = hazel x2, birch sapling, young pine; `brush` = low hazel, hazel shoot, birch
+  sapling at scale 0.15-0.32 (the prefab is 4.7 m), pine sapling, young pine. Items shared with other
+  mixes are bound by name with a density (`zones -- bind <course> woodland_floor --variant <key>
+  "<item>=<density>" ...`), as for `shrub`.
+- **Colour and light** of the NM small plants (shader `Advanced Grass Specular`): untouched they glow
+  lime-yellow in sun. Every such item carries `"material": {"_BackFaceMirrorNormal": 1,
+  "_SmoothnessPower": 0.1, "_AmbientOcclusionPower": 0.8}` and tints: bilberry and lingonberry
+  `#7f9a72` / `#8a9470` (deep green), ferns `#a3b89b` / `#98a48c` with AO 1, heather its own near-neutral
+  `#bdb6b6` / `#a59f9a` (the bilberry green turned its flowers brown). `golfmap.grass.apply` sends the
+  tints through VSP's NM grass controller (`HealthyColorTint`/`DryColorTint`); setting the material's
+  own colours does nothing, VSP overwrites them when it draws.
+- **VSP takes foliage only**: stumps, logs, branches and ground rocks are on Unity's `Standard` shader,
+  which `golfmap.grass.apply` refuses (GSPro's VSP does not know it). Deadwood and stones need to be
+  scene objects, not palette items. NM's `Prefab_grass_02_*` tufts render straw yellow.
+- The brush was first too thin to notice (thresholds 0.35..0.5 and 6-11 m spacing: 1 ha of drifts on
+  20 ha of floor). Now 3 ha at more than half weight; judge it at its densest spots (the mask's item
+  channel, or `golfmap.vegpalette.spots`), a random forest view may hold none.
+- Open: nothing is tuned against the ground by measurement yet; frame cost not compared before/after.
+
 ## Patched fields (hand-drawn variant zones inside a deep rough field)
 
 A deep rough field that should read as several covers is a set of **hand-drawn** `rough_tall/<variant>`
@@ -334,9 +438,23 @@ from the 26 Sept reference photos): `blond` (closed straw sward on an olive foot
 and density, straw tints), `hummock` (low dull tussocks along the rim and the pale north band) and
 `weedy` (thistle heads, dark seed stems, dry umbels over an olive base).
 
-- **Re-planting keeps them**: Plant vegetation / `grass:zones` replace generated zones only, and a drawn
+- **Re-planting keeps them**: Plant for GSPro / `grass:zones` replace generated zones only, and a drawn
   replace zone takes its ground from the generated tall rough under it. Checked by a real re-plant: same
   zone ids, standard tall rough 0.00 in the fields' mask.
+- **Soft borders are the default**: a drawn replace zone's mix fades into its neighbours (other
+  patches, the generated tall rough, the woodland floor) over `edgeBlend` metres, 8 m when unset,
+  along a border that wanders; only the mix changes, so the field still ends at its `feather`
+  against a path or mown rough (D-VZ16 in `docs/feature-vegetation-zones.md`). Hard border:
+  `bun run zones -- set <course> <zone> --edge-blend 0`; wider: a number; back to default:
+  `--edge-blend default`. Keep the patches' `--feather 0.5`: that is the edge against bare ground.
+  History: 4 m with a straight linear ramp read as "still a rather hard line".
+- **Bush height per zone**: `bun run zones -- set <course> <zone> --height 2-3.5` (or "Bush height" in the
+  selection panel; `none` clears it) scales the zone's bushes to that many metres, mostly near the min with
+  bumps up to the max; grass is not touched (D-VZ17). The first height on a palette needs Plant for GSPro
+  (or `gspro:export zones:<terrain>`, `golfmap.zones.import`, `golfmap.grass.apply`): the importer makes
+  `<item> @height` twins. Later changes are an Update for GSPro. A height is size, not spacing: for a
+  closed screen use a dense palette (Vreta: `shrub/dense`, cottonwood canopy and grey willow at 2.4-3.4 m
+  spacing with no density noise; hole 5's hedge by the green).
 - **Tile, never overlap**: drawn zones add up, so two overlapping patches plant double. Cut the field
   into disjoint polygons and load them in one go: `bun run zones -- add <course> rough_tall
   --from-geojson <file> --feather 0.5 --noise 0` (`properties.variant` per polygon).

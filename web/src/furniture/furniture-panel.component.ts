@@ -2,8 +2,12 @@ import { Component, effect, template } from '@basics/core/client/core';
 import { t } from '../theme';
 import { s, btn, field, metric } from '../css';
 import { sectionTitle } from '../editor/panel-recipes.css';
-import { FurnitureService, TEE_COLORS, PIN_DIFFICULTIES, type PlacementKind, type GreenPoint } from './furniture.service';
+import { FurnitureService, TEE_COLORS, PIN_DAYS, PIN_DIFFICULTIES, defaultTeeName, type PlacementKind, type GreenPoint, type TeeSetPatch } from './furniture.service';
+import type { TeeSet } from '../../../shared/api/tee-sets.gen';
 import { FurnitureToolService } from './furniture-tool.service';
+import { PIN_RING_RADIUS_M, type PinTerrainMode } from './pin-terrain';
+import { slopeColor } from '../analysis/analysis-math';
+import { HEIGHT_GRADIENT, SLOPE_GRADIENT } from '../analysis/analysis-panel.component';
 import { CourseDetailService } from '../course-detail/course-detail.service';
 import { teeFill } from './furniture-overlay';
 import { icon } from '../ui/icons';
@@ -36,6 +40,35 @@ const tpl = template(`
             <div bind="hint" class="place-hint"></div>
         </div>
 
+        <div bind="teeAttrs" class="furn-panel__section attr">
+            <h4 class="section-title">Tee</h4>
+            <div class="tee-pick" bind="teeSetPick" data-testid="furniture-tee-set-pick"></div>
+        </div>
+
+        <div bind="pinAttrs" class="furn-panel__section attr">
+            <h4 class="section-title">Pin</h4>
+            <div class="pin-days" bind="pinDay" data-testid="furniture-pin-day"></div>
+            <label class="attr-field">Difficulty
+                <select bind="pinDifficulty"></select>
+            </label>
+            <label class="attr-field">Show on the green
+                <select bind="pinTerrain" data-testid="furniture-pin-terrain">
+                    <option value="slope">Slope</option>
+                    <option value="height">Height</option>
+                    <option value="off">Nothing</option>
+                </select>
+            </label>
+            <div bind="pinLegend" class="pin-legend">
+                <div bind="pinLegendBar" class="pin-legend__bar"></div>
+                <div bind="pinLegendLabels" class="pin-legend__labels"></div>
+            </div>
+            <div bind="pinTerrainNote" class="place-hint"></div>
+            <div bind="pinActions" class="reorder-row">
+                <button bind="pinSetActive" type="button" class="mini-btn"></button>
+                <button bind="pinDelete" type="button" class="delete-btn">Delete pin</button>
+            </div>
+        </div>
+
         <div class="furn-panel__section">
             <h4 class="section-title">Rules lines</h4>
             <div bind="ruleButtons" class="place-grid rules-grid"></div>
@@ -49,24 +82,6 @@ const tpl = template(`
             <button bind="ruleDelete" type="button" class="delete-btn">Delete</button>
         </div>
 
-        <div bind="teeAttrs" class="furn-panel__section attr">
-            <h4 class="section-title">Tee</h4>
-            <label class="attr-field">Name
-                <input bind="teeName" type="text" placeholder="e.g. Yellow" />
-            </label>
-            <div class="swatch-row" bind="teeColors"></div>
-        </div>
-
-        <div bind="pinAttrs" class="furn-panel__section attr">
-            <h4 class="section-title">Pin</h4>
-            <label class="attr-field">Name
-                <input bind="pinName" type="text" placeholder="e.g. Front-left" />
-            </label>
-            <label class="attr-field">Difficulty
-                <select bind="pinDifficulty"></select>
-            </label>
-        </div>
-
         <div bind="selection" class="furn-panel__section selection">
             <h4 class="section-title">Selection</h4>
             <div bind="selCard" class="sel-card"></div>
@@ -76,6 +91,17 @@ const tpl = template(`
             </div>
             <button bind="setActiveBtn" type="button" class="mini-btn set-active">Set active pin</button>
             <button bind="deleteBtn" type="button" class="delete-btn">Delete</button>
+        </div>
+
+        <div class="furn-panel__section">
+            <h4 class="section-title">Tee sets</h4>
+            <div bind="teeSetRows" class="tee-sets" data-testid="furniture-tee-sets"></div>
+            <div class="tee-set__head tee-set__new">
+                <span bind="newSetSwatch" class="tee-set__dot"></span>
+                <input bind="newSetName" class="tee-set__name" type="text" placeholder="New set" aria-label="New tee set name" />
+                <select bind="newSetColor" class="tee-set__color" aria-label="Colour"></select>
+                <button bind="addSet" type="button" class="mini-btn tee-set__add" data-testid="furniture-tee-set-add">Add</button>
+            </div>
         </div>
 
         <div bind="summary" class="furn-panel__section summary">
@@ -175,6 +201,37 @@ export class FurniturePanelComponent extends Component {
 
             & .attr { display: none; &.show { display: flex; } }
             & .attr-field { ${field()} }
+            /* One button per pin day: the day, then how steep its pin lies. */
+            & .pin-days { display: grid; grid-template-columns: 1fr 1fr; gap: ${s('xs')}; }
+            & .pin-day {
+                display: flex;
+                flex-direction: column;
+                align-items: flex-start;
+                gap: 1px;
+                padding: 3px ${s('sm')};
+                font-size: 0.72rem;
+                ${btn(t('radius-sm'))}
+                &.active { border-color: ${t('color-accent-primary')}; box-shadow: 0 0 0 1px ${t('color-accent-primary')}; }
+            }
+            & .pin-day__slope {
+                display: inline-flex;
+                align-items: center;
+                gap: ${s('xs')};
+                font-size: 0.68rem;
+                color: ${t('color-text-secondary')};
+                font-variant-numeric: tabular-nums;
+            }
+            & .pin-day__dot { width: 8px; height: 8px; border-radius: 50%; flex: none; &.hide { display: none; } }
+            /* The ramp the green is shaded by while pins are placed. */
+            & .pin-legend { display: flex; flex-direction: column; gap: 2px; &.hide { display: none; } }
+            & .pin-legend__bar { height: 8px; border-radius: 2px; border: 1px solid ${t('color-border-default')}; }
+            & .pin-legend__labels {
+                display: flex;
+                justify-content: space-between;
+                font-size: 0.68rem;
+                color: ${t('color-text-secondary')};
+                font-variant-numeric: tabular-nums;
+            }
 
             & .swatch-row { display: flex; gap: ${s('xs')}; flex-wrap: wrap; }
             & .swatch {
@@ -185,6 +242,53 @@ export class FurniturePanelComponent extends Component {
                 cursor: pointer;
                 &.active { border-color: ${t('color-accent-primary')}; box-shadow: 0 0 0 1px ${t('color-accent-primary')}; }
             }
+
+            & .tee-pick { display: flex; flex-wrap: wrap; gap: ${s('xs')}; }
+            & .tee-pick__btn {
+                display: inline-flex;
+                align-items: center;
+                gap: ${s('xs')};
+                padding: 3px ${s('sm')};
+                font-size: 0.72rem;
+                ${btn(t('radius-sm'))}
+                &.active { border-color: ${t('color-accent-primary')}; box-shadow: 0 0 0 1px ${t('color-accent-primary')}; }
+            }
+            & .tee-sets { display: flex; flex-direction: column; gap: var(--space-2); &:empty { display: none; } }
+            /* One card per set: what the club calls it, its two ratings, then the quiet facts. */
+            & .tee-set {
+                display: flex;
+                flex-direction: column;
+                gap: ${s('xs')};
+                padding: ${s('sm')};
+                border: 1px solid ${t('color-border-subtle')};
+                border-radius: ${t('radius-sm')};
+                background: ${t('color-surface-card')};
+            }
+            & .tee-set__head, & .tee-set__ratings, & .tee-set__foot {
+                display: flex;
+                align-items: center;
+                gap: ${s('xs')};
+                font-size: 0.72rem;
+                color: ${t('color-text-secondary')};
+                & input[type=text], & select { min-width: 0; font-size: 0.72rem; padding: 2px ${s('xs')}; }
+            }
+            & .tee-set__new { padding: 0 ${s('sm')}; }
+            & .tee-set .tee-set__name { font-weight: 600; color: ${t('color-text-primary')}; }
+            /* One line per gender: label, course rating / slope. */
+            & .tee-set__ratings {
+                display: grid;
+                grid-template-columns: 3.4rem 1fr auto 1fr;
+                gap: ${s('xs')};
+                & input[type=text] { width: 100%; box-sizing: border-box; text-align: right; font-variant-numeric: tabular-nums; }
+            }
+            & .tee-set__foot { justify-content: space-between; font-size: 0.7rem; color: ${t('color-text-tertiary')}; }
+            & .tee-set__only { display: inline-flex; align-items: center; gap: ${s('xs')}; color: ${t('color-text-secondary')}; cursor: pointer; }
+            & .tee-set__dot { width: 12px; height: 12px; border-radius: 50%; flex: none; border: 1px solid ${t('color-border-default')}; }
+            & .tee-set__name { flex: 1; }
+            & .tee-set__color { flex: none; width: 4.6rem; }
+            & .tee-set__count { font-variant-numeric: tabular-nums; }
+            & .tee-set__add, & .tee-set__del { flex: none; }
+            & .tee-set__del { padding: 0 ${s('xs')}; background: none; border: none; cursor: pointer; color: ${t('color-text-secondary')}; }
 
             & .selection { display: none; &.show { display: flex; } }
             & .sel-card { font-size: 0.75rem; line-height: 1.5; color: ${t('color-text-primary')}; }
@@ -260,7 +364,7 @@ export class FurniturePanelComponent extends Component {
                 className: () => this.placeClass('tee'),
             },
             placePin: {
-                onclick: () => this.svc.arm('pin'),
+                onclick: () => this.tool.armPin(),
                 className: () => this.placeClass('pin'),
             },
             placeAim: {
@@ -299,7 +403,36 @@ export class FurniturePanelComponent extends Component {
             },
             teeAttrs: { className: () => this.svc.placing.get() === 'tee' ? 'furn-panel__section attr show' : 'furn-panel__section attr' },
             pinAttrs: { className: () => this.svc.placing.get() === 'pin' ? 'furn-panel__section attr show' : 'furn-panel__section attr' },
-            selection: { className: () => this.svc.selection.get() ? 'furn-panel__section selection show' : 'furn-panel__section selection' },
+            pinTerrain: {
+                value: () => this.tool.pinTerrain.mode.get(),
+                onchange: (e: Event) => this.tool.pinTerrain.mode.set((e.target as HTMLSelectElement).value as PinTerrainMode),
+            },
+            pinLegend: { className: () => (this.tool.pinTerrain.mode.get() === 'off' ? 'pin-legend hide' : 'pin-legend') },
+            pinLegendBar: {
+                style: () => `background: ${this.tool.pinTerrain.mode.get() === 'height' ? HEIGHT_GRADIENT : SLOPE_GRADIENT}`,
+            },
+            pinLegendLabels: {
+                innerHTML: () => (this.tool.pinTerrain.mode.get() === 'height' ? ['Low', 'High'] : ['0%', '1%', '3%', '5%', '7%+'])
+                    .map(label => `<span>${label}</span>`).join(''),
+            },
+            pinTerrainNote: {
+                textContent: () => (this.tool.pinTerrain.loading.get() ? 'Reading the green…' : this.tool.pinTerrain.note.get()),
+                className: () => (this.tool.pinTerrain.loading.get() || this.tool.pinTerrain.note.get() ? 'place-hint show' : 'place-hint'),
+            },
+            // A pin is picked and read in the Pin section's day buttons, not here.
+            selection: {
+                className: () => {
+                    const sel = this.svc.selection.get();
+                    return sel && sel.kind !== 'pin' ? 'furn-panel__section selection show' : 'furn-panel__section selection';
+                },
+            },
+            pinActions: { className: () => (this.svc.selectedPin.get() ? 'reorder-row show' : 'reorder-row') },
+            pinSetActive: {
+                onclick: () => { const p = this.svc.selectedPin.peek(); if (p) void this.svc.setPinActive(p.id); },
+                disabled: () => !!this.svc.selectedPin.get()?.active,
+                innerHTML: () => (this.svc.selectedPin.get()?.active ? `Active pin ${icon('check')}` : 'Set active pin'),
+            },
+            pinDelete: { onclick: () => void this.tool.deleteSelected() },
             selCard: { textContent: () => '' }, // filled via effect (multiline)
             reorder: { className: () => this.reorderVisible() ? 'reorder-row show' : 'reorder-row' },
             upBtn: { onclick: () => this.moveSelected(-1) },
@@ -335,27 +468,102 @@ export class FurniturePanelComponent extends Component {
             },
         });
 
-        // Tee colour swatches.
-        const swatchRow = this.ref(frag, 'teeColors');
-        for (const color of TEE_COLORS) {
-            const btnEl = document.createElement('button');
-            btnEl.type = 'button';
-            btnEl.title = color;
-            btnEl.style.background = teeFill(color);
-            btnEl.addEventListener('click', () => this.svc.pendingTeeColor.set(color));
-            this.track(effect(() => {
-                btnEl.className = this.svc.pendingTeeColor.get() === color ? 'swatch active' : 'swatch';
+        // Tee placement: which of the course's tee sets the next tee goes on.
+        const teeSetPick = this.ref(frag, 'teeSetPick');
+        this.track(effect(() => {
+            const picked = this.svc.pendingTeeSet()?.id;
+            teeSetPick.replaceChildren(...this.svc.teeSets.get().map(set => {
+                const btnEl = document.createElement('button');
+                btnEl.type = 'button';
+                btnEl.className = set.id === picked ? 'tee-pick__btn active' : 'tee-pick__btn';
+                btnEl.innerHTML = '<span class="tee-set__dot"></span>';
+                (btnEl.firstChild as HTMLElement).style.background = teeFill(set.color);
+                btnEl.append(set.name);
+                btnEl.addEventListener('click', () => this.svc.pendingTeeSetId.set(set.id));
+                return btnEl;
             }));
-            swatchRow.appendChild(btnEl);
+        }));
+
+        // The course's tee sets. Rows are kept per set and only refreshed in
+        // place, so a save answering while the next field is being typed in
+        // does not take that field away.
+        const teeSetRows = this.ref(frag, 'teeSetRows');
+        const rows = new Map<string, { el: HTMLElement; show: (set: TeeSet) => void }>();
+        this.track(effect(() => {
+            const sets = this.svc.teeSets.get();
+            for (const [id, row] of rows) {
+                if (!sets.some(s => s.id === id)) { row.el.remove(); rows.delete(id); }
+            }
+            for (const set of sets) {
+                let row = rows.get(set.id);
+                if (!row) {
+                    row = this.teeSetRow(set.id);
+                    rows.set(set.id, row);
+                }
+                teeSetRows.appendChild(row.el);  // (re)places it in the course's order
+                row.show(set);
+            }
+        }));
+
+        // New tee set: colour + name; the name defaults to the colour's.
+        const newSetColor = this.ref(frag, 'newSetColor') as HTMLSelectElement;
+        const newSetName = this.ref(frag, 'newSetName') as HTMLInputElement;
+        const newSetSwatch = this.ref(frag, 'newSetSwatch') as HTMLElement;
+        fillColors(newSetColor);
+        const showNewColor = () => {
+            newSetSwatch.style.background = teeFill(newSetColor.value || null);
+            newSetName.placeholder = newSetColor.value ? defaultTeeName(newSetColor.value) : 'New set';
+        };
+        newSetColor.addEventListener('change', showNewColor);
+        const addSet = async () => {
+            const name = newSetName.value.trim() || (newSetColor.value ? defaultTeeName(newSetColor.value) : '');
+            if (!name) { this.svc.notice.set('Name the tee set, or pick its colour.'); return; }
+            if (await this.svc.createTeeSet(name, newSetColor.value || null)) {
+                newSetName.value = '';
+                // On to the next colour the course has no set of.
+                const used = new Set(this.svc.teeSets.peek().map(s => s.color));
+                newSetColor.value = TEE_COLORS.find(c => !used.has(c)) ?? '';
+                showNewColor();
+            }
+        };
+        this.ref(frag, 'addSet').addEventListener('click', () => void addSet());
+        newSetName.addEventListener('keydown', e => { if (e.key === 'Enter') void addSet(); });
+        this.track(effect(() => {
+            if (document.activeElement === newSetName || document.activeElement === newSetColor) return;
+            const used = new Set(this.svc.teeSets.get().map(s => s.color));
+            newSetColor.value = TEE_COLORS.find(c => !used.has(c)) ?? '';
+            showNewColor();
+        }));
+
+        // Pin day select: the four positions GreenKeeper/GSPro keep per green.
+        // One button per day; a day the hole's green already has a pin for is
+        // marked, since placing it again moves that pin.
+        const pinDay = this.ref(frag, 'pinDay');
+        for (const day of PIN_DAYS) {
+            const dayBtn = document.createElement('button');
+            dayBtn.type = 'button';
+            dayBtn.innerHTML = '<span></span><span class="pin-day__slope"><span class="pin-day__dot"></span><span></span></span>';
+            const [name, slopeRow] = [...dayBtn.children] as HTMLElement[];
+            const [dot, slopeText] = [...slopeRow.children] as HTMLElement[];
+            dayBtn.addEventListener('click', () => this.svc.pendingPinDay.set(day));
+            this.track(effect(() => {
+                const hole = this.tool.selectedHole.get();
+                const green = hole ? this.svc.greens.get().find(g => g.holeId === hole.id) : undefined;
+                this.svc.pins.items.get();  // re-read once that day's pin exists, or moves
+                const pin = green ? this.svc.pinForDay(green.id, day) : undefined;
+                const slope = pin ? this.tool.pinTerrain.slopeAt(pin.lat, pin.lon) : null;
+                dayBtn.className = this.svc.pendingPinDay.get() === day ? 'pin-day active' : 'pin-day';
+                name.textContent = day;
+                dot.className = slope ? 'pin-day__dot' : 'pin-day__dot hide';
+                if (slope) dot.style.background = `rgb(${slopeColor(slope.atPin).join(', ')})`;
+                slopeText.textContent = !pin ? 'not placed'
+                    : slope ? `${slope.atPin.toFixed(1)}% · max ${slope.maxInRing.toFixed(1)}%` : 'placed';
+                dayBtn.title = !pin ? `Place ${day}'s pin`
+                    : `${day}'s pin is placed: a click on the map moves it.`
+                        + (slope ? ` Slope ${slope.atPin.toFixed(1)}% at the hole, ${slope.maxInRing.toFixed(1)}% at the steepest within ${PIN_RING_RADIUS_M} m.` : '');
+            }));
+            pinDay.appendChild(dayBtn);
         }
-
-        // Tee name input ↔ pending signal.
-        const teeName = this.ref(frag, 'teeName') as HTMLInputElement;
-        teeName.addEventListener('input', () => this.svc.pendingTeeName.set(teeName.value));
-
-        // Pin name input ↔ pending signal.
-        const pinName = this.ref(frag, 'pinName') as HTMLInputElement;
-        pinName.addEventListener('input', () => this.svc.pendingPinName.set(pinName.value));
 
         // Pin difficulty select.
         const pinDiff = this.ref(frag, 'pinDifficulty') as HTMLSelectElement;
@@ -429,6 +637,87 @@ export class FurniturePanelComponent extends Component {
             `<b>${escapeHtml(FEATURE_STYLES[f.type as FeatureType]?.label ?? f.type)}</b> · ${this.holeLabel(f.holeId)}`,
             `${metricSpan(points)} point${plural(points)}`,
         ].join('<br>');
+    }
+
+    /**
+     * One tee set's card: name, colour, the men's and women's course rating
+     * and slope, how many holes have a tee of it, and whether it exists for
+     * GSPro alone. Every field saves on change. What GSPro calls the set and
+     * which rating it shows are the GSPro export panel's.
+     */
+    private teeSetRow(id: string): { el: HTMLElement; show: (set: TeeSet) => void } {
+        const el = document.createElement('div');
+        el.className = 'tee-set';
+        el.dataset.testid = 'furniture-tee-set';
+        el.innerHTML = `
+            <div class="tee-set__head">
+                <span class="tee-set__dot"></span>
+                <input class="tee-set__name" type="text" aria-label="Name" />
+                <select class="tee-set__color" aria-label="Colour"></select>
+                <button type="button" class="tee-set__del" title="Delete the tee set" aria-label="Delete the tee set">×</button>
+            </div>
+            <div class="tee-set__ratings" title="Course rating / slope">
+                <span>Men</span>
+                <input data-k="ratingMen" type="text" inputmode="decimal" placeholder="CR" aria-label="Course rating, men" />
+                <span>/</span>
+                <input data-k="slopeMen" type="text" inputmode="numeric" placeholder="slope" aria-label="Slope, men" />
+                <span>Women</span>
+                <input data-k="ratingWomen" type="text" inputmode="decimal" placeholder="CR" aria-label="Course rating, women" />
+                <span>/</span>
+                <input data-k="slopeWomen" type="text" inputmode="numeric" placeholder="slope" aria-label="Slope, women" />
+            </div>
+            <div class="tee-set__foot">
+                <span class="tee-set__count" title="Holes with a tee of this set"></span>
+                <label class="tee-set__only" title="A set only GSPro has, like Junior or Par3: left out of the course guide">
+                    <input type="checkbox" data-testid="furniture-tee-set-gspro-only" /> GSPro only
+                </label>
+            </div>`;
+        const dot = el.querySelector('.tee-set__dot') as HTMLElement;
+        const color = el.querySelector('.tee-set__color') as HTMLSelectElement;
+        const name = el.querySelector('.tee-set__name') as HTMLInputElement;
+        const count = el.querySelector('.tee-set__count') as HTMLElement;
+        const gsproOnly = el.querySelector('.tee-set__only input') as HTMLInputElement;
+        const numbers = [...el.querySelectorAll<HTMLInputElement>('input[data-k]')];
+        fillColors(color);
+        let shown: TeeSet | null = null;
+        const save = (patch: TeeSetPatch) => { void this.svc.updateTeeSet(id, patch).then(ok => { if (!ok && shown) show(shown, true); }); };
+
+        color.addEventListener('change', () => save({ color: color.value || null }));
+        name.addEventListener('change', () => {
+            if (name.value.trim()) save({ name: name.value.trim() });
+            else if (shown) name.value = shown.name;
+        });
+        gsproOnly.addEventListener('change', () => save({ gsproOnly: gsproOnly.checked }));
+        for (const input of numbers) {
+            const key = input.dataset.k as 'ratingMen' | 'slopeMen' | 'ratingWomen' | 'slopeWomen';
+            input.addEventListener('change', () => {
+                const value = parseRating(input.value, key.startsWith('slope'));
+                if (value === undefined) {
+                    this.svc.notice.set(key.startsWith('slope')
+                        ? 'A slope is a whole number between 55 and 155.'
+                        : 'A course rating is a number between 40 and 90, e.g. 71.5.');
+                    if (shown) input.value = shown[key]?.toString() ?? '';
+                    return;
+                }
+                this.svc.notice.set(null);
+                save({ [key]: value });
+            });
+        }
+        el.querySelector('.tee-set__del')!.addEventListener('click', () => void this.svc.removeTeeSet(id));
+
+        const show = (set: TeeSet, force = false) => {
+            shown = set;
+            const idle = (field: HTMLElement) => force || document.activeElement !== field;
+            dot.style.background = teeFill(set.color);
+            if (idle(color)) color.value = set.color && TEE_COLORS.includes(set.color as never) ? set.color : '';
+            if (idle(name)) name.value = set.name;
+            count.textContent = `${set.teeCount} tee${set.teeCount === 1 ? '' : 's'}`;
+            gsproOnly.checked = set.gsproOnly;
+            for (const input of numbers) {
+                if (idle(input)) input.value = set[input.dataset.k as 'ratingMen']?.toString() ?? '';
+            }
+        };
+        return { el, show };
     }
 
     private placeClass(kind: Exclude<PlacementKind, null>): string {
@@ -516,6 +805,29 @@ export class FurniturePanelComponent extends Component {
         if (error) return `Load failed: ${error.message}`;
         return '';
     }
+}
+
+/** The colour options of a tee set: none, then the presets. */
+function fillColors(select: HTMLSelectElement): void {
+    for (const value of ['', ...TEE_COLORS]) {
+        const opt = document.createElement('option');
+        opt.value = value;
+        opt.textContent = value ? defaultTeeName(value) : 'No colour';
+        select.appendChild(opt);
+    }
+}
+
+/**
+ * A typed course rating (40–90, one decimal) or slope (55–155, whole): the
+ * number, null for blank (clear it), undefined when it is neither.
+ */
+function parseRating(text: string, slope: boolean): number | null | undefined {
+    const trimmed = text.trim().replace(',', '.');
+    if (!trimmed) return null;
+    const n = Number(trimmed);
+    if (!Number.isFinite(n)) return undefined;
+    if (slope) return Number.isInteger(n) && n >= 55 && n <= 155 ? n : undefined;
+    return n >= 40 && n <= 90 ? Math.round(n * 10) / 10 : undefined;
 }
 
 function card(

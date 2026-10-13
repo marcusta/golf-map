@@ -21,7 +21,10 @@
 //               "<surface> to <neighbour material>.mat" - a copy of the material the mesh beside the strip wears
 //               (found by raycasts just past the strip's far edge), its grass channels untouched, the far channel
 //               given the channel that mesh is painted with there, the path channel the surface (its height map x
-//               paint x blend strength interleaves stones and grass across the strip). A strip between two roads
+//               paint x blend strength interleaves stones and grass across the strip). A surface with a `tracks`
+//               look draws it on the strip material's black: the Blender wear (blender/README.md "Shaping: path
+//               transitions") takes the path's green out of the paint where wheels have packed the stones, and a
+//               worn road's meshes wear the strip material. A strip between two roads
 //               (Spline_<shape>_B_Concrete_-_Blend) fades into the other road's surface ("<surface> to <other>.mat"),
 //               except the pairs the spec lists as sharp (asphalt/concrete) and same-surface pairs, which wear the
 //               owning road's surface. A blend whose OPCD channels name no concrete (a fairway blend OPCD named after
@@ -135,7 +138,13 @@ namespace GolfMap.Editor
             public double tileM = 3, smoothness = 0.1, nearNRMStrength = 1, farNRMStrength = 0.7, farNRMTilingM = 9,
                 aoBrightness = 1, detailOpacity = 1, detailDistanceM = 30, fringeBlendStrength = 3;
             public Color tint = Color.white;
+            // Where traffic has packed the surface (wheel tracks): drawn on MAHS's black, the paint the Blender
+            // wear takes out of the path's green. Null = the surface has no worn look.
+            public Look tracks;
+            public double tracksBlendStrength = 1.5;
         }
+
+        const string TracksSuffix = " tracks";   // a worn look's slice key: "<surface> tracks" (never a surface name)
 
         sealed class Spec
         {
@@ -305,13 +314,36 @@ namespace GolfMap.Editor
                 Assign(p.r, m);
                 if (!IsBlend(p.r.name)) SetPhysic(p.r, spec.looks[p.surface].physicMaterial, problems);
             }
+            // A whole run built every material a path mesh wears. What else lies in Surfaces/ is from an earlier plan
+            // (another neighbour, paint or transition since) and still names the arrays of its day.
+            bool whole = meshes.Count == all.Count;
+            var surfacesDir = folder + "Surfaces/";
+            var wanted = new HashSet<string>(built.Keys.Concat(plans.Select(p => p.target))
+                .Concat(plans.Select(p => surfacesDir + Safe(p.surface) + ".mat")), StringComparer.Ordinal);
             if (!dryRun && (changed > 0 || built.Count > 0))
             {
                 WriteRecords(recordPath, records);
+                if (slices != null && whole)
+                {
+                    var stores = new Stores();
+                    int followed = plans.Sum(p => stores.FollowRenderer(p.r, surfacesDir, p.rec != null ? p.rec.channels : null, problems));
+                    if (followed > 0) result["opcdStoresUpdated"] = followed;
+                    DropOrphans(surfacesDir, folder + "Arrays/", wanted, slices, scene, stores, result, problems);
+                }
                 AssetDatabase.SaveAssets();
                 EditorSceneManager.MarkSceneDirty(scene);
-                // a whole run rebuilt every material of ours: arrays none of them references any more go
-                if (slices != null && meshes.Count == all.Count) DeleteStaleArrays(folder + "Arrays", slices);
+                // arrays no material under Paths/ references any more go
+                if (slices != null && whole)
+                {
+                    var keptArrays = DeleteStaleArrays(folder + "Arrays", slices);
+                    if (keptArrays.Count > 0) result["oldArraysKept"] = keptArrays;
+                }
+            }
+            else if (dryRun && whole && AssetDatabase.IsValidFolder(surfacesDir.TrimEnd('/')))
+            {
+                var orphans = AssetDatabase.FindAssets("t:Material", new[] { surfacesDir.TrimEnd('/') })
+                    .Select(g => AssetDatabase.GUIDToAssetPath(g)).Where(p => !wanted.Contains(p)).OrderBy(p => p, StringComparer.Ordinal).ToList();
+                if (orphans.Count > 0) result["orphanMaterials"] = orphans;   // deleted by a real run unless the scene holds them
             }
             result[dryRun ? "wouldChange" : "changed"] = changed;
             result["alreadyThatLook"] = kept;
@@ -639,7 +671,10 @@ namespace GolfMap.Editor
             var dl = new List<GolfMapTextureArrays.Layer>();
             var nl = new List<GolfMapTextureArrays.Layer>();
             var key = new List<string> { "v2", GolfMapTextureArrays.Hash(AssetDatabase.GetAssetPath(detail)), GolfMapTextureArrays.Hash(AssetDatabase.GetAssetPath(normals)) };
-            foreach (var kv in spec.looks.OrderBy(kv => kv.Key, StringComparer.Ordinal))
+            var looks = spec.looks.OrderBy(kv => kv.Key, StringComparer.Ordinal)
+                .SelectMany(kv => kv.Value.tracks == null ? new[] { kv }
+                    : new[] { kv, new KeyValuePair<string, Look>(kv.Key + TracksSuffix, kv.Value.tracks) });
+            foreach (var kv in looks)
             {
                 var lk = kv.Value;
                 var albedo = Texture(lk.albedo, false, kv.Key, problems);
@@ -682,19 +717,187 @@ namespace GolfMap.Editor
             catch (Exception) { return false; }
         }
 
-        static void DeleteStaleArrays(string dir, Slices s)
+        // Deletes the arrays in `dir` other than the current pair that no material under Paths/ references (hand-made
+        // ones count: Paths/EndTrials). Returns the old arrays that stay, each with a material that keeps it.
+        static List<string> DeleteStaleArrays(string dir, Slices s)
         {
             var keep = new HashSet<string> { AssetDatabase.GetAssetPath(s.detail), AssetDatabase.GetAssetPath(s.normals) };
-            var used = new HashSet<string>(AssetDatabase.FindAssets("t:Material", new[] { dir.Substring(0, dir.LastIndexOf('/')) })
-                .Select(g => AssetDatabase.LoadAssetAtPath<Material>(AssetDatabase.GUIDToAssetPath(g)))
-                .Where(m => m != null && m.HasProperty("_DetailArray"))
-                .SelectMany(m => new[] { m.GetTexture("_DetailArray"), m.GetTexture("_NormalArray") })
-                .Where(t => t != null).Select(t => AssetDatabase.GetAssetPath(t)));
+            var used = new Dictionary<string, string>(StringComparer.Ordinal);
+            foreach (var g in AssetDatabase.FindAssets("t:Material", new[] { dir.Substring(0, dir.LastIndexOf('/')) }))
+            {
+                var mp = AssetDatabase.GUIDToAssetPath(g);
+                var m = AssetDatabase.LoadAssetAtPath<Material>(mp);
+                if (m == null || !m.HasProperty("_DetailArray") || !m.HasProperty("_NormalArray")) continue;
+                foreach (var t in new[] { m.GetTexture("_DetailArray"), m.GetTexture("_NormalArray") })
+                    if (t != null && !used.ContainsKey(AssetDatabase.GetAssetPath(t))) used[AssetDatabase.GetAssetPath(t)] = mp;
+            }
+            var kept = new List<string>();
             foreach (var g in AssetDatabase.FindAssets("t:Texture2DArray", new[] { dir }))
             {
                 var p = AssetDatabase.GUIDToAssetPath(g);
-                if (!keep.Contains(p) && !used.Contains(p)) AssetDatabase.DeleteAsset(p);
+                if (keep.Contains(p)) continue;
+                if (used.ContainsKey(p)) kept.Add(p + " (used by " + used[p] + ")");
+                else AssetDatabase.DeleteAsset(p);
             }
+            return kept;
+        }
+
+        // OPCD's helper components on a path mesh remember a material of ours once OPCD's tools have run over it
+        // (MeshChannelMaterialsStore.MeshChannelMaterials -> a ChannelMaterials asset beside OPCD's, named after the
+        // material; BlendTarget.BlendSourceMaterialRed / BlendToMaterialBlack) and keep the one of that day when a later
+        // plan gives the mesh another. The scene then drags that material and its arrays into the build with no
+        // renderer wearing it (golfmap.build.usedby shows them under `components`).
+        sealed class Stores
+        {
+            // the folders ChannelMaterials assets were seen in: where OPCD writes the ones it makes for our materials
+            public readonly HashSet<string> dirs = new HashSet<string>(StringComparer.Ordinal);
+            readonly Dictionary<string, List<KeyValuePair<UnityEngine.Object, Material>>> byDir = new Dictionary<string, List<KeyValuePair<UnityEngine.Object, Material>>>(StringComparer.Ordinal);
+
+            // The ChannelMaterials assets in a folder, each with its RenderMaterial.
+            public List<KeyValuePair<UnityEngine.Object, Material>> In(string dir)
+            {
+                List<KeyValuePair<UnityEngine.Object, Material>> list;
+                if (byDir.TryGetValue(dir, out list)) return list;
+                list = new List<KeyValuePair<UnityEngine.Object, Material>>();
+                foreach (var g in AssetDatabase.FindAssets("t:ScriptableObject", new[] { dir }))
+                {
+                    var o = AssetDatabase.LoadMainAssetAtPath(AssetDatabase.GUIDToAssetPath(g));
+                    var render = Field(o, "RenderMaterial") as Material;
+                    if (render != null) list.Add(new KeyValuePair<UnityEngine.Object, Material>(o, render));
+                }
+                return byDir[dir] = list;
+            }
+
+            // Points the components of a path mesh that hold another material of ours at the one its renderer wears:
+            // material fields directly, a ChannelMaterials reference at the asset of the worn material (else at
+            // `opcdChannels`, what the store held before this tool). Returns the components changed.
+            public int FollowRenderer(MeshRenderer r, string surfacesDir, string opcdChannels, List<string> problems)
+            {
+                var worn = r.sharedMaterial;
+                if (worn == null || !AssetDatabase.GetAssetPath(worn).StartsWith(surfacesDir, StringComparison.Ordinal)) return 0;
+                int changed = 0;
+                foreach (var c in r.GetComponents<MonoBehaviour>())
+                {
+                    if (c == null) continue;
+                    var so = new SerializedObject(c);
+                    var it = so.GetIterator();
+                    bool dirty = false;
+                    while (it.NextVisible(true))
+                    {
+                        if (it.propertyType != SerializedPropertyType.ObjectReference || it.propertyPath == "m_Script") continue;
+                        var o = it.objectReferenceValue;
+                        if (o == null) continue;
+                        var held = o as Material;
+                        if (held != null)
+                        {
+                            if (held != worn && AssetDatabase.GetAssetPath(held).StartsWith(surfacesDir, StringComparison.Ordinal)) { it.objectReferenceValue = worn; dirty = true; }
+                            continue;
+                        }
+                        if (!(o is ScriptableObject)) continue;
+                        var render = Field(o, "RenderMaterial") as Material;
+                        if (render == null) continue;
+                        var path = AssetDatabase.GetAssetPath(o);
+                        var dir = path.Substring(0, path.LastIndexOf('/'));
+                        dirs.Add(dir);
+                        if (render == worn || !AssetDatabase.GetAssetPath(render).StartsWith(surfacesDir, StringComparison.Ordinal)) continue;
+                        var channels = In(dir).Where(kv => kv.Value == worn).Select(kv => kv.Key).FirstOrDefault()
+                            ?? (string.IsNullOrEmpty(opcdChannels) ? null : AssetDatabase.LoadMainAssetAtPath(opcdChannels));
+                        if (channels == null) { problems.Add(r.name + ": " + c.GetType().Name + "." + it.propertyPath + " holds " + path + " (" + render.name + ") and no ChannelMaterials asset names " + worn.name + "; left"); continue; }
+                        it.objectReferenceValue = channels;
+                        dirty = true;
+                    }
+                    if (!dirty) continue;
+                    so.ApplyModifiedProperties();
+                    changed++;
+                }
+                return changed;
+            }
+        }
+
+        // The materials in Surfaces/ this whole run did not build. One nothing in the scene holds goes to the trash with
+        // the ChannelMaterials asset OPCD made for it (the next run that plans it builds it again); one the scene still
+        // holds (a renderer or component outside the path meshes) stays and is moved to the current arrays when its own
+        // have as many slices (same surfaces, so the same indices), so it does not keep an old pair in the build.
+        static void DropOrphans(string surfacesDir, string arraysDir, HashSet<string> wanted, Slices s, UnityEngine.SceneManagement.Scene scene,
+            Stores stores, Dictionary<string, object> result, List<string> problems)
+        {
+            var orphans = new HashSet<string>(AssetDatabase.FindAssets("t:Material", new[] { surfacesDir.TrimEnd('/') })
+                .Select(g => AssetDatabase.GUIDToAssetPath(g)).Where(p => !wanted.Contains(p)), StringComparer.Ordinal);
+            if (orphans.Count == 0) return;
+            var holders = SceneHolders(scene, orphans);
+            var deleted = new List<string>();
+            var kept = new List<string>();
+            foreach (var path in orphans.OrderBy(p => p, StringComparer.Ordinal))
+            {
+                var m = AssetDatabase.LoadAssetAtPath<Material>(path);
+                string holder;
+                if (!holders.TryGetValue(path, out holder))
+                {
+                    foreach (var dir in stores.dirs)
+                        foreach (var kv in stores.In(dir).Where(kv => kv.Value == m).ToList())
+                        {
+                            stores.In(dir).Remove(kv);
+                            AssetDatabase.MoveAssetToTrash(AssetDatabase.GetAssetPath(kv.Key));
+                        }
+                    if (AssetDatabase.MoveAssetToTrash(path)) deleted.Add(Path.GetFileNameWithoutExtension(path));
+                    else problems.Add(path + ": not built by this run and not held by the scene, but could not be moved to the trash");
+                    continue;
+                }
+                var note = Path.GetFileNameWithoutExtension(path) + " (held by " + holder + ")";
+                var detail = m != null && m.HasProperty("_DetailArray") ? m.GetTexture("_DetailArray") as Texture2DArray : null;
+                var normals = m != null && m.HasProperty("_NormalArray") ? m.GetTexture("_NormalArray") as Texture2DArray : null;
+                bool old = (detail != null && detail != s.detail && AssetDatabase.GetAssetPath(detail).StartsWith(arraysDir, StringComparison.Ordinal))
+                    || (normals != null && normals != s.normals && AssetDatabase.GetAssetPath(normals).StartsWith(arraysDir, StringComparison.Ordinal));
+                if (old && detail != null && normals != null && detail.depth == s.detail.depth && normals.depth == s.normals.depth)
+                {
+                    m.SetTexture("_DetailArray", s.detail);
+                    m.SetTexture("_NormalArray", s.normals);
+                    EditorUtility.SetDirty(m);
+                    note += ", moved to the current arrays";
+                }
+                else if (old) problems.Add(path + ": held by " + holder + " and on older arrays with another slice count (" + (detail != null ? detail.name : "?") + "); they stay in the build until nothing holds it");
+                kept.Add(note);
+            }
+            if (deleted.Count > 0) result["orphanMaterialsDeleted"] = deleted;
+            if (kept.Count > 0) result["orphanMaterialsKept"] = kept;
+        }
+
+        // Which of `paths` (material assets) the scene holds, each with one holder: a renderer wearing it, or a
+        // component referencing it directly or through a ScriptableObject (OPCD's ChannelMaterials). Inactive objects too.
+        static Dictionary<string, string> SceneHolders(UnityEngine.SceneManagement.Scene scene, HashSet<string> paths)
+        {
+            var held = new Dictionary<string, string>(StringComparer.Ordinal);
+            foreach (var r in Resources.FindObjectsOfTypeAll<Renderer>())
+            {
+                if (r == null || EditorUtility.IsPersistent(r) || r.gameObject.scene != scene) continue;
+                foreach (var m in r.sharedMaterials)
+                {
+                    var p = m != null ? AssetDatabase.GetAssetPath(m) : null;
+                    if (p != null && paths.Contains(p) && !held.ContainsKey(p)) held[p] = r.name + ", renderer";
+                }
+            }
+            var none = new string[0];
+            var hits = new Dictionary<UnityEngine.Object, string[]>();
+            foreach (var c in Resources.FindObjectsOfTypeAll<MonoBehaviour>())
+            {
+                if (c == null || EditorUtility.IsPersistent(c) || c.gameObject.scene != scene) continue;
+                var it = new SerializedObject(c).GetIterator();
+                while (it.NextVisible(true))
+                {
+                    if (it.propertyType != SerializedPropertyType.ObjectReference || it.propertyPath == "m_Script") continue;
+                    var o = it.objectReferenceValue;
+                    if (o == null) continue;
+                    string[] hit;
+                    if (!hits.TryGetValue(o, out hit))
+                    {
+                        var p = AssetDatabase.GetAssetPath(o);
+                        hit = hits[o] = string.IsNullOrEmpty(p) ? none : paths.Contains(p) ? new[] { p }
+                            : o is ScriptableObject ? AssetDatabase.GetDependencies(p, false).Where(paths.Contains).ToArray() : none;
+                    }
+                    foreach (var p in hit) if (!held.ContainsKey(p)) held[p] = c.name + ", " + c.GetType().Name + "." + it.propertyPath;
+                }
+            }
+            return held;
         }
 
         // The material of a plan: built once per target per run (fringe and pair copies start from it).
@@ -735,6 +938,13 @@ namespace GolfMap.Editor
                 if (p.nbCh != p.farCh) GolfMapBunkerChannels.CopyChannel(source, p.nbCh, m, p.farCh);
                 SetSurfaceChannel(m, p.pathCh, p.surface, lk, s);
                 m.SetFloat(GolfMapBunkerChannels.Prefix(p.pathCh) + "BlendStrength", (float)lk.fringeBlendStrength);
+                // Black is free on a strip painted red grass / green path (its paint sums to one): the worn look.
+                if (lk.tracks != null && s.index.ContainsKey(p.surface + TracksSuffix)
+                    && p.pathCh != BunkerPaintChannel.Black && p.farCh != BunkerPaintChannel.Black)
+                {
+                    SetSurfaceChannel(m, BunkerPaintChannel.Black, p.surface + TracksSuffix, lk.tracks, s);
+                    m.SetFloat("_BlackBlendStrength", (float)lk.tracksBlendStrength);
+                }
                 if (p.transition)
                 {
                     Look dirt;
@@ -914,7 +1124,7 @@ namespace GolfMap.Editor
             var text = GolfMapJson.Serialize(new Dictionary<string, object>
             {
                 { "format", SpecFormat },
-                { "note", "golfmap.paths.materials look=surface: how each path surface is drawn, on OPCD's MAHS shader (satellite off). Keys = the Draw panel's path surfaces (shared/features/path-surface.ts); grass tracks are rough meshes and not listed. albedo/normal/occlusion/height = asset paths (occlusion and height optional: occlusion goes into the MAHS map's AO, height is the channel's Height Texture, which with the vertex paint and fringeBlendStrength decides where stones show through the grass across a fringe strip), tileM = metres one repeat covers (Detail Tiling), tint = #rrggbb (Detail Color Tint; OPCD's arrays are sampled as stored bytes, brighter than a Standard material shows the same file, so tints run dark), smoothness 0-1, nearNRMStrength/farNRMStrength/farNRMTilingM = the normal map near and beyond detailDistanceM, aoBrightness multiplies the AO, detailOpacity 0-1 = how much of the texture shows over the surface's mean colour (the base, which also takes over beyond detailDistanceM so it does not tile), fringeBlendStrength = the path channel's Blend Strength on fringe strips (higher = the path reaches further across), physicMaterial = the path mesh collider's (GSPro reads bounce and roll off it). unknownSurface = the look of a path mesh no road shape of the export names. sharpPairs = road-to-road strips that keep a hard edge. baseMaterial = what the surface materials are copied from. Edit and run again." },
+                { "note", "golfmap.paths.materials look=surface: how each path surface is drawn, on OPCD's MAHS shader (satellite off). Keys = the Draw panel's path surfaces (shared/features/path-surface.ts); grass tracks are rough meshes and not listed. albedo/normal/occlusion/height = asset paths (occlusion and height optional: occlusion goes into the MAHS map's AO, height is the channel's Height Texture, which with the vertex paint and fringeBlendStrength decides where stones show through the grass across a fringe strip), tileM = metres one repeat covers (Detail Tiling), tint = #rrggbb (Detail Color Tint; OPCD's arrays are sampled as stored bytes, brighter than a Standard material shows the same file, so tints run dark), smoothness 0-1, nearNRMStrength/farNRMStrength/farNRMTilingM = the normal map near and beyond detailDistanceM, aoBrightness multiplies the AO, detailOpacity 0-1 = how much of the texture shows over the surface's mean colour (the base, which also takes over beyond detailDistanceM so it does not tile), fringeBlendStrength = the path channel's Blend Strength on fringe strips (higher = the path reaches further across), physicMaterial = the path mesh collider's (GSPro reads bounce and roll off it), tracks = optional worn look of the surface (wheel tracks, a trodden middle: where the Blender wear paint took the path's green out; same keys, what it leaves out is the surface's own, blendStrength = how hard it takes over). unknownSurface = the look of a path mesh no road shape of the export names. sharpPairs = road-to-road strips that keep a hard edge. baseMaterial = what the surface materials are copied from. Edit and run again." },
                 { "unknownSurface", "asphalt" },
                 { "baseMaterial", DefaultBase },
                 { "sharpPairs", new List<object> { new List<object> { "asphalt", "concrete" } } },
@@ -927,7 +1137,9 @@ namespace GolfMap.Editor
                         { "concrete", LookJson(props + "concrete.png", props + "concrete_n.png", null, null, 3, "#9a9a9a", 0.15, 0.8, 0.6, 12, 1.0, 0.9, 40, 2, "GSPconcrete") },
                         { "paving", LookJson(props + "brick_paving.png", props + "brick_paving_n.png", null, null, 2, "#9a9a9a", 0.15, 1.0, 0.6, 8, 1.0, 0.9, 30, 2, "GSPconcrete") },
                         // ambientCG Ground032 (CC0, 2K, NormalGL): fine grey gravel path, no height map (its twig heights make the fringe interleave look like grey straw once the strip is 0.6 m wide), 3.5 m a repeat (stones exaggerated: at 1.7 m eye height the real 1.5 m scale mips to an even grain).
-                        { "gravel", LookJson(g32 + "A.png", g32 + "N.png", g32 + "AO.png", null, 3.5, "#707070", 0.05, 0.5, 0.8, 6, 1.0, 1.0, 25, 3, "GSPconcrete") },
+                        // tracks: the same stones at their real scale and flatter, paler and warmer - fines packed by wheels.
+                        { "gravel", With(LookJson(g32 + "A.png", g32 + "N.png", g32 + "AO.png", null, 3.5, "#676f6c", 0.05, 0.5, 0.8, 6, 1.0, 1.0, 25, 3, "GSPconcrete"),
+                            "tracks", new Dictionary<string, object> { { "tileM", 1.5 }, { "tint", "#66625a" }, { "height", g32 + "H.png" }, { "nearNRMStrength", 0.2 }, { "farNRMStrength", 0.3 }, { "blendStrength", 1.6 } }) },
                         { "dirt", LookJson(ground + "GroundCracked01.png", ground + "GroundCracked01_N.png", null, null, 3, "#665c4e", 0.05, 1.0, 0.7, 9, 1.0, 0.9, 30, 2, "GSPconcrete") },
                         { "wood", LookJson(props + "wood_deck_grey.png", props + "wood_deck_grey_n.png", null, null, 2, "#9a9a9a", 0.1, 1.0, 0.6, 8, 1.0, 1.0, 30, 2, "GSPwood") },
                     }
@@ -956,6 +1168,8 @@ namespace GolfMap.Editor
             d["physicMaterial"] = "Assets/Resources/Physics/" + physic + ".physicMaterial";
             return d;
         }
+
+        static Dictionary<string, object> With(Dictionary<string, object> d, string key, object value) { d[key] = value; return d; }
 
         static Spec ReadSpec(string path, string courseFolder, bool dryRun, Dictionary<string, object> result)
         {
@@ -1012,26 +1226,38 @@ namespace GolfMap.Editor
             {
                 var o = surfaces.Object(key);
                 if (o == null) continue;
-                Color tint;
-                spec.looks[key] = new Look
-                {
-                    albedo = o.String("albedo"), normal = o.String("normal"), occlusion = o.String("occlusion"), height = o.String("height"),
-                    physicMaterial = o.String("physicMaterial"),
-                    tileM = o.Number("tileM", 3), smoothness = o.Number("smoothness", 0.1),
-                    nearNRMStrength = o.Number("nearNRMStrength", 1), farNRMStrength = o.Number("farNRMStrength", 0.7),
-                    farNRMTilingM = o.Number("farNRMTilingM", 9), aoBrightness = o.Number("aoBrightness", 1),
-                    detailOpacity = o.Number("detailOpacity", 1), detailDistanceM = o.Number("detailDistanceM", 30),
-                    fringeBlendStrength = o.Number("fringeBlendStrength", 3),
-                    tint = ColorUtility.TryParseHtmlString(o.String("tint") ?? "#ffffff", out tint) ? tint : Color.white,
-                };
+                var look = spec.looks[key] = ReadLook(o, new Look());
+                var tracks = o.Object("tracks");
+                if (tracks == null) continue;
+                // what the worn look does not say is the surface's own
+                look.tracks = ReadLook(tracks, look);
+                look.tracksBlendStrength = tracks.Number("blendStrength", 1.5);
             }
             return spec;
+        }
+
+        static Look ReadLook(GolfMapJsonObject o, Look d)
+        {
+            Color tint;
+            return new Look
+            {
+                albedo = o.String("albedo") ?? d.albedo, normal = o.String("normal") ?? d.normal,
+                occlusion = o.String("occlusion") ?? d.occlusion, height = o.String("height") ?? d.height,
+                physicMaterial = o.String("physicMaterial") ?? d.physicMaterial,
+                tileM = o.Number("tileM", d.tileM), smoothness = o.Number("smoothness", d.smoothness),
+                nearNRMStrength = o.Number("nearNRMStrength", d.nearNRMStrength), farNRMStrength = o.Number("farNRMStrength", d.farNRMStrength),
+                farNRMTilingM = o.Number("farNRMTilingM", d.farNRMTilingM), aoBrightness = o.Number("aoBrightness", d.aoBrightness),
+                detailOpacity = o.Number("detailOpacity", d.detailOpacity), detailDistanceM = o.Number("detailDistanceM", d.detailDistanceM),
+                fringeBlendStrength = o.Number("fringeBlendStrength", d.fringeBlendStrength),
+                tint = o.String("tint") != null && ColorUtility.TryParseHtmlString(o.String("tint"), out tint) ? tint : d.tint,
+            };
         }
 
         // ------------------------------------------------------------ plumbing
 
         // OPCD's MeshChannelMaterialsStore keeps pointing at its ChannelMaterials, so OPCD's channel editor would
-        // rebuild the satellite look; golfmap.course.refresh (step paths.materials) puts the surface back.
+        // rebuild the satellite look; golfmap.course.refresh (step paths.materials) puts the surface back. Once OPCD's
+        // tools have made the store remember a material of ours, a whole run keeps it on the worn one (Stores).
         static void Assign(MeshRenderer r, Material m)
         {
             Undo.RecordObject(r, "GolfMap path materials");

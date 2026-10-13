@@ -30,6 +30,19 @@ strip) = the surface, far channel (black) = the neighbour's painted channel; roa
 road's surface except `sharpPairs`. Spec `<course>/Paths/path-surfaces.json` (`golfmap-path-looks-v2`); never tune
 the built materials by hand, they are rebuilt from the spec. Tree shadows in the photo only matter for `look=photo`
 (OPCD's satellite concrete), lifted by the path fill (`--path-fill`, default).
+Old arrays in the build (2026-10-11, ~324 MB per stale pair against the 4 GB limit): a new spec texture means a new
+`Paths/Arrays/Path detail|normals <key>.asset` pair, and a run only rebuilds the materials its plans target. A material
+in `Paths/Surfaces/` from an earlier plan keeps the arrays of its day, and OPCD's helper components keep it in the
+scene with no renderer wearing it (`MeshChannelMaterialsStore.MeshChannelMaterials` -> a ChannelMaterials asset OPCD
+writes to `Assets/Resources/Materials/SOs/`, `BlendTarget.BlendSourceMaterialRed` / `BlendToMaterialBlack`). A whole
+run (no `only`) therefore: points those components on every path mesh at the worn material (`opcdStoresUpdated`),
+moves each `Surfaces/` material it did not build and nothing in the scene holds to the trash with its ChannelMaterials
+asset (`orphanMaterialsDeleted`; held ones stay and move to the current arrays when the slice count matches,
+`orphanMaterialsKept`), then deletes the arrays no material under `Paths/` references (`oldArraysKept` names the
+material keeping one - hand-made ones such as `Paths/EndTrials/` count and are never touched). `dryRun` lists
+`orphanMaterials`. Check after saving the scene (the commands read the saved scene's dependencies):
+`golfmap.build.size {type: "Texture2DArray"}` lists one Path detail/normals pair, `golfmap.build.usedby {asset: "<array
+or material path part>"}` shows the components holding it.
 
 Course meshes after a Blender export: `golfmap.meshes.sync` (GolfMap > Meshes > Sync from FBX folder,
 `GolfMapCourseMeshes.cs`) deletes and re-adds the object of every FBX that changed since the last sync (file size+time),
@@ -49,6 +62,11 @@ Position overlay`): eye in SWEREF 99 TM + elevation + WGS84, heading/tilt, and t
 with its object, all from the inner DEM sidecar (x = E - square3006[0], z = N - square3006[1], y = H - minM). The user's
 screenshots carry it; `golfmap.view` returns it as data, and with `e`/`n` (+ `heading`/`tilt` or `atE`/`atN`) moves the
 view to a place read off a screenshot.
+
+Getting to a hole: `golfmap.holes {hole, point: tee|aim1..|green}` (`GolfMapHoleNavigator.cs`, window `GolfMap > Scene View >
+Hole navigator`) puts the view 5 m over that point looking along the direction of play; without `hole` it lists the holes.
+Reads `<export folder>/<prefix>-holes.json`; after tees, aim points or greens move in golf-map, write it again:
+`bun run py gspro.py holes --course <course> --out <export folder>/<prefix>-holes.json`.
 
 Terrains after the first import: `golfmap.terrain.update` (GolfMap > Terrain > Update heights from export) puts a new heightmap export onto the existing terrains in place (backup, VSP refresh, outer sink kept); golf-map's "Heightmap → Unity" calls it.
 
@@ -73,6 +91,26 @@ measured spec (`blender/tools/build_props.py`, `docs/gspro/<course>/*-props.gen.
 (`GolfMapProps.cs`, README "Course props"): EPSG:3006 positions on the highest collider, Standard materials from the
 manifest, no custom components on placed objects (GSPro loads them as missing scripts; they are found by name).
 
+Vehicles are prefab assets of the spec, and never the vehicle pack's own prefabs (43 / 29 / 8 renderers for the
+hatchback / sedan / golf cart, every one a shadow caster): the spec points at merged copies in
+`<course>/Props/VehiclesLowPoly/` (2 renderers each, the pack's materials, no shadows; sedan 11 177 and hatchback
+10 405 triangles, golf cart 3 956).
+- Regenerate: `blender/tools/vehicle_prefabs.py` -> `vehicle_models.py` -> `vehicle_models_10k.py`
+  (blender/README.md "Low-poly vehicles"), copy the FBX files + `vehicles.json` into the course folder,
+  `golfmap.vehicles.build`, then `golfmap.props.measure` old against new (the hatchback is 2.6 cm lower: its wipers
+  are gone; the others are equal).
+- Shadows: `castShadows` per object in `vehicles.json` (`--shadows none|body` when generating). Vreta has `none`:
+  without a shadow the cars look pasted on at 15 m, which the owner chose for frame rate.
+- How many: the generator places one car per entry of `docs/gspro/<course>/clubhouse-cars.json` (every stall the
+  ortho shows a car in); `"parked": false` leaves a stall empty. Vreta keeps 30 of 89. Model (hatchback/sedan) and
+  the odd reversed car are hashed from the stall position, so flipping the flag changes nothing else.
+- After a change, place only the vehicles (`golfmap.props.place only=<vehicle asset ids> materials=false`) and
+  check with `golfmap.props.stats group=Vehicles transforms=true`. `build_props.py --only <a prefab asset>` rewrites
+  `props.json` without re-exporting any model (it does regenerate `Textures/`).
+- Measuring triangles in a built course: static batching (on in the project, and props are `BatchingStatic`) hands
+  every renderer the combined mesh, so `sharedMesh.triangles` summed over renderers reported 181.6 M for cars that
+  were 2.0 M. Count submesh index ranges, or measure in the editor with `golfmap.props.stats`.
+
 Stone walls (the stone-faced banks of raised tees) are built by `golfmap.walls.build` (`GolfMapWalls.cs`, README
 "Stone walls") from `<course>/stone-walls.json` (`docs/gspro/<course>/stone-walls.gen.py`: banks traced on the DEM)
 with Blender-built stones (`props_kit` `boulder`, `<course>/Walls/Stones/`). The ~1.2 m OPCD meshes flatten a wall to
@@ -91,6 +129,23 @@ window validates then applies — but plant plain GameObjects under the terrain,
 flat pad under each building is a pipeline terrain edit baked into the heightmap, not a Unity step; the
 planter's corner probe warns when it is missing (expected for outer buildings: pads are inner terrain only). Matcher tests: `bun test unity/building-matching.test.mjs`
 (node:test files run under `bun test`; `node` is not on this machine's PATH).
+
+Performance ranking (`GolfMapPerf.cs` + `GolfMapPerfWindow.cs`, bridge `golfmap.perf.report|hide|show`; game side
+`unity/ArboristMod/perf.ts --rank`; README "Performance ranking"): one category model for both, rules in
+`Editor/GolfMap/GolfMapPerfCategories.json` (first matching regex on the hierarchy path, else `other:<root>`), pure
+model and tests in `unity/perf-rank.ts` / `.test.ts`. Three places apply the rules and must agree: `GolfMapPerf.GroupOf`,
+the mod's `SceneCommands.GroupOf` (`scene.geometry groups=`, `scene.hide groups= group=`) and `categoryOf` in
+`perf-rank.ts`; the statistics exist twice (`GolfMapPerf.Costs` / `Ranking`, `viewCosts` / `ranking`). Change them together.
+- The editor run switches scene and project state (renderer and component `enabled`, VSP `BillboardLayer` +
+  `Tools.visibleLayers`, `QualitySettings.shadows`) and puts it back after each case, before a scene save, a script
+  reload and quit. If a run is killed mid-case: `golfmap.perf.show`.
+- Timing and VSP item hides are `GolfMapVegPerf`'s (`Measure`, `SetHidden`); the vegetation-only sweep
+  (`golfmap.vegperf.sweep`, packages and single items) stays the tool for looking inside the VSP rows.
+- The course-mesh rules repeat `GolfMapSurfaces.Classify` (the game cannot call it); the editor report compares the two
+  on every course mesh and lists disagreements in `conditions.notes`.
+- Traps: editor numbers rank, the game's are the fps; the 120 fps vSync cap ("at the cap", `>=`); a 5 s reading swings
+  several fps (raise `--rounds`); static batching makes the game's triangles upper bounds; never measure after a
+  `veg.set` refresh.
 
 ## Course exports and zone import from the command line
 

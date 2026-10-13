@@ -235,16 +235,17 @@ def leaf_off_ortho_dir(tiles_dir, manifest):
     return tiles_dir / "ortho" / collection
 
 
-def sample_ortho_rgb(tile_dir, transform, shape, zoom=LEAF_OFF_ZOOM):
-    """Sample a Web Mercator XYZ webp pyramid at the centres of an EPSG:3006 grid.
-    Returns float32 (rows, cols, 3); NaN where no tile exists."""
+def sample_ortho_points(tile_dir, east, north, zoom=LEAF_OFF_ZOOM, cache=None):
+    """Sample a Web Mercator XYZ webp pyramid at EPSG:3006 points. Returns float32 (n, 3);
+    NaN where no tile exists. `cache` (a dict, optional) keeps decoded tiles between calls."""
     from PIL import Image
     from rasterio.warp import transform as warp_coords
-    rows, cols = shape
-    col_idx, row_idx = np.meshgrid(np.arange(cols) + .5, np.arange(rows) + .5)
-    east = transform.c + col_idx * transform.a
-    north = transform.f + row_idx * transform.e
-    lon, lat = warp_coords("EPSG:3006", "EPSG:4326", east.ravel(), north.ravel())
+    east = np.asarray(east, dtype=np.float64).ravel()
+    north = np.asarray(north, dtype=np.float64).ravel()
+    out = np.full((east.size, 3), np.nan, dtype=np.float32)
+    if east.size == 0:
+        return out
+    lon, lat = warp_coords("EPSG:3006", "EPSG:4326", east, north)
     lon = np.asarray(lon, dtype=np.float64)
     lat = np.radians(np.asarray(lat, dtype=np.float64))
     extent = 2 ** zoom * 256
@@ -254,16 +255,30 @@ def sample_ortho_rgb(tile_dir, transform, shape, zoom=LEAF_OFF_ZOOM):
     tile_y = np.floor(py / 256).astype(np.int64)
     in_x = (px % 256).astype(np.int64)
     in_y = (py % 256).astype(np.int64)
-    out = np.full((lon.size, 3), np.nan, dtype=np.float32)
     keys = tile_x * (1 << 32) + tile_y
     for key in np.unique(keys):
-        path = Path(tile_dir) / str(zoom) / str(int(key >> 32)) / f"{int(key & 0xffffffff)}.webp"
-        if not path.exists():
+        key = int(key)
+        img = cache.get(key) if cache is not None else None
+        if img is None and (cache is None or key not in cache):
+            path = Path(tile_dir) / str(zoom) / str(key >> 32) / f"{key & 0xffffffff}.webp"
+            img = np.asarray(Image.open(path).convert("RGB"), dtype=np.float32) if path.exists() else None
+            if cache is not None:
+                cache[key] = img
+        if img is None:
             continue
-        img = np.asarray(Image.open(path).convert("RGB"), dtype=np.float32)
         sel = np.nonzero(keys == key)[0]
         out[sel] = img[in_y[sel], in_x[sel]]
-    return out.reshape(rows, cols, 3)
+    return out
+
+
+def sample_ortho_rgb(tile_dir, transform, shape, zoom=LEAF_OFF_ZOOM):
+    """Sample a Web Mercator XYZ webp pyramid at the centres of an EPSG:3006 grid.
+    Returns float32 (rows, cols, 3); NaN where no tile exists."""
+    rows, cols = shape
+    col_idx, row_idx = np.meshgrid(np.arange(cols) + .5, np.arange(rows) + .5)
+    east = transform.c + col_idx * transform.a
+    north = transform.f + row_idx * transform.e
+    return sample_ortho_points(tile_dir, east, north, zoom).reshape(rows, cols, 3)
 
 
 def segment_greenness(raw, segments, peaks, rgb, upper_fraction=UPPER_CROWN_FRACTION, min_coverage=MIN_ORTHO_COVERAGE):

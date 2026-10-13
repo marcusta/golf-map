@@ -174,19 +174,128 @@ def test_positions_are_unity_metres_on_the_terrain(tmp_path, terrain):
 
 def test_hole_carries_par_index_and_the_full_tee_list(tmp_path, terrain):
     """A hole holds all eight tee sets plus the two aim points and the green
-    centre, in GreenKeeper's order — the sets the course has no tee for are
-    present with a null position, not missing."""
+    centre, in GreenKeeper's order — the sets the hole has no tee for are
+    present but disabled with a null position, the way GreenKeeper writes
+    them, so GSPro offers no tee that is not in the app."""
     doc, _ = _run(tmp_path, terrain, _make_db(tmp_path / "app.sqlite"))
 
     hole = doc["Holes"][0]
     assert (hole["HoleNumber"], hole["Par"], hole["Index"], hole["Enabled"]) == (1, 4, 7, True)
     assert [t["TeeType"] for t in hole["Tees"]] == [
         *gspro.GKD_TEE_TYPES, *gspro.GKD_AIM_TYPES, gspro.GKD_GREEN_CENTER]
-    assert _tee(hole, "Black")["Position"] is None
+    assert [t["TeeType"] for t in hole["Tees"] if t["Enabled"]] == ["White", "Yellow", "AimPoint1"]
+    assert all((t["Position"] is None) == (not t["Enabled"])
+               for t in hole["Tees"] if t["TeeType"] != gspro.GKD_GREEN_CENTER)
     assert _tee(hole, "AimPoint1")["Position"]["x"] == pytest.approx(200.0, abs=0.01)
-    assert _tee(hole, "AimPoint2")["Position"] is None
     # The green centre is the hole's measuring point, not a playable tee.
     assert _tee(hole, gspro.GKD_GREEN_CENTER)["Enabled"] is False
+
+
+def test_a_set_missing_on_one_hole_is_off_there_and_on_elsewhere(tmp_path, terrain):
+    holes = (HOLE, {**HOLE, "number": 2, "tees": [("Yellow", "yellow", 250.0, 300.0)],
+                    "aims": [], "green": (50.0, 300.0)})
+    doc, _ = _run(tmp_path, terrain, _make_db(tmp_path / "app.sqlite", holes=holes))
+
+    assert _tee(doc["Holes"][0], "White")["Enabled"] is True
+    assert _tee(doc["Holes"][1], "White") == {"TeeType": "White", "Enabled": False, "Distance": 0.0,
+                                              "Position": None}
+    assert doc["Holes"][1]["Enabled"] is True
+
+
+def test_a_hole_with_no_tee_is_written_disabled_and_says_so(tmp_path, terrain, capsys):
+    holes = (HOLE, {**HOLE, "number": 2, "tees": []})
+    doc, _ = _run(tmp_path, terrain, _make_db(tmp_path / "app.sqlite", holes=holes))
+
+    assert [h["Enabled"] for h in doc["Holes"][:2]] == [True, False]
+    assert "hole(s) 2 have no tee" in capsys.readouterr().out
+
+
+# --- Tidy tees --------------------------------------------------------------
+
+def _xz(hole, tee_type):
+    position = _tee(hole, tee_type)["Position"]
+    return position["x"], position["z"]
+
+
+def test_tees_under_a_metre_apart_share_the_position_furthest_from_the_hole(tmp_path, terrain):
+    """Two sets drawn 0.8 m apart are one tee box: both land exactly on the
+    back one, with its distance, and the height of the ground there."""
+    hole = {**HOLE, "tees": [("Yellow", "yellow", 350.0, 200.0), ("Red", "red", 350.6, 200.5)]}
+    doc, _ = _run(tmp_path, terrain, _make_db(tmp_path / "app.sqlite", holes=(hole,)))
+
+    gkd_hole = doc["Holes"][0]
+    assert _tee(gkd_hole, "Yellow")["Position"] == _tee(gkd_hole, "Red")["Position"]
+    assert _xz(gkd_hole, "Red") == pytest.approx((350.6, 200.5), abs=0.01)
+    assert _tee(gkd_hole, "Yellow")["Distance"] == _tee(gkd_hole, "Red")["Distance"]
+
+
+def test_tees_a_metre_or_more_apart_keep_their_own_positions(tmp_path, terrain):
+    hole = {**HOLE, "tees": [("Yellow", "yellow", 350.0, 200.0), ("Red", "red", 351.0, 202.0)]}
+    doc, _ = _run(tmp_path, terrain, _make_db(tmp_path / "app.sqlite", holes=(hole,)))
+
+    assert _xz(doc["Holes"][0], "Yellow") == pytest.approx((350.0, 200.0), abs=0.01)
+    assert _xz(doc["Holes"][0], "Red") == pytest.approx((351.0, 202.0), abs=0.01)
+
+
+def test_nearby_tees_nearly_in_a_row_are_put_on_the_line_of_play(tmp_path, terrain, capsys):
+    """Red stands 4 m in front of Yellow and 0.5 m off the line from Yellow
+    to the aim point: it moves sideways onto the line and keeps its place
+    along it. The height is the ground's at the new spot."""
+    hole = {**HOLE, "tees": [("Yellow", "yellow", 350.0, 200.0), ("Red", "red", 346.0, 200.5)]}
+    doc, _ = _run(tmp_path, terrain, _make_db(tmp_path / "app.sqlite", holes=(hole,)))
+
+    gkd_hole = doc["Holes"][0]
+    assert _xz(gkd_hole, "Yellow") == pytest.approx((350.0, 200.0), abs=0.01)
+    assert _xz(gkd_hole, "Red") == pytest.approx((346.0, 200.0), abs=0.01)
+    assert _tee(gkd_hole, "Red")["Position"]["y"] == pytest.approx(_unity_y(E0 + 346.0), abs=0.05)
+    assert _tee(gkd_hole, "Red")["Distance"] == pytest.approx(296.0, abs=0.01)
+    assert "1 moved" in capsys.readouterr().out
+
+
+def test_the_row_follows_the_aim_point_not_the_green(tmp_path, terrain):
+    """On a dogleg the line of play off the tee is towards the first aim
+    point; the row is square to that, not to the green."""
+    hole = {**HOLE, "tees": [("Yellow", "yellow", 350.0, 200.0), ("Red", "red", 346.0, 201.0)],
+            "aims": [(200.0, 260.0)]}
+    doc, _ = _run(tmp_path, terrain, _make_db(tmp_path / "app.sqlite", holes=(hole,)))
+
+    # The line from Yellow to the aim point climbs 0.4 m in z per metre west;
+    # Red, 0.56 m off it, ends up on it.
+    x, z = _xz(doc["Holes"][0], "Red")
+    assert z - 200.0 == pytest.approx((350.0 - x) * 0.4, abs=0.01)
+    assert math.hypot(x - 346.0, z - 201.0) == pytest.approx(0.557, abs=0.01)
+
+
+def test_a_par_3_lines_its_tees_up_on_the_green_centre(tmp_path, terrain):
+    hole = {**HOLE, "par": 3, "tees": [("Yellow", "yellow", 200.0, 200.0), ("Red", "red", 195.0, 199.6)],
+            "aims": []}
+    doc, _ = _run(tmp_path, terrain, _make_db(tmp_path / "app.sqlite", holes=(hole,)))
+
+    assert _xz(doc["Holes"][0], "Red") == pytest.approx((195.0, 200.0), abs=0.01)
+
+
+def test_tees_too_far_off_the_line_or_too_far_apart_are_left_alone(tmp_path, terrain):
+    """0.9 m off the line is a tee box beside the other, not a crooked row;
+    and 8 m apart is another tee box, however straight."""
+    hole = {**HOLE, "tees": [("Yellow", "yellow", 350.0, 200.0), ("Red", "red", 346.0, 200.9),
+                             ("Junior", None, 338.0, 200.4)]}
+    doc, _ = _run(tmp_path, terrain, _make_db(tmp_path / "app.sqlite", holes=(hole,)))
+
+    assert _xz(doc["Holes"][0], "Red") == pytest.approx((346.0, 200.9), abs=0.01)
+    assert _xz(doc["Holes"][0], "Junior") == pytest.approx((338.0, 200.4), abs=0.01)
+
+
+def test_a_chain_of_nearby_tees_lines_up_on_the_longest(tmp_path, terrain):
+    """White-Yellow and Yellow-Red are each within 6 m, White-Red is not:
+    one group, all on the line from White."""
+    hole = {**HOLE, "tees": [("Yellow", "yellow", 355.0, 200.3), ("White", "white", 360.0, 200.0),
+                             ("Red", "red", 350.0, 199.6)]}
+    doc, _ = _run(tmp_path, terrain, _make_db(tmp_path / "app.sqlite", holes=(hole,)))
+
+    gkd_hole = doc["Holes"][0]
+    assert _xz(gkd_hole, "White") == pytest.approx((360.0, 200.0), abs=0.01)
+    assert _xz(gkd_hole, "Yellow") == pytest.approx((355.0, 200.0), abs=0.01)
+    assert _xz(gkd_hole, "Red") == pytest.approx((350.0, 200.0), abs=0.01)
 
 
 def test_a_point_outside_the_square_is_left_unplaced(tmp_path, terrain, capsys):
@@ -588,6 +697,101 @@ def test_merging_keeps_everything_greenkeeper_owns(tmp_path, terrain):
 
     assert {k: doc[k] for k in GK_METADATA} == GK_METADATA
     assert doc["Holes"][0]["Par"] == 4 and _tee(doc["Holes"][0], "Yellow")["Position"] is not None
+
+
+APP_META = {"courseName": "Vreta Kloster", "city": "Ljungsbro", "state": "", "country": "Sweden",
+            "designer": "Marcus", "homage": "", "description": "Oak parkland, opened 1990.",
+            "difficulty": 4.9, "keywords": ["Parkland", "Historic"]}
+
+
+def _db_with_meta(path, meta):
+    """A course database from after migration 028, with the course's details."""
+    db = _make_db(path)
+    conn = sqlite3.connect(db)
+    conn.execute("ALTER TABLE courses ADD COLUMN gspro_meta_json TEXT")
+    conn.execute("UPDATE courses SET gspro_meta_json = ?", (json.dumps(meta) if meta else None,))
+    conn.commit()
+    conn.close()
+    return db
+
+
+def test_the_apps_course_details_go_into_the_header(tmp_path, terrain):
+    """Details typed in the app win over the file's, in GreenKeeper's own
+    spelling; what the app does not keep (region, the range) stays."""
+    out = _greenkeeper_file(tmp_path / "Scene.GKD")
+    doc, _ = _run(tmp_path, terrain, _db_with_meta(tmp_path / "app.sqlite", APP_META), out=out)
+
+    assert doc["CourseName"] == "Vreta Kloster" and doc["Designer"] == "Marcus"
+    assert doc["Location"] == "Ljungsbro, , Sweden" and doc["CityTown"] == "Ljungsbro"
+    assert doc["CourseInfo"] == "Oak parkland, opened 1990." and doc["DifficultyRating"] == 4.9
+    assert doc["KeywordParkland"] is True and doc["KeywordHistoric"] is True and doc["KeywordLinks"] is False
+    assert doc["KeywordsString"] == "Historic, Parkland"
+    assert doc["WhiteSR"] == GK_METADATA["WhiteSR"]
+    assert doc["region"] == 3 and doc["HasRange"] is True and doc["RangeTee"] == GK_METADATA["RangeTee"]
+
+
+def test_tee_set_ratings_go_into_the_header(tmp_path, terrain, capsys):
+    """A tee set's rating lands on the GKD set its tees do — the men's or the
+    women's, whichever the set says GSPro shows; sets without one, and GKD
+    sets the course has none for, keep the file's."""
+    out = _greenkeeper_file(tmp_path / "Scene.GKD")
+    db = _make_db(tmp_path / "app.sqlite")
+    conn = sqlite3.connect(db)
+    conn.execute("""CREATE TABLE course_tee_sets (id TEXT PRIMARY KEY, course_id TEXT, name TEXT, color TEXT,
+        sort_order INTEGER, rating_men REAL, slope_men INTEGER, rating_women REAL, slope_women INTEGER,
+        gspro_rating TEXT)""")
+    conn.executemany("INSERT INTO course_tee_sets VALUES (?,?,?,?,?,?,?,?,?,?)", [
+        ("s1", COURSE, "Gul", "yellow", 0, 71.5, 135, 77.2, 141, "men"),
+        ("s2", COURSE, "Red", "red", 1, 66.0, 120, 72.3, 129, "women"),
+        ("s3", COURSE, "Blue", "blue", 2, None, None, 75.9, 137, "men"),
+        ("s4", COURSE, "Klubbtee", None, 3, 70.0, 130, None, None, "men"),
+    ])
+    conn.commit()
+    conn.close()
+    doc, _ = _run(tmp_path, terrain, db, out=out)
+
+    assert doc["YellowSR"] == "71.5/135" and doc["RedSR"] == "72.3/129"
+    assert doc["BlueSR"] == "0.0/0" and doc["WhiteSR"] == GK_METADATA["WhiteSR"]
+    assert "ratings from the course's tee sets: Yellow 71.5/135, Red 72.3/129" in capsys.readouterr().out
+
+
+def test_a_tee_sets_gspro_tee_decides_where_its_tees_and_rating_go(tmp_path, terrain, capsys):
+    """The club's "57" is GSPro's Yellow because its tee set says so, whatever
+    its name and colour; a set with no GSPro tee stays out of the file even
+    when its colour is one of the eight."""
+    out = _greenkeeper_file(tmp_path / "Scene.GKD")
+    hole = {**HOLE, "tees": [("57", "white", 345.0, 200.0), ("Klubb", "red", 350.0, 200.0),
+                             ("Knatte", None, 380.0, 200.0)]}
+    db = _make_db(tmp_path / "app.sqlite", holes=(hole,))
+    conn = sqlite3.connect(db)
+    conn.execute("""CREATE TABLE course_tee_sets (id TEXT PRIMARY KEY, course_id TEXT, name TEXT, color TEXT,
+        sort_order INTEGER, rating_men REAL, slope_men INTEGER, rating_women REAL, slope_women INTEGER,
+        gspro_rating TEXT, gspro_tee TEXT)""")
+    conn.executemany("INSERT INTO course_tee_sets VALUES (?,?,?,?,?,?,?,?,?,?,?)", [
+        ("s1", COURSE, "57", "white", 0, 71.5, 135, None, None, "men", "Yellow"),
+        ("s2", COURSE, "Klubb", "red", 1, 66.0, 120, None, None, "men", None),
+        ("s3", COURSE, "Knatte", None, 2, 60.1, 101, None, None, "men", "Junior"),
+    ])
+    conn.execute("ALTER TABLE tees ADD COLUMN tee_set_id TEXT")
+    conn.execute("UPDATE tees SET tee_set_id = (SELECT id FROM course_tee_sets s WHERE s.name = tees.name)")
+    conn.commit()
+    conn.close()
+    doc, _ = _run(tmp_path, terrain, db, out=out)
+
+    gkd_hole = doc["Holes"][0]
+    assert _tee(gkd_hole, "Yellow")["Position"]["x"] == pytest.approx(345.0, abs=0.01)
+    assert _tee(gkd_hole, "Junior")["Position"]["x"] == pytest.approx(380.0, abs=0.01)
+    assert not _tee(gkd_hole, "White")["Enabled"] and not _tee(gkd_hole, "Red")["Enabled"]
+    assert doc["YellowSR"] == "71.5/135" and doc["JuniorSR"] == "60.1/101"
+    assert doc["WhiteSR"] == GK_METADATA["WhiteSR"] and doc["RedSR"] == "0.0/0"
+    assert "1 tee(s) named 'Klubb' have no GSPro tee" in capsys.readouterr().out
+
+
+def test_a_course_without_details_keeps_the_files(tmp_path, terrain):
+    out = _greenkeeper_file(tmp_path / "Scene.GKD")
+    doc, _ = _run(tmp_path, terrain, _db_with_meta(tmp_path / "app.sqlite", None), out=out)
+
+    assert {k: doc[k] for k in GK_METADATA} == GK_METADATA
 
 
 def test_merging_backs_the_original_up_once(tmp_path, terrain):

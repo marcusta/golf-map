@@ -19,6 +19,10 @@
 //   creeks                   the creeks as R.A.M. splines at the water surface (inner; needs the inner dem)
 //   gkd                      GreenKeeper's <scene>.GKD into the course's GSPro folder (--course-dir <folder>
 //                            sets it, like the panel does); needs the inner dem exported first
+//   arborist                 the Arborist file (arboristdata.dat in the course's GSPro folder): the lower vegetation
+//                            from the inner zones export, then the trees out of the open Unity editor's scene
+//                            (golfmap.trees.dump; skipped when it is not open). What the web's Plant for GSPro
+//                            runs after the planting. --arborist-out <folder> writes there instead (a trial run)
 //
 // Exports run one after another, in the order given; the first failure stops
 // the rest. Order matters where the service needs an earlier file: trees,
@@ -45,7 +49,7 @@ import {
 } from '../server/services/gspro-export.service';
 
 const ROOT = path.resolve(import.meta.dir, '..');
-const KINDS: GsproExportKind[] = ['svg', 'ortho', 'outer-ortho', 'dem', 'unity-terrain', 'unity-sculpt', 'unity-ortho', 'hillshade', 'trees', 'buildings', 'zones', 'creeks', 'gkd'];
+const KINDS: GsproExportKind[] = ['svg', 'ortho', 'outer-ortho', 'dem', 'unity-terrain', 'unity-sculpt', 'unity-ortho', 'hillshade', 'trees', 'buildings', 'zones', 'creeks', 'gkd', 'arborist'];
 const TERRAIN_KINDS = new Set<GsproExportKind>(['dem', 'unity-terrain', 'unity-sculpt', 'hillshade', 'trees', 'buildings', 'zones']);
 
 function usage(message?: string): never {
@@ -55,7 +59,7 @@ function usage(message?: string): never {
         '       bun run gspro:export -- status <course>',
         '       bun run gspro:export -- <course> <kind[:inner|:outer]>... [--dir <folder>] [--course-dir <folder>] [--source <file>] [--collection <id>]',
         '                                 [--darken <x>] [--tint] [--tint-opacity <x>] [--forest-floor] [--floor-color <#hex>]',
-        '                                 [--floor-mix <x>] [--remove-buildings]',
+        '                                 [--floor-mix <x>] [--remove-buildings] [--arborist-out <folder>]',
         `kinds: ${KINDS.join(', ')}`,
     ].join('\n'));
     process.exit(2);
@@ -89,6 +93,7 @@ function num(flags: Record<string, string | true>, name: string): number | undef
 
 const dataDir = process.env.DATA_DIR ?? path.join(ROOT, 'data');
 const dbPath = process.env.DB_PATH ?? path.join(dataDir, 'app.sqlite');
+const arboristOut = process.argv.indexOf('--arborist-out');
 if (!existsSync(dbPath)) usage(`no database at ${dbPath}`);
 const db = createDb<Database>(dbPath);
 const courses = new CoursesService(db);
@@ -97,6 +102,7 @@ const exporter = new GsproExportService({
     db, courses, assets, dataDir,
     terrainEdits: new TerrainEditsService(db),
     pipelineDir: process.env.MAP_PIPELINE_DIR ?? path.join(ROOT, 'pipeline'),
+    arboristOutDir: arboristOut === -1 ? undefined : path.resolve(process.argv[arboristOut + 1] ?? usage('--arborist-out needs a folder')),
 });
 
 async function resolveCourse(ident: string): Promise<{ id: string; name: string }> {

@@ -7,6 +7,7 @@ export interface Database {
     courses: CoursesTable;
     holes: HolesTable;
     tees: TeesTable;
+    course_tee_sets: CourseTeeSetsTable;
     greens: GreensTable;
     pins: PinsTable;
     aim_points: AimPointsTable;
@@ -67,6 +68,7 @@ export interface CoursesTable {
     site_id: string | null; // the site whose map this course uses (null = no map yet)
     gspro_export_dir: string | null; // GSPro SVG export folder; null = the server default (Downloads)
     gspro_course_dir: string | null; // GSPro course (scene) folder the GreenKeeper .GKD export writes into; null = not set
+    gspro_meta_json: string | null; // GSPro course details (GsproCourseMeta) the .GKD export writes; null = leave the file's own
     next_feature_no: Generated<number>; // the next course_features.feature_no (migration 026 triggers keep it)
     version: number;
     created_at: Generated<string>;
@@ -89,12 +91,33 @@ export interface HolesTable {
 export interface TeesTable {
     id: string;
     hole_id: string;
-    name: string; // e.g. 'yellow'
-    color: string | null;
+    tee_set_id: string | null; // the course tee set it belongs to (migration 029); null until adopted by TeeSetsService
+    name: string; // e.g. 'yellow' — the set's name, kept in step by TeeSetsService
+    color: string | null; // the set's colour, likewise
+    gspro_only: Generated<number>; // 1 = the set's `gspro_only`, likewise: a tee the course guide leaves out
     lat: number;
     lon: number;
     elevation: number | null;
     sort_order: number;
+    version: number;
+    created_at: Generated<string>;
+    updated_at: Generated<string>;
+}
+
+/** A course's tee set: what "Yellow" is for the whole course (migration 029). */
+export interface CourseTeeSetsTable {
+    id: string;
+    course_id: string;
+    name: string;
+    color: string | null;
+    sort_order: number;
+    rating_men: number | null; // course rating, men
+    slope_men: number | null;
+    rating_women: number | null;
+    slope_women: number | null;
+    gspro_rating: string; // 'men' | 'women': which of the two ratings the .GKD export writes for the set
+    gspro_tee: string | null; // the GreenKeeper tee type the set is exported as (GKD_TEE_TYPES); null = not in GSPro
+    gspro_only: Generated<number>; // 1 = exists for GSPro alone (a Junior or Par3 set); out of the course guide
     version: number;
     created_at: Generated<string>;
     updated_at: Generated<string>;

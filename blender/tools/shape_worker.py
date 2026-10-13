@@ -368,6 +368,11 @@ class Worker:
         app, old = self.app, self.ops
         # Any subsequent planner must see freshly exported sidecar content.
         app.ctx.__dict__.pop("_sidecars", None)
+        # The transition paint is keyed on these files' content, so an edit re-runs it: with the edited code.
+        import importlib
+        for name in ("shape_edgefade", "shape_transition"):
+            if name in sys.modules:
+                importlib.reload(sys.modules[name])
         new = self.op_list(self.status["layersDir"])
         d = self.diff(old, new)
         base = {"changedOps": [new[j]["key"] for j in d["changedNew"]],

@@ -22,6 +22,7 @@ import { api } from '../api';
 import type { CourseZoneType, ZoneTypeItem, ZoneTypeVariant, ZoneTypesApi } from '../../../shared/api/zone-types.gen';
 import { CREEK_BANK_ZONE_TYPE, isWetBankVariant } from '../../../shared/features/creek-vegetation';
 import { zoneBlendOf, type ZoneBlend } from '../../../shared/features/zone-layers';
+import { zoneHeightOf } from '../../../shared/features/zone-height';
 
 export type { CourseZoneType, ZoneTypeItem, ZoneTypeVariant };
 
@@ -34,6 +35,12 @@ export const FALLBACK_ZONE_TYPE_KEY = 'shrub';
 export const ZONE_WEIGHT_DEFAULT = 1;
 export const ZONE_FEATHER_DEFAULT_M = 2;
 export const ZONE_NOISE_DEFAULT_M = 0;
+/**
+ * How wide a drawn zone's mix fades into the vegetation beside it when it has
+ * no `edgeBlend` of its own (gspro.py DEFAULT_ZONE_EDGE_BLEND_M; generated and
+ * "Add to it" zones default to 0 there).
+ */
+export const ZONE_EDGE_BLEND_DEFAULT_M = 8;
 
 /** Name a fresh variant gets (and its key's slug), to be typed over. */
 export const NEW_VARIANT_NAME = 'New variant';
@@ -42,7 +49,10 @@ export const NEW_VARIANT_NAME = 'New variant';
  * The `vegetation_zone` attribute keys, as stored on the feature.
  * `zoneVariant` is a variant key of the zone's type; '' is the Default mix.
  * `blend` and `extraPalettes` (the attribute string, '' = none) say how the
- * zone adds up with others (shared/features/zone-layers.ts).
+ * zone adds up with others (shared/features/zone-layers.ts). `edgeBlend`
+ * is absent until set: the pipeline's default then applies. `heightMin` and
+ * `heightMax` (metres, both or neither) are the height the zone's bushes are
+ * scaled to; absent = the palette's own sizes (shared/features/zone-height.ts).
  */
 export interface ZoneAttributes {
     zoneType: string;
@@ -52,6 +62,9 @@ export interface ZoneAttributes {
     noise: number;
     blend: ZoneBlend;
     extraPalettes: string;
+    edgeBlend?: number;
+    heightMin?: number;
+    heightMax?: number;
 }
 
 /** The zone-type key a feature's attributes name ('' when it has none). */
@@ -208,6 +221,7 @@ export class ZoneTypesService {
     attributesOf(attributes: unknown): ZoneAttributes {
         const raw = (attributes ?? {}) as Record<string, unknown>;
         const defaults = this.defaultAttributes();
+        const height = zoneHeightOf(raw);
         return {
             zoneType: typeof raw.zoneType === 'string' && raw.zoneType ? raw.zoneType : defaults.zoneType,
             zoneVariant: zoneVariantKeyOf(raw),
@@ -216,6 +230,8 @@ export class ZoneTypesService {
             noise: typeof raw.noise === 'number' ? raw.noise : defaults.noise,
             blend: zoneBlendOf(raw),
             extraPalettes: typeof raw.extraPalettes === 'string' ? raw.extraPalettes : defaults.extraPalettes,
+            ...(typeof raw.edgeBlend === 'number' ? { edgeBlend: raw.edgeBlend } : {}),
+            ...(height ? { heightMin: height.min, heightMax: height.max } : {}),
         };
     }
 

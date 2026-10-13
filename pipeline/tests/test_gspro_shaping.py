@@ -50,6 +50,19 @@ def test_path_transition_sidecar_and_shaping_are_meter_based_and_deterministic(t
     rows = list(conn.execute("SELECT * FROM course_features"))
     exported = gspro._path_transition_entries(rows, {"road-transition": ["roads_a"]})[0]["transitions"]
     assert [t["id"] for t in exported] == ["fade"]  # nominal spans apart, but paint persists to endpoint
+    # Gravel wears with or without transitions: two tracks on a road, one band on a footpath, none on dirt.
+    def wear(surface, width):
+        geometry = json.loads(rows[0]["geometry_json"])
+        geometry["centerline"]["widthM"] = width
+        conn.execute("UPDATE course_features SET attributes_json=?, geometry_json=?", (json.dumps({"surface": surface}), json.dumps(geometry)))
+        entries = gspro._path_transition_entries(list(conn.execute("SELECT * FROM course_features")), {"road-transition": ["roads_a"]})
+        return entries[0] if entries else None
+    road = wear("gravel", 4)
+    assert road["transitions"] == [] and road["wear"]["tracks"] == 2
+    assert road["wear"]["trackSpacingM"] + road["wear"]["trackWidthM"] < 4 - .5
+    assert wear("gravel", 2)["wear"]["tracks"] == 2 and wear("gravel", 1.6)["wear"]["tracks"] == 1
+    assert wear("gravel", 1.2) is None and wear("dirt", 4) is None
+    assert road == wear("gravel", 4)
     conn.close()
 
 COURSE = "11111111-1111-1111-1111-111111111111"

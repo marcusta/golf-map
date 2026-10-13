@@ -7,6 +7,7 @@ import { createSitesApi } from './api/sites.api';
 import { createCoursesApi } from './api/courses.api';
 import { createHolesApi } from './api/holes.api';
 import { createTeesApi } from './api/tees.api';
+import { createTeeSetsApi } from './api/tee-sets.api';
 import { createGreensApi } from './api/greens.api';
 import { createPinsApi } from './api/pins.api';
 import { createAimPointsApi } from './api/aim-points.api';
@@ -54,6 +55,7 @@ export function mountApiRoutes(app: Hono, services: Services, opts: { mode: Serv
         coursesService,
         holesService,
         teesService,
+        teeSetsService,
         greensService,
         pinsService,
         aimPointsService,
@@ -86,6 +88,7 @@ export function mountApiRoutes(app: Hono, services: Services, opts: { mode: Serv
     mount(app, '/api', createCoursesApi(coursesService));
     mount(app, '/api', createHolesApi(holesService));
     mount(app, '/api', createTeesApi(teesService));
+    mount(app, '/api', createTeeSetsApi(teeSetsService));
     mount(app, '/api', createGreensApi(greensService));
     mount(app, '/api', createPinsApi(pinsService));
     mount(app, '/api', createAimPointsApi(aimPointsService));

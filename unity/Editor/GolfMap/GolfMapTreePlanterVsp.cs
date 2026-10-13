@@ -57,8 +57,8 @@ namespace GolfMap.Editor
             Dirty();
         }
 
-        // The area's storage is the one GolfMap system laid out for its terrain. Picking it by
-        // hand is what let inner trees land in the outer system, so it is only ever resolved.
+        // The area's storage is the course's one GolfMap system, which covers both terrains. Picking
+        // it by hand is what let inner trees land in the outer system, so it is only ever resolved.
         partial void SyncStorage(ref bool changed, ref string problem)
         {
             if (mode != Mode.PersistentStorage || !terrain) return;
@@ -109,7 +109,7 @@ namespace GolfMap.Editor
                     dialog.titleContent=new GUIContent("Delete storage");dialog.minSize=new Vector2(660,390);dialog.ShowUtility();
                 }
             }
-            EditorGUILayout.HelpBox("The storage is found from the area's terrain; Plant creates it when there is none. Plant and Clear replace this area's imported trees (source 42) only, after writing a backup.", MessageType.None);
+            EditorGUILayout.HelpBox("The inner and the outer area share the course's one storage; Plant creates it when there is none. Plant and Clear replace this area's imported trees (its own catalogue, source 42) only, after writing a backup.", MessageType.None);
         }
 
         public class DeleteStorageWindow : EditorWindow
@@ -253,33 +253,45 @@ namespace GolfMap.Editor
             }catch(Exception e){status="Colour refresh stopped: "+e.Message;Debug.LogException(e);}
         }
 
-        static HashSet<string> StoredIDs(PersistentVegetationStoragePackage package)
+        // only: the item ids to look at. The inner and the outer trees share one storage, so
+        // everything an area clears, counts or replaces goes by its own catalogue's items (RoleIDs).
+        static HashSet<string> StoredIDs(PersistentVegetationStoragePackage package, HashSet<string> only = null)
         {
-            return new HashSet<string>(package.PersistentVegetationCellList.SelectMany(c => c.PersistentVegetationInfoList).Select(i => i.VegetationItemID));
+            return new HashSet<string>(package.PersistentVegetationCellList.SelectMany(c => c.PersistentVegetationInfoList).Select(i => i.VegetationItemID).Where(id => only == null || only.Contains(id)));
         }
 
-        static int SourceCount(PersistentVegetationStoragePackage package)
+        static int SourceCount(PersistentVegetationStoragePackage package, HashSet<string> only = null)
         {
-            return package.PersistentVegetationCellList.Sum(c => c.PersistentVegetationInfoList.Sum(i => i.VegetationItemList.Count(t => t.VegetationSourceID == ImportSource)));
+            return package.PersistentVegetationCellList.Sum(c => c.PersistentVegetationInfoList.Where(i => only == null || only.Contains(i.VegetationItemID)).Sum(i => i.VegetationItemList.Count(t => t.VegetationSourceID == ImportSource)));
+        }
+
+        // The items of this area's tree catalogue: what the area owns in the shared storage.
+        HashSet<string> RoleIDs(VegetationSystemPro system)
+        {
+            var ids = new HashSet<string>();
+            if (system) foreach (var catalog in system.VegetationPackageProList.Where(p => p && p.PackageName == CatalogName))
+                foreach (var item in catalog.VegetationInfoList) ids.Add(item.VegetationItemID);
+            return ids;
         }
 
         partial void ClearImported()
         {
             if (!storage || !storage.PersistentVegetationStoragePackage) { status = "Nothing planted in the " + RoleKey + " area: it has no storage yet."; return; }
             var package = storage.PersistentVegetationStoragePackage;
-            int count = SourceCount(package);
+            var own = RoleIDs(storage.VegetationSystemPro);
+            int count = SourceCount(package, own);
             BackupStorage(package);
             Undo.RegisterCompleteObjectUndo(package, "Clear GolfMap imported trees");
-            foreach (var id in StoredIDs(package)) package.RemoveVegetationItemInstances(id, ImportSource);
+            foreach (var id in StoredIDs(package, own)) package.RemoveVegetationItemInstances(id, ImportSource);
             EditorUtility.SetDirty(package);
             RefreshStorage();
             AssetDatabase.SaveAssets();
-            status = "Cleared " + count + " imported instances. Other sources preserved. Undo is available.";
+            status = "Cleared " + count + " imported " + RoleKey + " instances. The other area and other sources are preserved. Undo is available.";
         }
 
         // Every system is named VegetationSystemPro for GSPro's sake (GolfMapVspRig), so identity
         // comes from the storage asset the planter created for it, never from the object's name.
-        static bool IsGolfMapStorage(PersistentVegetationStorage candidate)
+        internal static bool IsGolfMapStorage(PersistentVegetationStorage candidate)
         {
             if(!candidate||!candidate.PersistentVegetationStoragePackage)return false;
             return GolfMapCourses.Owns(AssetDatabase.GetAssetPath(candidate.PersistentVegetationStoragePackage));
@@ -289,12 +301,7 @@ namespace GolfMap.Editor
         {
             if(!candidate||!target||!target.terrainData||!candidate.VegetationSystemPro||
                 !candidate.PersistentVegetationStoragePackage||candidate.gameObject.scene!=target.gameObject.scene)return false;
-            var system=candidate.VegetationSystemPro;
-            if(!system.VegetationStudioTerrainObjectList.Contains(target.gameObject))return false;
-            var bounds=system.VegetationSystemBounds;var size=target.terrainData.size;
-            var center=target.transform.position+size/2;
-            return Mathf.Abs(bounds.size.x-(size.x+2))<=2&&Mathf.Abs(bounds.size.z-(size.z+2))<=2&&
-                Mathf.Abs(bounds.center.x-center.x)<=1&&Mathf.Abs(bounds.center.z-center.z)<=1;
+            return GolfMapZoneImporter.SystemMatchesTerrain(candidate.VegetationSystemPro,target);
         }
 
         static string StorageMismatchDetails(PersistentVegetationStorage candidate,Terrain target)
@@ -305,7 +312,7 @@ namespace GolfMap.Editor
             if(!candidate.PersistentVegetationStoragePackage)return "Storage '"+candidate.name+"' has no storage asset.";
             if(candidate.gameObject.scene!=target.gameObject.scene)return "Storage and terrain belong to different scenes.";
             if(!system.VegetationStudioTerrainObjectList.Contains(target.gameObject))return "Storage '"+candidate.name+"' is not associated with terrain '"+target.name+"'.";
-            return "Storage '"+candidate.name+"' bounds "+system.VegetationSystemBounds+" differ from terrain '"+target.name+"' at "+target.transform.position+" with size "+target.terrainData.size+".";
+            return "Storage '"+candidate.name+"' bounds "+system.VegetationSystemBounds+" do not cover terrain '"+target.name+"' at "+target.transform.position+" with size "+target.terrainData.size+".";
         }
 
         void EnsureStorage(bool createNew=false)
@@ -317,6 +324,8 @@ namespace GolfMap.Editor
             var compatible=candidates.Where(s=>StorageMatchesTerrain(s,terrain)).ToArray();
             if(!createNew&&compatible.Length>1)throw new InvalidOperationException("Several matching GolfMap systems exist. Select the intended storage explicitly.");
             if(!createNew&&compatible.Length==1){storage=compatible[0];return;}
+            // A second system would be left without a camera in GSPro (GolfMapVspRig).
+            if(!createNew&&candidates.Length>0)throw new InvalidOperationException("The scene's GolfMap vegetation system does not cover '"+terrain.name+"'. Run GolfMap > Merge vegetation systems for GSPro first.");
             var go = new GameObject(GolfMapVspRig.SystemObjectName);
             Undo.RegisterCreatedObjectUndo(go, "Create GolfMap VSP system");
             SceneManager.MoveGameObjectToScene(go, terrain.gameObject.scene);
@@ -327,10 +336,16 @@ namespace GolfMap.Editor
             // Match the shape VSP's own wizard builds, which is what GSPro expects to find.
             GolfMapVspRig.Standardise(system, manager);
             system.AutomaticBoundsCalculation = false;
-            var size = terrain.terrainData.size;
-            system.VegetationSystemBounds = new Bounds(terrain.transform.position + size / 2, size + new Vector3(2, 100, 2));
-            if (!terrain.GetComponent<UnityTerrain>()) Undo.AddComponent<UnityTerrain>(terrain.gameObject);
-            system.AddTerrain(terrain.gameObject);
+            // One system for the whole course, laid out over both terrains whichever area plants first.
+            var terrains = GolfMapVspRig.CourseTerrains(Course, terrain);
+            system.VegetationSystemBounds = GolfMapVspRig.BoundsOver(terrains);
+            foreach (var t in terrains)
+            {
+                if (!t.GetComponent<UnityTerrain>()) Undo.AddComponent<UnityTerrain>(t.gameObject);
+                system.AddTerrain(t.gameObject);
+            }
+            GolfMapVspRig.TagTerrainSources(Course, terrains);
+            GolfMapVspRig.NoPreload(system);
             var package = CreateInstance<PersistentVegetationStoragePackage>();
             AssetDatabase.CreateAsset(package, AssetDatabase.GenerateUniqueAssetPath(GolfMapCourses.Folder(Course) + "ImportedTreeStorage.asset"));
             storage.SetPersistentVegetationStoragePackage(package);
@@ -410,7 +425,7 @@ namespace GolfMap.Editor
         // VSP resolves a position with a zero-size rect (also inside AddVegetationItemInstance), which misses
         // points lying exactly on a cell edge. Survey stems use whole-metre coordinates, so thousands sit on the
         // cell grid. Nudge those a centimetre into the nearest cell instead of dropping them.
-        static bool ResolveCell(VegetationSystemPro system, ref Vector3 position)
+        internal static bool ResolveCell(VegetationSystemPro system, ref Vector3 position)
         {
             var cells = new List<VegetationCell>();
             system.VegetationCellQuadTree.Query(new Rect(new Vector2(position.x, position.z), Vector2.zero), cells);
@@ -460,7 +475,10 @@ namespace GolfMap.Editor
                 var item = catalog.VegetationInfoList.FirstOrDefault(i => i.VegetationPrefab == prefab);
                 if (item == null) { catalog.AddVegetationItem(prefab, VegetationType.Tree, false); item = catalog.VegetationInfoList.Last(); changed = true; }
                 item.EnableRuntimeSpawn = false;
+                // The tree prefabs carry their GSPro colliders (trunk capsules on GSPwood, crowns on GSPleaves).
+                item.ColliderType = ColliderType.FromPrefab;
                 item.UseBillboards = forceBillboards;
+                if(forceBillboards)GolfMapVspRig.BillboardsOnly(item);
                 if(useBiome)SyncPrefabColours(item);
                 if(forceBillboards&&(rebake||!item.BillboardTexture)){BakeBiomeBillboard(catalog,item);changed=true;}
                 mapping.Add(prefab, item.VegetationItemID);
@@ -555,11 +573,6 @@ namespace GolfMap.Editor
                 }
                 if(storage&&storage.VegetationSystemPro){
                     if(!StorageMatchesTerrain(storage,terrain))throw new InvalidOperationException("Storage does not match the current terrain/bounds. Click Create / select storage for this terrain to select or create a matching system. The old storage will be preserved.");
-                    var catalogs=storage.VegetationSystemPro.VegetationPackageProList;
-                    // Only the other area's tree catalogue is a clash: the inner system also carries the
-                    // lower-vegetation (grass) package, which the planter never touches.
-                    var other=catalogs.FirstOrDefault(p=>IsImportedCatalogue(p)&&p.VegetationInfoList.Count>0&&p.PackageName!=CatalogName);
-                    if(other)throw new InvalidOperationException("This system already holds the '"+other.PackageName+"' catalogue. Inner and outer trees must use separate systems.");
                 }
                 probe = new GroundProbe(terrain, forceBillboards ? new List<GameObject>() : groundMeshes);
                 foreach (var tree in loaded.trees)
@@ -575,9 +588,10 @@ namespace GolfMap.Editor
                 system.PersistentVegetationStorage = storage;
                 system.VegetationCellSpawner.PersistentVegetationStorage = storage;
                 // This VSP billboard generator uses X scale for both billboard axes.
-                // The survey uses independent crown width and height: retain mesh LODs.
-                system.VegetationSettings.AdditionalTreeMeshDistance = forceBillboards ? 0 : 3000;
-                if(forceBillboards){system.VegetationSettings.PlantDistance=0;system.VegetationSettings.AdditionalBillboardDistance=outerBillboardDistance;system.VegetationSettings.TreeShadows=false;}
+                // The survey uses independent crown width and height: the inner trees retain mesh LODs,
+                // and the outer items are held to billboards per item (GolfMapVspRig.BillboardsOnly).
+                system.VegetationSettings.AdditionalTreeMeshDistance = GolfMapVspRig.TreeMeshDistance;
+                if(forceBillboards)GolfMapVspRig.SetBillboardReach(system,outerBillboardDistance);
                 for (int i = 0; i < prepared.Count; i++)
                 {
                     var t = prepared[i];
@@ -585,7 +599,7 @@ namespace GolfMap.Editor
                 }
                 int strays = Doubles(false).Where(d => d.storage != storage).Sum(d => d.items.Count);
                 if (strays > 0) throw new InvalidOperationException(strays + " imported trees from another storage already stand in the " + RoleKey + " area and would render on top of these. Use Remove doubled trees first. Nothing changed.");
-                int prior = SourceCount(package);
+                int prior = SourceCount(package, RoleIDs(system));
                 if (prior > 0 && !unattended && !EditorUtility.DisplayDialog("Replace " + RoleKey + " trees?", "Replace the " + prior + " imported trees in " + Path.GetFileName(AssetDatabase.GetAssetPath(package)) + " with " + prepared.Count + " from " + Path.GetFileName(filePath) + "?\n\nA backup is written first.", "Replace", "Cancel")) { status = "Plant cancelled. Nothing changed."; return; }
                 var mapping = EnsureCatalog(system, prepared.Select(t => t.prefab), regenerateBillboards);
                 var backup=BackupStorage(package);
@@ -593,9 +607,10 @@ namespace GolfMap.Editor
                 try {
                 // Always replace. Appending the survey to an earlier import of it puts every tree in
                 // twice, a hair apart wherever the palette's scale limits changed in between.
-                foreach (var id in StoredIDs(package)) package.RemoveVegetationItemInstances(id, ImportSource);
+                var own = RoleIDs(system);   // after EnsureCatalog: includes the items it just added
+                foreach (var id in StoredIDs(package, own)) package.RemoveVegetationItemInstances(id, ImportSource);
                 foreach (var t in prepared) storage.AddVegetationItemInstance(mapping[t.prefab], t.position, t.scale, t.rotation, false, ImportSource, 1f, false);
-                if (SourceCount(package) != prepared.Count) throw new InvalidOperationException("Stored count differs from expected count.");
+                if (SourceCount(package, own) != prepared.Count) throw new InvalidOperationException("Stored count differs from expected count.");
                 } catch {EditorJsonUtility.FromJsonOverwrite(backup,package);EditorUtility.SetDirty(package);RefreshStorage();throw;}
                 // Retired palette prefabs would otherwise stay in the catalogue for good and keep
                 // failing VSP's per-item validation at load. Only safe once the instances are in.

@@ -14,9 +14,9 @@
       "select": {
         "feature": "b0654a52-6c55-472e-9821-2da474c6e18e"
       },
-      "recipe": "golfmap-bunker-paint-only.json",
+      "recipe": "cesimgolf-Hazeltine_Bunker_Recipe.json",
       "seed": 25,
-      "note": "golfmap-bunker-paint-only (default for bunker)"
+      "note": "cesimgolf-hazeltine (recipe edit)"
     },
     {
       "id": "recipe-1a",
@@ -24,9 +24,9 @@
       "select": {
         "feature": "60334cc9-c016-4aa2-bbe7-f42310dda654"
       },
-      "recipe": "golfmap-bunker-paint-only.json",
+      "recipe": "cesimgolf-Hazeltine_Bunker_Recipe.json",
       "seed": 26,
-      "note": "golfmap-bunker-paint-only (default for bunker)"
+      "note": "cesimgolf-hazeltine (recipe edit)"
     },
     {
       "id": "recipe-1b",
@@ -44,9 +44,9 @@
       "select": {
         "feature": "04542ab7-cd16-4072-b6f6-3939f97207b9"
       },
-      "recipe": "golfmap-bunker-studio-conway.json",
+      "recipe": "cesimgolf-Hazeltine_Bunker_Recipe.json",
       "seed": 28,
-      "note": "golfmap-bunker-studio-conway (recipe edit)"
+      "note": "cesimgolf-hazeltine (recipe edit)"
     },
     {
       "id": "recipe-1d",
@@ -64,9 +64,9 @@
       "select": {
         "feature": "bec99bb7-f43f-4b89-b2be-0e712cd9c830"
       },
-      "recipe": "golfmap-bunker-paint-only.json",
+      "recipe": "cesimgolf-Hazeltine_Bunker_Recipe.json",
       "seed": 36,
-      "note": "golfmap-bunker-paint-only (default for bunker)"
+      "note": "cesimgolf-hazeltine (recipe edit)"
     },
     {
       "id": "recipe-32",
@@ -74,9 +74,9 @@
       "select": {
         "feature": "676a1218-a86c-4392-a068-a7afb2cbcbde"
       },
-      "recipe": "golfmap-bunker-paint-only.json",
+      "recipe": "cesimgolf-Hazeltine_Bunker_Recipe.json",
       "seed": 50,
-      "note": "golfmap-bunker-paint-only (default for bunker)"
+      "note": "cesimgolf-hazeltine (recipe edit)"
     },
     {
       "id": "recipe-38",
@@ -114,9 +114,9 @@
       "select": {
         "feature": "a4926092-f621-4122-881c-5710a33a3e14"
       },
-      "recipe": "golfmap-bunker-paint-only.json",
+      "recipe": "cesimgolf-Hazeltine_Bunker_Recipe.json",
       "seed": 59,
-      "note": "golfmap-bunker-paint-only (default for bunker)"
+      "note": "cesimgolf-hazeltine (recipe edit)"
     },
     {
       "id": "recipe-3c",
@@ -124,9 +124,9 @@
       "select": {
         "feature": "01b89dbf-cedb-407a-8759-34279dd6d95f"
       },
-      "recipe": "golfmap-bunker-paint-only.json",
+      "recipe": "cesimgolf-Hazeltine_Bunker_Recipe.json",
       "seed": 60,
-      "note": "golfmap-bunker-paint-only (default for bunker)"
+      "note": "cesimgolf-hazeltine (recipe edit)"
     },
     {
       "id": "recipe-49",
@@ -134,9 +134,9 @@
       "select": {
         "feature": "3f2b863a-3d71-4333-a1ce-108e7c52c17f"
       },
-      "recipe": "golfmap-bunker-paint-only.json",
+      "recipe": "cesimgolf-Hazeltine_Bunker_Recipe.json",
       "seed": 73,
-      "note": "golfmap-bunker-paint-only (default for bunker)"
+      "note": "cesimgolf-hazeltine (recipe edit)"
     },
     {
       "id": "recipe-4a",
@@ -144,9 +144,9 @@
       "select": {
         "feature": "3f152bfe-0b2d-46f6-bdbd-d22d8decac81"
       },
-      "recipe": "golfmap-bunker-paint-only.json",
+      "recipe": "cesimgolf-Hazeltine_Bunker_Recipe.json",
       "seed": 74,
-      "note": "golfmap-bunker-paint-only (default for bunker)"
+      "note": "cesimgolf-hazeltine (recipe edit)"
     },
     {
       "id": "recipe-4b",
@@ -154,9 +154,9 @@
       "select": {
         "feature": "1cbe472a-47d9-4cae-88fe-dd918803ed48"
       },
-      "recipe": "golfmap-bunker-paint-only.json",
+      "recipe": "cesimgolf-Hazeltine_Bunker_Recipe.json",
       "seed": 75,
-      "note": "golfmap-bunker-paint-only (default for bunker)"
+      "note": "cesimgolf-hazeltine (recipe edit)"
     },
     {
       "id": "recipe-4c",
@@ -164,9 +164,9 @@
       "select": {
         "feature": "5a933726-86da-4a66-8825-715804eb86f6"
       },
-      "recipe": "golfmap-bunker-paint-only.json",
+      "recipe": "cesimgolf-Hazeltine_Bunker_Recipe.json",
       "seed": 76,
-      "note": "golfmap-bunker-paint-only (default for bunker)"
+      "note": "cesimgolf-hazeltine (recipe edit)"
     },
     {
       "id": "recipe-4d",
@@ -174,9 +174,9 @@
       "select": {
         "feature": "e6ff8ddb-91a8-40d5-a4d1-2cde53f94447"
       },
-      "recipe": "golfmap-bunker-paint-only.json",
+      "recipe": "cesimgolf-Conway_Bunker_Standard.json",
       "seed": 77,
-      "note": "golfmap-bunker-paint-only (default for bunker)"
+      "note": "cesimgolf-conway (recipe edit)"
     },
     {
       "id": "recipe-53",
@@ -184,9 +184,9 @@
       "select": {
         "feature": "77dbcbda-7b6d-4c03-bfde-bd6e9eb3e958"
       },
-      "recipe": "golfmap-bunker-studio-conway.json",
+      "recipe": "cesimgolf-Hazeltine_Bunker_Recipe.json",
       "seed": 83,
-      "note": "golfmap-bunker-studio-conway (recipe edit)"
+      "note": "cesimgolf-hazeltine (recipe edit)"
     },
     {
       "id": "recipe-54",
@@ -194,9 +194,9 @@
       "select": {
         "feature": "e57e408e-c07b-4712-ab3f-9e79a8c40cf2"
       },
-      "recipe": "cesimgolf-Hazeltine_Bunker_Recipe.json",
+      "recipe": "cesimgolf-Conway_Bunker_Standard.json",
       "seed": 84,
-      "note": "cesimgolf-hazeltine (recipe edit)"
+      "note": "cesimgolf-conway (recipe edit)"
     },
     {
       "id": "recipe-55",
@@ -204,9 +204,9 @@
       "select": {
         "feature": "bbea1cf1-bfaf-4660-88ea-73fadc0ed39b"
       },
-      "recipe": "cesimgolf-Hazeltine_Bunker_Recipe.json",
+      "recipe": "cesimgolf-Conway_Bunker_Standard.json",
       "seed": 85,
-      "note": "cesimgolf-hazeltine (recipe edit)"
+      "note": "cesimgolf-conway (recipe edit)"
     },
     {
       "id": "recipe-66",
@@ -244,9 +244,9 @@
       "select": {
         "feature": "cba4669e-0531-4748-8f71-98bab198e99b"
       },
-      "recipe": "golfmap-bunker-paint-only.json",
+      "recipe": "cesimgolf-Hazeltine_Bunker_Recipe.json",
       "seed": 109,
-      "note": "golfmap-bunker-paint-only (default for bunker)"
+      "note": "cesimgolf-hazeltine (recipe edit)"
     },
     {
       "id": "recipe-78",
@@ -344,9 +344,9 @@
       "select": {
         "feature": "7ba1e990-24d6-42bc-b731-ae8b6a157da0"
       },
-      "recipe": "golfmap-bunker-paint-only.json",
+      "recipe": "cesimgolf-Hazeltine_Bunker_Recipe.json",
       "seed": 356,
-      "note": "golfmap-bunker-paint-only (default for bunker)"
+      "note": "cesimgolf-hazeltine (recipe edit)"
     },
     {
       "id": "recipe-165",

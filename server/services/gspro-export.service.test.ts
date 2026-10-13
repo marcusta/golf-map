@@ -20,6 +20,8 @@ import { defaultUnityBridge, type UnityBridge } from './unity-bridge';
 import { NotFoundError, ConflictError } from '@basics/core/server/auth';
 import { CourseFeaturesService } from './course-features.service';
 import { generatorsFrom } from './vegetation-generators';
+import { courseMetaDiff, emptyCourseMeta } from '../../shared/gspro-course-meta';
+import { TeeSetsService } from './tee-sets.service';
 
 /**
  * The real exporter is pinned by pipeline/tests/test_gspro_svg.py; here the
@@ -60,13 +62,13 @@ const GEOREF = JSON.stringify({ bbox: GEOREF_BBOX });
 /** …which the exports square and snap to the 10 m step: 2054 m -> 2050 m. */
 const GEOREF_INNER = innerSquareFrom3006(GEOREF_BBOX);
 
-async function setup(runner: ExportRunner, opts: { georeference?: boolean; unityBridge?: UnityBridge; courseDocsRoot?: string } = {}) {
+async function setup(runner: ExportRunner, opts: { georeference?: boolean; unityBridge?: UnityBridge; courseDocsRoot?: string; dataDir?: string } = {}) {
     const ctx = await createTestDb(seedCourse);
     if (opts.georeference !== false) {
         await ctx.db.updateTable('courses').set({ georeference_json: GEOREF })
             .where('id', '=', TEST_COURSE_ID).execute();
     }
-    const dataDir = await mkdtemp(path.join(os.tmpdir(), 'gspro-data-'));
+    const dataDir = opts.dataDir ?? await mkdtemp(path.join(os.tmpdir(), 'gspro-data-'));
     const courses = new CoursesService(ctx.db);
     const assets = new AssetsService(ctx.db, dataDir);
     const svc = new GsproExportService({
@@ -1161,6 +1163,59 @@ test('the GSPro course folder is unset until chosen, must exist, and names the G
     await expect(svc.setCourseDir('nope', null)).rejects.toThrow(NotFoundError);
 });
 
+test('course details are kept with the course, and read back from a .GKD edited in GreenKeeper', async () => {
+    const t = await setup(recordingRunner().runner);
+    const { svc } = t;
+    const none = await svc.settings(TEST_COURSE_ID);
+    expect(none.meta).toBeNull();
+    expect(none.gkdMeta).toBeNull();
+    await expect(svc.readGkdMeta(TEST_COURSE_ID)).rejects.toThrow(/Set the GSPro course folder first/);
+
+    const scene = path.join(await mkdtemp(path.join(os.tmpdir(), 'gspro-courses-')), 'Vreta_lidar_scene');
+    await mkdir(scene);
+    await svc.setCourseDir(TEST_COURSE_ID, scene);
+    await expect(svc.readGkdMeta(TEST_COURSE_ID)).rejects.toThrow(/No readable \.GKD/);
+
+    // Typed in the app: stored trimmed, keywords in the file's order.
+    const typed = await svc.setMeta(TEST_COURSE_ID, {
+        ...emptyCourseMeta('Linkan'), designer: ' Marcus ', keywords: ['Parkland', 'Historic'],
+    });
+    expect(typed.meta).toMatchObject({ courseName: 'Linkan', designer: 'Marcus', keywords: ['Historic', 'Parkland'] });
+    expect(typed.gkdRatings).toEqual([]);
+
+    // Saved in GreenKeeper since: the file's details show next to the app's, and can be taken over.
+    await writeFile(path.join(scene, 'Vreta_lidar_scene.GKD'), JSON.stringify({
+        CourseName: 'Vreta', CityTown: 'Linköping', StateCountyProvince: '', Country: 'Sweden', Designer: 'Fandorm',
+        CourseInfo: 'Oak parkland.', DifficultyRating: 4.9, KeywordParkland: true, KeywordLinks: false,
+        WhiteSR: '73.4/139', YellowSR: '71.5/135', BlueSR: '0.0/0', Holes: [],
+    }));
+    const edited = await svc.settings(TEST_COURSE_ID);
+    expect(edited.meta?.designer).toBe('Marcus');
+    expect(edited.gkdMeta).toMatchObject({ courseName: 'Vreta', city: 'Linköping', designer: 'Fandorm', keywords: ['Parkland'] });
+    expect(courseMetaDiff(edited.meta!, edited.gkdMeta!)).toEqual(
+        ['name', 'city', 'country', 'designer', 'description', 'difficulty', 'keywords']);
+    // The course's tee sets (yellow, blue) are unrated; the file rates Yellow (and White, which the course has no set for).
+    expect(edited.gkdRatings).toEqual(['yellow 71.5/135']);
+
+    // The ratings alone can be taken: the course details the app keeps stay.
+    const rated = await svc.readGkdRatings(TEST_COURSE_ID);
+    expect(rated.gkdRatings).toEqual([]);
+    expect(rated.meta?.designer).toBe('Marcus');
+    const [yellow] = await new TeeSetsService(t.db).listByCourse(TEST_COURSE_ID);
+    expect([yellow.ratingMen, yellow.slopeMen]).toEqual([71.5, 135]);
+    await new TeeSetsService(t.db).update(yellow.id, yellow.version, { ratingMen: null, slopeMen: null });
+
+    const read = await svc.readGkdMeta(TEST_COURSE_ID);
+    expect(read.meta).toEqual(read.gkdMeta);
+    expect(read.meta).toMatchObject({ description: 'Oak parkland.', difficulty: 4.9 });
+    // The file's rating went onto the tee set, as the rating GSPro shows for it.
+    expect(read.gkdRatings).toEqual([]);
+    const sets = await new TeeSetsService(t.db).listByCourse(TEST_COURSE_ID);
+    expect(sets.map(s => [s.name, s.ratingMen, s.slopeMen])).toEqual([['yellow', 71.5, 135], ['blue', null, null]]);
+
+    expect((await svc.setMeta(TEST_COURSE_ID, null)).meta).toBeNull();
+});
+
 test('the GKD export needs the course folder and the inner heightmap, then writes into the course folder', async () => {
     const { calls, runner } = recordingRunner({ stdout: 'Wrote x.GKD\n  18 holes, par 72\n' });
     const t = await setup(runner);
@@ -1446,7 +1501,10 @@ test('unity-sculpt captures in Unity, makes the GeoTIFF and stores it as the ter
 });
 
 
-// --- Plant vegetation (generators -> zones export -> Unity) ---
+// --- Plant for GSPro (generators -> zones export -> Unity, the Arborist file) ---
+
+/** The test course has no Arborist species file under the docs root: the Arborist half says so in one line. */
+const NOT_ARBORIST = `Arborist: not used by this course (no ${path.join('/pipeline', '..', 'docs', 'gspro', 'linkan', 'arborist-species.json')})`;
 
 /** A runner standing in for the vegetation generators and `gspro.py zones`: each writes its --out. */
 function vegetationRunner(zones: Record<string, Record<string, unknown>[]>) {
@@ -1455,8 +1513,10 @@ function vegetationRunner(zones: Record<string, Record<string, unknown>[]>) {
         runs.push(args);
         const out = args[args.indexOf('--out') + 1]!;
         const script = path.basename(args[0]!);
-        if (script in zones) {
-            const source = script === 'grass_zones.py' ? 'tall-grass' : 'creek-bank';
+        const sources: Record<string, string> = { 'grass_zones.py': 'tall-grass', 'woodland_floor_zones.py': 'woodland-floor', 'creek_bank_zones.py': 'creek-bank' };
+        if (script in sources) {
+            const source = sources[script]!;
+            zones[script] ??= [];   // a generator the test says nothing about finds nothing to plant
             await writeFile(out, JSON.stringify({
                 type: 'FeatureCollection',
                 features: zones[script]!.map((p, i) => ({
@@ -1512,7 +1572,7 @@ test('vegetation: every generator in stack order, replacing only its own zones, 
 
         for (const round of [1, 2]) {
             const job = await t.svc.start(TEST_COURSE_ID, { kind: 'vegetation', terrain: 'inner' });
-            expect(job.label).toBe('inner vegetation, planted into Unity');
+            expect(job.label).toBe('inner vegetation, planted for GSPro');
             await t.svc.whenIdle(TEST_COURSE_ID);
             const done = t.svc.job(job.id);
             expect(done.error).toBeNull();
@@ -1523,12 +1583,14 @@ test('vegetation: every generator in stack order, replacing only its own zones, 
                 expect(report).toContain('warning: 1 creek_bank zones use its Default mix, which has no items: nothing grows there - pick a palette that has items');
                 expect(report).toContain("Unity (linkan_v4): imported linkan-inner-zones.json into 'GolfMap lower vegetation' - Imported 3 zone groups");
                 expect(report).toContain('Unity (linkan_v4): grass palettes applied (2 items on Inner VSP)');
+                expect(report.at(-2)).toBe(NOT_ARBORIST);
                 expect(report.at(-1)).toBe('Save the scene in Unity to keep it.');
             }
         }
         // Generators in stack order, then the zones export; each gets the course's inputs.
         expect(runs.map(a => path.basename(a[0]!) + (a[1] === 'zones' ? ' zones' : ''))).toEqual([
-            'grass_zones.py', 'creek_bank_zones.py', 'gspro.py zones', 'grass_zones.py', 'creek_bank_zones.py', 'gspro.py zones',
+            'grass_zones.py', 'woodland_floor_zones.py', 'creek_bank_zones.py', 'gspro.py zones',
+            'grass_zones.py', 'woodland_floor_zones.py', 'creek_bank_zones.py', 'gspro.py zones',
         ]);
         expect(flag(runs[0]!, '--surfaces')).toBe(path.join(exportDir, 'linkan-inner-surfaces.json'));
         expect(flag(runs[0]!, '--buildings')).toBe(path.join(sources, 'buildings.geojson'));
@@ -1562,14 +1624,17 @@ test('vegetation without the surface map or an open Unity: what can run does, th
     expect(runs.map(a => path.basename(a[0]!))).toEqual(['grass_zones.py', 'gspro.py']);
     expect(flag(runs[0]!, '--surfaces')).toBeUndefined();
     expect(res.report).toContain("tall rough: warning: no surface map from Unity - run golfmap.surfaces.export in the course's Unity project; the drawn features stand in (they miss OPCD's Outer_Deep fill)");
+    expect(res.report).toContain("woodland floor: not planted (no surface map from Unity - run golfmap.surfaces.export in the course's Unity project)");
     expect(res.report).toContain("creek banks: not planted (no surface map from Unity - run golfmap.surfaces.export in the course's Unity project)");
-    expect(res.report.at(-1)).toMatch(/^Not in Unity yet: no open Unity editor imports from .* \(none is open\)/);
+    expect(res.report.at(-2)).toMatch(/^Unity: not open, zones exported only - no open Unity editor imports from .* \(none is open\)/);
+    expect(res.report.at(-1)).toBe(NOT_ARBORIST);
 });
 
 test('vegetation generators: a run from one generator re-runs every one after it (the zone stack order holds)', () => {
-    expect(generatorsFrom(undefined).map(g => g.source)).toEqual(['tall-grass', 'creek-bank']);
+    expect(generatorsFrom(undefined).map(g => g.source)).toEqual(['tall-grass', 'woodland-floor', 'creek-bank']);
+    expect(generatorsFrom('woodland-floor').map(g => g.source)).toEqual(['woodland-floor', 'creek-bank']);
     expect(generatorsFrom('creek-bank').map(g => g.source)).toEqual(['creek-bank']);
-    expect(() => generatorsFrom('ferns')).toThrow("No vegetation generator 'ferns' (have: tall-grass, creek-bank)");
+    expect(() => generatorsFrom('ferns')).toThrow("No vegetation generator 'ferns' (have: tall-grass, woodland-floor, creek-bank)");
 });
 
 
@@ -1621,7 +1686,7 @@ test('vegetation-update patches each exported terrain for the zones and sends on
         await writeFile(path.join(exportDir, 'linkan-outer-zones.json'), '{}');
 
         const job = await t.svc.start(TEST_COURSE_ID, { kind: 'vegetation-update', zoneIds: ['z1', 'z2'] });
-        expect(job.label).toBe('2 vegetation zone(s) updated in Unity');
+        expect(job.label).toBe('2 vegetation zone(s) updated for GSPro');
         await t.svc.whenIdle(TEST_COURSE_ID);
         const done = t.svc.job(job.id);
         expect(done.error).toBeNull();
@@ -1642,6 +1707,7 @@ test('vegetation-update patches each exported terrain for the zones and sends on
             'inner: Patched linkan-inner-zones.json: 2 zone(s)',
             'outer: Patched linkan-outer-zones.json: 2 zone(s)',
             'Unity (linkan_v4): Patched 1 mask texture(s) for 1 zone(s), respawned 68 x 68 m in 640 ms. Save the scene.',
+            NOT_ARBORIST,
             'Save the scene in Unity to keep it.',
         ]);
     } finally {
@@ -1678,7 +1744,7 @@ test('vegetation-update with nothing changed leaves Unity alone', async () => {
         await t.svc.setDir(TEST_COURSE_ID, exportDir);
         await writeFile(path.join(exportDir, 'linkan-inner-zones.json'), '{}');
         const res = await t.svc.updateZones(TEST_COURSE_ID, ['z1']);
-        expect(res.report.at(-1)).toBe('Nothing changed in the masks, so nothing to take into Unity');
+        expect(res.report.at(-1)).toBe('Nothing changed in the masks, so nothing to take into Unity or the Arborist file');
         expect(calls.map(c => c.command)).toEqual(['golfmap.course']);
     } finally {
         server.stop(true);
@@ -1692,7 +1758,7 @@ test('vegetation-update refuses before patching: no planting yet, Unity not open
     const t = await setup(moved.runner, { unityBridge: defaultUnityBridge(discovery) });
     await t.svc.setDir(TEST_COURSE_ID, exportDir);
 
-    await expect(t.svc.updateZones(TEST_COURSE_ID, ['z1'])).rejects.toThrow(/No vegetation zones export in .* yet: plant vegetation once first/);
+    await expect(t.svc.updateZones(TEST_COURSE_ID, ['z1'])).rejects.toThrow(/No vegetation zones export in .* yet: Plant for GSPro once first/);
     await writeFile(path.join(exportDir, 'linkan-inner-zones.json'), '{}');
     await expect(t.svc.updateZones(TEST_COURSE_ID, ['z1'])).rejects.toThrow(/Open the course's Unity project first: no open Unity editor imports from/);
     expect(moved.runs).toHaveLength(0);   // masks patched without Unity would leave the scene behind
@@ -1700,7 +1766,7 @@ test('vegetation-update refuses before patching: no planting yet, Unity not open
     const { calls, server } = fakeUnity(exportDir, discovery);
     try {
         await expect(t.svc.updateZones(TEST_COURSE_ID, ['z1'])).rejects.toThrow(
-            "The zone types' item bindings changed since the last planting, so the inner masks' channels may have moved: use Plant vegetation this time");
+            "The zone types' item bindings changed since the last planting, so the inner masks' channels may have moved: use Plant for GSPro this time");
         expect(calls.map(c => c.command)).toEqual(['golfmap.course']);
         await expect(t.svc.start(TEST_COURSE_ID, { kind: 'vegetation-update', zoneIds: [] })).rejects.toThrow('A vegetation-update export needs the zones to update');
     } finally {
@@ -1712,14 +1778,14 @@ test('vegetation-update: a Unity that cannot take the patch says how to catch up
     const discovery = await mkdtemp(path.join(os.tmpdir(), 'bridges-'));
     const exportDir = await mkdtemp(path.join(os.tmpdir(), 'gspro-out-'));
     const { server } = fakeUnity(exportDir, discovery, () =>
-        Response.json({ ok: false, error: "The scene does not hold this zones export's import (no mask group for 'Reed'). Plant vegetation (a full import) instead." }));
+        Response.json({ ok: false, error: "The scene does not hold this zones export's import (no mask group for 'Reed'). Plant for GSPro (a full import) instead." }));
     const { runner } = patchRunner({ inner: true });
     try {
         const t = await setup(runner, { unityBridge: defaultUnityBridge(discovery) });
         await t.svc.setDir(TEST_COURSE_ID, exportDir);
         await writeFile(path.join(exportDir, 'linkan-inner-zones.json'), '{}');
         await expect(t.svc.updateZones(TEST_COURSE_ID, ['z1'])).rejects.toThrow(
-            /The inner masks are updated in .*, but Unity \(linkan_v4\) could not take them: .*no mask group for 'Reed'.*Plant vegetation to bring Unity in step/);
+            /The inner masks are updated in .*, but Unity \(linkan_v4\) could not take them: .*no mask group for 'Reed'.*Plant for GSPro to bring Unity in step/);
     } finally {
         server.stop(true);
     }
@@ -1776,4 +1842,132 @@ test('vegetation-update with a drawn creek_bank zone (a creek section) re-runs o
     } finally {
         server.stop(true);
     }
+});
+
+// --- The Arborist half (what the server decides; arborist.py itself runs in arborist.service.test.ts) ---
+
+/** An Arborist course: a species file and palette under a docs root, the machine's library and key under the data dir, a GSPro course folder with its file. */
+async function arboristCourse(opts: { courseDir?: boolean } = {}) {
+    const root = await mkdtemp(path.join(os.tmpdir(), 'arborist-course-'));
+    const docs = path.join(root, 'docs'), dataDir = path.join(root, 'data'), courseDir = path.join(root, 'Courses', 'Linkan_scene');
+    for (const dir of [path.join(docs, 'linkan'), path.join(dataDir, 'arborist'), courseDir]) await mkdir(dir, { recursive: true });
+    await writeFile(path.join(docs, 'linkan', 'arborist-species.json'), '{}');
+    await writeFile(path.join(docs, 'linkan', 'grass-palette.json'), '{}');
+    await writeFile(path.join(dataDir, 'arborist', 'GolfMap library.biome'), '{}');
+    await writeFile(path.join(dataDir, 'arborist-wrapper.key'), '0123456789abcdef');
+    if (opts.courseDir !== false) await writeFile(path.join(courseDir, 'arboristdata.dat'), 'dat');
+    return { docs, dataDir, courseDir };
+}
+
+/** `arborist.py lower` as it reports; any other script goes to `rest`. */
+function arboristRunner(rest: ExportRunner) {
+    const runs: { args: string[]; timeoutMs?: number }[] = [];
+    const runner: ExportRunner = async (args, cwd, opts) => {
+        if (path.basename(args[0]!) !== 'arborist.py') return rest(args, cwd, opts);
+        runs.push({ args, timeoutMs: opts?.timeoutMs });
+        return { code: 0, stdout: "wrote arboristdata.dat (4.4 MB): 38 item(s), 13 mask texture(s) in package 'GolfMap lower vegetation'\n  Shrub - willow = MeadowEnv_bush_grey_willow_02 (mask 6, channel 0)\n", stderr: '' };
+    };
+    return { runs, runner };
+}
+
+test('vegetation-update on an Arborist course: after Unity took the patch the Arborist lower vegetation is written from the same masks', async () => {
+    const discovery = await mkdtemp(path.join(os.tmpdir(), 'bridges-'));
+    const exportDir = await mkdtemp(path.join(os.tmpdir(), 'gspro-out-'));
+    const { calls, server } = fakeUnity(exportDir, discovery);
+    const a = await arboristCourse();
+    const { runs, runner } = arboristRunner(patchRunner({ inner: true }).runner);
+    try {
+        const t = await setup(runner, { unityBridge: defaultUnityBridge(discovery), courseDocsRoot: a.docs, dataDir: a.dataDir });
+        await t.svc.setDir(TEST_COURSE_ID, exportDir);
+        await t.svc.setCourseDir(TEST_COURSE_ID, a.courseDir);
+        await writeFile(path.join(exportDir, 'linkan-inner-zones.json'), '{}');
+
+        const res = await t.svc.updateZones(TEST_COURSE_ID, ['z1']);
+        expect(res.report).toEqual([
+            'inner: Patched linkan-inner-zones.json: 2 zone(s)',
+            'Unity (linkan_v4): Patched 1 mask texture(s) for 1 zone(s), respawned 68 x 68 m in 640 ms. Save the scene.',
+            `Arborist lower vegetation written: 38 items, 13 mask textures (${path.join(a.courseDir, 'arboristdata.dat')})`,
+            'Save the scene in Unity to keep it.',
+        ]);
+        // Only the lower vegetation (fast); the trees and their dump are Plant for GSPro's.
+        expect(runs).toHaveLength(1);
+        expect(runs[0]!.args.slice(0, 2)).toEqual([path.join('/pipeline', 'arborist.py'), 'lower']);
+        expect(flag(runs[0]!.args, '--course-dir')).toBe(a.courseDir);
+        expect(flag(runs[0]!.args, '--zones')).toBe(path.join(exportDir, 'linkan-inner-zones.json'));
+        expect(flag(runs[0]!.args, '--palette')).toBe(path.join(a.docs, 'linkan', 'grass-palette.json'));
+        expect(flag(runs[0]!.args, '--species')).toBe(path.join(a.docs, 'linkan', 'arborist-species.json'));
+        expect(flag(runs[0]!.args, '--library')).toBe(path.join(a.dataDir, 'arborist', 'GolfMap library.biome'));
+        expect(flag(runs[0]!.args, '--key-file')).toBe(path.join(a.dataDir, 'arborist-wrapper.key'));
+        expect(flag(runs[0]!.args, '--out-dir')).toBeUndefined();
+        expect(runs[0]!.timeoutMs).toBe(5 * 60_000);
+        expect(calls.map(c => c.command)).toEqual(['golfmap.course', 'golfmap.zones.patch']);
+    } finally {
+        server.stop(true);
+    }
+});
+
+test('vegetation: a half that fails fails the job after the other has run, and the message carries both', async () => {
+    const discovery = await mkdtemp(path.join(os.tmpdir(), 'bridges-'));
+    const exportDir = await mkdtemp(path.join(os.tmpdir(), 'gspro-out-'));
+
+    // Unity closed, an Arborist course with no GSPro course folder set: the zones are out, the file is not.
+    const unset = await arboristCourse();
+    const first = arboristRunner(vegetationRunner({}).runner);
+    const t = await setup(first.runner, { unityBridge: defaultUnityBridge(discovery), courseDocsRoot: unset.docs, dataDir: unset.dataDir });
+    await t.svc.setDir(TEST_COURSE_ID, exportDir);
+    await writeFile(path.join(exportDir, 'linkan-inner-dem-2050m.tif.json'), '{}');
+    await expect(t.svc.plantVegetation(TEST_COURSE_ID, 'inner')).rejects.toThrow(
+        "The zones are exported, but: Arborist file not written: set the GSPro course folder first (export panel, GreenKeeper course file) - the course's folder under GSPro's Courses");
+    expect(first.runs).toHaveLength(0);
+    // The shaping run and the CLI can leave the half out.
+    const without = await t.svc.plantVegetation(TEST_COURSE_ID, 'inner', { arborist: false });
+    expect(without.report.some(l => l.startsWith('Arborist'))).toBe(false);
+
+    // Unity open but refusing the import: the Arborist lower vegetation is still written, the trees are not asked for.
+    const unity: string[] = [];
+    const server = Bun.serve({
+        port: 0,
+        async fetch(req) {
+            const command = decodeURIComponent(new URL(req.url).pathname.replace('/cmd/', ''));
+            unity.push(command);
+            if (command === 'golfmap.course') return Response.json({ ok: true, result: { active: { name: 'Linkan', exportFolder: exportDir } } });
+            return Response.json({ ok: false, error: 'No VegetationSystemPro on Terrain (Inner)' });
+        },
+    });
+    writeFileSync(path.join(discovery, 'bridge-1.json'), JSON.stringify({ pid: process.pid, port: server.port!, token: 'tok', projectPath: 'D:/unity/linkan', projectName: 'linkan_v4', unityVersion: '', started: '' }));
+    try {
+        await t.svc.setCourseDir(TEST_COURSE_ID, unset.courseDir);
+        await expect(t.svc.plantVegetation(TEST_COURSE_ID, 'inner')).rejects.toThrow(
+            'The zones were generated and exported, but Unity (linkan_v4) could not take them: No VegetationSystemPro on Terrain (Inner). The Arborist lower vegetation was still written');
+        expect(first.runs.map(r => r.args[1])).toEqual(['lower']);
+        expect(unity).toEqual(['golfmap.course', 'golfmap.zones.import']);
+    } finally {
+        server.stop(true);
+    }
+});
+
+test('arborist: the file alone, as a job; a course without a species file is refused', async () => {
+    const discovery = await mkdtemp(path.join(os.tmpdir(), 'bridges-'));
+    const exportDir = await mkdtemp(path.join(os.tmpdir(), 'gspro-out-'));
+    const a = await arboristCourse();
+    const { runs, runner } = arboristRunner(recordingRunner().runner);
+    const t = await setup(runner, { unityBridge: defaultUnityBridge(discovery), courseDocsRoot: a.docs, dataDir: a.dataDir });
+    await t.svc.setDir(TEST_COURSE_ID, exportDir);
+    await t.svc.setCourseDir(TEST_COURSE_ID, a.courseDir);
+    await writeFile(path.join(exportDir, 'linkan-inner-zones.json'), '{}');
+
+    const job = await t.svc.start(TEST_COURSE_ID, { kind: 'arborist' });
+    expect(job.label).toBe('Arborist file (lower vegetation and trees)');
+    await t.svc.whenIdle(TEST_COURSE_ID);
+    const done = t.svc.job(job.id);
+    expect(done.error).toBeNull();
+    expect(done.result!.path).toBe(path.join(a.courseDir, 'arboristdata.dat'));
+    expect(done.result!.report).toEqual([
+        `Arborist lower vegetation written: 38 items, 13 mask textures (${path.join(a.courseDir, 'arboristdata.dat')})`,
+        "Arborist trees: skipped, Unity is not open (the trees' positions and ground heights come from its scene); the file keeps the trees as last generated",
+    ]);
+    expect(runs.map(r => r.args[1])).toEqual(['lower']);
+
+    const plain = await setup(runner, { unityBridge: defaultUnityBridge(discovery) });
+    await expect(plain.svc.exportArborist(TEST_COURSE_ID)).rejects.toThrow(NOT_ARBORIST);
 });

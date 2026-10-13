@@ -1,0 +1,10 @@
+{
+  "format": "golfmap-perf-views-v1",
+  "comment": "The viewpoints the frame rate is judged at: unity/ArboristMod/perf.ts in GSPro, golfmap.perf.report in the Unity editor (which reads a copy in the course folder, Assets/GolfMap/<Course>/perf-views.json). Poses are world coordinates of the camera; rotation is euler pitch, yaw, roll; eye = metres over the ground instead of a fixed y. Target (Marcus, 2026-10-13): at least 90 fps mean and a 1 % low of at least 50 at each, 1920x1440 Medium, Unity and Arborist closed.",
+  "views": [
+    { "name": "tee 1", "note": "GSPro's own default tee view when the round starts (read from the camera)", "position": [1100.52, 16.08, 953.34], "rotation": [0, 279.16, 0] },
+    { "name": "hole 6 water hazard", "note": "Marcus's own screenshot spot in the thick grass by the creek", "position": [823.4, 10.8, 1800.8], "rotation": [1.7, 135, 0] },
+    { "name": "woods right of hole 4", "note": "55 m right of the first leg, looking along the hole", "position": [703, 0, 1317], "eye": 1.7, "rotation": [2, 327, 0] },
+    { "name": "hole 4 tee, forward-left", "note": "on the white tee looking up into the rough, 40 degrees left of the hole", "position": [720, 0, 1190.6], "eye": 1.7, "rotation": [-3, 287, 0] }
+  ]
+}

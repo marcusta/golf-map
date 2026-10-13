@@ -9,7 +9,7 @@ import type { MapPointerEvent } from '../map/map.service';
 import { ConfirmService } from '../app/confirm-dialog.component';
 import { CourseDetailService } from '../course-detail/course-detail.service';
 import type { Hole } from '../../../shared/api/holes.gen';
-import { FurnitureService, FURNITURE_TOOL_ID, defaultTeeName, finiteWgs84Point, greenPointFields, type GreenPoint, type Selection } from './furniture.service';
+import { FurnitureService, FURNITURE_TOOL_ID, finiteWgs84Point, greenPointFields, type GreenPoint, type Selection } from './furniture.service';
 import {
     FURNITURE_DRAG_OVERLAY_ID,
     FURNITURE_OVERLAY_ID,
@@ -19,6 +19,8 @@ import {
 } from './furniture-overlay';
 import { DrawToolService } from '../draw/draw-tool.service';
 import { isRulesType, type FeatureType } from '../draw/feature-palette';
+import type { AnalysisRenderer } from '../analysis/analysis-tool.service';
+import { PinTerrain, holeGreenFeature, pinRingsGeojson } from './pin-terrain';
 
 /** Screen-px radius for click-to-select and mousedown-to-drag hit testing. */
 const MARKER_HIT_PX = 14;
@@ -46,6 +48,8 @@ interface DragTarget {
 }
 
 const EMPTY_COLLECTION: FeatureCollection = { type: 'FeatureCollection', features: [] };
+/** The rings round the hole's pins while pins are placed (pin-terrain.ts). */
+const PIN_RINGS_OVERLAY_ID = `${FURNITURE_OVERLAY_ID}-pin-rings`;
 
 /** True when `f` is the main-overlay feature that renders `hit`. */
 function featureIsHit(f: Feature, hit: MarkerHit): boolean {
@@ -96,6 +100,8 @@ export class FurnitureToolService {
     private readonly dragPos = new Signal<{ lng: number; lat: number } | null>(null);
     /** Last collection sent to the main overlay; the drag overlay copies its marker from here. */
     private lastMain: FeatureCollection = EMPTY_COLLECTION;
+    /** The green's slope or height, shaded while pins are placed. */
+    readonly pinTerrain = new PinTerrain();
 
     /** ?hole= carries the hole NUMBER; resolve to the Hole for the selected course. */
     private readonly selectedHoleNumber = this.router.query('hole');
@@ -115,10 +121,10 @@ export class FurnitureToolService {
             return `Hole ${hole.number} has no green yet — draw/import one before placing pins.`;
         }
         if (kind === 'tee') {
-            const color = this.svc.pendingTeeColor.get();
-            const name = this.svc.pendingTeeName.get().trim() || defaultTeeName(color);
-            return `Placing: Tee (${name}) on hole ${hole.number} — click map to place, `
-                + `Shift-click to place multiple, Esc to cancel.`;
+            const set = this.svc.pendingTeeSet();
+            if (!set) return 'Add a tee set first (Tee sets, further down).';
+            return `Placing: Tee (${set.name}) on hole ${hole.number} — click map to place; `
+                + `pick another set or hole and click again, Esc to finish.`;
         }
         if (kind === 'green') {
             const gp = this.svc.pendingGreenPoint.get();
@@ -132,7 +138,16 @@ export class FurnitureToolService {
             return `Placing green ${gpLabel} on hole ${hole.number} — click to ${verb} `
                 + `${gpLabel} position, Esc to cancel.`;
         }
-        const label = kind === 'pin' ? 'Pin' : 'Aim point';
+        if (kind === 'pin') {
+            const day = this.svc.pendingPinDay.get();
+            const green = this.svc.greenForHole(hole.id)!;
+            this.svc.pins.items.get();  // re-read once that day's pin exists
+            return this.svc.pinForDay(green.id, day)
+                ? `${day} pin on hole ${hole.number} — drag it, or click the map to move it there. Esc to finish.`
+                : `Placing: ${day} pin on hole ${hole.number} — click map to place; `
+                    + `click again for the next day, Esc to finish.`;
+        }
+        const label = 'Aim point';
         return `Placing: ${label} on hole ${hole.number} — click map to place, `
             + `Shift-click to place multiple, Esc to cancel.`;
     });
@@ -160,8 +175,51 @@ export class FurnitureToolService {
         // by EditorCanvasComponent behind EditorModeService.followHole).
     }
 
-    activate(ctx: ToolContext): void {
+    /** `terrainRenderer` draws the green's slope/height under the pins being placed; none in tests. */
+    activate(ctx: ToolContext, terrainRenderer?: AnalysisRenderer): void {
         this.ctx = ctx;
+
+        // A ring round each pin of the hole while pins are placed; the pin
+        // under drag carries its ring along.
+        ctx.track(ownedOverlay(ctx.map, PIN_RINGS_OVERLAY_ID, () => {
+            const hole = this.selectedHole.get();
+            if (this.svc.placing.get() !== 'pin' || !hole) return EMPTY_COLLECTION;
+            this.svc.pins.items.get();
+            this.svc.greens.get();
+            const dragged = this.drag?.hit.kind === 'pin' ? this.drag.hit.id : null;
+            const at = this.dragPos.get();
+            return pinRingsGeojson(this.svc.pinsForHole(hole.id).map(pin =>
+                (at && pin.id === dragged ? { lat: at.lat, lon: at.lng } : pin)));
+        }, () => [
+            { id: `${PIN_RINGS_OVERLAY_ID}-casing`, type: 'line', paint: { 'line-color': '#14281c', 'line-width': 3, 'line-opacity': 0.6 } },
+            { id: `${PIN_RINGS_OVERLAY_ID}-line`, type: 'line', paint: { 'line-color': '#ffffff', 'line-width': 1.4 } },
+        ]));
+
+        // While pins are placed the selected pin IS the picked day's: a day
+        // button, a placement moving on to the next day, or another hole
+        // moves the selection with it (none for a day not placed yet).
+        ctx.track(effect(() => {
+            if (this.svc.placing.get() !== 'pin') return;
+            const hole = this.selectedHole.get();
+            const day = this.svc.pendingPinDay.get();
+            this.svc.pins.items.get();
+            const green = hole ? this.svc.greens.get().find(g => g.holeId === hole.id) : undefined;
+            const pin = green ? this.svc.pinForDay(green.id, day) : undefined;
+            untrack(() => this.svc.selection.set(pin ? { kind: 'pin', id: pin.id } : null));
+        }));
+
+        if (terrainRenderer) {
+            ctx.track(this.pinTerrain.attach(ctx, terrainRenderer, () => {
+                if (this.svc.placing.get() !== 'pin') return null;
+                const hole = this.selectedHole.get();
+                if (!hole) return null;
+                const green = this.svc.greens.get().find(g => g.holeId === hole.id);
+                return holeGreenFeature(
+                    ctx.features.stackTopDown.get(), hole.id,
+                    green ? { lat: green.centerLat, lon: green.centerLon } : null,
+                );
+            }));
+        }
 
         // Registered before the rules engine's, so these run first on every
         // event and can stand aside while it is drawing or dragging.
@@ -257,8 +315,10 @@ export class FurnitureToolService {
                 const origin = this.svc.lineOriginTee(holeId);
                 if (origin) lineOriginByHole.set(holeId, origin.id);
             }
+            const par3 = this.svc.teeSets.get().find(set => set.gsproTee === 'Par3')?.id;
+            const tees = this.svc.tees.items.get();
             return this.lastMain = buildFurnitureGeojson({
-                tees: this.svc.tees.items.get(),
+                tees,
                 pins: this.svc.pins.items.get(),
                 greens: this.svc.greens.get(),
                 aims: this.svc.aims.items.get(),
@@ -266,6 +326,7 @@ export class FurnitureToolService {
                 selection: this.svc.selection.get(),
                 highlightHoleId: this.selectedHole.get()?.id ?? null,
                 lineOriginByHole,
+                straightTeeIds: new Set(par3 ? tees.filter(t => t.teeSetId === par3).map(t => t.id) : []),
             });
         }, furnitureLayers);
     }
@@ -307,7 +368,7 @@ export class FurnitureToolService {
             const near = this.hitMarker(e.point, PLACEMENT_PROXIMITY_PX);
             if (near && near.kind === kind &&
                 (kind !== 'green' || (near.kind === 'green' && near.point === this.svc.pendingGreenPoint.peek()))) {
-                this.svc.select(hitToSelection(near));
+                this.pick(near);
                 return;
             }
             const keepArmed = e.originalEvent.shiftKey;
@@ -317,7 +378,19 @@ export class FurnitureToolService {
 
         // Select mode: pick the nearest marker within tolerance.
         const hit = this.hitMarker(e.point);
-        this.svc.select(hit ? hitToSelection(hit) : null);
+        if (hit) this.pick(hit);
+        else this.svc.select(null);
+    }
+
+    /**
+     * Select the marker under the pointer. A pin goes to the Pin panel
+     * (placement armed on its day, `focusPin`); any other marker is selected
+     * and, when nothing is armed, stays so — `select` would disarm.
+     */
+    private pick(hit: MarkerHit): void {
+        if (hit.kind === 'pin') this.svc.focusPin(hit.id);
+        else if (this.svc.placing.peek() === null) this.svc.select(hitToSelection(hit));
+        else this.svc.selection.set(hitToSelection(hit));
     }
 
     private onMouseMove(e: MapPointerEvent): void {
@@ -334,14 +407,19 @@ export class FurnitureToolService {
     /**
      * Left press under the furniture claim. Cmd/Ctrl-drag pans even from a
      * marker: the drag binding filters that press before it gets here.
+     *
+     * A press on a marker grabs it whatever is armed in the panel: any
+     * placed marker moves at any time, and a placement stays armed through
+     * it (the click MapLibre makes of the release is swallowed in mouseup,
+     * so grabbing a marker never places a new one on top of it).
      */
     private onMouseDown(e: MapMouseEvent, map: MaplibreMap): void {
-        if (this.svc.placing.peek() !== null || this.rules.isEngaged()) return;
+        if (this.rules.isEngaged()) return;
 
         const hit = this.hitMarker(e.point);
         if (!hit) return;
         this.dragBinding?.claim(e, map);
-        this.svc.select(hitToSelection(hit));
+        this.pick(hit);
         this.drag = {
             hit,
             startScreen: { x: e.point.x, y: e.point.y },
@@ -400,7 +478,10 @@ export class FurnitureToolService {
      *
      * One-shot by default: after a successful placement we DISARM (back to
      * select/move). Hold Shift (`keepArmed`) to stay armed for rapid
-     * multi-placement.
+     * multi-placement. Tees always stay armed, with the picked tee set kept:
+     * a set is placed hole after hole (or set after set on one hole), and
+     * closing the set picker after every click made that a reopen each time.
+     * Pins stay armed too, moved on to the next day the green has no pin for.
      */
     private async place(
         kind: 'tee' | 'pin' | 'aim' | 'green',
@@ -418,44 +499,61 @@ export class FurnitureToolService {
             // rejected inside setGreenPoint with a notice.
             created = await this.svc.setGreenPoint(hole.id, gp, lngLat.lat, lngLat.lng);
         } else if (kind === 'tee') {
-            const name = this.svc.pendingTeeName.peek().trim()
-                || defaultTeeName(this.svc.pendingTeeColor.peek());
+            const set = this.svc.pendingTeeSet();
+            if (!set) return; // hint covers this
             // Client-side duplicate guard: the server enforces UNIQUE(hole, name)
             // and would only surface a raw 500. Catch it here, tell the user, and
-            // auto-advance the pending preset to the next free colour.
-            if (this.svc.teeNameTaken(hole.id, name)) {
+            // auto-advance to the next tee set the hole has no tee of.
+            if (this.svc.teeNameTaken(hole.id, set.name)) {
                 this.svc.notice.set(
-                    `A '${name}' tee already exists on hole ${hole.number}.`
+                    `A '${set.name}' tee already exists on hole ${hole.number}.`
                     + (this.svc.advancePendingTee(hole.id)
-                        ? ` Switched to '${this.svc.pendingTeeName.peek() || defaultTeeName(this.svc.pendingTeeColor.peek())}'.`
-                        : ' All tee colours are used on this hole.'),
+                        ? ` Switched to '${this.svc.pendingTeeSet()?.name}'.`
+                        : ' The hole has a tee of every tee set.'),
                 );
-                return; // stay armed so the next click places the advanced preset
+                return; // stay armed so the next click places the advanced set
             }
             created = await this.svc.createTee({
                 holeId: hole.id,
-                name,
-                color: this.svc.pendingTeeColor.peek(),
+                teeSetId: set.id,
                 lat: lngLat.lat,
                 lon: lngLat.lng,
             });
         } else if (kind === 'pin') {
             const green = this.svc.greenForHole(hole.id);
             if (!green) return; // hint covers this
-            created = await this.svc.createPin({
-                greenId: green.id,
-                name: this.svc.pendingPinName.peek().trim() || 'Pin',
-                difficulty: this.svc.pendingPinDifficulty.peek(),
-                lat: lngLat.lat,
-                lon: lngLat.lng,
-            });
+            // A green has one pin per day: placing a day it already has moves that pin.
+            const day = this.svc.pendingPinDay.peek();
+            const existing = this.svc.pinForDay(green.id, day);
+            if (existing) {
+                // The picked day's pin stays picked: click again to move it again.
+                created = await this.svc.movePin(existing.id, lngLat.lat, lngLat.lng);
+            } else {
+                created = await this.svc.createPin({
+                    greenId: green.id,
+                    name: day,
+                    difficulty: this.svc.pendingPinDifficulty.peek(),
+                    lat: lngLat.lat,
+                    lon: lngLat.lng,
+                });
+                // On to the next day the green has no pin for (the last one placed stays picked).
+                if (created) this.svc.advancePendingPinDay(green.id);
+            }
         } else {
             const n = this.svc.aimsForHole(hole.id).length + 1;
             created = await this.svc.createAim({ holeId: hole.id, lat: lngLat.lat, lon: lngLat.lng, label: `A${n}` });
         }
 
-        // One-shot: disarm on success unless Shift is held (rapid multi-place).
-        if (created && !keepArmed) this.svc.disarm();
+        // One-shot: disarm on success unless Shift is held (rapid multi-place) or it was a tee or a pin.
+        if (created && !keepArmed && kind !== 'tee' && kind !== 'pin') this.svc.disarm();
+    }
+
+    /** Arm pin placement on the first day the selected hole's green has no pin for. */
+    armPin(): void {
+        this.svc.arm('pin');
+        const hole = this.selectedHole.peek();
+        const green = hole && this.svc.greenForHole(hole.id);
+        if (green && this.svc.placing.peek() === 'pin') this.svc.advancePendingPinDay(green.id);
     }
 
     /** Delete the selected item after confirmation (Delete key or panel button). */

@@ -218,7 +218,7 @@ namespace GolfMap.Editor
 
         // The visible surface under a point: the highest collider hit straight down, else the
         // highest terrain covering it (same rule as the bridge's terrain.height).
-        static float? Ground(Vector3 p)
+        internal static float? Ground(Vector3 p)
         {
             var hits = Physics.RaycastAll(new Vector3(p.x, 10000f, p.z), Vector3.down, 20000f, ~0, QueryTriggerInteraction.Ignore);
             if (hits.Length > 0) return hits.Max(h => h.point.y);
@@ -369,6 +369,17 @@ namespace GolfMap.Editor
             if (GUI.Button(new Rect(box.xMax - 46f, box.yMax - s.lineH - 3f, 42f, s.lineH), "Copy", EditorStyles.miniButton))
                 EditorGUIUtility.systemCopyBuffer = string.Join("\n", s.lines);
             Handles.EndGUI();
+        }
+
+        // Puts a Scene view's eye at `from` looking along `dir`, the pivot on the surface it looks at.
+        internal static void LookFrom(SceneView sv, Vector3 from, Vector3 dir)
+        {
+            dir.Normalize();
+            RaycastHit hit;
+            float size = Physics.Raycast(from, dir, out hit, 50000f, ~0, QueryTriggerInteraction.Ignore) ? Mathf.Clamp(hit.distance, 5f, 500f) : 50f;
+            // In 2018.2 the Scene view camera sits exactly `size` behind the pivot (see the bridge's screenshot).
+            sv.LookAtDirect(from + dir * size, Quaternion.LookRotation(dir), size);
+            sv.Repaint();
         }
 
         // ---- bridge --------------------------------------------------------------

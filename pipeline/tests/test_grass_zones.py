@@ -117,7 +117,7 @@ def test_grass_grows_up_to_the_rough_and_spills_a_foot_in():
     cls = np.full((200, 200), gz.S_DEEP, dtype=np.uint8)
     cls[:, 0:20] = 3                                            # semi, west
     cls[:, 20:32] = gz.S_ROUGH                                  # 6 m of rough between semi and deep
-    w = gz.weight_field(cls, 0.5, None, gz.Rules(min_area=1, simplify=0))
+    w = gz.weight_field(cls, 0.5, None, gz.Rules(min_area=1, simplify=0, far_weight=1.0))
     assert (w[:, 32:120] == 1).all()                            # deep: full from the first cell
     assert w[:, :29].max() == 0                                 # nothing beyond 1.5 m into the rough
     first = w[:, 31]                                            # the rough's cell at the deep border
@@ -132,7 +132,7 @@ def test_a_rock_slab_is_bare_but_for_a_fringe_over_its_edge_and_patches():
     cls = np.full((200, 200), gz.S_DEEP, dtype=np.uint8)
     cls[:, 0:4] = gz.S_ROUGH                                    # play nearby (reach)
     cls[60:100, 80:120] = gz.S_SLAB                             # 20 x 20 m at 0.5 m cells
-    w = gz.weight_field(cls, 0.5, None, gz.Rules(min_area=1, simplify=0))
+    w = gz.weight_field(cls, 0.5, None, gz.Rules(min_area=1, simplify=0, far_weight=1.0))
     on = w[60:100, 80:120]
     assert ((on == 0) | (on == 1)).all()
     ring =np.zeros_like(cls, dtype=bool)
@@ -145,7 +145,7 @@ def test_a_rock_slab_is_bare_but_for_a_fringe_over_its_edge_and_patches():
     assert (w[edge] == 1).mean() > 0.65                         # most of the edge is under grass (the rest: blades leaning in)
     core = w[64:96, 84:116]                                     # 2 m in from the edge: patches only
     assert 0.05 < (core == 1).mean() < 0.3
-    r = gz.tall_grass_from_surfaces(cls, 0.5, 0.0, 100.0, [], [], gz.Rules(min_area=25, simplify=0))
+    r = gz.tall_grass_from_surfaces(cls, 0.5, 0.0, 100.0, [], [], gz.Rules(min_area=25, simplify=0, far_weight=1.0))
     inner = box(42, 52, 58, 68)                                 # the core in world metres (north = 100)
     assert 0.05 < r.bands[-1][1].intersection(inner).area / inner.area < 0.3
     # no slab on a map without one: the rule changes nothing
@@ -158,7 +158,7 @@ def test_a_rock_slab_in_mown_rough_gets_a_ragged_skirt_of_grass_outside_its_edge
     import numpy as np
     cls = np.full((200, 200), gz.S_ROUGH, dtype=np.uint8)
     cls[60:100, 80:120] = gz.S_SLAB                             # 20 x 20 m at 0.5 m cells
-    w = gz.weight_field(cls, 0.5, None, gz.Rules(min_area=1, simplify=0))
+    w = gz.weight_field(cls, 0.5, None, gz.Rules(min_area=1, simplify=0, far_weight=1.0))
     ring = np.zeros_like(cls, dtype=bool)
     ring[59:101, 79:121] = True
     ring[60:100, 80:120] = False
@@ -223,3 +223,69 @@ def test_a_road_that_is_also_drawn_as_a_path_is_cut_by_the_drawing_alone():
     alone = gz.ways_cut([(centerline, 3.5)], [], rules)         # not drawn: centerline + width + margin
     assert alone.area == pytest.approx(100 * (3.5 + 2 * rules.road_margin), rel=0.01)
 
+
+
+def test_a_gravel_path_gets_a_ragged_verge_in_deep_rough_only_and_off_the_path():
+    """An unmown strip beside a loose path: mixed over what grows there, with gaps, off the play surfaces."""
+    import numpy as np
+    cls = np.full((800, 100), gz.S_DEEP, dtype=np.uint8)
+    cls[:, :42] = gz.S_ROUGH                                    # mown rough west of the path, deep rough east
+    cls[:, 0:4] = 4                                             # a fairway 18 m west of it
+    cls[:120, 50:56] = 4                                        # and one 3 m east of it along the first 60 m (north)
+    cls[:, 40:44] = gz.S_OTHER
+    path = box(20.0, 0.0, 22.0, 400.0)
+    rules = gz.Rules(min_area=1, simplify=0, path_margin=0.0)
+
+    def verge(surface):
+        return gz.tall_grass_from_surfaces(cls, 0.5, 0.0, 400.0, [], [], rules, paths=[(path, surface)]).verge
+
+    assert verge("asphalt") is None
+    v = verge("gravel")
+    west, east = box(17.0, 0.0, 20.0, 400.0), box(22.0, 0.0, 26.0, 400.0)
+    assert 0.4 * 1.8 * 340 * 0.75 < v.intersection(east).area < 1.3 * 1.8 * 340 * 0.75   # ~1.8 m, 3/4 of the length
+    assert v.intersection(west).area == 0                                               # mown rough is cut to the gravel
+    assert v.intersection(box(20.0, 341.0, 30.0, 400.0)).area == 0                      # none beside the near fairway
+    assert v.intersection(box(26.5, 0.0, 50.0, 400.0)).area == 0                        # a strip, not a field
+    assert v.intersection(path.buffer(0.3)).area == 0                                   # a card's lean off the path
+    doc = gz.feature_collection(v, "rough_tall", "tall-grass", 1.0, 0.5, 0.0, [(1.0, box(0, 0, 1, 1))], v)
+    zones = [f["properties"] for f in doc["features"] if f["properties"].get("zoneVariant") == "verge"]
+    assert zones and all(z["blend"] == "mix" and z["source"] == "tall-grass" for z in zones)
+    assert "zoneVariant" not in doc["features"][0]["properties"]
+
+
+def test_grass_far_from_play_is_thinner():
+    """Beyond 30 m from the playing field the weight falls to far_weight over 10 m; nearer it is whole."""
+    import numpy as np
+    cls = np.full((40, 200), gz.S_DEEP, dtype=np.uint8)
+    cls[:, :20] = gz.S_ROUGH
+    w = gz.weight_field(cls, 1.0, None, gz.Rules(min_area=1, simplify=0, spill=0, max_distance=150))[20]
+    assert w[20 + 25] == pytest.approx(1.0)                 # 25 m from the rough
+    assert w[20 + 60] == pytest.approx(0.56, abs=0.01)      # 60 m: thinned
+    assert 0.56 < w[20 + 35] < 1.0                          # on the ramp
+    off = gz.weight_field(cls, 1.0, None, gz.Rules(min_area=1, simplify=0, spill=0, max_distance=150, far_weight=1.0))[20]
+    assert off[20 + 60] == pytest.approx(1.0)
+
+
+def test_far_from_play_the_far_mix_takes_over_when_the_course_has_one():
+    """With Rules.far_variant the ordinary mix hands over to <type>/far across 40-50 m from play:
+    the two add up to the unthinned field, and the far bands are written above the ordinary ones."""
+    import numpy as np
+    cls = np.full((40, 200), gz.S_DEEP, dtype=np.uint8)
+    cls[:, :20] = gz.S_ROUGH
+    rules = gz.Rules(min_area=1, simplify=0, spill=0, max_distance=150, far_variant=True)
+    near, far = (f[20] for f in gz.weight_field(cls, 1.0, None, rules, split=True))
+    assert near[20 + 25] == pytest.approx(1.0) and far[20 + 25] == 0          # near play: the ordinary mix alone
+    assert near[20 + 38] == pytest.approx(0.56 + 0.44 * 0.1, abs=0.01)        # 39 m: thinned, before the hand-over
+    assert 0 < far[20 + 45] < 1 and 0 < near[20 + 45] < 0.56                  # 45 m: both, cross-fading
+    assert far[20 + 60] == pytest.approx(1.0) and near[20 + 60] == 0          # 60 m: the far mix alone
+    assert gz.weight_field(cls, 1.0, None, rules).shape == cls.shape          # unsplit: the ordinary mix
+    off = gz.weight_field(cls, 1.0, None, gz.Rules(min_area=1, simplify=0, spill=0, max_distance=150), split=True)[1]
+    assert not off.any()                                                      # no far variant bound: none
+
+    r = gz.tall_grass_from_surfaces(cls, 1.0, 0.0, 40.0, [], [], rules)
+    assert r.far_bands[-1][1].contains(Point(20 + 60, 20)) and not r.bands[0][1].contains(Point(20 + 60, 20))
+    doc = gz.feature_collection(r.area, "rough_tall", "tall-grass", 1.0, 0.5, 0.0, r.bands, None, r.far_bands)
+    variants = [f["properties"].get("zoneVariant") for f in doc["features"]]
+    first_far = variants.index("far")
+    assert first_far > 0 and all(v is None for v in variants[:first_far]) and all(v == "far" for v in variants[first_far:])
+    assert len({f["properties"]["source_ref"] for f in doc["features"]}) == len(doc["features"])

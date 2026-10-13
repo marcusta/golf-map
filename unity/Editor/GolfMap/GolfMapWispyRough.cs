@@ -11,7 +11,10 @@
 //
 // Two renderers per zone, so the wisps are added to the floor instead of taking its blades:
 //   floor  the rough's own Stix material (the same asset the rough meshes use), red = the zone's weight: the
-//          sward is the rough's, blade for blade. Deep rough only: a rough mesh under the zone has it already;
+//          sward is the rough's, blade for blade. Deep rough only: a rough mesh under the zone has it already.
+//          With floor != 1 it is <course>/Grass/<rough> Wispy Floor.mat instead: the rough's material with the
+//          blades that much longer (rebuilt from the rough's on every run, like the wisps'), and it then grows
+//          on the rough meshes under the zone too, over their own sward;
 //   wisps  <course>/Grass/<rough> Wispy.mat on a second copy of the mesh, red = the zone's weight x the drift
 //          noise. The material is rebuilt from the rough's on every run (so it follows the rough's colour map
 //          and terrain scale; hand edits to it do not survive): the same blade, longer, thinner, paler, and
@@ -34,34 +37,37 @@ namespace GolfMap.Editor
         const string RootName = "GolfMap Wispy Rough";
         const string MeshFolder = "WispyRough";
         const string MaterialSuffix = " Wispy";
+        const string FloorSuffix = " Wispy Floor";
         public const string DefaultZoneType = "rough_wispy";
 
         public sealed class Options
         {
             public string zoneType = DefaultZoneType;
             public string material = GolfMapRoughGrass.DefaultMaterial;
+            public float floor = 1.3f;          // floor blade length, x the rough's (1 = the rough's own material)
             public float wisp = 0.15f;         // wisps per floor blade
             public float patch = 0.7f;         // how much the wisp share drifts over the area: 0 even, 1 from none to twice
             public float patchM = 7f;          // size of those drifts
-            public float wispMinM = 0.15f, wispMaxM = 0.30f;
+            public float wispMinM = 0.20f, wispMaxM = 0.38f;
             public float wispWidthM = 0.006f;
             public Color wispColor = new Color(1.3f, 1.25f, 1f, 1), wispSecColor = new Color(0.95f, 0.88f, 0.62f, 1);
             public bool dryRun;
         }
 
         [BridgeCommand("golfmap.wispy.build", "Wispy rough (links-style deep rough) in every vegetation zone of type rough_wispy in the course's inner zones export: one object per zone under 'GolfMap Wispy Rough' holding the deep-rough course meshes under the zone, cut to it (blade chance fading out over the zone's feather), with two StixGames GrassRenderers: the floor on the rough's own Stix material (the rough's sward, blade for blade) and, added to it, the wisps on <course>/Grass/<material> Wispy.mat (rebuilt from the rough's material: longer, thinner, paler blades, spaced wider, in drifts). The course meshes and their materials are not touched. Replaces what the last run made; zones that are gone lose their object. Marks the scene dirty, does not save it.",
-            args = "zoneType=rough_wispy, material=NewRough (the rough's Stix material), wisp=0.15 (wisps per floor blade), patch=0.7 (drift of that over the area, 0 = even), patchM=7 (drift size), wispMin=0.15, wispMax=0.30 (m), wispWidth=0.006 (m), wispColor/wispSecColor (multipliers on the ortho colour: #rrggbb, or r,g,b which may exceed 1), file (zones export; default the course's inner), dryRun=false")]
+            args = "zoneType=rough_wispy, material=NewRough (the rough's Stix material), floor=1.3 (floor blade length x the rough's; other than 1 = its own material <material> Wispy Floor.mat), wisp=0.15 (wisps per floor blade), patch=0.7 (drift of that over the area, 0 = even), patchM=7 (drift size), wispMin=0.20, wispMax=0.38 (m), wispWidth=0.006 (m), wispColor/wispSecColor (multipliers on the ortho colour: #rrggbb, or r,g,b which may exceed 1), file (zones export; default the course's inner), dryRun=false")]
         static object BuildCommand(BridgeArgs a)
         {
             var o = new Options
             {
                 zoneType = a.String("zoneType", DefaultZoneType),
                 material = a.String("material", GolfMapRoughGrass.DefaultMaterial),
+                floor = (float)a.Number("floor", 1.3),
                 wisp = Mathf.Clamp((float)a.Number("wisp", 0.15), 0.001f, 1f),
                 patch = Mathf.Clamp01((float)a.Number("patch", 0.7)),
                 patchM = Mathf.Max(1f, (float)a.Number("patchM", 7)),
-                wispMinM = (float)a.Number("wispMin", 0.15),
-                wispMaxM = (float)a.Number("wispMax", 0.30),
+                wispMinM = (float)a.Number("wispMin", 0.20),
+                wispMaxM = (float)a.Number("wispMax", 0.38),
                 wispWidthM = (float)a.Number("wispWidth", 0.006),
                 dryRun = a.Bool("dryRun", false),
             };
@@ -94,6 +100,7 @@ namespace GolfMap.Editor
         public static Dictionary<string, object> Build(Options o, string file = null)
         {
             if (o.wispMinM <= 0 || o.wispMaxM < o.wispMinM) throw new InvalidOperationException("wispMin must be > 0 and <= wispMax.");
+            if (o.floor <= 0) throw new InvalidOperationException("floor must be > 0.");
             if (o.wispWidthM <= 0) throw new InvalidOperationException("wispWidth must be > 0.");
             var type = AppDomain.CurrentDomain.GetAssemblies().Select(asm => asm.GetType(RendererType, false)).FirstOrDefault(t => t != null);
             if (type == null) throw new InvalidOperationException(RendererType + " not found: is the StixGames Grass Shader in this project?");
@@ -141,6 +148,7 @@ namespace GolfMap.Editor
             Undo.SetCurrentGroupName("Build wispy rough");
             var rough = FindMaterial(o.material);
             var material = built.Count > 0 ? WispyMaterial(folder, rough, o) : null;
+            var floor = built.Count > 0 && !Mathf.Approximately(o.floor, 1f) ? FloorMaterial(folder, rough, o) : rough;
             if (!AssetDatabase.IsValidFolder(folder + MeshFolder)) AssetDatabase.CreateFolder(folder.TrimEnd('/'), MeshFolder);
 
             var root = scene.GetRootGameObjects().FirstOrDefault(g => g.name == RootName);
@@ -149,14 +157,15 @@ namespace GolfMap.Editor
             {
                 root = new GameObject(RootName);
                 Undo.RegisterCreatedObjectUndo(root, "Build wispy rough");
-                foreach (var patch in built) Place(root.transform, patch, type, rough, material, folder + MeshFolder + "/");
+                foreach (var patch in built) Place(root.transform, patch, type, floor, material, folder + MeshFolder + "/");
             }
             Undo.CollapseUndoOperations(undoGroup);
             AssetDatabase.SaveAssets();
             EditorSceneManager.MarkSceneDirty(scene);
             SceneView.RepaintAll();
 
-            result["floorMaterial"] = AssetDatabase.GetAssetPath(rough);
+            result["floorMaterial"] = AssetDatabase.GetAssetPath(floor);
+            result["floorMaxHeightM"] = floor.GetFloat("_MaxHeight00");
             result["wispMaterial"] = material == null ? null : AssetDatabase.GetAssetPath(material);
             result["wispSpacingM"] = material == null ? 0 : material.GetFloat("_TargetDensity");
             result["objects"] = built.Count;
@@ -172,16 +181,16 @@ namespace GolfMap.Editor
             public string id;
             public Vector3 centre;
             public float areaM2;
-            public readonly List<Vector3> vertices = new List<Vector3>();   // relative to centre
+            public readonly List<Vector3> vertices = new List<Vector3>();   // world space
             public readonly List<Vector3> normals = new List<Vector3>();
             public readonly List<Color> floor = new List<Color>();   // red = the zone's weight
             public readonly List<Color> wisps = new List<Color>();   // red = weight x drift (1 where the wisps stand thickest)
             public readonly List<int> triangles = new List<int>();        // where the wisps grow: deep and rough
-            public readonly List<int> floorTriangles = new List<int>();   // where the floor is ours to grow: deep only
+            public readonly List<int> floorTriangles = new List<int>();   // where the floor is ours to grow: deep only, unless it is longer than the rough's
             public readonly List<string> sources = new List<string>();
         }
 
-        // The triangles of the deep meshes that reach into the zone, as one mesh around the zone's centre, with the
+        // The triangles of the deep meshes that reach into the zone, as one world-space mesh, with the
         // blade chance (red) of the floor and of the wisps. Both fade over the zone's feather, centred on its outline.
         static Patch Cut(GolfMapZone zone, Vector3 origin, List<MeshFilter> ground, Options o)
         {
@@ -195,6 +204,8 @@ namespace GolfMap.Editor
             var mid = (min + max) * 0.5f;
             float seedX = (zone.id.GetHashCode() & 0xff) * 3.7f, seedZ = ((zone.id.GetHashCode() >> 8) & 0xff) * 5.3f;
 
+            // a longer floor also grows on the rough meshes, over their own shorter sward
+            bool ownFloor = !Mathf.Approximately(o.floor, 1f);
             var world = new List<Vector3>();
             foreach (var f in ground)
             {
@@ -241,7 +252,7 @@ namespace GolfMap.Editor
                             patch.wisps.Add(new Color(weight[v] * drift, 0, 0, 1));
                         }
                         patch.triangles.Add(at);
-                        if (deep) patch.floorTriangles.Add(at);
+                        if (deep || ownFloor) patch.floorTriangles.Add(at);
                     }
                     var a0 = world[patch.triangles[patch.triangles.Count - 3]];
                     var a1 = world[patch.triangles[patch.triangles.Count - 2]];
@@ -252,7 +263,7 @@ namespace GolfMap.Editor
             }
             float y = world.Count == 0 ? origin.y : world.Average(p => p.y);
             patch.centre = new Vector3(mid.x, y, mid.y);
-            foreach (var p in world) patch.vertices.Add(p - patch.centre);
+            patch.vertices.AddRange(world);
             return patch;
         }
 
@@ -289,7 +300,8 @@ namespace GolfMap.Editor
         {
             var go = new GameObject("Wispy rough " + patch.id.Substring(0, Math.Min(8, patch.id.Length)));
             go.transform.SetParent(root, false);
-            go.transform.position = patch.centre;
+            // At the origin with world-space vertices: GSPro's DisableGrassRenderer takes the mesh bounds' centre as a
+            // world point when the object has no MeshCollider, and switches the grass off beyond 300 m from the camera.
             if (patch.floorTriangles.Count > 0)
                 Grow(go, PatchMesh(patch, patch.floor, patch.floorTriangles, meshFolder + patch.id + ".asset", "floor"), rendererType, floor);
             var over = new GameObject("Wisps");
@@ -355,6 +367,22 @@ namespace GolfMap.Editor
             m.SetColor("_SecColor00", s);
             m.SetFloat("_LODMax", Mathf.Max(m.GetFloat("_LODMax"), 4));   // segments per blade: a 30 cm wisp bends in a curve
 
+            return StoreMaterial(m, path);
+        }
+
+        // The floor's material when it is not the rough's own: the rough's with every blade `floor` times as long.
+        static Material FloorMaterial(string courseFolder, Material rough, Options o)
+        {
+            if (!AssetDatabase.IsValidFolder(courseFolder + "Grass")) AssetDatabase.CreateFolder(courseFolder.TrimEnd('/'), "Grass");
+            var m = new Material(rough) { name = rough.name + FloorSuffix };
+            foreach (var p in new[] { "_MinHeight00", "_MaxHeight00", "_MinHeight01", "_MaxHeight01" })
+                if (m.HasProperty(p)) m.SetFloat(p, m.GetFloat(p) * o.floor);
+            return StoreMaterial(m, courseFolder + "Grass/" + m.name + ".mat");
+        }
+
+        // Rebuilt in place: the asset at `path` takes m's values (same GUID, same references).
+        static Material StoreMaterial(Material m, string path)
+        {
             var existing = AssetDatabase.LoadAssetAtPath<Material>(path);
             if (existing == null) { AssetDatabase.CreateAsset(m, path); return m; }
             Undo.RecordObject(existing, "Build wispy rough");

@@ -264,8 +264,8 @@ export class HoleInfoPanelComponent extends Component {
                 const green = this.furniture.greenForHole(h.id);
                 const center = green ? { lat: green.centerLat, lon: green.centerLon } : null;
                 return [...this.furniture.teesForHole(h.id)].sort((a, b) => {
-                    const la = playingLength(a, aims, center).meters ?? -1;
-                    const lb = playingLength(b, aims, center).meters ?? -1;
+                    const la = playingLength(a, aims, center, this.playsStraight(a)).meters ?? -1;
+                    const lb = playingLength(b, aims, center, this.playsStraight(b)).meters ?? -1;
                     return lb - la;
                 });
             },
@@ -297,8 +297,13 @@ export class HoleInfoPanelComponent extends Component {
         const aims = this.furniture.aimsForHole(holeId);
         const green = this.furniture.greenForHole(holeId);
         const center = green ? { lat: green.centerLat, lon: green.centerLon } : null;
-        const { meters, approximate } = playingLength(tee, aims, center);
+        const { meters, approximate } = playingLength(tee, aims, center, !!tee && this.playsStraight(tee));
         if (meters === null) return '—';
         return `${approximate ? '~' : ''}${meters} m`;
+    }
+
+    /** A tee of the set GSPro plays as Par3: one shot at the green, whatever aim points the hole has. */
+    private playsStraight(tee: { teeSetId: string | null }): boolean {
+        return this.furniture.teeSets.get().find(set => set.id === tee.teeSetId)?.gsproTee === 'Par3';
     }
 }

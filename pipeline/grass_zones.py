@@ -103,6 +103,23 @@ class Rules:
     min_area: float = DEFAULT_MIN_AREA_M2
     simplify: float = DEFAULT_SIMPLIFY_M
     clearance: float = DEFAULT_NOISE_M + 0.5
+    # Far from play the grass is thinner: beyond far_start metres from the nearest rough, semi,
+    # fairway, green, tee or bunker the weight falls over far_ramp metres to far_weight (the mask
+    # value is the density, so 0.56 is a little over half the plants; it lands in the 0.55 band).
+    # Nobody walks there, it is seen from a distance, and it is most of the grass the player's
+    # machine draws (Marcus 2026-10-13). far_weight 1 = off.
+    far_start: float = 30.0
+    far_ramp: float = 10.0
+    far_weight: float = 0.56
+    # Further out still, where no ball is played from, the mix itself changes: beyond out_start
+    # metres from play the ordinary mix hands over, across out_ramp metres, to the type's
+    # FAR_VARIANT (zones of slot <type>/far): few, large, wide cards that read as the same grass
+    # from the fairway at a fraction of the instances. Distance from play, not the drawn `oob`
+    # ring: on Vreta that ring holds only the western holes. Only with far_variant set, which
+    # main() does when the course binds items to the variant (an unbound one would plant nothing).
+    out_start: float = 40.0
+    out_ramp: float = 10.0
+    far_variant: bool = False
 
 
 # (surface codes, clearance: zero weight within this many metres, ramp: full weight beyond clearance + ramp)
@@ -134,6 +151,22 @@ TUFT_MIN_GAP_M = 2.0
 TUFT_RADIUS_M = (0.36, 0.42)   # >= half the diagonal of a 0.5 m mask pixel: each tuft holds one
 ROAD_DRAWN_REACH_M = 3.0       # a road centerline this close to a drawn path (or its own width) is that path
 PATH_SEAM_M = 1.0              # the surface map's cells this close to a drawn path are its mesh and seam
+# The verge of a loose path: an unmown strip of straw and weeds beside it, as a mix layer over whatever
+# grows there (zone variant VERGE_VARIANT, blend mix). In deep rough only: mown rough is cut right up to
+# the gravel (Vreta, 2026-10: a verge there read as weeds on a kept lawn). Ragged (reach x 0.4 .. 1.6 by
+# noise), with gaps, never near a play surface or water, and a card's lean off the path: its 1 m cards
+# hung over a 2 m path from both sides, and tufts of its own closed it.
+VERGE_VARIANT = "verge"
+FAR_VARIANT = "far"            # the thin mix beyond Rules.out_start from play (Rules.far_variant)
+VERGE_DEEP_M = 1.8
+VERGE_ROUGH_M = 0.0
+VERGE_NOISE_FEATURE_M = 4.0    # blobs of the noise that bends the verge's outer edge
+VERGE_GAP_FEATURE_M = 9.0      # ... and of the one that opens gaps along it
+VERGE_COVER = 0.75             # share of the path's length that has a verge
+VERGE_CLEAR = ((3, 4, 5, 6, 7), 4.0), ((8,), 2.0)   # semi/fairway/green/tee/bunker, water: none within this
+VERGE_PATH_MARGIN_M = 0.35     # its feet stand this far off the path's edge
+VERGE_FEATHER_M = 0.4
+VERGE_MIN_M2 = 0.3
 MIN_SLIVER_M2 = 2.0            # band pieces smaller than this after the paths are cut out are dropped
 
 
@@ -146,6 +179,8 @@ class Result:
     cut_by_buildings_m2: float
     cut_by_roads_m2: float
     bands: list | None = None   # [(weight, geometry)] lowest first, from a weight field; None = `area` at one weight
+    verge: BaseGeometry | None = None   # the loose paths' verges (VERGE_VARIANT), with --surfaces
+    far_bands: list | None = None   # [(weight, geometry)] of the FAR_VARIANT mix far from play (Rules.far_variant)
 
 
 def _union(geoms) -> BaseGeometry:
@@ -231,10 +266,12 @@ def slab_grass(cls: np.ndarray, cell: float, seed: int = 0) -> np.ndarray | None
 
 def weight_field(cls: np.ndarray, cell: float, blocked: np.ndarray | None, rules: Rules,
                  clearances=CLEARANCES, reach_ramp: float = DEFAULT_REACH_RAMP_M,
-                 block_ramp: float = DEFAULT_BLOCK_RAMP_M, seed: int = 0) -> np.ndarray:
+                 block_ramp: float = DEFAULT_BLOCK_RAMP_M, seed: int = 0, split: bool = False):
     """Tall-grass weight 0..1 per cell of the surface map (see the module doc).
     `blocked`: buildings (+ margin), faded over `block_ramp`. Paths and roads are cut
-    from the band polygons instead (tall_grass_from_surfaces)."""
+    from the band polygons instead (tall_grass_from_surfaces). `split`: (ordinary mix,
+    far mix) instead - with rules.far_variant the far mix takes over beyond out_start
+    from play; the two add up to what grows there without the far thinning."""
     from scipy.ndimage import distance_transform_edt
     from creek_bank_zones import smooth_noise
 
@@ -271,23 +308,58 @@ def weight_field(cls: np.ndarray, cell: float, blocked: np.ndarray | None, rules
                 f = np.maximum(f, ramp(d - d_rough, ROUGH_BUFFER_M, ROUGH_BUFFER_RAMP_M))
             w *= f
     play = np.isin(cls, S_PLAY)
-    w *= np.clip((rules.max_distance - dist(play)) / reach_ramp, 0.0, 1.0)
+    d_play = dist(play)
+    w *= np.clip((rules.max_distance - d_play) / reach_ramp, 0.0, 1.0)
     if blocked is not None and blocked.any():
         w *= ramp(dist(blocked), 0.0, block_ramp)
-    return w.astype(np.float32)
+    far = np.zeros_like(w)
+    if rules.far_variant and play.any():
+        t = ramp(d_play, rules.out_start, rules.out_ramp)
+        far, w = w * t, w * (1.0 - t)
+    if rules.far_weight < 1.0 and play.any():
+        w *= 1.0 - (1.0 - rules.far_weight) * ramp(d_play, rules.far_start, rules.far_ramp)
+    w, far = w.astype(np.float32), far.astype(np.float32)
+    return (w, far) if split else w
 
 
-def path_tufts(loose: BaseGeometry, seed: int = 0) -> BaseGeometry:
+def path_verge(cls: np.ndarray, cell: float, loose: np.ndarray, blocked: np.ndarray | None,
+               max_distance: float = DEFAULT_MAX_DISTANCE_M, seed: int = 0) -> np.ndarray:
+    """Cells of the verge beside the loose paths (`loose`: their cells), per the VERGE_* rules."""
+    from scipy.ndimage import distance_transform_edt
+    from creek_bank_zones import smooth_noise
+
+    def dist(mask):
+        return distance_transform_edt(~mask) * cell
+
+    reach = np.where(cls == S_DEEP, VERGE_DEEP_M, np.where(cls == S_ROUGH, VERGE_ROUGH_M, 0.0))
+    reach = reach * (1.0 + 0.6 * smooth_noise(cls.shape, cell, VERGE_NOISE_FEATURE_M, seed + 11))
+    verge = dist(loose) - cell / 2 < reach
+    gaps = smooth_noise(cls.shape, cell, VERGE_GAP_FEATURE_M, seed + 12)
+    if verge.any():
+        verge &= gaps >= np.quantile(gaps[verge], 1.0 - VERGE_COVER)
+    for codes, clear in VERGE_CLEAR:
+        present = np.isin(cls, codes)
+        if present.any():
+            verge &= dist(present) >= clear
+    if blocked is not None and blocked.any():
+        verge &= dist(blocked) >= DEFAULT_BLOCK_RAMP_M
+    play = np.isin(cls, S_PLAY)
+    if play.any():   # as far from play as the tall grass itself
+        verge &= dist(play) <= max_distance
+    return verge
+
+
+def path_tufts(loose: BaseGeometry, seed: int = 0, spacing: float = TUFT_SPACING_M) -> BaseGeometry:
     """Discs on the outline of the loose paths, where a tuft grows onto the path."""
     from shapely.geometry import Point
     rng = np.random.default_rng(seed)
     discs = []
     for poly in _each_polygon(loose):
         for ring in (poly.exterior, *poly.interiors):
-            at = rng.exponential(TUFT_SPACING_M)
+            at = rng.exponential(spacing)
             while at < ring.length:
                 discs.append(ring.interpolate(at).buffer(rng.uniform(*TUFT_RADIUS_M), quad_segs=3))
-                at += TUFT_MIN_GAP_M + rng.exponential(TUFT_SPACING_M - TUFT_MIN_GAP_M)
+                at += TUFT_MIN_GAP_M + rng.exponential(spacing - TUFT_MIN_GAP_M)
     return _union(discs)
 
 
@@ -342,28 +414,44 @@ def tall_grass_from_surfaces(cls: np.ndarray, cell: float, west: float, north: f
         if not under.all():
             rows, cols = distance_transform_edt(under, return_distances=False, return_indices=True)
             cls = cls[rows, cols]
-    w = weight_field(cls, cell, blocked, rules)
+    w, w_far = weight_field(cls, cell, blocked, rules, split=True)
     cut = ways_cut(roads, paths, rules)
 
     # A patch of grass on a rock slab is small by design: the minimum area does not apply there.
     slab = cls == S_SLAB
     slabs = _union(shape(g) for g, v in features.shapes(slab.astype(np.uint8), mask=slab, transform=transform) if v == 1) if slab.any() else Polygon()
 
-    bands = []
-    for i, level in enumerate(levels):
-        m = w >= level
+    def contour_bands(field):
+        out = []
+        for i, level in enumerate(levels):
+            m = field >= level
+            polys = [shape(g) for g, v in features.shapes(m.astype(np.uint8), mask=m, transform=transform) if v == 1]
+            band = _union(p.simplify(rules.simplify) for p in _each_polygon(_union(polys))
+                          if p.area >= rules.min_area or (not slabs.is_empty and p.intersects(slabs)))
+            if not cut.is_empty:   # after the simplify: the path's edge stays exact
+                band = _union(p for p in _each_polygon(make_valid(band.difference(cut))) if p.area >= min(rules.min_area, MIN_SLIVER_M2))
+            out.append((1.0 if i == len(levels) - 1 else float(level), band))
+        return out
+
+    bands = contour_bands(w)
+    far_bands = contour_bands(w_far) if w_far.any() else None
+
+    # The verge of the loose paths: its cells, less every path and a margin.
+    verge = None
+    loose_paths = [g for g, surface in paths if surface in LOOSE_SURFACES]
+    loose = raster(loose_paths, all_touched=True)
+    if loose is not None:
+        m = path_verge(cls, cell, loose, blocked, rules.max_distance)
         polys = [shape(g) for g, v in features.shapes(m.astype(np.uint8), mask=m, transform=transform) if v == 1]
-        band = _union(p.simplify(rules.simplify) for p in _each_polygon(_union(polys))
-                      if p.area >= rules.min_area or (not slabs.is_empty and p.intersects(slabs)))
-        if not cut.is_empty:   # after the simplify: the path's edge stays exact
-            band = _union(p for p in _each_polygon(make_valid(band.difference(cut))) if p.area >= min(rules.min_area, MIN_SLIVER_M2))
-        bands.append((1.0 if i == len(levels) - 1 else float(level), band))
+        off = _union(g.buffer(max(rules.path_margin, VERGE_PATH_MARGIN_M)) for g, _ in paths)
+        area = make_valid(_union(p.simplify(rules.simplify / 2) for p in polys).difference(off))
+        verge = _union(p for p in _each_polygon(area) if p.area >= VERGE_MIN_M2)
 
     cell2 = cell * cell
     deep = cls == S_DEEP
     return Result(bands[0][1], float(deep.sum()) * cell2, float(((cls == S_ROUGH) & (w > 0)).sum()) * cell2,
                   float((deep & (w == 0)).sum()) * cell2,
-                  float(blocked.sum()) * cell2 if blocked is not None else 0.0, cut.area, bands)
+                  float(blocked.sum()) * cell2 if blocked is not None else 0.0, cut.area, bands, verge, far_bands)
 
 
 def load_surfaces_map(path: Path, sidecar: Path | None) -> tuple[np.ndarray, float, float, float, dict]:
@@ -390,22 +478,40 @@ def load_surfaces_map(path: Path, sidecar: Path | None) -> tuple[np.ndarray, flo
 
 
 def feature_collection(area: BaseGeometry, zone_type: str, source: str, weight: float,
-                       feather: float, noise: float, bands: list | None = None) -> dict:
+                       feather: float, noise: float, bands: list | None = None,
+                       verge: BaseGeometry | None = None, far_bands: list | None = None) -> dict:
     """One zone per polygon; with `bands` ([(weight, geometry)], lowest first) one per band
-    polygon in that order, so higher bands sit above lower ones in the zone stack."""
+    polygon in that order, so higher bands sit above lower ones in the zone stack. `far_bands`:
+    the same for the FAR_VARIANT mix, above the ordinary bands (it claims its share first, the
+    ordinary mix keeps the rest, so the two cross-fade). `verge`: the loose paths' verges, on
+    top as VERGE_VARIANT mix zones (what is under them keeps growing)."""
     features = []
-    for level, geom in (bands if bands is not None else [(weight, area)]):
-        for poly in sorted(_each_polygon(geom), key=lambda p: -p.area):
-            rings = [poly.exterior, *poly.interiors]
-            features.append({
-                "type": "Feature",
-                "geometry": {"type": "Polygon", "coordinates": [[[round(x, 2), round(y, 2)] for x, y, *_ in r.coords] for r in rings]},
-                "properties": {
-                    "type": "vegetation_zone", "source": source, "source_ref": f"{source}:{len(features)}",
-                    "zoneType": zone_type, "weight": round(level, 3), "feather": feather, "noise": noise,
-                    "areaM2": round(poly.area),
-                },
-            })
+    for variant, stack in ((None, bands if bands is not None else [(weight, area)]), (FAR_VARIANT, far_bands or [])):
+        for level, geom in stack:
+            for poly in sorted(_each_polygon(geom), key=lambda p: -p.area):
+                rings = [poly.exterior, *poly.interiors]
+                features.append({
+                    "type": "Feature",
+                    "geometry": {"type": "Polygon", "coordinates": [[[round(x, 2), round(y, 2)] for x, y, *_ in r.coords] for r in rings]},
+                    "properties": {
+                        "type": "vegetation_zone", "source": source,
+                        "source_ref": f"{source}:{variant + ':' if variant else ''}{len(features)}",
+                        "zoneType": zone_type, **({"zoneVariant": variant} if variant else {}),
+                        "weight": round(level, 3), "feather": feather, "noise": noise,
+                        "areaM2": round(poly.area),
+                    },
+                })
+    for poly in sorted(_each_polygon(verge) if verge is not None else [], key=lambda p: -p.area):
+        rings = [poly.exterior, *poly.interiors]
+        features.append({
+            "type": "Feature",
+            "geometry": {"type": "Polygon", "coordinates": [[[round(x, 2), round(y, 2)] for x, y, *_ in r.coords] for r in rings]},
+            "properties": {
+                "type": "vegetation_zone", "source": source, "source_ref": f"{source}:{VERGE_VARIANT}:{len(features)}",
+                "zoneType": zone_type, "zoneVariant": VERGE_VARIANT, "blend": gspro.ZONE_BLEND_MIX, "weight": 1.0,
+                "feather": VERGE_FEATHER_M, "noise": 0, "areaM2": round(poly.area),
+            },
+        })
     return {"type": "FeatureCollection", "crs": {"type": "name", "properties": {"name": "EPSG:3006"}}, "features": features}
 
 
@@ -437,6 +543,16 @@ def load_path_surfaces(db_path: Path, course_ident: str) -> list[tuple[BaseGeome
             attrs = json.loads(r["attributes_json"]) if r["attributes_json"] else {}
             out.append((make_valid(g), attrs.get("surface")))
     return out
+
+
+def far_variant_bound(db_path: Path, course_ident: str, zone_type: str) -> bool:
+    """Whether the course's `zone_type` has a FAR_VARIANT that binds items (zones -- bind
+    <course> <type> --variant far --palette ...): the switch for the far mix."""
+    conn = gspro._open_course_db(db_path)
+    course = gspro._resolve_course(conn, course_ident)
+    types = gspro._load_zone_types(conn, course["id"])
+    conn.close()
+    return any(t.key == zone_type and any(v.key == FAR_VARIANT and v.items for v in t.variants) for t in types)
 
 
 def load_buildings(path: Path | None) -> list[BaseGeometry]:
@@ -487,14 +603,20 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--road-margin", type=float, default=DEFAULT_ROAD_MARGIN_M)
     p.add_argument("--path-margin", type=float, default=DEFAULT_PATH_MARGIN_M, help="metres kept clear beside the app's path features")
     p.add_argument("--clearance", type=float, help="metres kept from forbidden surfaces and the reach limit (default: noise + 0.5)")
+    p.add_argument("--far-start", type=float, default=Rules.far_start, help="metres from play where the grass starts to thin")
+    p.add_argument("--far-weight", type=float, default=Rules.far_weight, help="its weight beyond --far-start + 10 m (1 = no thinning)")
+    p.add_argument("--out-start", type=float, default=Rules.out_start,
+                   help=f"metres from play where the <type>/{FAR_VARIANT} mix takes over (only when the course binds that variant)")
     args = p.parse_args(argv)
 
     buildings = load_buildings(Path(args.buildings) if args.buildings else None)
     roads = load_roads(Path(args.roads) if args.roads else None)
     rules = Rules(max_distance=args.max_distance, spill=args.spill,
                   building_margin=args.building_margin, road_margin=args.road_margin, path_margin=args.path_margin,
-                  clearance=args.clearance if args.clearance is not None else (DEFAULT_NOISE_M if args.noise is None else args.noise) + 0.5)
+                  clearance=args.clearance if args.clearance is not None else (DEFAULT_NOISE_M if args.noise is None else args.noise) + 0.5,
+                  far_start=args.far_start, far_weight=args.far_weight, out_start=args.out_start)
     if args.surfaces:
+        rules.far_variant = far_variant_bound(Path(args.db), args.course, args.zone_type)
         cls, cell, west, north, doc = load_surfaces_map(Path(args.surfaces), Path(args.sidecar) if args.sidecar else None)
         course = {"name": doc.get("course", args.course)}
         # Creeks marked for bank vegetation: no water clearance there, the tall rough
@@ -513,12 +635,19 @@ def main(argv: list[str] | None = None) -> int:
     doc = feature_collection(r.area, args.zone_type, args.source, args.weight,
                              args.band_feather if r.bands is not None else args.feather,
                              args.noise if args.noise is not None else DEFAULT_BAND_NOISE_M if r.bands is not None else DEFAULT_NOISE_M,
-                             r.bands)
+                             r.bands, r.verge, r.far_bands)
     Path(args.out).write_text(json.dumps(doc), encoding="utf-8")
     print(f"{course['name']}: {len(doc['features'])} {args.zone_type} zones, {r.area.area:,.0f} m2 "
           f"(deep rough {r.habitat_m2:,.0f} m2 + rough spill {r.spill_m2:,.0f} m2; cut: beyond {args.max_distance:g} m "
           f"{r.cut_by_reach_m2:,.0f} m2, buildings {r.cut_by_buildings_m2:,.0f} m2 ({len(buildings)}), "
           f"roads {r.cut_by_roads_m2:,.0f} m2 ({len(roads)} centerlines))")
+    if r.far_bands:
+        print(f"  {r.far_bands[0][1].area:,.0f} m2 beyond {rules.out_start:g} m from play: the thin {args.zone_type}/{FAR_VARIANT} mix "
+              f"(hand-over across {rules.out_start:g}-{rules.out_start + rules.out_ramp:g} m)")
+    elif args.surfaces:
+        print(f"  no {args.zone_type}/{FAR_VARIANT} variant with items on this course: the ordinary mix grows to the reach limit")
+    if r.verge is not None and not r.verge.is_empty:
+        print(f"  {r.verge.area:,.0f} m2 of verge along the gravel and dirt paths ({args.zone_type}/{VERGE_VARIANT}, mixed over what grows there)")
     print(f"Wrote {args.out}")
     return 0
 

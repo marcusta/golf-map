@@ -12,6 +12,8 @@
 //     exported, duplicates) is deleted, and every rule on any item that points at a
 //     golfmap group other than that item's own is removed. Hand-authored rules
 //     (non-golfmap groups) and everything else about an item are left alone (D-VZ9).
+//   - when a zone sets a bush height: the "golfmap-zone:height" group, the height-driven
+//     twin items and their rules (GolfMapZoneImporterHeight.cs, D-VZ17).
 // No VegetationSystemPro is ever created here: the tree planter builds systems
 // through GolfMapVspRig.
 //
@@ -73,15 +75,15 @@ namespace GolfMap.Editor
         }
 
         // Same test the tree planter applies to its storage: the system lists the terrain and its
-        // bounds are the terrain square plus VSP's 1 m margin.
+        // bounds cover the terrain square. The course's one system holds the inner and the outer
+        // terrain (GolfMapVspRig), so it matches both.
         internal static bool SystemMatchesTerrain(VegetationSystemPro system, Terrain target)
         {
             if (!system || !target || !target.terrainData || system.gameObject.scene != target.gameObject.scene) return false;
             if (!system.VegetationStudioTerrainObjectList.Contains(target.gameObject)) return false;
             var bounds = system.VegetationSystemBounds; var size = target.terrainData.size;
-            var center = target.transform.position + size / 2;
-            return Mathf.Abs(bounds.size.x - (size.x + 2)) <= 2 && Mathf.Abs(bounds.size.z - (size.z + 2)) <= 2 &&
-                Mathf.Abs(bounds.center.x - center.x) <= 1 && Mathf.Abs(bounds.center.z - center.z) <= 1;
+            var min = target.transform.position; var max = min + size;
+            return bounds.min.x <= min.x + 1 && bounds.min.z <= min.z + 1 && bounds.max.x >= max.x - 1 && bounds.max.z >= max.z - 1;
         }
 
         // True when VSP will actually let the item through its include filter somewhere: include
@@ -174,6 +176,12 @@ namespace GolfMap.Editor
             public List<string> textures = new List<string>(), groupsCreate = new List<string>(), groupsUpdate = new List<string>(), groupsDelete = new List<string>();
             public List<string> rulesAdd = new List<string>(), rulesUpdate = new List<string>();
             public List<string> bound = new List<string>(), missing = new List<string>(), unbound = new List<string>(), dangling = new List<string>();
+            // Bush height (GolfMapZoneImporterHeight.cs): the height mask's group (null = create or none),
+            // the twin per bush item, twins nobody needs any more, and what to say about it.
+            public TextureMaskGroup heightGroup;
+            public Dictionary<VegetationItemInfoPro, TwinPlan> twins = new Dictionary<VegetationItemInfoPro, TwinPlan>();
+            public List<VegetationItemInfoPro> staleTwins = new List<VegetationItemInfoPro>();
+            public List<string> height = new List<string>(), heightNotes = new List<string>();
         }
 
         // The active course's folder; a project without a course asset falls back to the export's name.
@@ -210,6 +218,14 @@ namespace GolfMap.Editor
                 if (g.TextureMaskGroupID != null) names[g.TextureMaskGroupID] = g.TextureMaskName;
                 if (!GolfMapZones.IsGroupName(g.TextureMaskName)) continue;
                 if (g.TextureMaskGroupID != null) golfIds.Add(g.TextureMaskGroupID);
+                if (g.TextureMaskName == GolfMapZones.HeightGroupName)
+                {
+                    if (GolfMapZones.HasHeight(loaded) && plan.heightGroup == null) { plan.heightGroup = g; continue; }
+                    plan.deleteGroups.Add(g);
+                    if (g.TextureMaskGroupID != null) deletedIds.Add(g.TextureMaskGroupID);
+                    plan.groupsDelete.Add(g.TextureMaskName + (GolfMapZones.HasHeight(loaded) ? " (duplicate)" : " (no zone sets a bush height)"));
+                    continue;
+                }
                 var itemName = GolfMapZones.ItemFromGroupName(g.TextureMaskName);
                 if (itemName != null && exported.Contains(itemName) && !kept.ContainsKey(g.TextureMaskName)) { kept[g.TextureMaskName] = g; continue; }
                 plan.deleteGroups.Add(g);
@@ -232,17 +248,46 @@ namespace GolfMap.Editor
                 plan.items.Add(ip);
             }
 
+            PlanHeight(plan, package);
+            var heightId = plan.heightGroup != null ? plan.heightGroup.TextureMaskGroupID : null;
+            if (GolfMapZones.HasHeight(loaded))
+                (plan.heightGroup == null ? plan.groupsCreate : plan.groupsUpdate).Add(GolfMapZones.HeightGroupName + " (" + loaded.height.file + ")");
+
             // Rules on every package item.
             foreach (var item in package.VegetationInfoList)
             {
                 if (item == null) continue;
+                var label = "'" + item.Name + "'";
+                if (GolfMapZones.IsTwinName(item.Name))
+                {
+                    // A height twin: the item's own mask group for density and include, the height mask for the rest.
+                    var tp = plan.twins.Values.FirstOrDefault(t => t.twin == item);
+                    if (tp == null)
+                    {
+                        plan.staleTwins.Add(item);
+                        plan.height.Add(item.Name + ": removed (no zone with a bush height plants '" + GolfMapZones.TwinBase(item.Name) + "' any more)");
+                        continue;
+                    }
+                    var baseId = tp.owner.group != null ? tp.owner.group.TextureMaskGroupID : null;
+                    tp.density = ScanRules(plan, label, "density", item.TextureMaskDensityRuleList, baseId, true, golfIds, deletedIds, names);
+                    tp.include = ScanRules(plan, label, "include", item.TextureMaskIncludeRuleList, baseId, true, golfIds, deletedIds, names);
+                    tp.exclude = ScanRules(plan, label, "exclude", item.TextureMaskExcludeRuleList, heightId, true, golfIds, deletedIds, names);
+                    tp.scale = ScanRules(plan, label, "scale", item.TextureMaskScaleRuleList, heightId, true, golfIds, deletedIds, names);
+                    continue;
+                }
                 ItemPlan own;
                 owner.TryGetValue(item, out own);
                 var ownId = own != null && own.group != null ? own.group.TextureMaskGroupID : null;
-                var label = "'" + item.Name + "'";
+                TwinPlan twinned;
+                plan.twins.TryGetValue(item, out twinned);
                 var density = ScanRules(plan, label, "density", item.TextureMaskDensityRuleList, ownId, true, golfIds, deletedIds, names);
                 var include = ScanRules(plan, label, "include", item.TextureMaskIncludeRuleList, ownId, true, golfIds, deletedIds, names);
-                ScanRules(plan, label, "exclude", item.TextureMaskExcludeRuleList, ownId, false, golfIds, deletedIds, names);
+                var exclude = ScanRules(plan, label, "exclude", item.TextureMaskExcludeRuleList, twinned != null ? heightId : null, twinned != null, golfIds, deletedIds, names);
+                if (twinned != null)
+                {
+                    twinned.baseExclude = exclude;
+                    plan.height.Add(item.Name + ": " + (twinned.twin == null ? "new twin" : "twin kept") + ", " + GolfMapZones.F(twinned.naturalHeight) + " m at scale 1");
+                }
                 ScanRules(plan, label, "scale", item.TextureMaskScaleRuleList, ownId, false, golfIds, deletedIds, names);
                 var spawnOff = item.EnableRuntimeSpawn ? "" : " [runtime spawn off]";
                 if (own != null)
@@ -287,6 +332,7 @@ namespace GolfMap.Editor
                 string reason;
                 if (deletedIds.Contains(id)) reason = "group deleted";
                 else if (id == ownId) reason = keepOwn ? "duplicate" : "golfmap rule in the " + kind + " list";
+                else if (names[id] == GolfMapZones.HeightGroupName) reason = "no bush height for this item";
                 else reason = "another item's mask";
                 plan.removals.Add(new RuleRemoval { list = list, rule = rule, line = label + " " + kind + " rule -> " + names[id] + " (" + reason + ")" });
             }
@@ -297,7 +343,8 @@ namespace GolfMap.Editor
         {
             return p.items.Count + " item mask group(s) (" + p.groupsCreate.Count + " new, " + p.groupsUpdate.Count + " updated), delete " + p.deleteGroups.Count + " group(s), remove "
                 + p.removals.Count + " rule(s), add " + p.rulesAdd.Count + " and update " + p.rulesUpdate.Count + " rule(s); " + p.bound.Count + " item(s) bound, "
-                + p.missing.Count + " missing from the package, " + p.unbound.Count + " package item(s) unbound.";
+                + p.missing.Count + " missing from the package, " + p.unbound.Count + " package item(s) unbound."
+                + (p.twins.Count + p.staleTwins.Count > 0 ? " Bush height: " + p.twins.Count + " twin item(s), " + p.staleTwins.Count + " removed." : "");
         }
 
         void CheckPackage(out VegetationSystemPro system, out VegetationPackagePro package)
@@ -377,6 +424,8 @@ namespace GolfMap.Editor
                 include.MaxDensity = 1f;
                 item.UseTextureMaskIncludeRules = true;
             }
+
+            ApplyHeight(plan, package, rect);
 
             // 5. Save and make VSP respawn from the new masks.
             EditorUtility.SetDirty(package);
@@ -490,6 +539,8 @@ namespace GolfMap.Editor
             if (p.removals.Count > 0) text += "\nRules removed:\n  " + string.Join("\n  ", p.removals.Select(r => r.line).ToArray());
             if (p.bound.Count > 0) text += "\nBound:\n  " + string.Join("\n  ", p.bound.ToArray());
             if (p.unbound.Count > 0) text += "\nUnbound:\n  " + string.Join("\n  ", p.unbound.ToArray());
+            if (p.height.Count > 0) text += "\nBush height twins:\n  " + string.Join("\n  ", p.height.ToArray());
+            if (p.heightNotes.Count > 0) text += "\nBush height notes:\n  " + string.Join("\n  ", p.heightNotes.ToArray());
             if (p.dangling.Count > 0) text += "\nDangling rules (left alone):\n  " + string.Join("\n  ", p.dangling.ToArray());
             return text;
         }
@@ -512,6 +563,8 @@ namespace GolfMap.Editor
                 { "missing", o(p.missing) },
                 { "unbound", o(p.unbound) },
                 { "dangling", o(p.dangling) },
+                { "height", o(p.height) },
+                { "heightNotes", o(p.heightNotes) },
             };
         }
 
@@ -528,6 +581,8 @@ namespace GolfMap.Editor
             Section(sb, "Items bound (item <- sources; density baked into the mask, include above " + GolfMapZones.F(kIncludeThreshold) + ")", p.bound);
             Section(sb, "Exported items missing from the package", p.missing);
             Section(sb, "Package items with no export entry", p.unbound);
+            Section(sb, "Bush height twins (item: twin, its height at scale 1)", p.height);
+            Section(sb, "Bush height notes", p.heightNotes);
             Section(sb, "Mask groups created", p.groupsCreate);
             Section(sb, "Mask groups updated", p.groupsUpdate);
             Section(sb, "Mask groups deleted", p.groupsDelete);

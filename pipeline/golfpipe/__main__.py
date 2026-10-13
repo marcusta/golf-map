@@ -645,6 +645,21 @@ def build_parser() -> argparse.ArgumentParser:
                         "tiling re-reads the lidar per tile, so it only pays on very large or dense boxes)")
     p.add_argument("--workers", type=int, help="processes for tiled detection (default: every core)")
 
+    p = sub.add_parser("rock-candidates", help="Boulders standing on the ground, found in the lidar and ranked with the course's ortho vintages")
+    p.add_argument("--lidar", action="append", required=True)
+    p.add_argument("--out", required=True, help="output EPSG:3006 GeoJSON, best candidates first")
+    p.add_argument("--bbox", help="e_min,n_min,e_max,n_max in EPSG:3006")
+    p.add_argument("--dem", help="DEM extent when --bbox is omitted")
+    p.add_argument("--tiles-dir", help="course tiles directory: every ortho vintage in its manifest is used (default: lidar alone)")
+    p.add_argument("--ortho", action="append", default=[], metavar="NAME=DIR",
+                   help="another XYZ webp pyramid to look in, repeatable")
+    p.add_argument("--known", action="append", default=[],
+                   help="golfmap-walls-v1 spec (stone-walls.json) whose boulders are already placed, repeatable")
+    p.add_argument("--buildings", help="fetch-buildings survey: candidates on a footprint are dropped")
+    p.add_argument("--near", help="GeoJSON of the course's features (WGS84, or EPSG:3006 with a crs member): keep only candidates within --near-m of them")
+    p.add_argument("--near-m", dest="near_m", type=float, default=35.0, help="distance for --near in metres (default 35)")
+    p.add_argument("--resolution", type=float, default=1.0)
+
     p = sub.add_parser("manifest", help="Write manifest.json for a tiled course")
     p.add_argument("--course", required=True, help="course id")
     p.add_argument("--tiles-dir", required=True, help="directory containing ortho/, terrain/ and hillshade/ subdirs")
@@ -998,6 +1013,18 @@ def main(argv: list[str] | None = None) -> int:
                 tall_height_m=args.tall_height, tall_min_area_m2=args.tall_min_area,
                 leaf_off_ortho=None if args.no_kind else (Path(args.leaf_off_ortho) if args.leaf_off_ortho else "auto"),
                 tile_m=args.tile_m, workers=args.workers,
+            )
+
+        elif args.command == "rock-candidates":
+            commands.cmd_rock_candidates(
+                [Path(p) for p in args.lidar], Path(args.out),
+                bbox_3006=tuple(float(v) for v in args.bbox.split(",")) if args.bbox else None,
+                dem_path=Path(args.dem) if args.dem else None,
+                tiles_dir=Path(args.tiles_dir) if args.tiles_dir else None,
+                orthos=dict(item.split("=", 1) for item in args.ortho),
+                known_paths=[Path(p) for p in args.known],
+                buildings_path=Path(args.buildings) if args.buildings else None,
+                near_path=Path(args.near) if args.near else None, near_m=args.near_m, resolution=args.resolution,
             )
 
         elif args.command == "manifest":

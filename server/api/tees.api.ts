@@ -14,7 +14,10 @@ const ListByCourseInput = Type.Object({
 
 const CreateTeeInput = Type.Object({
     holeId: Type.String(),
-    name: Type.String(),
+    /** The course tee set the tee belongs to; it takes the set's name and colour. */
+    teeSetId: Type.Optional(Type.String()),
+    /** Without `teeSetId`: the tee's own name (adopted into the set of that name later). */
+    name: Type.Optional(Type.String()),
     color: Type.Optional(Type.String()),
     lat: Type.Number(),
     lon: Type.Number(),
@@ -24,6 +27,8 @@ const CreateTeeInput = Type.Object({
 const UpdateTeeInput = Type.Object({
     id: Type.String(),
     version: Type.Number(),
+    /** Move the tee to another of the course's tee sets. */
+    teeSetId: Type.Optional(Type.String()),
     name: Type.Optional(Type.String()),
     color: Type.Optional(Type.String()),
     lat: Type.Optional(Type.Number()),
@@ -49,7 +54,7 @@ export function createTeesApi(svc: TeesService) {
         listByHole:   { method: 'GET'  as const, path: '/tees',           fn: (input: Static<typeof ListByHoleInput>)   => svc.listByHole(input.holeId),                                                                                        schema: ListByHoleInput,   middleware: mw },
         listByCourse: { method: 'GET'  as const, path: '/tees/by-course', fn: (input: Static<typeof ListByCourseInput>) => svc.listByCourse(input.courseId),                                                                                    schema: ListByCourseInput, middleware: mw },
         create:       { method: 'POST' as const, path: '/tees/create',    fn: (input: Static<typeof CreateTeeInput>)    => svc.create(input),                                                                                                    schema: CreateTeeInput,    middleware: mw },
-        update:       { method: 'POST' as const, path: '/tees/update',    fn: (input: Static<typeof UpdateTeeInput>)    => svc.update(input.id, input.version, { name: input.name, color: input.color, lat: input.lat, lon: input.lon, elevation: input.elevation }), schema: UpdateTeeInput, middleware: mw },
+        update:       { method: 'POST' as const, path: '/tees/update',    fn: (input: Static<typeof UpdateTeeInput>)    => svc.update(input.id, input.version, { teeSetId: input.teeSetId, name: input.name, color: input.color, lat: input.lat, lon: input.lon, elevation: input.elevation }), schema: UpdateTeeInput, middleware: mw },
         remove:       { method: 'POST' as const, path: '/tees/remove',    fn: (input: Static<typeof RemoveTeeInput>)    => svc.remove(input.id, input.version),                                                                                  schema: RemoveTeeInput,    middleware: mw },
         reorder:      { method: 'POST' as const, path: '/tees/reorder',   fn: (input: Static<typeof ReorderTeesInput>)  => svc.reorder(input.holeId, input.orderedIds),                                                                          schema: ReorderTeesInput,  middleware: mw },
     };

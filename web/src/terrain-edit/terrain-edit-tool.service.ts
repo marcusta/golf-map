@@ -99,6 +99,23 @@ export function recipeFeatureId(edit: TerrainEdit): string | null {
     return edit.originRef?.startsWith('feature:') ? edit.originRef.slice('feature:'.length) : null;
 }
 
+/**
+ * Map colours for the features that have a recipe of their own, one per
+ * library recipe (in library order, wrapping). Clear of the edit violet, the
+ * selection yellow and the highlight white.
+ */
+export const RECIPE_COLORS = ['#22d3ee', '#fb923c', '#f472b6', '#a3e635', '#60a5fa', '#f87171', '#2dd4bf', '#c4b5fd'] as const;
+/** The colour of "no recipe" and of a recipe the library does not have. */
+export const RECIPE_COLOR_OTHER = '#cbd5e1';
+
+/** A recipe edit on the map: its feature's outline (EPSG:3006 rings) in its recipe's colour. */
+export interface RecipeMark {
+    rings: Array<Array<{ x: number; y: number }>>;
+    color: string;
+}
+
+const NO_RECIPE_MARKS: Record<string, RecipeMark> = {};
+
 /** One-line params summary for the panel rows and the map glyph tooltips. */
 export function paramsSummary(edit: TerrainEdit): string {
     const parts: string[] = [];
@@ -195,8 +212,10 @@ export interface TerrainEditView {
     draft: AnchorPoint[];
     /** The edit to draw highlighted: the hovered row, else the open form's. */
     highlightId: string | null;
-    /** Each edit's name (editName), for its map label. */
+    /** Each edit's map label: its name (editName), a recipe edit's recipe name. */
     labels: Record<string, string>;
+    /** The recipe edits to draw on their features, by edit id. */
+    recipes: Record<string, RecipeMark>;
     /** The outlines of the features selected for shaping (EPSG:3006 rings per feature), empty when none. */
     selection: Array<Array<Array<{ x: number; y: number }>>>;
     /**
@@ -282,9 +301,32 @@ export class TerrainEditToolService {
     /** The edit drawn highlighted: the hovered row, else the open form's. */
     readonly highlightId = new Computed<string | null>(() => this.hoveredId.get() ?? this.editingId.get());
 
-    /** Each edit's name, for its map label (its own computed: a hover must not rename every edit). */
+    /** Each edit's map label (its own computed: a hover must not rename every edit). */
     private readonly labels = new Computed<Record<string, string>>(() =>
-        Object.fromEntries(this.edits.get().map(e => [e.id, this.editName(e)])));
+        Object.fromEntries(this.edits.get().map(e => [e.id, isRecipeEdit(e) ? this.recipeName(e) : this.editName(e)])));
+
+    /**
+     * The features that have a recipe of their own (bunkers, ponds, creeks,
+     * paths), by recipe edit id: drawn filled in the recipe's colour so the
+     * ones done stand out from the ones still on the course default.
+     */
+    private readonly recipeMarks = new Computed<Record<string, RecipeMark>>(() => {
+        const edits = this.edits.get().filter(isRecipeEdit);
+        if (edits.length === 0) return NO_RECIPE_MARKS;
+        const byId = new Map((this.ctxSignal.get()?.features.store.items.get() ?? []).map(f => [f.id, f]));
+        const library = this.shaping.recipes.get().map(r => r.id);
+        const marks: Record<string, RecipeMark> = {};
+        for (const edit of edits) {
+            const feature = byId.get(recipeFeatureId(edit) ?? '');
+            if (!feature) continue;
+            const index = library.indexOf(recipeParams(edit).recipe);
+            marks[edit.id] = {
+                rings: featureRings(feature),
+                color: index < 0 ? RECIPE_COLOR_OTHER : RECIPE_COLORS[index % RECIPE_COLORS.length],
+            };
+        }
+        return marks;
+    });
 
     /** Pointer position for the rubber band (see TerrainEditView.cursor). */
     readonly cursor = new Signal<Point | null>(null);
@@ -297,6 +339,7 @@ export class TerrainEditToolService {
             cursor: this.cursor.get(),
             highlightId: this.highlightId.get(),
             labels: this.labels.get(),
+            recipes: this.recipeMarks.get(),
             selection: this.selectedFeatures.get().map(featureRings),
         };
     });
@@ -732,8 +775,7 @@ export class TerrainEditToolService {
     editName(edit: TerrainEdit): string {
         if (isRecipeEdit(edit)) {
             const feature = this.featureOf(edit);
-            const { recipe } = recipeParams(edit);
-            const name = recipe === NO_RECIPE ? 'no recipe' : this.shaping.recipe(recipe)?.name ?? recipe;
+            const name = this.recipeName(edit);
             if (!feature) return `Recipe · not on this course · ${name}`;
             const parts = [FEATURE_STYLES[feature.type as FeatureType]?.label ?? feature.type];
             const hole = this.holeNumber(edit);
@@ -762,6 +804,12 @@ export class TerrainEditToolService {
             return terrain ? `Unity sculpt (${terrain})` : 'Unity sculpt';
         }
         return `${capitalize(edit.op)} · ${edit.origin}`;
+    }
+
+    /** A recipe edit's recipe by its library name ("no recipe" for the opt-out, the id when not in the library). */
+    private recipeName(edit: TerrainEdit): string {
+        const { recipe } = recipeParams(edit);
+        return recipe === NO_RECIPE ? 'no recipe' : this.shaping.recipe(recipe)?.name ?? recipe;
     }
 
     /** Fits the map to an edit's outline. */

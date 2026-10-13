@@ -235,7 +235,8 @@ assets["cart_shelter"] = {"category": "structure", "parts": [
 # Shelter and carts as set by hand in Unity (Marcus, 2026-09-26); CS is the ortho/lidar measurement.
 place("cart_shelter", 178.75, 647.92, 110.0)
 # The club's carts are dark with black roofs (photo 19): the pack's beige body panels recoloured.
-assets["golf_cart"] = {"prefab": "Assets/CESimgolf 3D Assets/Course Items/Golf Cart/golf-cart-ezgo.prefab", "axis": "x", "category": "vehicle", "collider": "box",
+# The prefab is the merged copy of the pack's golf-cart-ezgo (2 renderers, same materials): see the parked cars below.
+assets["golf_cart"] = {"prefab": "Assets/GolfMap/Vreta/Props/VehiclesLowPoly/Golf Cart.prefab", "axis": "x", "category": "vehicle", "collider": "box",
                        "recolor": [{"material": "Cart Color", "color": [0.07, 0.07, 0.075], "as": "Cart body dark"},
                                    {"material": "Scratched_Polyvinyl_Hood", "color": [0.10, 0.10, 0.11], "as": "Cart hood dark"},
                                    {"material": "Scratched_Polyvinyl_Carbonate_sccnbdnp", "color": [0.10, 0.10, 0.11], "as": "Cart panels dark"}]}
@@ -248,6 +249,27 @@ for e, n in ((172.53, 649.47), (175.04, 648.46), (177.32, 647.46), (180.2, 646.3
 # ---------------------------------------------------------------------------------------------
 assets["gazebo"] = {"category": "structure", "parts": [{"kind": "gazebo", "radius": 1.9, "height": 2.3, "roofRise": 1.3, "open": 4}]}
 place("gazebo", 156.5, 649.5, 90.0)
+# Second lusthus S of the path fork W of the clubhouse (2025 ortho only, built after the 2023 photo and the
+# lidar): roof centre (-7.0, 902.0), ~3.5 m across; open side to the path (N).
+place("gazebo", -7.0, 902.0, 225.0)
+
+# ---------------------------------------------------------------------------------------------
+# Course toilet by the path at hole 14 (site photos 2026-09-26 12:51, ids 994d7db8, 1c9ce347, 1a772bc7;
+# 2025 ortho roof 2.6 x 1.7 m, centre (-221.25, 551.6), long axis 133 deg). Falu red vertical boards, white
+# corner boards and fascia, mono roof falling from the door end (SE, by the path) to the NW, white door
+# with a round window on a concrete step, galvanised service hatch and a vent on the SW wall.
+# ---------------------------------------------------------------------------------------------
+assets["course_toilet"] = {"category": "building", "parts": [  # local +y SE (door, high side), +x SW
+    {"kind": "building", "length": 1.3, "width": 2.0, "wall": "falu_red_vertical", "trim": "white_trim",
+     "plinth": {"h": 0.15, "mat": "concrete"},
+     "roof": {"type": "mono", "low": 2.3, "high": 2.9, "overhang": 0.3, "gableOverhang": 0.2, "thick": 0.16, "mat": "roof_metal_charcoal"},
+     "openings": [{"side": "+y", "at": 0.0, "w": 0.9, "h": 2.0, "sill": 0.15, "kind": "door", "mat": "door_white", "lamp": False}]},
+    {"kind": "box", "c": (0.0, 1.06, 1.7), "s": (0.24, 0.04, 0.24), "mat": "window_dark"},
+    {"kind": "box", "c": (0.0, 1.2, 0.07), "s": (0.9, 0.4, 0.15), "mat": "concrete"},
+    {"kind": "box", "c": (0.67, 0.4, 0.73), "s": (0.04, 0.5, 1.15), "mat": "galvanised"},
+    {"kind": "box", "c": (0.68, 0.72, 2.45), "s": (0.06, 0.25, 0.25), "mat": "white_trim"},
+]}
+place("course_toilet", -220.12, 551.97, 225.0, dz=-0.075)  # set by hand in Unity 2026-10-11 (ortho fit: -221.25, 551.6, 223)
 
 # ---------------------------------------------------------------------------------------------
 # Driving range house (OSM 7222): photos 12, 124. Mono roof falling from 6.3 m (NNW, range side)
@@ -528,13 +550,20 @@ place("bench", 161.33, 636.47, 155.0, ground="centre", dz=-0.034)  # set by hand
 # tee - positions and board faces from hole-signs.gen.py (holes 1 and 10 from photos 17 and 28-29).
 HS = json.load(open(os.path.join(HERE, "hole-signs.json"), encoding="utf-8"))
 MATS = {}
+# Set by hand in Unity (wins over hole-signs.json): hole -> sign (e, n, yaw, dz), bench (e, n, yaw, dz).
+HS_HAND = {
+    14: ((-204.86, 569.23, 170.13, 0.355), (-205.11, 570.71, 170.13, -0.022)),  # 2026-10-11: 17.6 m E, by the path
+}
 for s in HS["signs"]:
+    if s["hole"] in HS_HAND:
+        (se, sn, sy, sdz), (be, bn, by, bdz) = HS_HAND[s["hole"]]
+        s = dict(s, sign=[se, sn, sy], bench=[be, bn, by], signDz=sdz, benchDz=bdz)
     aid, mat = "tee_sign_%02d" % s["hole"], "hole_board_%02d" % s["hole"]
     MATS[mat] = {"image": s["texture"], "smoothness": 0.35}
     assets[aid] = {"category": "prop", "collider": "box", "parts": [
         {"kind": "tee_sign", "face": mat, "width": HS["board"]["width"], "height": HS["board"]["height"], "outline": HS["board"]["outline"]}]}
-    place(aid, *s["sign"], ground="centre")
-    place("bench_stone", *s["bench"], ground="centre")
+    place(aid, *s["sign"], ground="centre", dz=s.get("signDz", 0.0))
+    place("bench_stone", *s["bench"], ground="centre", dz=s.get("benchDz", 0.0))
 assets["signpost"] = {"category": "prop", "collider": "box", "parts": [{"kind": "signpost", "arms": [{"dir": 20}, {"dir": 200}, {"dir": 110}, {"dir": 290}]}]}
 place("signpost", 194.0, 627.7, 0.0, ground="centre")  # on the lawn's NW corner (photos 127-128; 2025 ortho pole shadow)
 assets["bollard_light"] = {"category": "prop", "collider": "none", "parts": [{"kind": "bollard_light"}]}
@@ -568,7 +597,9 @@ BRIDGES.append(("bridge_brick", 56.0, 562.5, 62.2, 8.0, 2.0))
 # ~151 deg here, bed centre (-187.5, 366.0), 7 m bank to bank at 75.6 m; the span is square to it (photo 84
 # looks 230 deg along it). A striped yellow/black post stands on the SE side near the NE end (photo 83).
 BR = (-187.5, 366.0, 58.0)
-assets["bridge_rope"] = {"category": "structure", "parts": [{"kind": "bridge_rope", "length": 10.0, "width": 1.8, "deck": 0.4, "steps": [1, 3], "pileDepth": 3.0}]}
+# 2026-10-11: built for pulling a trolley over, not as photographed - a low deck with a plank ramp at each end
+# in place of the sleeper steps (was "deck": 0.4, "steps": [1, 3]).
+assets["bridge_rope"] = {"category": "structure", "parts": [{"kind": "bridge_rope", "length": 10.0, "width": 1.8, "deck": 0.15, "steps": [0, 0], "ramps": [1.2, 1.2], "pileDepth": 3.0}]}
 place("bridge_rope", *BR, ground="max")
 BRIDGES.append(("bridge_rope", BR[0], BR[1], BR[2], 10.0, 1.8))
 assets["marker_post"] = {"category": "prop", "collider": "box", "parts": [{"kind": "marker_post"}]}
@@ -578,14 +609,38 @@ place("marker_post", *world(3.6, -2.2, BR[0], BR[1], BR[2]), BR[2], ground="cent
 # is 2.5 m deep here (bed 72.9 m, banks 75.4-75.5 m at +-5 m), hence the 3 m piles on the shared asset.
 place("bridge_rope", -141.32, 971.88, 80.5, ground="max")
 BRIDGES.append(("bridge_rope_n", -141.32, 971.88, 80.5, 10.0, 1.8))
+# The footbridge W of the pond by the 5th green (2025 ortho: a pale deck 2 m wide over the channel between the pond
+# and the ditch, its shadow on the water side): the rope bridge again, but one trolleys are pulled over, so a low
+# deck with a plank ramp at each end and no steps. It joins the ends of the two gravel paths drawn in the app
+# ((-354.7, 1541.7) and (-351.6, 1551.1): 9.9 m on bearing 18.3 deg; banks 74.7-74.8 m, the channel between them
+# 74.05 m under the pond's water plane at 74.17 m); the ramps lie on the path ends.
+assets["bridge_rope_cart"] = {"category": "structure", "parts": [
+    {"kind": "bridge_rope", "length": 10.0, "width": 2.0, "deck": 0.15, "steps": [0, 0], "ramps": [1.2, 1.2], "pileDepth": 1.6}]}
+place("bridge_rope_cart", -353.15, 1546.4, 18.3, ground="max")
+BRIDGES.append(("bridge_rope_cart", -353.15, 1546.4, 18.3, 12.4, 2.0))
+# The jetty in the same pond's N end (2025 ortho): an 11.7 x 4.2 m timber deck on bearing 57 deg from its water end
+# (-335.7, 1541.9), a paler board across each end, and a grey 3.4 m gangway from the bank down to it (the edited
+# DEM's waterline is where the timber ends). Origin on the bank at the gangway's land end, +x out over the water;
+# the deck stands 0.45 m over the water plane (74.17 m = Unity y 8.949 + the inner sidecar's minM).
+JETTY = (-323.04, 1550.12, 237.0)
+POND5_WATER = 74.17
+assets["jetty"] = {"category": "structure", "parts": [
+    {"kind": "jetty", "length": 11.7, "width": 4.2, "ramp": 3.4, "rampWidth": 3.6, "pileDepth": 2.6,
+     "deckZ": round(POND5_WATER + 0.45 - ground(JETTY[0], JETTY[1]), 2) if _dem else -0.2}]}
+place("jetty", *JETTY, ground="centre")
+BRIDGES.append(("jetty", *world(7.55, 0.0, *JETTY), JETTY[2], 15.1, 4.2))
 
 # ---------------------------------------------------------------------------------------------
 # Parked cars (clubhouse-cars.json: stall rows tuned on the 2025 ortho, occupancy + colour).
 # ---------------------------------------------------------------------------------------------
-# Two realistic models from the course project's vehicle pack (Unity prefabs, Standard shader, +z forward):
-# a 5-door hatchback (~16k tris) and a small sedan (~20k tris). The pack's colours cover white, black, navy
-# and red; the rest (grey and silver are 2/3 of the car park) are recoloured copies of the body materials.
-VEH = "Assets/Vehicles/Prefabs/"
+# Two realistic models from the course project's vehicle pack (Standard shader, +z forward): a 5-door
+# hatchback and a small sedan. The pack's prefabs (Assets/Vehicles/Prefabs/, 43 and 29 renderers, 26k and
+# 19k triangles a car) are not placed: the course's own low-poly copies are (2 renderers, ~10k triangles,
+# same materials; blender/tools/vehicle_models_10k.py + golfmap.vehicles.build, docs/unity-tool-notes.md).
+# The pack's colours cover white, black, navy and red; the rest (grey and silver are 2/3 of the car park)
+# are recoloured copies of the body materials. clubhouse-cars.json lists every stall the 2025 ortho shows a
+# car in; "parked": false leaves a stall empty (30 of 89 stay, for frame rate).
+VEH = "Assets/GolfMap/Vreta/Props/VehiclesLowPoly/"
 PAINT = {"grey": (0.20, 0.21, 0.22), "silver": (0.55, 0.56, 0.58), "blue": (0.06, 0.10, 0.24), "red": (0.42, 0.03, 0.03), "black": (0.02, 0.02, 0.025)}
 
 
@@ -600,8 +655,8 @@ def hatch(col):
 
 def sedan(col):
     if col == "white":
-        return {"prefab": VEH + "Small Sedan White.prefab", "axis": "z", "category": "vehicle", "collider": "box"}
-    return {"prefab": VEH + "Small Sedan White.prefab", "axis": "z", "category": "vehicle", "collider": "box",
+        return {"prefab": VEH + "Sedan.prefab", "axis": "z", "category": "vehicle", "collider": "box"}
+    return {"prefab": VEH + "Sedan.prefab", "axis": "z", "category": "vehicle", "collider": "box",
             "recolor": [{"material": "Tocus_Body White", "color": list(PAINT[col]), "as": "Sedan body " + col}]}
 
 
@@ -610,6 +665,8 @@ for col in ("white", "silver", "grey", "black", "blue", "red"):
     assets["car_sedan_" + col] = sedan(col)
 cars = json.load(open(os.path.join(HERE, "clubhouse-cars.json"), encoding="utf-8"))
 for c in cars:
+    if c.get("parked") is False:
+        continue  # stall left empty (delete the flag in clubhouse-cars.json to bring the car back)
     h = int(hashlib.md5(("%.2f%.2f" % (c["e"], c["n"])).encode()).hexdigest(), 16)
     kind = "hatch" if h % 10 < 5 else "sedan"
     yaw = c["yawDeg"]

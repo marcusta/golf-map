@@ -894,6 +894,16 @@ export class MapService {
         return draped ? this.aboveDrapeSlot(map, order) : undefined;
     }
 
+    /**
+     * The `beforeId` for a draped layer a caller adds to the raw map itself
+     * (an image raster): where `addOverlayLayer` would put a draped overlay
+     * layer now, so it lies under every marker and under the overlay layers
+     * added after it.
+     */
+    drapedLayerSlot(): string | undefined {
+        return this.overlayLayerSlot(this.requireMap(), true, false);
+    }
+
     /** The layer directly above the topmost draped layer (undefined: none, add on top). */
     private aboveDrapeSlot(map: maplibregl.Map, order = map.getLayersOrder()): string | undefined {
         for (let i = order.length - 1; i >= 0; i--) {

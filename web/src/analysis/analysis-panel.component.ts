@@ -17,10 +17,10 @@ import {
 const rgb = (c: Rgb): string => `rgb(${c[0]}, ${c[1]}, ${c[2]})`;
 
 /** CSS gradient for the slope ramp with stops proportional to 0–7%+. */
-const SLOPE_GRADIENT = `linear-gradient(to right, ${rgb(SLOPE_BLUE)} 0%, ${rgb(SLOPE_BLUE)} ${100 / 7}%, ` +
+export const SLOPE_GRADIENT = `linear-gradient(to right, ${rgb(SLOPE_BLUE)} 0%, ${rgb(SLOPE_BLUE)} ${100 / 7}%, ` +
     `${rgb(SLOPE_GREEN)} ${300 / 7}%, ${rgb(SLOPE_ORANGE)} ${500 / 7}%, ${rgb(SLOPE_MAGENTA)} 100%)`;
 
-const HEIGHT_GRADIENT = `linear-gradient(to right, ${HEIGHT_STOPS.map(rgb).join(', ')})`;
+export const HEIGHT_GRADIENT = `linear-gradient(to right, ${HEIGHT_STOPS.map(rgb).join(', ')})`;
 
 /** Diverging relative ramp: deepest hollow (purple) → green level → highest mound (red). */
 const RELATIVE_GRADIENT = `linear-gradient(to right, ${[...REL_BELOW_STOPS].reverse().map(rgb).join(', ')}, ` +

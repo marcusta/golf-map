@@ -6,6 +6,7 @@ import type { Green } from '../../../shared/api/greens.gen';
 import type { Pin } from '../../../shared/api/pins.gen';
 import type { AimPoint } from '../../../shared/api/aim-points.gen';
 import { FURNITURE_TOOL_ID, finiteWgs84Point, type Selection } from './furniture.service';
+import { aimsInPlay } from '../course-detail/hole-length';
 import {
     ACCENT_COLOR,
     CAT,
@@ -38,6 +39,7 @@ export const SELECTION_COLOR = ACCENT_COLOR; // '#BF6A3E' — --data-cat-1 / acc
 const TEE_FILL: Record<string, string> = {
     black: '#211D14', // --color-text-primary (light) — ink, not pure black
     white: '#EFEAE0', // --map-oob-fill — bone white
+    green: '#4C9256', // --map-fairway-fill
     yellow: '#E8CB56', // --map-penalty-yellow-fill
     blue: '#4C8FBE', // --map-water-fill
     red: '#DE6152', // --map-penalty-red-fill
@@ -76,6 +78,8 @@ export interface OverlayInput {
      * builder falls back to the first tee by sortOrder.
      */
     lineOriginByHole?: Map<string, string>;
+    /** Tees that play straight at the green (the set GSPro plays as Par3): their line skips every aim point. */
+    straightTeeIds?: ReadonlySet<string>;
 }
 
 /**
@@ -83,7 +87,7 @@ export interface OverlayInput {
  * `role` per feature for the layer filters below, plus per-role display
  * properties (tee colour/letter, pin active, aim number, selection flag).
  * Aim points are joined per hole into an ordered polyline
- * (tee → aim1 → aim2 → … → green center).
+ * (tee → the aim points that tee plays through → green center, `aimsInPlay`).
  */
 export function buildFurnitureGeojson(input: OverlayInput): FeatureCollection {
     const features: Feature[] = [];
@@ -114,12 +118,14 @@ export function buildFurnitureGeojson(input: OverlayInput): FeatureCollection {
         const originTee = (originId && holeTees.find(t => t.id === originId)) || holeTees[0];
         const line: Position[] = [];
         const originPos = originTee ? finiteWgs84Point(originTee.lat, originTee.lon) : null;
-        if (originPos) line.push([originPos.lon, originPos.lat]);
-        for (const a of holeAims) {
-            const pos = finiteWgs84Point(a.lat, a.lon);
-            if (pos) line.push([pos.lon, pos.lat]);
-        }
         const greenCenter = green ? finiteWgs84Point(green.centerLat, green.centerLon) : null;
+        if (originPos) line.push([originPos.lon, originPos.lat]);
+        const placed = holeAims.flatMap(a => finiteWgs84Point(a.lat, a.lon) ?? []);
+        // A forward tee's line does not run back to an aim point it is past.
+        const through = originPos
+            ? aimsInPlay(originPos, placed, greenCenter, !!originTee && !!input.straightTeeIds?.has(originTee.id))
+            : placed;
+        for (const pos of through) line.push([pos.lon, pos.lat]);
         if (greenCenter) line.push([greenCenter.lon, greenCenter.lat]);
         if (line.length >= 2) {
             features.push({

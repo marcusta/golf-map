@@ -1,6 +1,7 @@
 import { test, expect, describe, afterEach } from 'bun:test';
 import { ApiError } from '@basics/core/client/api-error';
 import { _reset } from '@basics/core/client/error-report';
+import type { TeeSet, TeeSetsApi } from '../../shared/api/tee-sets.gen';
 import { FurnitureService, defaultTeeName, finiteWgs84Point, greenPointFields, type ElevationSampler } from '../src/furniture/furniture.service';
 import { buildFurnitureGeojson } from '../src/furniture/furniture-overlay';
 import type { Feature } from 'geojson';
@@ -27,8 +28,9 @@ function fakeTees(initial: Tee[] = []) {
         async create(input) {
             calls.create++;
             const row: Tee = {
-                id: `t${++seq}`, holeId: input.holeId, name: input.name, color: input.color ?? null,
-                lat: input.lat, lon: input.lon, elevation: input.elevation ?? null,
+                id: `t${++seq}`, holeId: input.holeId, teeSetId: input.teeSetId ?? null,
+                name: input.name ?? input.teeSetId!.replace(/^s-/, ''), color: input.color ?? null,
+                gsproOnly: false, lat: input.lat, lon: input.lon, elevation: input.elevation ?? null,
                 sortOrder: [...rows.values()].filter(t => t.holeId === input.holeId).length, version: 1,
             };
             rows.set(row.id, row);
@@ -197,20 +199,65 @@ function fakeElevation(value: number | null = 72.5): ElevationSampler & { querie
     };
 }
 
+/**
+ * The course's tee sets as the server keeps them: one per name among the
+ * tees (adopted on list), plus any named up front; a rename goes onto the
+ * set's tees.
+ */
+function fakeTeeSets(tees: ReturnType<typeof fakeTees>, names: string[] = []) {
+    const rows = new Map<string, TeeSet>();
+    const add = (name: string, color: string | null): TeeSet => {
+        const set: TeeSet = {
+            id: `s-${name}`, courseId: 'c1', name, color, sortOrder: rows.size,
+            ratingMen: null, slopeMen: null, ratingWomen: null, slopeWomen: null, gsproRating: 'men', gsproTee: null, gsproOnly: false, teeCount: 0, version: 1,
+        };
+        rows.set(set.id, set);
+        return set;
+    };
+    for (const name of names) add(name, name.toLowerCase());
+    const counted = () => [...rows.values()].map(s => ({ ...s, teeCount: [...tees.rows.values()].filter(t => t.teeSetId === s.id).length }));
+    const api: TeeSetsApi = {
+        async listByCourse() {
+            for (const tee of tees.rows.values()) {
+                tee.teeSetId ??= ([...rows.values()].find(s => s.name === tee.name) ?? add(tee.name, tee.color)).id;
+            }
+            return counted();
+        },
+        async create({ name, color }) { return structuredClone(add(name, color ?? null)); },
+        async update({ id, version, ...patch }) {
+            const row = rows.get(id);
+            if (!row || row.version !== version) throw new ApiError(409, 'conflict');
+            Object.assign(row, patch, { version: version + 1 });
+            for (const tee of tees.rows.values()) {
+                if (tee.teeSetId === id) Object.assign(tee, { name: row.name, color: row.color, version: tee.version + 1 });
+            }
+            return counted().find(s => s.id === id)!;
+        },
+        async remove({ id }) {
+            if (counted().find(s => s.id === id)!.teeCount) throw new ApiError(409, 'still has tees');
+            rows.delete(id);
+            return { ok: true };
+        },
+    };
+    return { api, rows };
+}
+
 function makeService(opts: {
     tees?: ReturnType<typeof fakeTees>;
     greens?: ReturnType<typeof fakeGreens>;
     pins?: ReturnType<typeof fakePins>;
     aims?: ReturnType<typeof fakeAims>;
     elevation?: ReturnType<typeof fakeElevation>;
+    teeSets?: string[];
 } = {}) {
     const tees = opts.tees ?? fakeTees();
     const greens = opts.greens ?? fakeGreens();
     const pins = opts.pins ?? fakePins();
     const aims = opts.aims ?? fakeAims();
     const elevation = opts.elevation ?? fakeElevation();
-    const svc = new FurnitureService(tees.api, greens.api, pins.api, aims.api, elevation);
-    return { svc, tees, greens, pins, aims, elevation };
+    const teeSets = fakeTeeSets(tees, opts.teeSets);
+    const svc = new FurnitureService(tees.api, greens.api, pins.api, aims.api, elevation, teeSets.api);
+    return { svc, tees, greens, pins, aims, elevation, teeSets };
 }
 
 function greenRow(holeId: string): Green {
@@ -345,6 +392,26 @@ describe('pins: create / set-active exclusivity', () => {
         expect(svc.selection.get()).toEqual({ kind: 'pin', id: created!.id });
     });
 
+    test('a green has one pin per tournament day, and the next placement goes to the first free day', async () => {
+        const green = greenRow('h1');
+        const { svc } = makeService({ greens: fakeGreens([green]) });
+        await svc.load('c1', ['h1']);
+        expect(svc.pendingPinDay.peek()).toBe('Thursday');
+
+        const thursday = await svc.createPin({ greenId: green.id, name: 'Thursday', difficulty: 'easy', lat: LAT, lon: LON });
+        await svc.createPin({ greenId: green.id, name: 'saturday', difficulty: 'easy', lat: LAT, lon: LON });
+        expect(svc.pinForDay(green.id, 'Thursday')?.id).toBe(thursday!.id);
+        expect(svc.pinForDay(green.id, 'Saturday')?.name).toBe('saturday');
+        expect(svc.pinForDay(green.id, 'Friday')).toBeUndefined();
+
+        expect(svc.advancePendingPinDay(green.id)).toBe(true);
+        expect(svc.pendingPinDay.peek()).toBe('Friday');
+        for (const day of ['Friday', 'Sunday']) await svc.createPin({ greenId: green.id, name: day, difficulty: 'easy', lat: LAT, lon: LON });
+        // All four placed: nothing free, the picked day stays.
+        expect(svc.advancePendingPinDay(green.id)).toBe(false);
+        expect(svc.pendingPinDay.peek()).toBe('Friday');
+    });
+
     test('setPinActive flips exclusivity across the green after refetch', async () => {
         const green = greenRow('h1');
         const p = fakePins([
@@ -417,6 +484,22 @@ describe('placement state machine', () => {
         expect(svc.selection.get()).toEqual({ kind: 'aim', id: 'a1' });
     });
 
+    test('a pin picked on the map opens pin placement on the day of that pin', async () => {
+        const pins = fakePins([
+            { id: 'p-sat', greenId: 'g-h1', name: 'Saturday', lat: LAT, lon: LON, difficulty: 'medium', active: false, version: 1 } as Pin,
+        ]);
+        const { svc } = makeService({ pins, greens: fakeGreens([greenRow('h1')]) });
+        await svc.load('c1', ['h1']);
+        svc.arm('tee');
+
+        svc.focusPin('p-sat');
+        expect(svc.placing.get()).toBe('pin');
+        expect(svc.pendingPinDay.get()).toBe('Saturday');
+        expect(svc.selection.get()).toEqual({ kind: 'pin', id: 'p-sat' });
+        svc.focusPin('nope');
+        expect(svc.selection.get()).toEqual({ kind: 'pin', id: 'p-sat' });
+    });
+
     test('disarm leaves select mode', () => {
         const { svc } = makeService();
         svc.arm('tee');
@@ -451,25 +534,47 @@ describe('duplicate tee-name handling', () => {
         expect(svc.teeNameTaken('h2', 'Blue')).toBe(false); // different hole
     });
 
-    test('advancePendingTee skips taken presets to the next free colour', async () => {
-        // Black, White, Yellow already placed on the hole; pending is white.
+    test('advancePendingTee skips the sets the hole has to the next free one', async () => {
+        // Black, White, Yellow already placed on the hole; the course also has Blue and Red.
         const t = fakeTees([
             teeRow('t1', 'h1', 'Black', 'black'),
             teeRow('t2', 'h1', 'White', 'white'),
             teeRow('t3', 'h1', 'Yellow', 'yellow'),
+            teeRow('t4', 'h2', 'Blue', 'blue'),
+            teeRow('t5', 'h2', 'Red', 'red'),
         ]);
         const { svc } = makeService({ tees: t });
-        await svc.load('c1', ['h1']);
-        svc.pendingTeeColor.set('white');
+        await svc.load('c1', ['h1', 'h2']);
+        expect(svc.teeSets.peek().map(s => [s.name, s.teeCount])).toEqual(
+            [['Black', 1], ['White', 1], ['Yellow', 1], ['Blue', 1], ['Red', 1]]);
+        expect(svc.pendingTeeSet()?.name).toBe('Black'); // nothing picked: the course's first
+        svc.pendingTeeSetId.set('s-White');
 
-        const advanced = svc.advancePendingTee('h1');
-        expect(advanced).toBe(true);
-        // Next free preset after white/yellow is blue.
-        expect(svc.pendingTeeColor.get()).toBe('blue');
-        expect(svc.pendingTeeName.get()).toBe(''); // cleared → falls back to default name
+        expect(svc.advancePendingTee('h1')).toBe(true);
+        expect(svc.pendingTeeSet()?.name).toBe('Blue');
     });
 
-    test('advancePendingTee returns false when every preset is used', async () => {
+    test('a tee goes on a tee set; renaming the set renames its tees', async () => {
+        const { svc, tees } = makeService({ tees: fakeTees([teeRow('ty', 'h1', 'Yellow', 'yellow')]) });
+        await svc.load('c1', ['h1', 'h2']);
+        const red = await svc.createTeeSet('Red', 'red');
+        expect(svc.pendingTeeSet()?.id).toBe(red!.id); // the new set is what the next tee goes on
+
+        const tee = await svc.createTee({ holeId: 'h2', teeSetId: red!.id, lat: LAT, lon: LON });
+        expect(tees.rows.get(tee!.id)!.teeSetId).toBe(red!.id);
+        expect(svc.teeSets.peek().find(s => s.id === red!.id)!.teeCount).toBe(1);
+        expect(await svc.removeTeeSet(red!.id)).toBe(false); // the server refuses while it has tees
+
+        const rated = await svc.updateTeeSet('s-Yellow', { ratingMen: 71.5, slopeMen: 135, name: 'Gul' });
+        expect(rated).toMatchObject({ name: 'Gul', ratingMen: 71.5, slopeMen: 135 });
+        expect(svc.tees.items.peek().find(t => t.id === 'ty')!.name).toBe('Gul');
+
+        await svc.removeTee(tee!.id);
+        expect(await svc.removeTeeSet(red!.id)).toBe(true);
+        expect(svc.teeSets.peek().map(s => s.name)).toEqual(['Gul']);
+    });
+
+    test('advancePendingTee returns false when the hole has every set', async () => {
         const t = fakeTees([
             teeRow('t1', 'h1', 'Black', 'black'),
             teeRow('t2', 'h1', 'White', 'white'),
@@ -675,6 +780,37 @@ describe('aim polyline on holes without aim points (par 3s)', () => {
         expect(coords).toHaveLength(2);
         expect(coords[0]).toEqual([LON, LAT]);
         expect(coords[1]).toEqual([green.centerLon, green.centerLat]);
+    });
+
+    test('the line from a forward tee skips the aim points it is past; a Par3 tee goes straight at the green', async () => {
+        // The hole runs 0.004 degrees north from the back tee to the green.
+        const green = { ...greenRow('h1'), centerLat: LAT + 0.004 };
+        const toGreen = (f: number) => ({ lat: LAT + 0.004 * f, lon: LON });
+        const t = fakeTees([
+            { id: 'back', holeId: 'h1', name: 'Yellow', color: 'yellow', ...toGreen(0), elevation: 55, sortOrder: 0, version: 1 },
+            { id: 'fwd', holeId: 'h1', name: 'Junior', color: null, ...toGreen(0.5), elevation: 55, sortOrder: 1, version: 1 },
+        ]);
+        const a = fakeAims([
+            { id: 'a1', holeId: 'h1', ...toGreen(0.3), elevation: null, label: 'A1', sortOrder: 0, version: 1 },
+            { id: 'a2', holeId: 'h1', ...toGreen(0.7), elevation: null, label: 'A2', sortOrder: 1, version: 1 },
+        ]);
+        const { svc } = makeService({ tees: t, greens: fakeGreens([green]), aims: a });
+        await svc.load('c1', ['h1']);
+        const points = (teeId: string, straight = false) => {
+            const fc = buildFurnitureGeojson({
+                ...overlayInputFrom(svc, ['h1']),
+                lineOriginByHole: new Map([['h1', teeId]]),
+                straightTeeIds: new Set(straight ? [teeId] : []),
+            });
+            return (fc.features.find(x => x.properties?.role === 'aim-line')!.geometry as unknown as { coordinates: unknown[] }).coordinates.length;
+        };
+
+        expect(points('back')).toBe(4);   // tee, both aim points, green
+        expect(points('fwd')).toBe(3);    // the first aim point is behind it
+        expect(points('fwd', true)).toBe(2);
+        // Both aim points are still drawn as markers.
+        const fc = buildFurnitureGeojson({ ...overlayInputFrom(svc, ['h1']), lineOriginByHole: new Map([['h1', 'fwd']]) });
+        expect(fc.features.filter(x => x.properties?.role === 'aim')).toHaveLength(2);
     });
 
     test('no line when the hole has only a tee (no green, no aims)', async () => {

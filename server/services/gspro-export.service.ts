@@ -71,7 +71,7 @@ import type { Database } from '../db/schema';
 import type { CoursesService } from './courses.service';
 import type { AssetsService } from './assets.service';
 import { SCULPT_DIR, SCULPT_ORIGINS, TerrainEditsService, type TerrainEditInput } from './terrain-edits.service';
-import { defaultUnityBridge, editorForExportDir, type UnityBridge } from './unity-bridge';
+import { defaultUnityBridge, editorForExportDir, type UnityBridge, type UnityEditor } from './unity-bridge';
 import { terrainEditsGeojson, ROOFS_SOURCE } from './map-build.service';
 import { resolveCourseMapBbox } from './course-bbox';
 import {
@@ -85,8 +85,13 @@ import { ZoneTypesService } from './zone-types.service';
 import { CREEK_BANKS, generateVegetation, type VegetationOptions } from './vegetation-generators';
 import { CREEK_BANK_ZONE_TYPE } from '../../shared/features/creek-vegetation';
 import { BUILDINGS_SURVEY, ROAD_CENTERLINES } from './terrain-generators.service';
+import { GKD_KEYWORDS, metaFromGkd, type GsproCourseMeta } from '../../shared/gspro-course-meta';
+import { gkdRating, gkdRatingKey, parseGkdRating } from '../../shared/tee-sets';
+import { TeeSetsService } from './tee-sets.service';
+import { ArboristService, type ArboristResult } from './arborist.service';
 
 export type { CourseTerrain, TerrainSquare } from './terrain-square';
+export type { GsproCourseMeta } from '../../shared/gspro-course-meta';
 
 // --- Public types ---
 
@@ -100,6 +105,20 @@ export interface GsproExportSettings {
     courseDir: string | null;
     /** The `.GKD` the GreenKeeper export writes in `courseDir` (null without one). */
     gkdFile: string | null;
+    /**
+     * The course details kept with the course (name, location, designer,
+     * description, keywords), which the `.GKD` export writes into
+     * the file; null until set, and the export then keeps the file's own.
+     */
+    meta: GsproCourseMeta | null;
+    /** The same details as the `.GKD` in `courseDir` has them now (null without a readable one). */
+    gkdMeta: GsproCourseMeta | null;
+    /**
+     * Tee sets whose rating in that `.GKD` is not the one the course keeps
+     * for them (`Yellow 71.5/135`, as the file has it): edited in
+     * GreenKeeper, and what `readGkdMeta` takes over. Empty when they agree.
+     */
+    gkdRatings: string[];
     /** True when `dir` is the server default rather than a per-course choice. */
     isDefault: boolean;
     /** The server default, so the UI can offer "reset". */
@@ -114,7 +133,7 @@ export interface GsproExportResult {
 }
 
 /** What an export job produces. */
-export type GsproExportKind = 'svg' | 'ortho' | 'outer-ortho' | 'dem' | 'unity-terrain' | 'unity-sculpt' | 'unity-ortho' | 'hillshade' | 'trees' | 'buildings' | 'zones' | 'vegetation' | 'vegetation-update' | 'creeks' | 'gkd';
+export type GsproExportKind = 'svg' | 'ortho' | 'outer-ortho' | 'dem' | 'unity-terrain' | 'unity-sculpt' | 'unity-ortho' | 'hillshade' | 'trees' | 'buildings' | 'zones' | 'vegetation' | 'vegetation-update' | 'arborist' | 'creeks' | 'gkd';
 
 /** A request to start one export; which fields matter depends on `kind`. */
 export interface GsproExportRequest {
@@ -218,8 +237,11 @@ export interface GsproOrthoSource {
 /** Which of the two GSPro terrains an export is for. */
 export type TerrainKind = 'inner' | 'outer';
 
-/** Runs one `python …` invocation (gspro.py or `-m golfpipe`). Injected so tests need no venv. */
-export type ExportRunner = (args: string[], cwd: string) => Promise<{ code: number; stdout: string; stderr: string }>;
+/**
+ * Runs one `python …` invocation (gspro.py, arborist.py or `-m golfpipe`). Injected so tests need no venv.
+ * `timeoutMs`: the process is killed after that long and the run fails saying so (default: none).
+ */
+export type ExportRunner = (args: string[], cwd: string, opts?: { timeoutMs?: number }) => Promise<{ code: number; stdout: string; stderr: string }>;
 
 /** Edge of the exported orthophoto texture — GSPro wants a square power of two. */
 export const ORTHO_EXPORT_SIZE = 8192;
@@ -302,16 +324,21 @@ export const OUTER_TREES_RESOLUTION_M = 2;
 export const OUTER_LIDAR_DIR = 'outer-lidar';
 
 export function defaultRunner(python: string): ExportRunner {
-    return async (args, cwd) => {
+    return async (args, cwd, opts) => {
         // UTF-8 stdout: the exporters print '×' and '…', which a Windows
         // Python would otherwise emit in cp1252 and the report would mangle.
         const env = { ...process.env, PYTHONIOENCODING: 'utf-8' };
         const proc = Bun.spawn([python, ...args], { cwd, env, stdout: 'pipe', stderr: 'pipe' });
+        let timedOut = false;
+        const timer = opts?.timeoutMs ? setTimeout(() => { timedOut = true; proc.kill(); }, opts.timeoutMs) : null;
         const [stdout, stderr, code] = await Promise.all([
             new Response(proc.stdout).text(),
             new Response(proc.stderr).text(),
             proc.exited,
         ]);
+        if (timer) clearTimeout(timer);
+        if (timedOut) return { code: code || 124, stdout, stderr: `${stderr}
+timed out after ${Math.round(opts!.timeoutMs! / 1000)} s` };
         return { code, stdout, stderr };
     };
 }
@@ -465,6 +492,8 @@ export interface GsproExportDeps {
     terrainEdits?: TerrainEditsService;
     /** The open Unity editors (`unity-terrain` puts the heightmap into the course's one); defaults to the real bridge. */
     unityBridge?: UnityBridge;
+    /** Write the Arborist file here instead of into the course's GSPro folder (tests, trial runs). */
+    arboristOutDir?: string;
 }
 
 export class GsproExportService {
@@ -478,6 +507,8 @@ export class GsproExportService {
     private readonly courseDocsRoot: string;
     private readonly runner: ExportRunner;
     private readonly history: FeatureHistoryService;
+    private readonly arborist: ArboristService;
+    private readonly arboristOutDir: string | undefined;
     /** Every job started in this process, by id (finished ones pruned per course as new ones start). */
     private readonly jobs = new Map<string, GsproExportJob>();
     /** The running job's completion, per course — what `start` refuses on and `whenIdle` awaits. */
@@ -497,19 +528,28 @@ export class GsproExportService {
         const python = deps.python ?? process.env.MAP_PIPELINE_PYTHON ?? venvPython(this.pipelineDir);
         this.runner = deps.runner ?? defaultRunner(python);
         this.history = new FeatureHistoryService(deps.db);
+        this.arboristOutDir = deps.arboristOutDir;
+        this.arborist = new ArboristService({
+            dataDir: this.dataDir, pipelineDir: this.pipelineDir, courseDocsRoot: this.courseDocsRoot, runner: this.runner, outDir: deps.arboristOutDir,
+        });
     }
 
     /** Where this course exports to, and what the default is. */
     async settings(courseId: string): Promise<GsproExportSettings> {
         const row = await this.db
-            .selectFrom('courses').select(['gspro_export_dir', 'gspro_course_dir'])
+            .selectFrom('courses').select(['gspro_export_dir', 'gspro_course_dir', 'gspro_meta_json'])
             .where('id', '=', courseId).executeTakeFirst();
         if (!row) throw new NotFoundError(`Course ${courseId} not found`);
         const defaultDir = defaultExportDir();
+        const gkdFile = row.gspro_course_dir ? await gkdFileIn(row.gspro_course_dir) : null;
+        const gkd = gkdFile ? await gkdIn(path.join(row.gspro_course_dir!, gkdFile)) : null;
         return {
             dir: row.gspro_export_dir ?? defaultDir,
             courseDir: row.gspro_course_dir,
-            gkdFile: row.gspro_course_dir ? await gkdFileIn(row.gspro_course_dir) : null,
+            gkdFile,
+            meta: row.gspro_meta_json ? JSON.parse(row.gspro_meta_json) as GsproCourseMeta : null,
+            gkdMeta: gkd ? metaFromGkd(gkd) : null,
+            gkdRatings: gkd ? (await this.gkdRatingEdits(courseId, gkd)).map(e => `${e.name} ${e.text}`) : [],
             isDefault: row.gspro_export_dir === null,
             defaultDir,
         };
@@ -535,6 +575,76 @@ export class GsproExportService {
             .updateTable('courses').set({ gspro_course_dir: stored })
             .where('id', '=', courseId).execute();
         return this.settings(courseId);
+    }
+
+    /**
+     * Keep the course details the `.GKD` export writes (null clears them, and
+     * the export goes back to keeping whatever the file has).
+     */
+    async setMeta(courseId: string, meta: GsproCourseMeta | null): Promise<GsproExportSettings> {
+        await this.settings(courseId);  // 404s for an unknown course
+        await this.db
+            .updateTable('courses').set({ gspro_meta_json: meta ? JSON.stringify(cleanMeta(meta)) : null })
+            .where('id', '=', courseId).execute();
+        return this.settings(courseId);
+    }
+
+    /**
+     * The tee sets a `.GKD` rates differently from the course: each set
+     * that is exported as one of the GKD's eight (`gsproTee`) and whose
+     * rating there is a real one other than the set's own GSPro rating.
+     */
+    private async gkdRatingEdits(courseId: string, gkd: Record<string, unknown>) {
+        const edits: { id: string; version: number; name: string; text: string; rating: number; slope: number; women: boolean }[] = [];
+        for (const set of await new TeeSetsService(this.db).listByCourse(courseId)) {
+            const type = set.gsproTee;
+            if (!type) continue;
+            const inFile = parseGkdRating(gkd[gkdRatingKey(type)]);
+            if (!inFile) continue;
+            const women = set.gsproRating === 'women';
+            const text = gkdRating(inFile.rating, inFile.slope)!;
+            if (text !== gkdRating(women ? set.ratingWomen : set.ratingMen, women ? set.slopeWomen : set.slopeMen)) {
+                edits.push({ id: set.id, version: set.version, name: set.name, text, ...inFile, women });
+            }
+        }
+        return edits;
+    }
+
+    /**
+     * Take the course details from the `.GKD` in the course's GSPro folder —
+     * what was typed in GreenKeeper — and keep them with the course; its
+     * ratings go onto the course's tee sets, as each set's GSPro rating.
+     */
+    async readGkdMeta(courseId: string): Promise<GsproExportSettings> {
+        const { courseDir, gkdFile, gkdMeta } = await this.settings(courseId);
+        if (!courseDir) throw new ConflictError('Set the GSPro course folder first — the course\'s folder under GSPro\'s Courses, where its .gspcrse is');
+        if (!gkdMeta) throw new ConflictError(`No readable .GKD in ${courseDir} — save the course in GreenKeeper, or export the GreenKeeper course file, first`);
+        const gkd = await gkdIn(path.join(courseDir, gkdFile!));
+        if (gkd) await this.applyGkdRatings(courseId, gkd);
+        return this.setMeta(courseId, gkdMeta);
+    }
+
+    /**
+     * Take only the tee sets' ratings from that `.GKD` — each onto the set
+     * exported as that GSPro tee, as the rating GSPro shows for it — and
+     * leave the course details the app keeps alone.
+     */
+    async readGkdRatings(courseId: string): Promise<GsproExportSettings> {
+        const { courseDir, gkdFile } = await this.settings(courseId);
+        if (!courseDir) throw new ConflictError('Set the GSPro course folder first — the course\'s folder under GSPro\'s Courses, where its .gspcrse is');
+        const gkd = gkdFile ? await gkdIn(path.join(courseDir, gkdFile)) : null;
+        if (!gkd) throw new ConflictError(`No readable .GKD in ${courseDir} — save the course in GreenKeeper, or export the GreenKeeper course file, first`);
+        await this.applyGkdRatings(courseId, gkd);
+        return this.settings(courseId);
+    }
+
+    private async applyGkdRatings(courseId: string, gkd: Record<string, unknown>): Promise<void> {
+        const teeSets = new TeeSetsService(this.db);
+        for (const edit of await this.gkdRatingEdits(courseId, gkd)) {
+            await teeSets.update(edit.id, edit.version, edit.women
+                ? { ratingWomen: edit.rating, slopeWomen: edit.slope }
+                : { ratingMen: edit.rating, slopeMen: edit.slope });
+        }
     }
 
     /**
@@ -1023,17 +1133,28 @@ export class GsproExportService {
     }
 
     /**
-     * Plant the course's lower vegetation, start to finish: run the vegetation
-     * generators (vegetation-generators.ts: tall rough, creek banks, ...) so
-     * their zones follow the course as it is now, export the terrain's zones,
-     * and, when the course's Unity project is open, import them into VSP and
-     * apply the grass palettes (`golfmap.zones.import`, `golfmap.grass.apply`).
-     * Unity not open is reported, not an error: the zones are exported for the
-     * next import. The scene is left for the operator to save. `dryRun` only
-     * writes the generators' GeoJSON (the CLI's --dry-run).
+     * Plant the course's vegetation for GSPro, start to finish (the web's
+     * "Plant for GSPro"): run the vegetation generators
+     * (vegetation-generators.ts: tall rough, creek banks, ...) so their zones
+     * follow the course as it is now, export the terrain's zones, and then
+     * the two halves GSPro draws from:
+     *
+     *   - Unity (the course's own VSP): when the course's Unity project is
+     *     open, import the zones and apply the grass palettes
+     *     (`golfmap.zones.import`, `golfmap.grass.apply`). Unity not open is
+     *     reported, not an error: the zones are exported for the next import.
+     *   - The Arborist file (ArboristService; inner terrain, a course with a
+     *     species file): the lower vegetation from the zones export, which
+     *     needs no Unity, then the trees out of the Unity scene when it is
+     *     open. `arborist: 'lower'` leaves the trees, `false` the whole half.
+     *
+     * The report says which ran. A half that fails fails the job, after the
+     * other has run, with both outcomes in the message. The scene is left for
+     * the operator to save. `dryRun` only writes the generators' GeoJSON (the
+     * CLI's --dry-run).
      */
     async plantVegetation(courseId: string, kind: TerrainKind,
-                          opts: Omit<VegetationOptions, 'workDir'> & { dbPath?: string; exportZones?: boolean; unity?: boolean } = {}): Promise<GsproExportResult> {
+                          opts: Omit<VegetationOptions, 'workDir'> & { dbPath?: string; exportZones?: boolean; unity?: boolean; arborist?: 'lower' | false } = {}): Promise<GsproExportResult> {
         const dir = await this.exportDir(courseId);
         const generated = await this.runGenerators(courseId, kind, opts);
         const report = [...generated.report];
@@ -1041,35 +1162,76 @@ export class GsproExportService {
 
         const exported = await this.exportZones(courseId, kind);
         report.push(...exported.report);
-        if (opts.unity === false) return { path: exported.path, report };
 
-        const { editor, seen } = await editorForExportDir(this.unityBridge, dir);
-        if (!editor) {
-            report.push(`Not in Unity yet: no open Unity editor imports from ${dir}`
-                + (seen.length ? ` (open: ${seen.join('; ')})` : ' (none is open)')
-                + " - open the course's Unity project and plant again, or run golfmap.zones.import and golfmap.grass.apply there");
-            return { path: exported.path, report };
-        }
-        try {
-            // Import binds each item's mask and include rules; apply makes and styles the items and
-            // turns spawning on for those with rules. An item apply only now added (a new species in a
-            // palette) had no rules at the import: a second round binds it and lets it spawn.
-            for (let round = 1; round <= 2; round++) {
-                const imported = await editor.run('golfmap.zones.import', { terrain: kind, package: LOWER_VEGETATION_PACKAGE }, 600);
-                report.push(`Unity (${editor.projectName}): imported ${path.basename(exported.path)} into '${LOWER_VEGETATION_PACKAGE}'`
-                    + (imported?.status ? ` - ${firstLine(String(imported.status))}` : ''));
-                const applied = await editor.run('golfmap.grass.apply', { terrain: kind }, 600);
-                const items = Array.isArray(applied?.items) ? applied.items.length : 0;
-                report.push(`Unity (${editor.projectName}): grass palettes applied (${items} items on ${applied?.system ?? "the terrain's system"})`);
-                const log = (applied?.log ?? []) as string[];
-                for (const line of log) report.push(`  ${line}`);
-                if (!log.some(l => /^(added|replaced) item /.test(l))) break;
+        // Half one, Unity: the course's own VSP (grass, and what the palette keeps there).
+        let editor: UnityEditor | null = null;
+        let unityError: string | null = null;
+        if (opts.unity !== false) {
+            const found = await editorForExportDir(this.unityBridge, dir);
+            editor = found.editor;
+            if (!editor) {
+                report.push(`Unity: not open, zones exported only - no open Unity editor imports from ${dir}`
+                    + (found.seen.length ? ` (open: ${found.seen.join('; ')})` : ' (none is open)')
+                    + " - open the course's Unity project and plant again, or run golfmap.zones.import and golfmap.grass.apply there");
+            } else {
+                try {
+                    // Import binds each item's mask and include rules; apply makes and styles the items and
+                    // turns spawning on for those with rules. An item apply only now added (a new species in a
+                    // palette) had no rules at the import: a second round binds it and lets it spawn.
+                    for (let round = 1; round <= 2; round++) {
+                        const imported = await editor.run('golfmap.zones.import', { terrain: kind, package: LOWER_VEGETATION_PACKAGE }, 600);
+                        report.push(`Unity (${editor.projectName}): imported ${path.basename(exported.path)} into '${LOWER_VEGETATION_PACKAGE}'`
+                            + (imported?.status ? ` - ${firstLine(String(imported.status))}` : ''));
+                        const applied = await editor.run('golfmap.grass.apply', { terrain: kind }, 600);
+                        const items = Array.isArray(applied?.items) ? applied.items.length : 0;
+                        report.push(`Unity (${editor.projectName}): grass palettes applied (${items} items on ${applied?.system ?? "the terrain's system"})`);
+                        const log = (applied?.log ?? []) as string[];
+                        for (const line of log) report.push(`  ${line}`);
+                        if (!log.some(l => /^(added|replaced) item /.test(l))) break;
+                    }
+                } catch (e) {
+                    unityError = `The zones were generated and exported, but Unity (${editor.projectName}) could not take them: ${firstLine((e as Error).message)}`;
+                }
             }
-        } catch (e) {
-            throw new ConflictError(`The zones were generated and exported, but Unity (${editor.projectName}) could not take them: ${firstLine((e as Error).message)}`);
         }
-        report.push('Save the scene in Unity to keep it.');
+
+        // Half two, GSPro's Arborist file: the lower vegetation needs only the zones export, so it is
+        // written whatever Unity did; the trees come out of the Unity scene. The masks are the inner terrain's.
+        const arborist = kind === 'inner' && opts.arborist !== false
+            ? await this.arborist.generate(await this.arboristCourse(courseId), { trees: opts.arborist !== 'lower', editor: unityError ? null : editor })
+            : null;
+        if (arborist) report.push(...arborist.report);
+        if (unityError) throw new ConflictError(unityError + arboristAfterFailure(arborist));
+        if (arborist?.error) {
+            throw new ConflictError((editor ? `Planted in Unity (${editor.projectName})` : 'The zones are exported')
+                + (arborist.written.length ? ` and the Arborist ${arborist.written.join(' and ')} written` : '')
+                + `, but: ${arborist.error}`);
+        }
+        if (editor) report.push('Save the scene in Unity to keep it.');
         return { path: exported.path, report };
+    }
+
+    /**
+     * The course's Arborist file on its own (`arborist.py lower`, then
+     * `trees` when the course's Unity project is open): what Plant for GSPro
+     * does after the planting, for when only the species file or the looks
+     * changed. 409 when the course has no species file or a step fails.
+     */
+    async exportArborist(courseId: string): Promise<GsproExportResult> {
+        const course = await this.arboristCourse(courseId);
+        const { editor } = await editorForExportDir(this.unityBridge, course.exportDir);
+        const result = await this.arborist.generate(course, { trees: true, editor });
+        if (!result.used) throw new ConflictError(result.report[0]!);
+        if (result.error) {
+            throw new ConflictError((result.written.length ? `The Arborist ${result.written.join(' and ')} was written, but: ` : '') + result.error);
+        }
+        return { path: path.join(this.arboristOutDir ?? course.courseDir!, 'arboristdata.dat'), report: result.report };
+    }
+
+    private async arboristCourse(courseId: string) {
+        const course = await this.courses.get(courseId);
+        const { dir, courseDir } = await this.settings(courseId);
+        return { name: course.name, exportDir: dir, courseDir };
     }
 
     /** The vegetation generators over the course as it is now (all, or `opts.from` on), with the inputs they find. */
@@ -1097,21 +1259,23 @@ export class GsproExportService {
     }
 
     /**
-     * Update some zones in Unity without planting everything (the Vegetation
-     * mode's "Update in Unity" on the selected zones): for each terrain that
+     * Update some zones without planting everything (the Vegetation mode's
+     * "Update for GSPro" on the selected zones): for each terrain that
      * has a zones export, `gspro.py zones-patch` re-rasterizes only the window
      * those zones cover, now and in that export (and any zone the export has
      * that the course no longer has), into the exported masks, and the open
      * Unity project takes just the changed textures and respawns just that
-     * window (`golfmap.zones.patch`). The generators do not run. It needs a
+     * window (`golfmap.zones.patch`); when the inner masks changed, the
+     * Arborist file's lower vegetation is written again from them (about 10 s;
+     * the trees are left). The generators do not run. It needs a
      * planting first (the masks and their import), and Unity open up front,
      * since masks patched without Unity would leave the scene behind the
      * export with nothing to say so. When the zone types' item bindings
      * changed since a terrain's export (and the zones reach that terrain),
      * its channels may have moved and only a full export can follow: that
      * terrain is skipped with a line in the report (the outer, which Plant
-     * vegetation does not refresh, often is), and when every terrain is, the
-     * job fails asking for Plant vegetation. The pipeline refuses before
+     * for GSPro does not refresh, often is), and when every terrain is, the
+     * job fails asking for Plant for GSPro. The pipeline refuses before
      * writing anything, so a skipped terrain is left as it was.
      *
      * A hand-drawn creek_bank zone near water is a creek section: it picks the
@@ -1128,7 +1292,7 @@ export class GsproExportService {
         for (const kind of ['inner', 'outer'] as const) {
             if (await statOrNull(path.join(dir, zonesExportFileName(course.name, kind)))) kinds.push(kind);
         }
-        if (kinds.length === 0) throw new ConflictError(`No vegetation zones export in ${dir} yet: plant vegetation once first`);
+        if (kinds.length === 0) throw new ConflictError(`No vegetation zones export in ${dir} yet: Plant for GSPro once first`);
         const { editor, seen } = await editorForExportDir(this.unityBridge, dir);
         if (!editor) {
             throw new ConflictError(`Open the course's Unity project first: no open Unity editor imports from ${dir}`
@@ -1179,10 +1343,10 @@ export class GsproExportService {
         }
         if (stale.length === kinds.length) {
             throw new ConflictError(`The zone types' item bindings changed since the last planting, so the ${stale.join(' and ')} masks' channels may have moved: `
-                + 'use Plant vegetation this time');
+                + 'use Plant for GSPro this time');
         }
         if (patches.length === 0) {
-            report.push('Nothing changed in the masks, so nothing to take into Unity');
+            report.push('Nothing changed in the masks, so nothing to take into Unity or the Arborist file');
             return { path: dir, report };
         }
         for (const p of patches) {
@@ -1191,8 +1355,14 @@ export class GsproExportService {
                 report.push(`Unity (${editor.projectName}): ${firstLine(String(result?.status ?? `${p.kind} zones patched`))}`);
             } catch (e) {
                 throw new ConflictError(`The ${p.kind} masks are updated in ${dir}, but Unity (${editor.projectName}) could not take them: `
-                    + `${firstLine((e as Error).message)}. Plant vegetation to bring Unity in step`);
+                    + `${firstLine((e as Error).message)}. Plant for GSPro to bring Unity in step`);
             }
+        }
+        // The Arborist file carries the inner masks themselves: the same zones, its lower vegetation again.
+        if (patches.some(p => p.kind === 'inner')) {
+            const arborist = await this.arborist.generate({ name: course.name, exportDir: dir, courseDir: (await this.settings(courseId)).courseDir }, { trees: false });
+            report.push(...arborist.report);
+            if (arborist.error) throw new ConflictError(`The zones are updated in Unity (${editor.projectName}), but: ${arborist.error}`);
         }
         report.push('Save the scene in Unity to keep it.');
         return { path: dir, report };
@@ -1235,8 +1405,9 @@ export class GsproExportService {
      * aim points, water hazards and the OOB ring as Unity positions on the
      * INNER terrain, written by `gspro.py gkd` into the course's GSPro folder
      * (`<folder>/<scene>.GKD`, or the `.GKD` already there) and merged into
-     * it, so what GreenKeeper owns — name, location, ratings, the range —
-     * stays. Reads the inner heightmap sidecar (and the GeoTIFF next to it)
+     * it, so what GreenKeeper owns — the range, wind, stimp — stays. The
+     * course details kept with the course (`setMeta`) go into the header;
+     * without any, the file's own stay too. Reads the inner heightmap sidecar (and the GeoTIFF next to it)
      * for the terrain's zero, so that must be exported first.
      */
     async exportGkd(courseId: string): Promise<GsproExportResult> {
@@ -1338,6 +1509,7 @@ export class GsproExportService {
             case 'zones': return this.exportZones(courseId, r.terrain!);
             case 'vegetation': return this.plantVegetation(courseId, r.terrain!);
             case 'vegetation-update': return this.updateZones(courseId, r.zoneIds!);
+            case 'arborist': return this.exportArborist(courseId);
             case 'creeks': return this.exportCreeks(courseId);
             case 'gkd': return this.exportGkd(courseId);
         }
@@ -1700,12 +1872,20 @@ export function describeRequest(r: GsproExportRequest): string {
         case 'trees': need(r.terrain, 'a terrain'); return `${r.terrain} trees`;
         case 'buildings': need(r.terrain, 'a terrain'); return `${r.terrain} buildings`;
         case 'zones': need(r.terrain, 'a terrain'); return `${r.terrain} vegetation zones`;
-        case 'vegetation': need(r.terrain, 'a terrain'); return `${r.terrain} vegetation, planted into Unity`;
-        case 'vegetation-update': need(r.zoneIds?.length, 'the zones to update'); return `${r.zoneIds!.length} vegetation zone(s) updated in Unity`;
+        case 'vegetation': need(r.terrain, 'a terrain'); return `${r.terrain} vegetation, planted for GSPro`;
+        case 'vegetation-update': need(r.zoneIds?.length, 'the zones to update'); return `${r.zoneIds!.length} vegetation zone(s) updated for GSPro`;
+        case 'arborist': return 'Arborist file (lower vegetation and trees)';
         case 'creeks': return 'creeks (R.A.M. splines)';
         case 'gkd': return 'GreenKeeper course file';
         default: throw new ConflictError(`Unknown export kind '${String((r as { kind: unknown }).kind)}'`);
     }
+}
+
+/** What the Arborist half did, for the message of a planting whose Unity half failed. */
+function arboristAfterFailure(arborist: ArboristResult | null): string {
+    if (!arborist?.used) return '';
+    if (arborist.error) return `. ${arborist.error}`;
+    return `. The Arborist ${arborist.written.join(' and ')} was still written`;
 }
 
 function firstLine(text: string): string {
@@ -1779,6 +1959,27 @@ export async function gkdFileIn(courseDir: string): Promise<string> {
         // not there (yet): the name it will get
     }
     return names.find(n => n.toLowerCase().endsWith('.gkd')) ?? `${path.basename(courseDir)}.GKD`;
+}
+
+/** A `.GKD` file parsed; null when it is missing or not a JSON object. */
+async function gkdIn(file: string): Promise<Record<string, unknown> | null> {
+    try {
+        const doc = JSON.parse(await readFile(file, 'utf8'));
+        return doc && typeof doc === 'object' && !Array.isArray(doc) ? doc : null;
+    } catch {
+        return null;
+    }
+}
+
+/** Course details as stored: text trimmed, keywords in file order without repeats. */
+function cleanMeta(meta: GsproCourseMeta): GsproCourseMeta {
+    if (!Number.isFinite(meta.difficulty) || meta.difficulty < 0) throw new ConflictError('Difficulty must be a number, 0 or more');
+    return {
+        courseName: meta.courseName.trim(), city: meta.city.trim(), state: meta.state.trim(), country: meta.country.trim(),
+        designer: meta.designer.trim(), homage: meta.homage.trim(), description: meta.description.trim(),
+        difficulty: meta.difficulty,
+        keywords: GKD_KEYWORDS.filter(k => meta.keywords.includes(k)),
+    };
 }
 
 export async function statOrNull(p: string) {

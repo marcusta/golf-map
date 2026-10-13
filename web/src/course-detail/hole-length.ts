@@ -38,9 +38,25 @@ export function pathMeters(path: LatLon[]): number {
 }
 
 /**
- * Playing length for a hole from a given tee: tee → aim points (in order) →
- * green center. Each leg is measured in projected EPSG:3006 metres and the
- * total is rounded to whole metres.
+ * The hole's aim points a tee plays through, in order. An aim point the tee
+ * is already past — one no closer to the green than the tee itself — drops
+ * out, so a forward tee does not walk backwards to a dogleg marker meant for
+ * the back tees; `straight` (a tee of the set GSPro plays as Par3) ignores
+ * them all. The same two rules as the .GKD export's `_gkd_tee_distance`
+ * (pipeline/gspro.py), so the play line, the panel and GSPro agree. Without
+ * a green center there is nothing to be past: every aim point stays.
+ */
+export function aimsInPlay<A extends LatLon>(tee: LatLon, aims: A[], greenCenter: LatLon | null, straight = false): A[] {
+    if (!greenCenter) return aims;
+    if (straight) return [];
+    const toGreen = legMeters(tee, greenCenter);
+    return aims.filter(a => legMeters(a, greenCenter) < toGreen);
+}
+
+/**
+ * Playing length for a hole from a given tee: tee → the aim points it plays
+ * through (`aimsInPlay`) → green center. Each leg is measured in projected
+ * EPSG:3006 metres and the total is rounded to whole metres.
  *
  * - `tee` null → length null (no origin).
  * - No `greenCenter` → measure tee → aims only and flag `approximate` (the
@@ -51,10 +67,11 @@ export function playingLength(
     tee: Pick<Tee, 'lat' | 'lon'> | null,
     aims: Pick<AimPoint, 'lat' | 'lon'>[],
     greenCenter: LatLon | null,
+    straight = false,
 ): PlayingLength {
     if (!tee) return { meters: null, approximate: false };
     const path: LatLon[] = [{ lat: tee.lat, lon: tee.lon }];
-    for (const a of aims) path.push({ lat: a.lat, lon: a.lon });
+    for (const a of aimsInPlay(tee, aims, greenCenter, straight)) path.push({ lat: a.lat, lon: a.lon });
     const approximate = greenCenter === null;
     if (greenCenter) path.push(greenCenter);
     if (path.length < 2) return { meters: null, approximate };

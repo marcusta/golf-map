@@ -50,7 +50,7 @@ def _rect(x0, y0, x1, y1):
 
 
 def _zone(zone_type, rings, weight=None, feather=0.0, noise=0.0, zone_id=None, hole=None, order=0, variant=None,
-          blend=None, extras=(), generated=False):
+          blend=None, extras=(), generated=False, edge_blend=None, height=None):
     """extras: (zoneType, variant, weight) per extra palette, stored as the
     `extraPalettes` string (shared/features/zone-layers.ts)."""
     attrs = {"zoneType": zone_type, "feather": feather, "noise": noise}
@@ -60,6 +60,10 @@ def _zone(zone_type, rings, weight=None, feather=0.0, noise=0.0, zone_id=None, h
         attrs["zoneVariant"] = variant
     if blend is not None:
         attrs["blend"] = blend
+    if edge_blend is not None:
+        attrs["edgeBlend"] = edge_blend
+    if height is not None:
+        attrs["heightMin"], attrs["heightMax"] = height
     if extras:
         attrs["extraPalettes"] = ", ".join(t + (f"/{v}" if v else "") + (f"={w:g}" if w != 1 else "") for t, v, w in extras)
     return gspro.ZoneSpec(id=zone_id or f"z-{zone_type}-{order}", zone_type=zone_type,
@@ -67,7 +71,7 @@ def _zone(zone_type, rings, weight=None, feather=0.0, noise=0.0, zone_id=None, h
                           geometry={"crs": "EPSG:3006", "curveType": "bezier", "rings": rings},
                           variant=variant or "", blend=blend or gspro.ZONE_BLEND_REPLACE,
                           extras=[gspro.ZonePalette(t, v, w) for t, v, w in extras],
-                          generated=generated), attrs, hole, order
+                          generated=generated, edge_blend=edge_blend or 0.0, height=height), attrs, hole, order
 
 
 def _make_db(path, zones, types=TYPES, with_table=True, extra_features=(), with_variants=True):
@@ -439,7 +443,7 @@ def test_command_writes_one_channel_per_item_and_the_unity_zones_v2_json(tmp_pat
     assert list(zones) == ["z-rough_tall-0", "z-rough_tall-1", "z-meadow-0"]  # editor stack (D28): hole 1, then course-level on top
     assert zones["z-rough_tall-0"]["variant"] == "" and zones["z-meadow-0"]["variant"] == ""
     dry = zones["z-rough_tall-1"]
-    assert list(dry) == ["id", "zoneType", "variant", "weight", "feather", "noise", "blend", "extraPalettes", "rings"]
+    assert list(dry) == ["id", "zoneType", "variant", "weight", "feather", "noise", "edgeBlend", "blend", "extraPalettes", "rings"]
     assert dry["blend"] == "replace" and dry["extraPalettes"] == []
     assert dry["zoneType"] == "rough_tall" and dry["variant"] == "dry"
     assert dry["weight"] == 0.5 and dry["feather"] == 2.0 and dry["noise"] == 0.0
@@ -677,6 +681,7 @@ def test_a_window_render_is_exactly_that_part_of_the_full_render():
         _zone("rough_tall", [_rect(0, 0, 200, 200)], feather=6.0, noise=2.0, order=0, generated=True),
         _zone("shrub", [_rect(40, 40, 130, 120)], feather=10.0, order=1, extras=[("fern", "", 0.5)]),
         _zone("meadow", [_rect(90, 60, 170, 150)], weight=0.7, feather=4.0, noise=3.0, order=2, blend="mix"),
+        _zone("rough_tall", [_rect(60, 100, 120, 170)], feather=1.0, variant="dry", order=3, edge_blend=12.0),
     ]]
     full, _ = gspro.render_zone_masks(zones, EXTENT, SIZE, seed=3, exclude=(E0 + 150, N0 + 0, E0 + 200, N0 + 30))
     window = (37, 121, 55, 181)
@@ -764,7 +769,7 @@ def test_a_square_the_zones_do_not_reach_needs_no_layout_check(tmp_path, capsys)
     """The outer terrain's export is often older than the zone types (planting
     refreshes the inner one): zones inside the excluded inner square, or off
     the square, patch nothing there instead of failing on the old layout."""
-    inner = (E0 + 10, N0 + 10, E0 + 100, N0 + 100)
+    inner = (E0 + 5, N0 + 5, E0 + 100, N0 + 100)   # holds zone a with its blend band
     out, _ = _run(tmp_path, BASE_ZONES, exclude=inner)
     conn = sqlite3.connect(tmp_path / "app.sqlite")
     conn.execute("UPDATE course_zone_types SET items_json = ? WHERE key = 'shrub'", (json.dumps([_item("Hazel bush", 0.5)]),))
@@ -810,7 +815,8 @@ def test_a_patch_on_the_outer_square_leaves_the_inner_square_out(tmp_path):
 
 
 def test_zones_patch_cli(tmp_path):
-    out, _ = _run(tmp_path, BASE_ZONES)
+    # b without an edge blend: with one it shares its edge band with the rough under it (D-VZ16).
+    out, _ = _run(tmp_path, [(s, {**a, "edgeBlend": 0} if s.id == "b" else a, h, o) for s, a, h, o in BASE_ZONES])
     _set_zone(tmp_path / "app.sqlite", "b", delete=True)
     code = gspro.main(["zones-patch", "--db", str(tmp_path / "app.sqlite"), "--course", "Zonbana",
                        "--zones-json", str(out), "--ids", "b", "--result", str(tmp_path / "r.json")])
@@ -915,3 +921,252 @@ def test_a_pixel_is_filled_when_the_point_vsp_reads_it_for_is_inside():
         cols, rows = np.where(m.any(0))[0], np.where(m.any(1))[0]
         assert all(a - 1e-3 <= c <= b for c in cols) and len(cols) == 5
         assert all(a <= r + 1 <= b + 1e-3 for r in rows) and len(rows) == 5
+
+
+# --- edge blend (D-VZ16) -------------------------------------------------------
+
+def _no_wander(monkeypatch):
+    monkeypatch.setattr(gspro, "ZONE_BLEND_WANDER", 0.0)
+
+
+def test_two_drawn_patches_side_by_side_crossfade_over_the_edge_blend(monkeypatch):
+    """Two tiled patches of different mixes, blend 20 m: across their shared
+    edge (x = 100) one gives way to the other smoothly, nearly all of it
+    within 20 m, the two always summing to 1."""
+    _no_wander(monkeypatch)
+    channels, _ = _render([
+        _zone("rough_tall", [_rect(40, 40, 100, 160)], variant="dry", edge_blend=20.0, order=0),
+        _zone("rough_tall", [_rect(100, 40, 160, 160)], variant="lush", edge_blend=20.0, order=1),
+    ])
+    dry, lush = channels["rough_tall/dry"][SIZE - 1 - 100], channels["rough_tall/lush"][SIZE - 1 - 100]
+    assert np.allclose((dry + lush)[41:159], 1.0, atol=1e-5)
+    assert dry[80] == pytest.approx(1.0, abs=1e-3) and lush[120] == pytest.approx(1.0, abs=1e-3)
+    assert (dry[99] + dry[100]) / 2 == pytest.approx(0.5, abs=0.01)
+    assert 0.75 < dry[95] < 0.9 and 0.02 < dry[109] < 0.06       # a Gaussian of 5 m: 1 and 2 sigma out
+    assert np.all(np.diff(dry[80:121]) <= 1e-6)
+
+
+def test_the_border_between_two_blended_patches_wanders():
+    """With the wander on, the line where the two mixes are even is not the
+    drawn edge everywhere: it moves from row to row, by metres, and the sum
+    is still 1."""
+    channels, _ = _render([
+        _zone("rough_tall", [_rect(40, 20, 100, 180)], variant="dry", edge_blend=20.0, order=0),
+        _zone("rough_tall", [_rect(100, 20, 160, 180)], variant="lush", edge_blend=20.0, order=1),
+    ])
+    dry, lush = channels["rough_tall/dry"], channels["rough_tall/lush"]
+    assert np.allclose((dry + lush)[30:170, 41:159], 1.0, atol=1e-5)
+    even = np.array([np.argmax(dry[r, 60:140] < 0.5) + 60 for r in range(40, 160)])
+    assert even.max() - even.min() >= 4 and np.all(np.abs(even - 100) <= 12)
+
+
+def test_an_edge_blend_changes_nothing_beside_bare_ground():
+    """The same two patches: the sum of the mixes is the unblended one, pixel
+    for pixel - no fade, no spill - and far from the other patch a patch is
+    as it was."""
+    def patches(blend):
+        return [_zone("rough_tall", [_rect(40, 40, 100, 160)], variant="dry", feather=2.0, edge_blend=blend, order=0),
+                _zone("rough_tall", [_rect(100, 40, 160, 160)], variant="lush", feather=2.0, edge_blend=blend, order=1)]
+    soft, _ = _render(patches(20.0))
+    hard, _ = _render(patches(0.0))
+    assert np.allclose(sum(soft.values()), sum(hard.values()), atol=1e-5)
+    west = SIZE - 1 - 100, slice(30, 70)   # the dry patch's outer edge at x = 40, far from the lush patch
+    assert np.allclose(soft["rough_tall/dry"][west], hard["rough_tall/dry"][west], atol=1e-4)
+    assert soft["rough_tall/lush"][west].max() < 1e-4
+
+
+def test_a_drawn_patch_blends_into_the_generated_fill_only_where_the_fill_grows(monkeypatch):
+    """A drawn patch in generated tall rough that stops at x = 120 (mown
+    rough beyond): towards the rough the two cross-fade; along the patch's
+    edge with nothing beside it, no rough comes in and nothing spills."""
+    _no_wander(monkeypatch)
+    channels, _ = _render([
+        _zone("rough_tall", [_rect(0, 0, 120, 200)], generated=True, order=0),
+        _zone("rough_tall", [_rect(60, 60, 180, 140)], variant="dry", edge_blend=20.0, order=1),
+    ])
+    rough, dry = channels["rough_tall"], channels["rough_tall/dry"]
+    row = SIZE - 1 - 100
+    assert np.allclose((rough + dry)[row, 5:175], 1.0, atol=1e-5)
+    assert 0.1 < dry[row, 55] < 0.25 and 0.75 < rough[row, 55] < 0.9   # 5 m outside the patch's west edge
+    assert dry[row, 85] == pytest.approx(1.0, abs=1e-3) and rough[row, 35] == pytest.approx(1.0, abs=1e-3)
+    assert rough[row, 150:].max() < 1e-4 and dry[row, 150] == pytest.approx(1.0, abs=1e-3)  # its east end, past the rough
+    assert dry[row, 181] == 0.0 and dry[SIZE - 1 - 141, 150] == 0.0    # no spill past its own edge
+
+
+def test_a_hard_drawn_zone_keeps_its_border_against_a_neighbour_that_blends():
+    def stack(blend):
+        return [_zone("rough_tall", [_rect(40, 40, 100, 160)], variant="dry", edge_blend=blend, order=0),
+                _zone("rough_tall", [_rect(100, 40, 160, 160)], variant="lush", order=1)]   # no edge blend: hard
+    soft, _ = _render(stack(8.0))
+    plain, _ = _render(stack(0.0))
+    for slot in plain:
+        assert np.allclose(soft[slot], plain[slot], atol=5e-3)   # the blur's far tail, past the kept band
+
+
+def test_the_blend_is_the_same_whatever_the_tile_size(monkeypatch):
+    zones = [_zone("rough_tall", [_rect(0, 0, 150, 200)], generated=True, order=0),
+             _zone("rough_tall", [_rect(30, 30, 110, 170)], variant="dry", feather=1.0, noise=2.0, edge_blend=10.0, order=1),
+             _zone("shrub", [_rect(110, 30, 180, 170)], edge_blend=6.0, order=2)]
+    whole, _ = _render(zones, seed=2)
+    monkeypatch.setattr(gspro, "ZONE_BLEND_TILE_PX", 37)
+    tiled, _ = _render(zones, seed=2)
+    for slot in whole:
+        assert np.array_equal(whole[slot], tiled[slot]), slot
+
+
+def test_edge_blend_defaults_to_drawn_replace_zones_only(tmp_path):
+    db = tmp_path / "app.sqlite"
+    ring = [_rect(20, 20, 80, 80)]
+    _make_db(db, [
+        _zone("shrub", ring, zone_id="drawn", order=0),
+        _zone("shrub", ring, zone_id="mix", blend="mix", order=1),
+        _zone("shrub", ring, zone_id="generated", order=2),
+        _zone("shrub", ring, zone_id="off", edge_blend=0, order=3),
+        _zone("shrub", ring, zone_id="set", blend="mix", edge_blend=7.5, order=4),
+    ])
+    conn = sqlite3.connect(db)
+    conn.execute("ALTER TABLE course_features ADD COLUMN generated INTEGER NOT NULL DEFAULT 0")
+    conn.execute("UPDATE course_features SET generated = 1 WHERE id = 'generated'")
+    conn.commit()
+    conn.close()
+    _, _, zones = gspro._load_zones(db, "Zonbana")
+    assert {z.id: z.edge_blend for z in zones} == {
+        "drawn": gspro.DEFAULT_ZONE_EDGE_BLEND_M, "mix": 0.0, "generated": 0.0, "off": 0.0, "set": 7.5}
+
+
+# --- bush height (D-VZ17) -----------------------------------------------------
+
+def _metres(value):
+    return float(value) / 256.0 * gspro.ZONE_HEIGHT_RANGE_M
+
+
+def test_a_zone_with_a_height_fills_its_footprint_between_min_and_max_and_nothing_else():
+    zones = [_zone("shrub", [_rect(40, 40, 120, 120)], height=(2.0, 3.0), order=0)[0],
+             _zone("shrub", [_rect(140, 140, 180, 180)], order=1)[0]]
+    h = gspro.render_zone_heights(zones, EXTENT, SIZE)
+    inside = h[SIZE - 118:SIZE - 42, 42:118]
+    assert inside.min() > 0
+    assert 2.0 - 0.03 <= _metres(inside.min()) and _metres(inside.max()) <= 3.0 + 0.03
+    # The noise reaches both ends of the range, so the bushes are not all one height.
+    assert _metres(inside.min()) < 2.2 and _metres(inside.max()) > 2.8
+    # Most of the zone is in the lower half of the range; the upper half is the bumps.
+    assert 0.05 < (inside > round(2.5 / gspro.ZONE_HEIGHT_RANGE_M * 256)).mean() < 0.35
+    assert _at(h, 20, 20) == 0 and _at(h, 160, 160) == 0
+
+
+def test_a_fixed_height_is_that_height_everywhere_and_covers_the_feather_ramp():
+    zone = _zone("shrub", [_rect(40, 40, 120, 120)], feather=6.0, height=(2.5, 2.5))[0]
+    h = gspro.render_zone_heights([zone], EXTENT, SIZE)
+    assert set(np.unique(h).tolist()) == {0, 50}
+    density, _ = gspro.render_zone_masks([zone], EXTENT, SIZE)
+    # Wherever the zone plants anything, a height is set.
+    assert not ((density["shrub"] > 0) & (h == 0)).any()
+
+
+def test_where_two_heights_overlap_the_heavier_zone_decides():
+    zones = [_zone("shrub", [_rect(20, 20, 120, 120)], weight=0.4, height=(1.0, 1.0), order=0)[0],
+             _zone("shrub", [_rect(80, 80, 180, 180)], weight=1.0, height=(4.0, 4.0), order=1)[0]]
+    h = gspro.render_zone_heights(zones, EXTENT, SIZE)
+    assert _metres(_at(h, 50, 50)) == 1.0 and _metres(_at(h, 100, 100)) == 4.0 and _metres(_at(h, 150, 150)) == 4.0
+    assert np.array_equal(h, gspro.render_zone_heights(zones[::-1], EXTENT, SIZE))
+
+
+def test_a_height_window_is_exactly_that_part_of_the_full_render():
+    zones = [_zone("shrub", [_rect(30, 30, 110, 170)], feather=4.0, noise=2.0, height=(1.5, 3.5), order=0)[0],
+             _zone("meadow", [_rect(90, 60, 180, 120)], feather=2.0, height=(0.5, 1.0), order=1)[0]]
+    full = gspro.render_zone_heights(zones, EXTENT, SIZE, seed=3)
+    window = (37, 151, 61, 133)
+    part = gspro.render_zone_heights(zones, EXTENT, SIZE, seed=3, window=window)
+    assert np.array_equal(part, full[37:151, 61:133])
+
+
+HEIGHT_ZONES = [
+    _zone("rough_tall", [_rect(0, 0, 200, 200)], zone_id="base", order=0),
+    _zone("shrub", [_rect(20, 20, 70, 70)], feather=2.0, zone_id="hedge", height=(2.0, 3.0), order=1),
+    _zone("meadow", [_rect(120, 120, 180, 180)], zone_id="b", order=2),
+]
+
+
+def test_command_writes_the_height_mask_and_names_the_items_that_can_grow_there(tmp_path, capsys):
+    out, doc = _run(tmp_path, HEIGHT_ZONES)
+    assert doc["height"] == {"file": "zones-height.png", "resolution": SIZE // gspro.ZONE_HEIGHT_DOWNSCALE,
+                             "rangeM": gspro.ZONE_HEIGHT_RANGE_M, "items": ["Hazel bush"]}
+    grey = np.asarray(Image.open(tmp_path / "zones-height.png"))
+    assert grey.shape == (SIZE // 2, SIZE // 2) and grey.dtype == np.uint8
+    assert 2.0 - 0.03 <= _metres(grey[SIZE // 2 - 1 - 22, 22]) <= 3.0 + 0.03 and grey[10, 80] == 0
+    hedge = next(z for z in doc["zones"] if z["id"] == "hedge")
+    assert (hedge["heightMin"], hedge["heightMax"]) == (2.0, 3.0)
+    assert all("heightMin" not in z for z in doc["zones"] if z["id"] != "hedge")
+    assert "1 zone(s) on the square set a bush height (2-3 m)" in capsys.readouterr().out
+    # The last height gone: no block, and the stale mask is removed.
+    _set_zone(tmp_path / "app.sqlite", "hedge", attrs={"zoneType": "shrub", "feather": 2.0, "noise": 0.0})
+    gspro.cmd_zones(None, tmp_path / "app.sqlite", "Zonbana", tmp_path / "inner.tif.json", out, extent=EXTENT, resolution=SIZE)
+    assert "height" not in json.loads(out.read_text()) and not (tmp_path / "zones-height.png").exists()
+
+
+def test_a_height_that_is_not_a_range_is_dropped_with_a_warning(tmp_path, capsys):
+    db = tmp_path / "app.sqlite"
+    ring = [_rect(20, 20, 80, 80)]
+    zones = [_zone("shrub", ring, zone_id=i, order=n) for n, i in enumerate(["ok", "half", "upside", "huge"])]
+    _make_db(db, zones)
+    for zone_id, extra in (("ok", {"heightMin": 1, "heightMax": 2.5}), ("half", {"heightMin": 2}),
+                           ("upside", {"heightMin": 3, "heightMax": 2}), ("huge", {"heightMin": 2, "heightMax": 40})):
+        _set_zone(db, zone_id, attrs={"zoneType": "shrub", **extra})
+    _, _, loaded = gspro._load_zones(db, "Zonbana")
+    assert {z.id: z.height for z in loaded} == {"ok": (1.0, 2.5), "half": None, "upside": None, "huge": None}
+    assert capsys.readouterr().out.count("no bush height") == 3
+
+
+def test_a_patch_of_a_changed_height_gives_exactly_the_full_export(tmp_path):
+    out, doc = _run(tmp_path, HEIGHT_ZONES, seed=5)
+    db = tmp_path / "app.sqlite"
+    _set_zone(db, "hedge", attrs={"zoneType": "shrub", "feather": 2.0, "noise": 0.0, "heightMin": 1.0, "heightMax": 1.5},
+              rings=[_rect(31, 25, 83, 77)])
+    record = gspro.cmd_zones_patch(db, "Zonbana", out, ["hedge"])
+    assert "zones-height.png" in record["textures"]
+    fresh = tmp_path / "fresh"
+    fresh.mkdir()
+    gspro.cmd_zones(None, db, "Zonbana", tmp_path / "inner.tif.json", fresh / "zones.json", extent=EXTENT, resolution=SIZE, seed=5)
+    assert np.array_equal(np.asarray(Image.open(out.with_name("zones-height.png"))),
+                          np.asarray(Image.open(fresh / "zones-height.png")))
+    for a, b in zip(_masks(out, doc), _masks(fresh / "zones.json", doc)):
+        assert np.array_equal(a, b)
+    assert json.loads(out.read_text())["zones"] == json.loads((fresh / "zones.json").read_text())["zones"]
+
+
+def test_a_patch_stops_at_the_first_height_on_a_palette(tmp_path, capsys):
+    out, _ = _run(tmp_path, HEIGHT_ZONES)
+    db = tmp_path / "app.sqlite"
+    _set_zone(db, "b", attrs={"zoneType": "meadow", "feather": 0.0, "noise": 0.0, "heightMin": 0.5, "heightMax": 1.0})
+    with pytest.raises(gspro.ZonesLayoutChanged):
+        gspro.cmd_zones_patch(db, "Zonbana", out, ["b"])
+    assert "bush height changed" in capsys.readouterr().err
+
+
+def test_a_slot_that_binds_no_items_is_bare_ground_to_the_blend(monkeypatch):
+    """An itemless zone (an old proposal of a type whose Default mix is empty) lying over a
+    strip beside a blended patch: the patch does not take that zone's weight and grow there."""
+    _no_wander(monkeypatch)
+    zones = [
+        _zone("woodland_floor", [_rect(20, 20, 180, 180)], weight=0.3, generated=True, order=0),
+        _zone("rough_tall", [_rect(40, 40, 100, 160)], variant="dry", edge_blend=20.0, order=1),
+    ]
+    leaky, _ = _render(zones)
+    assert leaky["rough_tall/dry"][SIZE - 1 - 100, 104] > 0.05           # 4 m outside the patch: the old leak
+    channels, _ = _render(zones, planted={"rough_tall/dry"})
+    row = channels["rough_tall/dry"][SIZE - 1 - 100]
+    assert row[101:].max() == 0 and row[80] == pytest.approx(1.0, abs=1e-3)
+    assert channels["woodland_floor"][SIZE - 1 - 100, 120] == pytest.approx(0.3, abs=1e-3)
+
+
+def test_a_window_beside_a_slot_that_only_grows_in_its_halo_renders_like_the_frame():
+    """Update for GSPro on a zone whose window stops short of a neighbouring mix: the blend
+    reads that mix in the halo around the window (KeyError on Vreta, 2026-10-11)."""
+    zones = [_zone("rough_tall", [_rect(20, 40, 100, 160)], variant="dry", edge_blend=20.0, order=0)[0],
+             _zone("rough_tall", [_rect(100, 40, 180, 160)], variant="lush", edge_blend=20.0, order=1)[0]]
+    full, _ = gspro.render_zone_masks(zones, EXTENT, SIZE, seed=2)
+    window = (50, 150, 10, 85)   # 15 m short of the lush zone, inside the blur's reach of it
+    part, _ = gspro.render_zone_masks(zones, EXTENT, SIZE, seed=2, window=window)
+    assert set(part) == {"rough_tall/dry", "rough_tall/lush"}
+    for slot, arr in part.items():
+        assert np.array_equal(arr, full[slot][50:150, 10:85]), slot

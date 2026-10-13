@@ -388,7 +388,7 @@ namespace GolfMap.Editor
         }
 
         // The highest collider under (x, z) that is not a prop: what the player stands on.
-        static float? Ground(float x, float z, Transform ignore)
+        internal static float? Ground(float x, float z, Transform ignore)
         {
             var hits = Physics.RaycastAll(new Ray(new Vector3(x, 5000f, z), Vector3.down), 10000f, ~0, QueryTriggerInteraction.Ignore);
             float? best = null;

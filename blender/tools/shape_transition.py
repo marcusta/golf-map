@@ -27,6 +27,44 @@ def project(point, line):
     return best[1], best[2], math.sqrt(best[0])
 
 
+class LineIndex:
+    """project() for the points within `band` metres of a polyline (None beyond): its segments in a grid of
+    band-sized cells, so a long centreline costs a point only the segments beside it. Same result as project()."""
+    def __init__(self, line, band):
+        self.band = band
+        self.cell = cell = max(band, .5)
+        self.grid = {}
+        self.segments = []
+        station = 0.0
+        for a, b in zip(line, line[1:]):
+            length = math.hypot(b[0]-a[0], b[1]-a[1])
+            if length < 1e-9:
+                continue
+            index = len(self.segments)
+            self.segments.append((a, b, station))
+            station += length
+            for ix in range(math.floor((min(a[0], b[0])-band)/cell), math.floor((max(a[0], b[0])+band)/cell)+1):
+                for iy in range(math.floor((min(a[1], b[1])-band)/cell), math.floor((max(a[1], b[1])+band)/cell)+1):
+                    self.grid.setdefault((ix, iy), []).append(index)
+        if not self.segments:
+            raise ValueError('transition centreline needs two distinct points')
+
+    def project(self, point):
+        best = None
+        for index in self.grid.get((math.floor(point[0]/self.cell), math.floor(point[1]/self.cell)), ()):
+            a, b, station = self.segments[index]
+            dx, dy = b[0]-a[0], b[1]-a[1]
+            length = math.hypot(dx, dy)
+            t = max(0.0, min(1.0, ((point[0]-a[0])*dx+(point[1]-a[1])*dy)/length**2))
+            px, py = point[0]-a[0]-t*dx, point[1]-a[1]-t*dy
+            distance = px*px+py*py
+            if best is None or distance < best[0]:
+                best = (distance, station+t*length, (dx*py-dy*px)/length)
+        if best is None or best[0] > self.band**2:
+            return None
+        return best[1], best[2], math.sqrt(best[0])
+
+
 def weights(along, lateral, spec, width):
     """RGB weights or None outside the longitudinal footprint. Sum is exactly one."""
     a = (along-spec['startM'])*spec.get('direction', 1)
@@ -73,10 +111,25 @@ def weights(along, lateral, spec, width):
     return 1-path-dirt, path, dirt
 
 
-def byte_weights(rgb):
+def wear(along, lateral, spec, width):
+    """Share (0..1) of the path surface that traffic has packed: two wheel tracks, or one trodden band
+    (`tracks` 1), ragged, wandering, coming and going along the path; the shoulders stay loose."""
+    seed = int(spec.get('seed', 0))
+    x = lateral-.1*value_noise(along/7, .3, seed+42)
+    centre = spec.get('trackSpacingM', 1.5)/2 if spec.get('tracks', 2) == 2 else 0.
+    half = spec.get('trackWidthM', .6)/2*(1+.35*value_noise(along/1.3, lateral/.5, seed))
+    ribbon = 1-smoothstep(half*.7, half+spec.get('edgeM', .2), abs(abs(x)-centre))
+    patch = .75+.25*value_noise(along/9, 0., seed+83)
+    shoulder = 1-smoothstep(width/2-.45, width/2-.2, abs(lateral))
+    return max(0., min(1., spec.get('strength', 1.)*ribbon*patch*shoulder))
+
+
+def byte_weights(rgb, worn=0.):
+    """RGB bytes summing to 255, then `worn` of the path's green taken out: what is missing from the sum is
+    MAHS's black, the packed look of the surface (red, the grass Stix grows on, is not touched)."""
     g = max(0, min(255, round(rgb[1]*255)))
     b = max(0, min(255-g, round(rgb[2]*255)))
-    return ((255-g-b)/255, g/255, b/255, 1.0)
+    return ((255-g-b)/255, round(g*(1-worn))/255, b/255, 1.0)
 
 
 def apply(objects, entries, frame, max_edge=.3):
@@ -89,19 +142,32 @@ def apply(objects, entries, frame, max_edge=.3):
     from mathutils import Vector
     from shape_coords import to_blend
     marker = hashlib.sha256(json.dumps([entries,max_edge],sort_keys=True).encode()).hexdigest()
-    curves = [(e, [to_blend(*p, frame) for p in e['centerline3006']]) for e in entries]
+    curves = [(e, LineIndex([to_blend(*p, frame) for p in e['centerline3006']], e['widthM']/2+.25)) for e in entries]
+    memo = {}
     def sample(co):
+        # Position alone decides the paint; a mesh is sampled per corner and per refinement pass.
+        at = (co[0], co[1])
+        if at not in memo:
+            memo[at] = paint_at(at)
+        return memo[at]
+    def paint_at(co):
+        worn = None
         for entry, line in curves:
-            s,l,d = project(co,line)
             # OPCD's outer fringe is narrow; a broad search band would paint an
             # unrelated parallel road in the same merged road shape.
-            if d > entry['widthM']/2+.25:
+            hit = line.project(co)
+            if hit is None:
                 continue
+            s,l,d = hit
+            wears = wear(s,l,entry['wear'],entry['widthM']) if entry.get('wear') else None
             for spec in entry['transitions']:
                 rgb = weights(s,l,spec,entry['widthM'])
                 if rgb is not None:
-                    return rgb
-        return None
+                    return rgb+(wears or 0.,)
+            if worn is None:
+                worn = wears
+        # A worn path outside every transition is all path.
+        return None if worn is None else (0.,1.,0.,worn)
     report = {}
     seam = {}
     from mathutils.kdtree import KDTree
@@ -186,7 +252,7 @@ def apply(objects, entries, frame, max_edge=.3):
                     if rgb is not None:
                         # Keep the fringe's transverse grass ramp; meshes use canonical G path.
                         coverage = base[1] if obj.get('opcd_kind')=='blend' else 1.
-                        value = byte_weights((1-coverage*(rgb[1]+rgb[2]),coverage*rgb[1],coverage*rgb[2]))
+                        value = byte_weights((1-coverage*(rgb[1]+rgb[2]),coverage*rgb[1],coverage*rgb[2]),rgb[3])
                         pos = tuple(world[tri[j]])
                         if obj.get('opcd_kind')=='blend':
                             if seam_tree is not None:

@@ -1,4 +1,4 @@
-// Patching an imported zones export in place (golf-map's "Update in Unity" on
+// Patching an imported zones export in place (golf-map's "Update for GSPro" on
 // selected zones): `gspro.py zones-patch` re-rasterizes the window the zones
 // cover and rewrites only the mask PNGs that changed, and writes a
 // unity-zones-patch-v1 record next to them. This takes those PNGs into the
@@ -69,16 +69,18 @@ namespace GolfMap.Editor
             var problems = ImportedLayoutProblems(package, folder);
             if (problems.Count > 0)
                 throw new BridgeError("The scene does not hold this zones export's import (" + string.Join("; ", problems.Take(3).ToArray())
-                    + (problems.Count > 3 ? "; ..." : "") + "). Plant vegetation (a full import) instead.");
+                    + (problems.Count > 3 ? "; ..." : "") + "). Plant for GSPro (a full import) instead.");
 
             var reimported = new List<object>();
             var textures = patch.textures ?? new List<string>();
             foreach (var file in textures)
             {
                 var mask = loaded.masks.FirstOrDefault(m => string.Equals(m.file, file, StringComparison.OrdinalIgnoreCase));
-                if (mask == null) throw new BridgeError("The patch names " + file + ", which " + patch.zonesFile + " has no mask for.");
-                var source = Path.Combine(Path.GetDirectoryName(loadedPath) ?? "", mask.file);
-                var texture = ImportMaskTexture(source, folder + Path.GetFileName(mask.file), mask.resolution);
+                bool height = mask == null && GolfMapZones.HasHeight(loaded) && string.Equals(loaded.height.file, file, StringComparison.OrdinalIgnoreCase);
+                if (mask == null && !height) throw new BridgeError("The patch names " + file + ", which " + patch.zonesFile + " has no mask for.");
+                var name = height ? loaded.height.file : mask.file;
+                var source = Path.Combine(Path.GetDirectoryName(loadedPath) ?? "", name);
+                var texture = ImportMaskTexture(source, folder + Path.GetFileName(name), height ? loaded.height.resolution : mask.resolution);
                 reimported.Add(AssetDatabase.GetAssetPath(texture));
             }
             long importMs = clock.ElapsedMilliseconds;
@@ -136,6 +138,23 @@ namespace GolfMap.Editor
                 if (!string.Equals(actual, expected, StringComparison.OrdinalIgnoreCase)) problems.Add("'" + entry.item + "' samples " + actual + ", not " + expected);
                 var channel = group.Settings.ControlerPropertyList.FirstOrDefault(p => p.PropertyName == kChannelProperty);
                 if (channel == null || channel.IntValue != entry.channel) problems.Add("'" + entry.item + "' reads another channel");
+            }
+            // The bush-height mask and the twins a full import made for it.
+            var heightGroup = package.TextureMaskGroupList.FirstOrDefault(g => g != null && g.TextureMaskName == GolfMapZones.HeightGroupName);
+            if (!GolfMapZones.HasHeight(loaded))
+            {
+                if (heightGroup != null) problems.Add("a bush-height mask group this export does not have");
+                return problems;
+            }
+            var heightPath = folder + Path.GetFileName(loaded.height.file);
+            if (heightGroup == null || heightGroup.TextureMaskList.Count == 0 || !heightGroup.TextureMaskList[0].MaskTexture
+                || !string.Equals(AssetDatabase.GetAssetPath(heightGroup.TextureMaskList[0].MaskTexture), heightPath, StringComparison.OrdinalIgnoreCase))
+                problems.Add("no bush-height mask group on " + heightPath);
+            foreach (var name in loaded.height.items)
+            {
+                var item = FindItem(package, name);
+                if (IsBush(item) && NaturalHeight(item) > 0.05f && !package.VegetationInfoList.Any(i => i != null && i.Name == GolfMapZones.TwinName(item.Name)))
+                    problems.Add("no height twin for '" + name + "'");
             }
             return problems;
         }
