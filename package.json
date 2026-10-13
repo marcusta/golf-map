@@ -17,6 +17,8 @@
         "ios:deploy": "bash scripts/deploy-ios.sh",
         "trees:regen": "bash scripts/regen-trees.sh",
         "gspro:export": "bun scripts/gspro-export.ts",
+        "gspro:status": "bun scripts/gspro-export.ts status",
+        "gspro:update": "bun scripts/gspro-export.ts update",
         "photo": "bun scripts/cleaned-photo.ts",
         "gspro:bisect": "bun scripts/gspro-bisect.ts",
         "zones": "bun scripts/vegetation-zones.ts",

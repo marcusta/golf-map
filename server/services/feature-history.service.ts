@@ -52,6 +52,29 @@ export interface SnapshotInfo {
     svg: string | null;
 }
 
+/**
+ * How much changed since some moment: how many things, and what kinds of
+ * thing they were (feature types, terrain-edit ops). What the GSPro status
+ * board puts in a row's "changed since".
+ */
+export interface ChangeCount {
+    count: number;
+    /** Distinct kinds, sorted; empty when `count` is 0. */
+    kinds: string[];
+}
+
+/**
+ * An ISO timestamp as the history tables spell one: UTC
+ * `YYYY-MM-DD HH:MM:SS.SSS`, which compares as a plain string against both
+ * `changed_at` (milliseconds) and the `updated_at`/`created_at` SQLite writes
+ * (whole seconds).
+ */
+export function sqlStamp(iso: string): string {
+    const d = new Date(iso);
+    if (Number.isNaN(d.getTime())) throw new Error(`Not a timestamp: ${iso}`);
+    return d.toISOString().replace('T', ' ').slice(0, 23);
+}
+
 const CONTENT = ['type', 'hole_id', 'layer', 'geometry_json', 'attributes_json', 'generated', 'source', 'source_ref', 'license'];
 
 export class FeatureHistoryService {
@@ -87,6 +110,47 @@ export class FeatureHistoryService {
         return { state, unknown };
     }
 
+    /**
+     * How many of the course's features changed since `since` (an ISO
+     * timestamp; null = unknown, which counts as nothing), and of which
+     * types. `types` narrows it to the types one GSPro target cares about
+     * (`shared/gspro-targets.ts`); without it every type counts.
+     *
+     * Two sources, deduplicated by feature id: a row whose `updated_at` moved
+     * (created, edited or restacked since) and the migration-025 history (the
+     * only trace a DELETED feature leaves). `generated = 1` rows are left out
+     * of both — they are pipeline output that the next run replaces wholesale
+     * (vegetation zones are rewritten by the planting itself), not edits a
+     * person made, so counting them would leave every row permanently stale.
+     * History rows without a `type` in their `row_json` are restacks, whose
+     * feature's own `updated_at` moved too, so the first source has them.
+     */
+    async countChangesSince(courseId: string, since: string | null, types?: readonly string[]): Promise<ChangeCount> {
+        if (since === null) return { count: 0, kinds: [] };
+        const at = sqlStamp(since);
+        const typeOf = new Map<string, string>();
+
+        let touched = this.db.selectFrom('course_features').select(['id', 'type'])
+            .where('course_id', '=', courseId).where('generated', '=', 0).where('updated_at', '>', at);
+        if (types) touched = touched.where('type', 'in', [...types]);
+        for (const row of await touched.execute()) typeOf.set(row.id, row.type);
+
+        const history = await this.db.selectFrom('course_feature_history')
+            .select([
+                'feature_id',
+                sql<string | null>`json_extract(row_json, '$.type')`.as('type'),
+                sql<number | null>`json_extract(row_json, '$.generated')`.as('generated'),
+            ])
+            .where('course_id', '=', courseId).where('changed_at', '>', at)
+            .execute();
+        for (const row of history) {
+            if (row.type === null || row.generated) continue;
+            if (types && !types.includes(row.type)) continue;
+            if (!typeOf.has(row.feature_id)) typeOf.set(row.feature_id, row.type);
+        }
+        return { count: typeOf.size, kinds: [...new Set(typeOf.values())].sort() };
+    }
+
     /** Keep a full SVG export: the SVG and the features it was made from, under <dir>/export-history/<local time>/. */
     async snapshot(courseId: string, dir: string, svgPath: string, when = new Date()): Promise<string> {
         const name = localStamp(when);
@@ -117,6 +181,29 @@ export class FeatureHistoryService {
             out.push({ name, dir: path.join(root, name), exportedAt: doc.exportedAt, features: doc.features.length, svg: doc.svg });
         }
         return out;
+    }
+
+    /**
+     * The newest export snapshot in an export folder, or null without one —
+     * when the course's SVG was last exported, without parsing every
+     * snapshot's features (the sync board asks on every poll).
+     */
+    static async latestSnapshot(dir: string): Promise<SnapshotInfo | null> {
+        const root = path.join(dir, SNAPSHOT_DIR);
+        if (!(await exists(root))) return null;
+        // Folder names are local timestamps, so the last one sorted is the newest.
+        for (const name of (await readdir(root)).sort().reverse()) {
+            const file = path.join(root, name, 'features.json');
+            if (!(await exists(file))) continue;
+            try {
+                const doc = JSON.parse(await readFile(file, 'utf-8'));
+                if (doc.format !== SNAPSHOT_FORMAT) continue;
+                return { name, dir: path.join(root, name), exportedAt: doc.exportedAt, features: doc.features.length, svg: doc.svg };
+            } catch {
+                continue;   // half-written or truncated: an older one still counts
+            }
+        }
+        return null;
     }
 
     static async readSnapshot(snapshotDir: string): Promise<FeatureState> {

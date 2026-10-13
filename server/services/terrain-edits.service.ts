@@ -4,6 +4,7 @@ import type { Database, TerrainEditsTable } from '../db/schema';
 import { VersionConflictError } from '@basics/core/server/version-conflict';
 import { ConflictError, NotFoundError } from '@basics/core/server/auth';
 import { wgs84ToSweref99tm } from './geo';
+import { sqlStamp, type ChangeCount } from './feature-history.service';
 import {
     FEATURE_RECIPE_SURFACE, NO_RECIPE, RECIPE_SEED, defaultRecipeLibraryPath, loadRecipeLibrary, type RecipeParam, type RecipeSurface,
 } from './shaping-recipes';
@@ -469,6 +470,53 @@ export class TerrainEditsService {
     /** The site's enabled edits that change the DEM (not `recipe`), in apply order: what every DEM replay takes. */
     async listDemEdits(siteId: string): Promise<TerrainEdit[]> {
         return (await this.listBySite(siteId)).filter(e => e.enabled && isDemEdit(e));
+    }
+
+    /**
+     * How many of the site's terrain edits changed since `since` (an ISO
+     * timestamp; null = unknown, which counts as nothing), and of which ops —
+     * what the GSPro status board puts in the Terrain and Meshes rows'
+     * "changed since". `ops` keeps only those ops, `exceptOps` drops them
+     * (the Terrain row takes every op but `recipe`, the Meshes row only
+     * `recipe`), `origins` only edits a given generator wrote.
+     *
+     * Two sources, deduplicated by edit id: a row whose `updated_at` moved
+     * (created, edited or toggled since — a generated edit is dated at the
+     * epoch in `created_at` to fix its replay slot, so only `updated_at` can
+     * tell a fresh generation) and the migration-025 history, the only trace
+     * a DELETED edit leaves.
+     */
+    async countChangesSince(
+        siteId: string, since: string | null,
+        filter: { ops?: readonly TerrainEditOp[]; exceptOps?: readonly TerrainEditOp[]; origins?: readonly string[] } = {},
+    ): Promise<ChangeCount> {
+        if (since === null) return { count: 0, kinds: [] };
+        const at = sqlStamp(since);
+        const keep = (op: string | null, origin: string | null) => {
+            if (op === null) return false;
+            if (filter.ops && !filter.ops.includes(op as TerrainEditOp)) return false;
+            if (filter.exceptOps?.includes(op as TerrainEditOp)) return false;
+            if (filter.origins && !filter.origins.includes(origin ?? '')) return false;
+            return true;
+        };
+        const opOf = new Map<string, string>();
+        const touched = await this.db.selectFrom('terrain_edits').select(['id', 'op', 'origin'])
+            .where('site_id', '=', siteId).where('updated_at', '>', at).execute();
+        for (const row of touched) if (keep(row.op, row.origin)) opOf.set(row.id, row.op);
+
+        const history = await this.db.selectFrom('terrain_edit_history')
+            .select([
+                'edit_id',
+                sql<string | null>`json_extract(row_json, '$.op')`.as('op'),
+                sql<string | null>`json_extract(row_json, '$.origin')`.as('origin'),
+            ])
+            .where('site_id', '=', siteId).where('changed_at', '>', at)
+            .execute();
+        for (const row of history) {
+            if (!keep(row.op, row.origin) || opOf.has(row.edit_id)) continue;
+            opOf.set(row.edit_id, row.op!);
+        }
+        return { count: opOf.size, kinds: [...new Set(opOf.values())].sort() };
     }
 
     /**

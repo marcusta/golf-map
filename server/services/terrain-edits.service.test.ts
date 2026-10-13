@@ -8,6 +8,7 @@ import { createTerrainEditsApi } from '../api/terrain-edits.api';
 import { createTestDb } from '../testing/db';
 import { seedCourse, TEST_COURSE_ID } from '../db/seeds/course';
 import { SitesService } from './sites.service';
+import { CourseFeaturesService } from './course-features.service';
 import {
     TerrainEditsService, InvalidTerrainEditError, InvalidRecipeEditError, RECIPE_ORIGIN, isDemEdit, parseEditsGeojson, type TerrainEditRing,
 } from './terrain-edits.service';
@@ -530,4 +531,58 @@ test('the API answers a refused recipe edit with 400 (other terrain-edit errors 
     expect((await post('update', { id: edit.id, version: 1, params: { recipe: 'conway', overrides: { depth: 0.8, seed: 4 } } })).status).toBe(200);
     expect((await post('create', { siteId, op: 'recipe', params: { recipe: 'none' }, featureId: bunker.id })).status).toBe(409);
     expect((await post('create', { siteId, op: 'plane', params: {}, rings: [SQUARE] })).status).toBe(500);
+});
+
+// --- Counting changes since a moment (the GSPro status board's "changed since") ---
+
+test('terrain-edit changes since a moment are counted per op, with deletions and the op filters', async () => {
+    const { svc, siteId, db } = await setup();
+    const long_ago = '2000-01-01 00:00:00';
+    const since = '2000-06-01T00:00:00.000Z';
+
+    // The recipe edit hangs off a feature of a course on this site.
+    await db.updateTable('courses').set({ site_id: siteId }).where('id', '=', TEST_COURSE_ID).execute();
+    const bunker = await new CourseFeaturesService(db).create({
+        courseId: TEST_COURSE_ID, holeId: null, type: 'bunker', geometry: { crs: 'EPSG:3006', rings: [{ points: SQUARE }] },
+    });
+    const plane = await svc.create({ siteId, op: 'plane', params: { featherM: 2, flat: true }, rings: [SQUARE] });
+    const smooth = await svc.create({ siteId, op: 'smooth', params: { featherM: 1, radiusM: 5 }, rings: [SQUARE] });
+    const recipe = await svc.create({ siteId, op: 'recipe', featureId: bunker.id, params: { recipe: 'none' } });
+    // Everything so far happened long ago, history included.
+    await db.updateTable('terrain_edits').set({ created_at: long_ago, updated_at: long_ago }).execute();
+    await db.updateTable('terrain_edit_history').set({ changed_at: `${long_ago}.000` }).execute();
+
+    expect(await svc.countChangesSince(siteId, null)).toEqual({ count: 0, kinds: [] });
+    expect(await svc.countChangesSince(siteId, since)).toEqual({ count: 0, kinds: [] });
+
+    // One edit toggled, one deleted, the recipe switched off.
+    await svc.update(plane.id, plane.version, { enabled: false });
+    await svc.remove(smooth.id, smooth.version);
+    await svc.update(recipe.id, recipe.version, { enabled: false });
+
+    expect(await svc.countChangesSince(siteId, since)).toEqual({ count: 3, kinds: ['plane', 'recipe', 'smooth'] });
+    // The Terrain row takes every op but `recipe`; the Meshes row only `recipe`.
+    expect(await svc.countChangesSince(siteId, since, { exceptOps: ['recipe'] })).toEqual({ count: 2, kinds: ['plane', 'smooth'] });
+    expect(await svc.countChangesSince(siteId, since, { ops: ['recipe'] })).toEqual({ count: 1, kinds: ['recipe'] });
+    // Another site's edits never count.
+    expect(await svc.countChangesSince('no-such-site', since)).toEqual({ count: 0, kinds: [] });
+});
+
+test('a fresh generation counts even though its rows are dated at the epoch, and the origin filter narrows it', async () => {
+    const { svc, siteId, db } = await setup();
+    const since = new Date(Date.now() - 3600_000).toISOString();
+
+    await svc.replaceByOrigin(siteId, 'building-pads', [
+        { op: 'plane', params: { featherM: 3, flat: true }, rings: [SQUARE], originRef: 'osm:way/1' },
+        { op: 'plane', params: { featherM: 3, flat: true }, rings: [SQUARE], originRef: 'osm:way/2' },
+    ]);
+    await svc.create({ siteId, op: 'smooth', params: { featherM: 1, radiusM: 4 }, rings: [SQUARE] });
+
+    // Generated rows carry a year-2000 `created_at` to fix their replay slot, so only `updated_at` can see them.
+    const rows = await db.selectFrom('terrain_edits').select(['created_at', 'origin']).where('origin', '=', 'building-pads').execute();
+    expect(rows.every(r => r.created_at.startsWith('2000-'))).toBe(true);
+
+    expect(await svc.countChangesSince(siteId, since)).toEqual({ count: 3, kinds: ['plane', 'smooth'] });
+    expect(await svc.countChangesSince(siteId, since, { origins: ['building-pads'] })).toEqual({ count: 2, kinds: ['plane'] });
+    expect(await svc.countChangesSince(siteId, since, { origins: ['road-grades'] })).toEqual({ count: 0, kinds: [] });
 });

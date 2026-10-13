@@ -15,12 +15,13 @@ import { parseBisect, type SvgBisect } from './svg-bisect';
  * The feature types `gspro.py svg` writes: its TYPE_SURFACE, plus `trees`
  * through the server's `--map trees=pinestraw`. It skips everything else
  * (rules lines, vegetation zones, outside) whatever is excluded, so the list
- * only offers these.
+ * only offers these. Lives in `shared/gspro-targets.ts` — the GSPro status
+ * board's `shapes` target goes stale on an edit to one of them — and is
+ * re-exported here for the panel that already imports it from this module.
  */
-export const SVG_FEATURE_TYPES: readonly string[] = [
-    'green', 'tee', 'fairway', 'bunker', 'semi_rough', 'rough', 'deep_rough',
-    'water', 'water_creek', 'path', 'trees',
-];
+import { SVG_FEATURE_TYPES } from '../../../shared/gspro-targets';
+
+export { SVG_FEATURE_TYPES };
 
 export type SvgStatusFilter = 'all' | 'excluded' | 'included' | 'suspects';
 

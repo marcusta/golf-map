@@ -65,6 +65,7 @@ import { DEFAULT_PIPELINE_DIR } from './pipeline-dir';
 import {
     defaultRecipeLibraryPath, loadRecipeLibrary, recipesFor, type RecipeSurface, type ShapingRecipe,
 } from './shaping-recipes';
+import { JobPhases, secs, type JobPhase, type JobPhaseStatus } from './job-phases';
 
 export const DEFAULT_SHAPING_URL = 'http://127.0.0.1:8766';
 const REPO_DIR = path.resolve(import.meta.dir, '..', '..');
@@ -138,18 +139,10 @@ export type ShapingJobStatus = 'running' | 'succeeded' | 'failed';
 
 /** The job's phases, in order. */
 export type ShapingPhaseId = 'layers' | 'worker' | 'blender' | 'unity' | 'vegetation';
-export type ShapingPhaseStatus = 'pending' | 'running' | 'done' | 'skipped' | 'failed';
+export type ShapingPhaseStatus = JobPhaseStatus;
 
-export interface ShapingPhase {
-    id: ShapingPhaseId;
-    /** "Generating layers", "Starting the shaping worker", "Blender sync", "Unity refresh", "Surface map and grass". */
-    label: string;
-    status: ShapingPhaseStatus;
-    /** What it is doing now, or what it did / why it was skipped or failed. */
-    detail: string | null;
-    /** Seconds so far (running) or taken (done, failed); null while pending or skipped. */
-    seconds: number | null;
-}
+/** "Generating layers", "Starting the shaping worker", "Blender sync", "Unity refresh", "Surface map and grass". */
+export type ShapingPhase = JobPhase<ShapingPhaseId>;
 
 export interface ShapingJob {
     id: string;
@@ -311,26 +304,24 @@ export class ShapingService {
         }
         const rec: JobRecord = {
             job: {
-                id: crypto.randomUUID(), courseId, status: 'running', phase: null, step: 'starting',
-                phases: PHASES.map(([id, label]) => ({ id, label, status: 'pending', detail: null, seconds: null })),
-                dryRun: opts.dryRun === true, startedAt: new Date().toISOString(), finishedAt: null, seconds: 0, result: null, error: null,
+                id: crypto.randomUUID(), courseId, status: 'running',
+                dryRun: opts.dryRun === true, startedAt: new Date().toISOString(), finishedAt: null, result: null, error: null,
             },
+            phases: new JobPhases(SHAPING_PHASES),
             t0: Date.now(),
             t1: null,
-            phaseT0: {},
         };
         this.jobs.set(rec.job.id, rec);
         const done = this.perform(rec, opts).then(
             (result) => {
                 rec.job.status = 'succeeded';
                 rec.job.result = result;
-                rec.job.phase = null;
+                rec.phases.current = null;
             },
             (err) => {
                 rec.job.status = 'failed';
                 rec.job.error = err instanceof Error ? err.message : String(err);
-                const current = rec.job.phases.find(p => p.id === rec.job.phase);
-                if (current?.status === 'running') endPhase(rec, current.id, 'failed', rec.job.error);
+                rec.phases.failCurrent(rec.job.error);
             },
         ).finally(() => {
             rec.t1 = Date.now();
@@ -754,16 +745,16 @@ export function blenderExecutable(): string {
 
 // --- The job's phases ---
 
-/** A job as this process keeps it: the public job plus its clocks. */
+/** A job as this process keeps it: the public job without its phases, plus them and the clocks. */
 interface JobRecord {
-    job: ShapingJob;
+    job: Omit<ShapingJob, 'phase' | 'phases' | 'step' | 'seconds'>;
+    phases: JobPhases<ShapingPhaseId>;
     t0: number;
     t1: number | null;
-    /** When each phase started (ms). */
-    phaseT0: Partial<Record<ShapingPhaseId, number>>;
 }
 
-const PHASES: ReadonlyArray<readonly [ShapingPhaseId, string]> = [
+/** The apply job's phases, in order (also mirrored by the GSPro sync board's `meshes` chain). */
+export const SHAPING_PHASES: ReadonlyArray<readonly [ShapingPhaseId, string]> = [
     ['layers', 'Generating layers'],
     ['worker', 'Starting the shaping worker'],
     ['blender', 'Blender sync'],
@@ -771,55 +762,21 @@ const PHASES: ReadonlyArray<readonly [ShapingPhaseId, string]> = [
     ['vegetation', 'Surface map and grass'],
 ];
 
-const secs = (ms: number) => Math.round(ms / 100) / 10;
-
-function phaseOf(rec: JobRecord, id: ShapingPhaseId): ShapingPhase {
-    return rec.job.phases.find(p => p.id === id)!;
-}
-
-function beginPhase(rec: JobRecord, id: ShapingPhaseId, detail: string): void {
-    const p = phaseOf(rec, id);
-    p.status = 'running';
-    p.detail = detail;
-    rec.phaseT0[id] = Date.now();
-    rec.job.phase = id;
-}
-
+const beginPhase = (rec: JobRecord, id: ShapingPhaseId, detail: string) => rec.phases.begin(id, detail);
 /** The running phase's detail (what it is doing now). */
-function notePhase(rec: JobRecord, detail: string): void {
-    const p = rec.job.phases.find(q => q.id === rec.job.phase);
-    if (p?.status === 'running') p.detail = detail;
-}
-
-function endPhase(rec: JobRecord, id: ShapingPhaseId, status: 'done' | 'failed', detail: string | null): void {
-    const p = phaseOf(rec, id);
-    p.status = status;
-    p.detail = detail;
-    const t0 = rec.phaseT0[id];
-    if (t0 !== undefined) p.seconds = secs(Date.now() - t0);
-}
-
-function skipPhase(rec: JobRecord, id: ShapingPhaseId, why: string): void {
-    const p = phaseOf(rec, id);
-    p.status = 'skipped';
-    p.detail = why;
-}
+const notePhase = (rec: JobRecord, detail: string) => rec.phases.note(detail);
+const endPhase = (rec: JobRecord, id: ShapingPhaseId, status: 'done' | 'failed', detail: string | null) => rec.phases.end(id, status, detail);
+const skipPhase = (rec: JobRecord, id: ShapingPhaseId, why: string) => rec.phases.skip(id, why);
 
 /** The job as the API serves it: a copy, with the running phase's seconds and the one-line step up to now. */
 function snapshot(rec: JobRecord): ShapingJob {
-    const now = Date.now();
-    const phases = rec.job.phases.map(p => {
-        const t0 = rec.phaseT0[p.id];
-        return p.status === 'running' && t0 !== undefined ? { ...p, seconds: secs(now - t0) } : { ...p };
-    });
-    const job = rec.job;
-    const current = phases.find(p => p.id === job.phase);
-    let step: string;
-    if (job.status === 'succeeded') step = 'done';
-    else if (job.status === 'failed') step = `failed${current ? ` (${current.label.toLowerCase()})` : ''}: ${job.error ?? 'unknown error'}`;
-    else if (current) step = `${current.label}${current.detail ? ` — ${current.detail}` : ''} (${current.seconds ?? 0} s)`;
-    else step = 'starting';
-    return { ...job, step, phases, seconds: secs((rec.t1 ?? now) - rec.t0) };
+    return {
+        ...rec.job,
+        phase: rec.phases.current,
+        phases: rec.phases.snapshot(),
+        step: rec.phases.step(rec.job.status, rec.job.error),
+        seconds: secs((rec.t1 ?? Date.now()) - rec.t0),
+    };
 }
 
 /** The refresh report's steps with their seconds. */

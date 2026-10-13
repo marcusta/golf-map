@@ -13,6 +13,7 @@ import {
     terrainTextureFileName, TERRAIN_TEXTURE_DARKEN, meshTextureFileName, TERRAIN_TINT_OPACITY, MESH_TEXTURE_SOFTEN_M, MESH_TEXTURE_SIZE, OUTER_TERRAIN_GRADE, treesExportFileName, OUTER_TREES_DIR, OUTER_TREES_RESOLUTION_M,
     ORTHO_EXPORT_SIZE, ORTHO_EXPORT_QUALITY, DEM_EXPORT_RESOLUTION_M, OUTER_DEM_SOURCE, OUTER_LIDAR_DIR, type ExportRunner,
     buildingsExportFileName, BUILDINGS_SURVEY_SOURCE, OUTER_DEM_EDITED_SOURCE, describeRequest, zonesExportFileName, creeksExportFileName,
+    ZONES_LAYOUT_CHANGED_EXIT,
 } from './gspro-export.service';
 import { TerrainEditsService } from './terrain-edits.service';
 import { innerSquareFrom3006, outerSquareFor, squareArg, terrainManifestField, toSquareBox, OUTER_TERRAIN_SIDE_M } from './terrain-square';
@@ -591,26 +592,30 @@ test('the inner DEM export clips the build DEM to the inner square at 0.5 m, wit
     expect(DEM_EXPORT_RESOLUTION_M).toEqual({ inner: 0.5, outer: 1 });
 });
 
-test('the outer DEM export hands the pipeline the inner sidecar when it is in the folder, for the Unity position', async () => {
+test('the outer DEM export exports the inner heightmap first when the folder has none, for the Unity position', async () => {
     const { calls, runner } = recordingRunner();
     const t = await setup(runner);
     await buildSite(t, ['dem.tif', OUTER_DEM_SOURCE]);
     const dir = await mkdtemp(path.join(os.tmpdir(), 'gspro-out-'));
     await t.svc.setDir(TEST_COURSE_ID, dir);
 
-    // Outer first: no inner sidecar yet, so the report says to export the inner.
+    // Outer first: no inner sidecar yet, so the inner heightmap goes out before it.
     const first = await t.svc.exportDem(TEST_COURSE_ID, 'outer');
-    expect(flag(calls[0].args, '--terrain')).toBe('outer');
-    expect(calls[0].args).not.toContain('--inner-sidecar');
-    expect(first.report.at(-1)).toMatch(/export the inner DEM first/);
+    expect(calls.map(c => flag(c.args, '--terrain'))).toEqual(['inner', 'outer']);
+    expect(first.report[0]).toMatch(/^exported the inner heightmap first, for the outer terrain's Unity position/);
+    // The stand-in pipeline writes no sidecar, so the position still could not be recorded — and that is said.
+    expect(calls[1].args).not.toContain('--inner-sidecar');
+    expect(first.report.at(-1)).toMatch(/Unity position is not recorded/);
 
-    // With the inner's sidecar there (side 2050 m for the georeferenced course), it is passed.
+    // With the inner's sidecar there (side 2050 m for the georeferenced course), it is passed and nothing runs first.
     const innerSidecar = path.join(dir, demSidecarName(demExportFileName('Linkan', 'inner', 2050)));
     expect(path.basename(innerSidecar)).toBe('linkan-inner-dem-2050m.tif.json');
     await writeFile(innerSidecar, '{}');
+    calls.length = 0;
     const second = await t.svc.exportDem(TEST_COURSE_ID, 'outer');
-    expect(flag(calls[1].args, '--inner-sidecar')).toBe(innerSidecar);
-    expect(second.report.join('\n')).not.toMatch(/export the inner DEM first/);
+    expect(calls).toHaveLength(1);
+    expect(flag(calls[0].args, '--inner-sidecar')).toBe(innerSidecar);
+    expect(second.report.join('\n')).not.toMatch(/exported the inner heightmap first/);
 });
 
 test('the outer DEM export replays the site\'s enabled terrain edits onto the outer DEM first', async () => {
@@ -619,6 +624,8 @@ test('the outer DEM export replays the site\'s enabled terrain edits onto the ou
     const srcDir = await buildSite(t, ['dem.tif', OUTER_DEM_SOURCE]);
     const dir = await mkdtemp(path.join(os.tmpdir(), 'gspro-out-'));
     await t.svc.setDir(TEST_COURSE_ID, dir);
+    // The inner heightmap is already in the folder, so only the outer export runs here.
+    await writeFile(path.join(dir, demSidecarName(demExportFileName('Linkan', 'inner', 2050))), '{}');
 
     // No enabled edits: the raw outer DEM is the source, no replay call.
     const edits = new TerrainEditsService(t.db);
@@ -642,19 +649,25 @@ test('the outer DEM export replays the site\'s enabled terrain edits onto the ou
     expect(result.report).toContain('replayed 1 terrain edit(s) onto the outer DEM');
 });
 
-test('the buildings export needs the heightmap sidecar and the survey, then writes unity-buildings over the square', async () => {
+test('the buildings export exports the heightmap itself, needs the survey, then writes unity-buildings over the square', async () => {
     const { calls, runner } = recordingRunner();
     const t = await setup(runner, { georeference: false });
     const srcDir = await buildSite(t, ['dem.tif'], 'orto-l2-2025', BUILT_MANIFEST);
     const dir = await mkdtemp(path.join(os.tmpdir(), 'gspro-out-'));
     await t.svc.setDir(TEST_COURSE_ID, dir);
 
-    await expect(t.svc.exportBuildings(TEST_COURSE_ID, 'inner')).rejects.toThrow(/Export the inner heightmap first/);
-    const sidecar = path.join(dir, demSidecarName(demExportFileName('Linkan', 'inner', 2010)));
-    await writeFile(sidecar, '{}');
+    // The survey is the server's to refuse: it comes from the terrain tool, not from here.
     await expect(t.svc.exportBuildings(TEST_COURSE_ID, 'inner')).rejects.toThrow(/Generate building pads/);
     await writeFile(path.join(srcDir, BUILDINGS_SURVEY_SOURCE), '{}');
 
+    // The heightmap sidecar it needs is not there: it is exported first instead of refused.
+    const first = await t.svc.exportBuildings(TEST_COURSE_ID, 'inner');
+    expect(calls.map(c => c.args[1])).toEqual(['dem', 'buildings']);
+    expect(first.report[0]).toMatch(/^exported the inner heightmap first, for linkan-inner-dem-2010m\.tif\.json/);
+
+    const sidecar = path.join(dir, demSidecarName(demExportFileName('Linkan', 'inner', 2010)));
+    await writeFile(sidecar, '{}');
+    calls.length = 0;
     const result = await t.svc.exportBuildings(TEST_COURSE_ID, 'inner');
     expect(result.path).toBe(path.join(dir, buildingsExportFileName('Linkan', 'inner')));
     expect(path.basename(result.path)).toBe('linkan-inner-buildings.json');
@@ -733,6 +746,10 @@ test('the outer DEM is gridded from Laserdata Skog lidar over the outer square o
     const sourcesDir = await buildSite(t, ['dem.tif']);
     const outer = outerSquareFor(GEOREF_INNER);
     const outerLidar = path.join(sourcesDir, OUTER_LIDAR_DIR);
+    const dir = await mkdtemp(path.join(os.tmpdir(), 'gspro-out-'));
+    await t.svc.setDir(TEST_COURSE_ID, dir);
+    // The inner heightmap is already in the folder, so only the outer export runs here.
+    await writeFile(path.join(dir, demSidecarName(demExportFileName('Linkan', 'inner', 2050))), '{}');
 
     const res = await t.svc.exportDem(TEST_COURSE_ID, 'outer');
 
@@ -817,14 +834,18 @@ test('the inner trees export converts the installed tree-stems asset over the in
     await t.svc.setDir(TEST_COURSE_ID, dir);
     const sidecar = path.join(dir, 'linkan-inner-dem-2050m.tif.json');
 
-    // Heightmap first: the trees file takes its height range from the sidecar.
-    await expect(t.svc.exportTrees(TEST_COURSE_ID, 'inner')).rejects.toThrow(/Export the inner heightmap first/);
-    await writeFile(sidecar, '{}');
-    // …and the trees job must have run.
+    // The trees job must have run — that is not the export's to do.
     await expect(t.svc.exportTrees(TEST_COURSE_ID, 'inner')).rejects.toThrow(/Regenerate trees/);
     const stems = t.assets.resolveTreeStemsPath(SITE_ID);
     await mkdir(path.dirname(stems), { recursive: true });
     await writeFile(stems, '{"trees":[]}');
+
+    // The heightmap sidecar the file takes its height range from is exported first when it is missing.
+    const first = await t.svc.exportTrees(TEST_COURSE_ID, 'inner');
+    expect(calls.map(c => c.args[1])).toEqual(['dem', 'trees']);
+    expect(first.report[0]).toMatch(/^exported the inner heightmap first, for linkan-inner-dem-2050m\.tif\.json/);
+    await writeFile(sidecar, '{}');
+    calls.length = 0;
 
     const res = await t.svc.exportTrees(TEST_COURSE_ID, 'inner');
 
@@ -1076,9 +1097,13 @@ test('the zones export needs the heightmap sidecar, then rasterizes the course z
     const dir = await mkdtemp(path.join(os.tmpdir(), 'gspro-out-'));
     await t.svc.setDir(TEST_COURSE_ID, dir);
 
-    await expect(t.svc.exportZones(TEST_COURSE_ID, 'inner')).rejects.toThrow(/Export the inner heightmap first/);
+    // No heightmap sidecar in the folder: the zones export writes one first instead of refusing.
+    const first = await t.svc.exportZones(TEST_COURSE_ID, 'inner');
+    expect(calls.map(c => c.args[1])).toEqual(['dem', 'zones']);
+    expect(first.report[0]).toMatch(/^exported the inner heightmap first, for linkan-inner-dem-2050m\.tif\.json/);
     const sidecar = path.join(dir, 'linkan-inner-dem-2050m.tif.json');
     await writeFile(sidecar, '{}');
+    calls.length = 0;
 
     const job = await t.svc.start(TEST_COURSE_ID, { kind: 'zones', terrain: 'inner' });
     expect(job.label).toBe('inner vegetation zones');
@@ -1216,9 +1241,10 @@ test('course details are kept with the course, and read back from a .GKD edited 
     expect((await svc.setMeta(TEST_COURSE_ID, null)).meta).toBeNull();
 });
 
-test('the GKD export needs the course folder and the inner heightmap, then writes into the course folder', async () => {
+test('the GKD export needs the course folder, exports the inner heightmap itself, then writes into the course folder', async () => {
     const { calls, runner } = recordingRunner({ stdout: 'Wrote x.GKD\n  18 holes, par 72\n' });
     const t = await setup(runner);
+    await buildSite(t, ['dem.tif']);
     const dir = await mkdtemp(path.join(os.tmpdir(), 'gspro-out-'));
     await t.svc.setDir(TEST_COURSE_ID, dir);
 
@@ -1227,9 +1253,13 @@ test('the GKD export needs the course folder and the inner heightmap, then write
     await mkdir(scene);
     await t.svc.setCourseDir(TEST_COURSE_ID, scene);
 
-    await expect(t.svc.exportGkd(TEST_COURSE_ID)).rejects.toThrow(/Export the inner heightmap first/);
+    // No inner heightmap sidecar in the folder: it is exported first instead of refused.
+    const first = await t.svc.exportGkd(TEST_COURSE_ID);
+    expect(calls.map(c => c.args[1])).toEqual(['dem', 'gkd']);
+    expect(first.report[0]).toMatch(/^exported the inner heightmap first, for linkan-inner-dem-2050m\.tif\.json/);
     const sidecar = path.join(dir, 'linkan-inner-dem-2050m.tif.json');
     await writeFile(sidecar, '{}');
+    calls.length = 0;
 
     const job = await t.svc.start(TEST_COURSE_ID, { kind: 'gkd' });
     expect(job.label).toBe('GreenKeeper course file');
@@ -1266,9 +1296,13 @@ test('the creeks export reads the raw DEM (not the dug one) and the inner sideca
     const dir = await mkdtemp(path.join(os.tmpdir(), 'gspro-out-'));
     await t.svc.setDir(TEST_COURSE_ID, dir);
 
-    await expect(t.svc.exportCreeks(TEST_COURSE_ID)).rejects.toThrow(/Export the inner heightmap first/);
+    // No inner heightmap sidecar in the folder: it is exported first instead of refused.
+    const first = await t.svc.exportCreeks(TEST_COURSE_ID);
+    expect(calls.map(c => c.args[1])).toEqual(['dem', 'creeks']);
+    expect(first.report[0]).toMatch(/^exported the inner heightmap first, for linkan-inner-dem-2050m\.tif\.json/);
     const sidecar = path.join(dir, 'linkan-inner-dem-2050m.tif.json');
     await writeFile(sidecar, '{}');
+    calls.length = 0;
 
     const job = await t.svc.start(TEST_COURSE_ID, { kind: 'creeks' });
     expect(job.label).toBe('creeks (R.A.M. splines)');
@@ -1751,23 +1785,44 @@ test('vegetation-update with nothing changed leaves Unity alone', async () => {
     }
 });
 
-test('vegetation-update refuses before patching: no planting yet, Unity not open, or the item bindings moved', async () => {
+test('vegetation-update plants the whole course when there is nothing to patch, or every terrain\'s bindings moved', async () => {
     const discovery = await mkdtemp(path.join(os.tmpdir(), 'bridges-'));
     const exportDir = await mkdtemp(path.join(os.tmpdir(), 'gspro-out-'));
-    const moved = patchRunner({}, 3);
-    const t = await setup(moved.runner, { unityBridge: defaultUnityBridge(discovery) });
+    // One runner for both halves: the generators and `gspro.py zones` of a planting, and a
+    // `zones-patch` whose channels have moved (ZONES_LAYOUT_CHANGED_EXIT).
+    const veg = vegetationRunner({ 'grass_zones.py': [{ zoneType: 'rough_tall' }] });
+    const moved = patchRunner({}, ZONES_LAYOUT_CHANGED_EXIT);
+    const runner: ExportRunner = (args, cwd, opts) => (args[1] === 'zones-patch' ? moved.runner : veg.runner)(args, cwd, opts);
+    const t = await setup(runner, { unityBridge: defaultUnityBridge(discovery) });
+    await buildSite(t, []);
     await t.svc.setDir(TEST_COURSE_ID, exportDir);
+    await writeFile(path.join(exportDir, 'linkan-inner-dem-2050m.tif.json'), '{}');
+    // The generators that need a surface map from Unity are reported, not run: the tall rough and the zones export are.
+    const planting = ['grass_zones.py', 'gspro.py'];
 
-    await expect(t.svc.updateZones(TEST_COURSE_ID, ['z1'])).rejects.toThrow(/No vegetation zones export in .* yet: Plant for GSPro once first/);
-    await writeFile(path.join(exportDir, 'linkan-inner-zones.json'), '{}');
+    // No zones export to patch: the planting that makes the masks runs instead of a 409, Unity open or not.
+    const planted = await t.svc.updateZones(TEST_COURSE_ID, ['z1']);
+    expect(planted.report[0]).toMatch(/^No vegetation zones export in .* yet, so the whole planting ran instead of a patch$/);
+    expect(veg.runs.map(a => path.basename(a[0]!))).toEqual(planting);
+    expect(moved.runs).toHaveLength(0);
+    expect(existsSync(path.join(exportDir, 'linkan-inner-zones.json'))).toBe(true);
+
+    // With masks there, Unity has to be open: patching them without it would leave the scene behind.
+    veg.runs.length = 0;
     await expect(t.svc.updateZones(TEST_COURSE_ID, ['z1'])).rejects.toThrow(/Open the course's Unity project first: no open Unity editor imports from/);
-    expect(moved.runs).toHaveLength(0);   // masks patched without Unity would leave the scene behind
+    expect(moved.runs).toHaveLength(0);
+    expect(veg.runs).toHaveLength(0);
 
     const { calls, server } = fakeUnity(exportDir, discovery);
     try {
-        await expect(t.svc.updateZones(TEST_COURSE_ID, ['z1'])).rejects.toThrow(
-            "The zone types' item bindings changed since the last planting, so the inner masks' channels may have moved: use Plant for GSPro this time");
-        expect(calls.map(c => c.command)).toEqual(['golfmap.course']);
+        const again = await t.svc.updateZones(TEST_COURSE_ID, ['z1']);
+        expect(moved.runs).toHaveLength(1);
+        expect(again.report[0]).toBe("The zone types' item bindings changed since the last planting, so the inner masks' channels may have moved: "
+            + 'the whole planting ran instead of a patch');
+        expect(veg.runs.map(a => path.basename(a[0]!))).toEqual(planting);
+        // The patch itself never reached Unity; the planting's import did.
+        expect(calls.map(c => c.command)).not.toContain('golfmap.zones.patch');
+        expect(calls.map(c => c.command)).toContain('golfmap.zones.import');
         await expect(t.svc.start(TEST_COURSE_ID, { kind: 'vegetation-update', zoneIds: [] })).rejects.toThrow('A vegetation-update export needs the zones to update');
     } finally {
         server.stop(true);

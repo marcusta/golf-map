@@ -431,3 +431,92 @@ the next 10 m (`SIDE_STEP_M`) so a hand-typed area is never a decimal-metre terr
   `GOLFMAP_RECIPE_LIBRARY`.
 - Recipe edits are not DEM edits: `TerrainEditsService.listDemEdits` (every DEM replay: map build,
   inner staleness check, outer DEM) leaves them out.
+
+### The GSPro status board: `GsproSyncService` (server, builder only)
+
+`GsproSyncService` (`server/services/gspro-sync.service.ts`, API `server/api/gspro-sync.api.ts`,
+CLI `bun run gspro:status` / `bun run gspro:update`). The export panel grew one button per file, and
+knowing which to press, in what order, after an edit was the operator's job (heightmap before the
+trees, SVG before Blender, zones before the Arborist file). The board turns that round: one row per
+**target** — the thing you changed in the editor — with *last updated / what changed since /
+Update*.
+
+**Targets** are `shared/gspro-targets.ts` (shared so the web uses the same ids and words):
+`terrain`, `photo`, `shapes`, `meshes`, `vegetation`, `trees`, `buildings`, `creeks`, `course-file`,
+each with `label`, a one-line `description`, `manual` (the step a human must still do: `shapes` →
+"Build the SVG in Blender (OPCD), then Update meshes"; `buildings` → the Unity planter menu; the
+rest null) and `featureTypes` (the `course_features.type`s whose edits make it stale).
+`SVG_FEATURE_TYPES` lives there too — the pipeline's `TYPE_SURFACE` plus `trees` — and
+`web/src/export/svg-exclusions.ts` re-exports it.
+
+**One verb: Update.** `update(courseId, target | 'stale')` runs the whole chain for a target: both
+terrains, the files on the way, and the push into the open Unity editor that has the course active.
+No matching editor is a **skipped** phase (`Not in Unity: …`), never a failure — the files are
+written either way. `'stale'` runs every target with `stale` true and `blocked` null, in board
+order. The chains:
+
+| Target | Phases |
+|---|---|
+| `terrain` | `apply` (the re-terrain bake, `MapBuildService.reTerrain`, only when `innerDemStale` says the exported heightmap lacks an edit) → `dem` (`exportDem` inner + outer) → `unity` (`pushUnityTerrain` inner + outer — the DEM is not rendered twice) → `dependents` (re-export the trees/buildings/zones/creeks/GKD files **already in the folder**; a course that never exported buildings does not get them now). Terrain › Export To OBJ for Blender and the terrain conform stay manual, and the report says so. |
+| `photo` | `inner` (`exportOrtho` of the newest `.cleaned.tif`, else the newest plain, with the panel's defaults: the surface tint, the forest floor, the roofs filled) → `unity` (`pushUnityOrtho` of that `-meshes.jpg`) → `outer` (`exportOuterOrtho` of the newest collection; the file is written and reported — there is no Unity push for the outer terrain). |
+| `shapes` | `svg` (the full SVG, kept as an export snapshot), then Blender by hand. |
+| `meshes` | `ShapingService.apply(courseId, {})` — layers → worker → Unity refresh → the grass round a changed rock slab — with its job's five phases mirrored into this one's while it runs. |
+| `vegetation` | `plantVegetation` inner, and outer when the outer already has a zones export. |
+| `trees` | `files` (`exportTrees` inner + outer) → `unity` (`golfmap.trees.plant` per terrain). |
+| `buildings` | `files` (`exportBuildings` inner + outer) → `unity` **skipped**: no `[BridgeCommand]` plants buildings, so the report names `GolfMap › Buildings › Plant from assignments`. |
+| `creeks` | `file` (`exportCreeks`) → `unity` (`golfmap.creeks.import`). |
+| `course-file` | `gkd` (`exportGkd`). |
+
+**Jobs queue per course** (FIFO) instead of 409ing: a second Update while one runs comes back
+`status: 'queued'` and shows in `status().queue`; its first phase is `wait` ("Waiting for …"). A sync
+job also waits for a running legacy `GsproExportService` job or `ShapingService` apply of the course
+(`whenIdle` on both) — they touch the same files and the one machine-wide Blender worker. Phases are
+the same bookkeeping as `ShapingJob`, extracted into `server/services/job-phases.ts` (`JobPhases`:
+`add`/`begin`/`note`/`end`/`skip`/`skipPending`/`failCurrent`/`snapshot`/`step`), which
+`ShapingService` now uses too.
+
+**Staleness.** `stale = changedSince.count > 0 || lastRun === null`.
+
+- **`lastRun`** comes from `<export dir>/gspro-sync.json` (`golfmap-gspro-sync-v1`:
+  `{targets: {[id]: {lastRun, seconds, report?}}}`), written per target after each successful update
+  with the **job's start time**, so an edit made while it ran counts as "since"; `seconds` lets the
+  board say "about 40 s" next time. With no entry it falls back to the mtime of what that target
+  writes, so a course exported before the board existed does not read "never": the inner DEM sidecar
+  (`terrain`), the newest inner `-meshes.jpg` (`photo`), the newest `export-history/` snapshot
+  (`FeatureHistoryService.latestSnapshot`, `shapes`), `<layers dir>/00-global.gen.json` (`meshes`),
+  the inner zones / trees / buildings / creeks file, and the `.GKD` in the course's GSPro folder.
+- **`changedSince`** = `{count, kinds}` since `lastRun` (empty when it is null — there is nothing to
+  count from). `FeatureHistoryService.countChangesSince(courseId, since, types?)` and
+  `TerrainEditsService.countChangesSince(siteId, since, {ops?, exceptOps?, origins?})` each take two
+  sources, deduplicated by id: a row whose `updated_at` moved (created, edited, restacked, toggled —
+  and the only way to see a fresh *generated* terrain edit, whose `created_at` is pinned at the epoch
+  to fix its replay slot) and the migration-025 history (the only trace a DELETED row leaves).
+  **`generated = 1` features are not counted** in either source: they are pipeline output the next
+  run replaces wholesale — the planting rewrites its own vegetation zones — so counting them would
+  leave rows permanently stale. Per target, on top of the feature types: `terrain` = terrain edits
+  except `recipe`, plus `unapplied edits` when `GsproExportService.innerDemStale` says so; `meshes` =
+  `recipe` edits; `buildings` = `building-pads` edits; `vegetation` = `course_zone_types.updated_at`;
+  `photo` = the cleaned photo's mtime; `course-file` = holes/tees/greens/pins/aim points/tee sets
+  (`courses.gspro_meta_json` has no time of its own, so a details-only edit does not show).
+- **`blocked`** is why an update cannot run now (and so is left out of a `'stale'` run): "Build the
+  map first", "Set the GSPro course folder first", `No .blend in <folder> …`, `Run "Generate building
+  pads" …`, or the map-area 409's own words. Only the cheap, certain reasons — the chains still throw
+  their own 409s for the rest.
+
+**API** (builder only, `requireAuth()`): `GET /api/gspro-sync/status?courseId` →
+`{unity: {editors, matched, exportDir}, worker, targets, job, queue}`,
+`POST /api/gspro-sync/update {courseId, target}` → the job, `GET /api/gspro-sync/job?jobId`,
+`GET /api/unity/editors?courseId` → the `unity` part alone (the command bar's chip).
+`unityEditorsFor` (`services/unity-bridge.ts`) probes EVERY open editor —
+`{projectName, projectPath, activeCourse, exportFolder, matches, error}` — and `editorForExportDir`
+is the same probe stopping at the first match (30 s cap per editor either way).
+
+**Exports do their own prerequisites** (the same change): `exportTrees`, `exportZones`,
+`exportBuildings`, `exportCreeks` and `exportGkd` export the heightmap whose sidecar they read
+(`ensureDemSidecar`; the inner one for creeks and the GKD) instead of 409ing "Export the … heightmap
+first"; `exportDem('outer')` exports the inner first, for the outer terrain's Unity position, instead
+of leaving a note asking for it; and `updateZones` runs the whole `plantVegetation` (inner, plus
+outer when it has a zones export) when there is no zones export to patch at all, or when every
+terrain's item bindings moved — with a report line saying why the fast path was not taken. The 409s
+that remain are the ones the server cannot do anything about: no DEM at all, no map area, no building
+survey, no tree stems, no GSPro course folder.

@@ -35,6 +35,7 @@ import { TapscoreBridgeService } from './tapscore-bridge.service';
 import { HttpTapscoreClient } from './tapscore-client';
 import { PhotosService } from './photos.service';
 import { ShapingService } from './shaping.service';
+import { GsproSyncService } from './gspro-sync.service';
 
 export interface ServicesConfig {
     /** Root directory for course assets/tiles on disk. Defaults to DATA_DIR env var, then './data'. */
@@ -90,6 +91,11 @@ export function createServices(db: Kysely<Database>, config: ServicesConfig = {}
     const gsproExportService = new GsproExportService({ db, courses: coursesService, assets: assetsService, dataDir, terrainEdits: terrainEditsService });
     // Blender shaping (recipe library, apply job → shaping worker → Unity refresh); builder-only API.
     const shapingService = new ShapingService({ courses: coursesService, exportSettings: gsproExportService, dataDir });
+    // The GSPro status board: per-target staleness, and the Update job that runs a target's whole chain.
+    const gsproSyncService = new GsproSyncService({
+        db, courses: coursesService, exports: gsproExportService, shaping: shapingService,
+        mapBuild: mapBuildService, terrainEdits: terrainEditsService, dataDir,
+    });
     const terrainGeneratorsService = new TerrainGeneratorsService({
         courses: coursesService, assets: assetsService, terrainEdits: terrainEditsService,
         courseFeatures: courseFeaturesService, dataDir,
@@ -132,6 +138,7 @@ export function createServices(db: Kysely<Database>, config: ServicesConfig = {}
         terrainGeneratorsService,
         gsproExportService,
         shapingService,
+        gsproSyncService,
         publishService,
         tapscoreBridgeService,
         ingestService,

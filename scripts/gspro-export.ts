@@ -1,10 +1,24 @@
 // GSPro/OPCD exports from the command line: the same GsproExportService the
-// web Export panel drives, so the files, names and folders are identical, but
+// web Export panel drives, and the same GsproSyncService the web's GSPro
+// status board drives, so the files, names and folders are identical, but
 // runnable by an agent or a script without the server or a login.
 //
 //   bun run gspro:export -- courses
-//   bun run gspro:export -- status <course>
+//   bun run gspro:status -- <course>                  (= `status <course>`)
+//   bun run gspro:update -- <course> <target|stale>   (= `update <course> …`)
 //   bun run gspro:export -- <course> <export>... [options]
+//
+// `status` prints the course's folders, terrains, ortho sources and files,
+// then the STATUS BOARD: one row per target (Terrain, Photo, Course shapes,
+// Meshes, Vegetation, Trees, Buildings, Creeks, Course file) with when it was
+// last updated, what has changed since, whether it is stale, why it cannot run
+// and the manual step that follows it — plus the open Unity editors and the
+// Blender shaping worker.
+//
+// `update <course> <target>` runs that target's WHOLE chain (both terrains,
+// the files on the way, the push into the open Unity editor when one has the
+// course active), printing each phase as it goes; `update <course> stale` does
+// that for every stale, unblocked target in board order. Exit 1 on failure.
 //
 // <course> is a course id or a unique name substring ("vreta"). Each <export>
 // is `kind` or `kind:terrain`:
@@ -45,8 +59,13 @@ import { CoursesService } from '../server/services/courses.service';
 import { AssetsService } from '../server/services/assets.service';
 import { TerrainEditsService } from '../server/services/terrain-edits.service';
 import {
-    GsproExportService, type GsproExportKind, type GsproExportRequest, type TerrainKind,
+    GsproExportService, venvPython, type GsproExportKind, type GsproExportRequest, type TerrainKind,
 } from '../server/services/gspro-export.service';
+import { ShapingService } from '../server/services/shaping.service';
+import { MapBuildService } from '../server/services/map-build.service';
+import { GsproSyncService, type GsproSyncJob, type GsproTargetStatus } from '../server/services/gspro-sync.service';
+import { GSPRO_TARGET_IDS, isGsproTargetId, gsproTarget, type GsproTargetId } from '../shared/gspro-targets';
+import type { JobPhase } from '../server/services/job-phases';
 
 const ROOT = path.resolve(import.meta.dir, '..');
 const KINDS: GsproExportKind[] = ['svg', 'ortho', 'outer-ortho', 'dem', 'unity-terrain', 'unity-sculpt', 'unity-ortho', 'hillshade', 'trees', 'buildings', 'zones', 'creeks', 'gkd', 'arborist'];
@@ -56,11 +75,13 @@ function usage(message?: string): never {
     if (message) console.error(`error: ${message}\n`);
     console.error([
         'usage: bun run gspro:export -- courses',
-        '       bun run gspro:export -- status <course>',
+        '       bun run gspro:status -- <course>',
+        '       bun run gspro:update -- <course> <target|stale>',
         '       bun run gspro:export -- <course> <kind[:inner|:outer]>... [--dir <folder>] [--course-dir <folder>] [--source <file>] [--collection <id>]',
         '                                 [--darken <x>] [--tint] [--tint-opacity <x>] [--forest-floor] [--floor-color <#hex>]',
         '                                 [--floor-mix <x>] [--remove-buildings] [--arborist-out <folder>]',
         `kinds: ${KINDS.join(', ')}`,
+        `targets: ${GSPRO_TARGET_IDS.join(', ')}, stale`,
     ].join('\n'));
     process.exit(2);
 }
@@ -93,17 +114,25 @@ function num(flags: Record<string, string | true>, name: string): number | undef
 
 const dataDir = process.env.DATA_DIR ?? path.join(ROOT, 'data');
 const dbPath = process.env.DB_PATH ?? path.join(dataDir, 'app.sqlite');
+const pipelineDir = process.env.MAP_PIPELINE_DIR ?? path.join(ROOT, 'pipeline');
 const arboristOut = process.argv.indexOf('--arborist-out');
 if (!existsSync(dbPath)) usage(`no database at ${dbPath}`);
 const db = createDb<Database>(dbPath);
 const courses = new CoursesService(db);
 const assets = new AssetsService(db, dataDir);
+const terrainEdits = new TerrainEditsService(db);
 const exporter = new GsproExportService({
-    db, courses, assets, dataDir,
-    terrainEdits: new TerrainEditsService(db),
-    pipelineDir: process.env.MAP_PIPELINE_DIR ?? path.join(ROOT, 'pipeline'),
+    db, courses, assets, dataDir, terrainEdits, pipelineDir,
     arboristOutDir: arboristOut === -1 ? undefined : path.resolve(process.argv[arboristOut + 1] ?? usage('--arborist-out needs a folder')),
 });
+/** The status board's own service graph: the shaping worker for `meshes`, the map build for the terrain bake. */
+const shaping = new ShapingService({ courses, exportSettings: exporter, dataDir, pipelineDir, dbPath });
+const mapBuild = new MapBuildService({
+    db, assets, dataDir, pipelineDir, terrainEdits,
+    // MapBuildService's own default is the POSIX venv path; this box is Windows.
+    python: process.env.MAP_PIPELINE_PYTHON ?? venvPython(pipelineDir),
+});
+const sync = new GsproSyncService({ db, courses, exports: exporter, shaping, mapBuild, dataDir, terrainEdits });
 
 async function resolveCourse(ident: string): Promise<{ id: string; name: string }> {
     const rows = await db.selectFrom('courses').select(['id', 'name']).execute();
@@ -157,6 +186,102 @@ async function cmdStatus(ident: string) {
     console.log(`vegetation zones drawn: ${zones?.n ?? 0}`);
     console.log('files in the export folder:');
     for (const line of listDir(settings.dir)) console.log(line);
+    await printBoard(course.id);
+}
+
+// --- The status board (GsproSyncService) ---
+
+/** `2026-10-14T09:12:33.000Z` -> `2026-10-14 09:12` in local time; `never` for null. */
+function when(iso: string | null): string {
+    if (!iso) return 'never';
+    const d = new Date(iso);
+    const p = (n: number) => String(n).padStart(2, '0');
+    return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())} ${p(d.getHours())}:${p(d.getMinutes())}`;
+}
+
+function changedText(row: GsproTargetStatus): string {
+    if (row.lastRun === null) return '-';
+    if (row.changedSince.count === 0) return 'nothing';
+    return `${row.changedSince.count} (${row.changedSince.kinds.join(', ')})`;
+}
+
+const pad = (text: string, width: number) => text.padEnd(width);
+
+async function printBoard(courseId: string) {
+    const status = await sync.status(courseId);
+    console.log('\nGSPro status board:');
+    console.log(`  ${pad('target', 12)}${pad('last updated', 18)}${pad('changed since', 40)}state`);
+    for (const row of status.targets) {
+        const state = row.blocked ? `blocked: ${row.blocked}` : row.stale ? 'STALE' : 'up to date';
+        console.log(`  ${pad(row.id, 12)}${pad(when(row.lastRun), 18)}${pad(changedText(row), 40)}${state}`
+            + (row.seconds !== null ? `  (last took ${row.seconds} s)` : ''));
+        if (row.manual) console.log(`  ${pad('', 12)}then by hand: ${row.manual}`);
+    }
+    const stale = status.targets.filter(r => r.stale && r.blocked === null).map(r => r.id);
+    console.log(`  stale and runnable: ${stale.length ? stale.join(', ') : 'none'}`);
+
+    console.log('\nUnity editors:');
+    if (status.unity.editors.length === 0) console.log('  (none open)');
+    for (const e of status.unity.editors) {
+        console.log(`  ${e.matches ? 'THIS COURSE' : '           '}  ${e.projectName}  ${e.error ?? `course ${e.activeCourse ?? '?'} -> ${e.exportFolder}`}`);
+    }
+    console.log(`shaping worker: ${status.worker.reachable ? `${status.worker.state ?? 'up'} (${status.worker.url})` : `not running (${status.worker.error ?? status.worker.url})`}`);
+    if (status.job) console.log(`last update job: ${status.job.request} - ${status.job.status} - ${status.job.step}`);
+    for (const q of status.queue) console.log(`queued: ${q.target} (job ${q.id})`);
+}
+
+// --- Update (one target's whole chain, or every stale one) ---
+
+const MARK: Record<JobPhase['status'], string> = {
+    done: 'ok     ', skipped: 'skipped', failed: 'FAILED ', running: '...    ', pending: '       ',
+};
+
+const phaseLine = (p: JobPhase) =>
+    `${MARK[p.status]} ${p.label}${p.detail ? ` - ${p.detail}` : ''}${p.seconds !== null ? ` (${p.seconds} s)` : ''}`;
+
+/** Poll the job to its end, printing each phase once as it finishes (and the one now running when it changes). */
+async function follow(jobId: string): Promise<GsproSyncJob> {
+    const printed = new Set<string>();
+    let running = '';
+    for (;;) {
+        const job = sync.job(jobId);
+        for (const p of job.phases) {
+            if (p.status === 'running' && p.id !== running) {
+                running = p.id;
+                console.log(`${MARK.running} ${p.label}`);
+            }
+            if ((p.status === 'done' || p.status === 'skipped' || p.status === 'failed') && !printed.has(p.id)) {
+                printed.add(p.id);
+                console.log(phaseLine(p));
+            }
+        }
+        if (job.status !== 'running' && job.status !== 'queued') return job;
+        await Bun.sleep(500);
+    }
+}
+
+async function cmdUpdate(ident: string, target: string) {
+    const course = await resolveCourse(ident);
+    if (target !== 'stale' && !isGsproTargetId(target)) {
+        usage(`unknown target '${target}' (have: ${GSPRO_TARGET_IDS.join(', ')}, stale)`);
+    }
+    const request = target as GsproTargetId | 'stale';
+    const started = await sync.update(course.id, request);
+    const what = started.targets.length === 0
+        ? 'nothing to do'
+        : started.targets.map(t => gsproTarget(t).label).join(', ');
+    console.log(`${course.name} (${course.id}) -> ${what}`);
+    const job = await follow(started.id);
+    for (const result of job.results) {
+        console.log(`\n${result.label} (${result.seconds} s)${result.error ? ' FAILED' : ''}:`);
+        for (const line of result.report) console.log(`  ${line}`);
+        if (result.error) console.log(`  error: ${result.error}`);
+    }
+    console.log(`\n${job.status === 'succeeded' ? 'done' : 'FAILED'} in ${job.seconds} s`);
+    if (job.status !== 'succeeded') {
+        console.error(`error: ${job.error ?? 'unknown error'}`);
+        process.exit(1);
+    }
 }
 
 function requestsFor(spec: string, flags: Record<string, string | true>, activeSource: () => Promise<string>): Promise<GsproExportRequest[]> {
@@ -228,6 +353,9 @@ try {
     if (!first) usage();
     else if (first === 'courses') await cmdCourses();
     else if (first === 'status') await cmdStatus(rest[0] ?? usage('status needs a course'));
+    else if (first === 'update') {
+        await cmdUpdate(rest[0] ?? usage('update needs a course'), rest[1] ?? usage(`update needs a target (${GSPRO_TARGET_IDS.join(', ')}, stale)`));
+    }
     else if (rest.length === 0) usage('name at least one export');
     else await cmdExport(first, rest, flags);
 } catch (e) {

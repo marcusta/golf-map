@@ -148,3 +148,62 @@ test('terrain edits keep their earlier versions too', async () => {
 
     expect(rows.map(r => [r.op, JSON.parse(r.row_json).params_json])).toEqual([['update', '{}'], ['delete', '{"featherM":2}']]);
 });
+
+// --- Counting changes since a moment (the GSPro status board's "changed since") ---
+
+test('changes since a moment are counted per feature type, deletions included', async () => {
+    const t = await editedCourse();
+    // editedCourse made everything long ago, then (now) reshaped the fairway,
+    // deleted the bunker and drew a second fairway.
+    const since = '2000-06-01T00:00:00.000Z';
+
+    // With no last run there is nothing to count from.
+    expect(await t.history.countChangesSince(TEST_COURSE_ID, null)).toEqual({ count: 0, kinds: [] });
+    // Narrowed to the types one target cares about.
+    expect(await t.history.countChangesSince(TEST_COURSE_ID, since, ['fairway'])).toEqual({ count: 2, kinds: ['fairway'] });
+    // The deleted bunker is only in the history, and it still counts.
+    expect(await t.history.countChangesSince(TEST_COURSE_ID, since, ['bunker'])).toEqual({ count: 1, kinds: ['bunker'] });
+    expect(await t.history.countChangesSince(TEST_COURSE_ID, since, ['water'])).toEqual({ count: 0, kinds: [] });
+    const all = await t.history.countChangesSince(TEST_COURSE_ID, since);
+    expect(all.kinds).toContain('bunker');
+    expect(all.kinds).toContain('fairway');
+    expect(all.count).toBeGreaterThanOrEqual(3);
+
+    // Nothing has changed since this instant.
+    expect(await t.history.countChangesSince(TEST_COURSE_ID, new Date(Date.now() + 1000).toISOString()))
+        .toEqual({ count: 0, kinds: [] });
+});
+
+test('generated features are not counted: the next pipeline run replaces them wholesale', async () => {
+    const t = await editedCourse();
+    const since = '2000-06-01T00:00:00.000Z';
+    const before = await t.history.countChangesSince(TEST_COURSE_ID, since, ['trees']);
+    expect(before).toEqual({ count: 0, kinds: [] });
+
+    await t.features.replaceGenerated(TEST_COURSE_ID, 'canopy', {
+        type: 'FeatureCollection',
+        crs: { type: 'name', properties: { name: 'urn:ogc:def:crs:EPSG::3006' } },
+        features: [{
+            type: 'Feature',
+            properties: { type: 'trees', source: 'canopy' },
+            geometry: { type: 'Polygon', coordinates: [[[0, 0], [10, 0], [10, 10], [0, 0]]] },
+        }],
+    });
+
+    expect(await t.db.selectFrom('course_features').select('id').where('generated', '=', 1).execute()).toHaveLength(1);
+    expect(await t.history.countChangesSince(TEST_COURSE_ID, since, ['trees'])).toEqual({ count: 0, kinds: [] });
+});
+
+test('the newest export snapshot is found without parsing every one of them', async () => {
+    const t = await editedCourse();
+    const dir = await mkdtemp(path.join(os.tmpdir(), 'gspro-snap-'));
+    expect(await FeatureHistoryService.latestSnapshot(dir)).toBeNull();
+
+    await writeFile(path.join(dir, 'linkan.svg'), '<svg/>');
+    await t.history.snapshot(TEST_COURSE_ID, dir, path.join(dir, 'linkan.svg'), new Date('2026-09-26T18:32:04'));
+    await t.history.snapshot(TEST_COURSE_ID, dir, path.join(dir, 'linkan.svg'), new Date('2026-09-27T09:00:00'));
+
+    const latest = (await FeatureHistoryService.latestSnapshot(dir))!;
+    expect(latest.name).toBe('2026-09-27_09-00-00');
+    expect(latest.exportedAt).toBe(new Date('2026-09-27T09:00:00').toISOString());
+});

@@ -1,0 +1,1076 @@
+// The GSPro status board (builder only): one row per TARGET — the thing you
+// changed in the editor — with "last updated / what changed since / Update".
+//
+// The export panel grew one button per file (`GsproExportService`), and
+// knowing which of them to press, in what order, after an edit was the
+// operator's job: the heightmap before the trees, the SVG before Blender, the
+// zones before the Arborist file. The board turns that round. The targets are
+// `shared/gspro-targets.ts` (shared so the web uses the same ids and words),
+// and each has ONE verb:
+//
+//   - `status(courseId)`  per target: when it was last updated, what has
+//                         changed since, whether it is stale, the manual step
+//                         that follows it and why it cannot run now; plus the
+//                         open Unity editors, the shaping worker, the running
+//                         or last job and the queue.
+//   - `update(courseId, target | 'stale')`
+//                         a JOB with phases (like `ShapingJob`, same
+//                         `job-phases.ts` bookkeeping) that runs the WHOLE
+//                         chain for the target — both terrains, every file on
+//                         the way, and the push into the open Unity editor.
+//                         No editor is a SKIPPED phase ("Not in Unity: …"),
+//                         never a failure: the files are written either way.
+//                         `'stale'` runs every stale, unblocked target in
+//                         board order.
+//
+// Jobs QUEUE per course (FIFO) instead of 409ing: a second Update while one
+// runs comes back `queued`, and the board shows it in `queue`. A sync job also
+// waits for a legacy `GsproExportService` job or a `ShapingService` apply of
+// the course — they touch the same files and the same one Blender worker.
+//
+// "Last updated" comes from `<export dir>/gspro-sync.json`
+// (`golfmap-gspro-sync-v1`), written after each successful target, and falls
+// back to the mtime of the file that target writes, so a course that was
+// exported before the board existed does not read "never". "Changed since" is
+// counted from the migration-025 edit history
+// (`FeatureHistoryService.countChangesSince`,
+// `TerrainEditsService.countChangesSince`) plus the cleaned photo's mtime and
+// the course's own tables.
+//
+// Everything it drives lives elsewhere: `GsproExportService` (the files and
+// the Unity pushes), `ShapingService` (the Blender meshes), `MapBuildService`
+// (`reTerrain` — the terrain tool's "Apply to terrain"). This service only
+// decides what is stale, in what order, and reports it.
+
+import * as path from 'node:path';
+import { readdir, readFile, writeFile } from 'node:fs/promises';
+import type { Kysely } from 'kysely';
+import { ConflictError, NotFoundError } from '@basics/core/server/auth';
+import type { Database } from '../db/schema';
+import {
+    GSPRO_TARGETS, GSPRO_TARGET_IDS, gsproTarget, type GsproTargetId,
+} from '../../shared/gspro-targets';
+import type { CoursesService } from './courses.service';
+import type { MapBuildService } from './map-build.service';
+import {
+    buildingsExportFileName, courseSlug, creeksExportFileName, demExportFileName, demSidecarName, ensureDir,
+    meshTextureFileName, statOrNull, treesExportFileName, zonesExportFileName,
+    type GsproExportService, type GsproOrthoSource, type TerrainKind,
+} from './gspro-export.service';
+import { BUILDINGS_SURVEY } from './terrain-generators.service';
+import { FeatureHistoryService, sqlStamp, type ChangeCount } from './feature-history.service';
+import { TerrainEditsService } from './terrain-edits.service';
+import { SHAPING_PHASES, type ShapingJob, type ShapingWorkerStatus, type ShapingService } from './shaping.service';
+import { JobPhases, secs, type JobPhase } from './job-phases';
+import { defaultUnityBridge, editorForExportDir, unityEditorsFor, type UnityBridge, type UnityEditor, type UnityEditorInfo } from './unity-bridge';
+import type { CourseTerrain } from './terrain-square';
+
+// --- The record in the export folder ---
+
+/** Where the per-target "last updated" is kept, next to the files themselves. */
+export const SYNC_RECORD_FILE = 'gspro-sync.json';
+export const SYNC_RECORD_FORMAT = 'golfmap-gspro-sync-v1';
+
+export interface GsproSyncRecordEntry {
+    /** ISO; the START of the job that updated the target, so an edit made while it ran counts as "since". */
+    lastRun: string;
+    /** How long that update took, so the board can say "about 40 s" next time. */
+    seconds: number;
+    report?: string[];
+}
+
+export interface GsproSyncRecord {
+    format: string;
+    targets: Partial<Record<GsproTargetId, GsproSyncRecordEntry>>;
+}
+
+// --- Public types ---
+
+export interface GsproTargetStatus {
+    id: GsproTargetId;
+    label: string;
+    /** ISO of the last update, from the record or the written file's mtime; null = never. */
+    lastRun: string | null;
+    /** How long the last recorded update took (seconds), null without a record entry. */
+    seconds: number | null;
+    /** Edits since `lastRun`; `{ count: 0, kinds: [] }` when `lastRun` is null (nothing to count from). */
+    changedSince: ChangeCount;
+    /** `changedSince.count > 0 || lastRun === null`. */
+    stale: boolean;
+    /** The step a human must do after an update of this target, else null. */
+    manual: string | null;
+    /** Why an update cannot run now (and so is left out of a `'stale'` run), else null. */
+    blocked: string | null;
+}
+
+export interface GsproSyncUnity {
+    editors: UnityEditorInfo[];
+    /** `projectName` of the editor whose active course exports to this course's folder; null with none. */
+    matched: string | null;
+    /** The folder an editor has to import from to match. */
+    exportDir: string;
+}
+
+export type GsproSyncJobStatus = 'queued' | 'running' | 'succeeded' | 'failed';
+
+/** One target an update finished (successfully or not). */
+export interface GsproSyncTargetResult {
+    target: GsproTargetId;
+    label: string;
+    seconds: number;
+    report: string[];
+    /** Null when it went through. */
+    error: string | null;
+}
+
+export interface GsproSyncJob {
+    id: string;
+    courseId: string;
+    /** What was asked for — a target id, or `stale`. */
+    request: GsproTargetId | 'stale';
+    /** The targets this job updates, in chain order (empty for a `'stale'` run with nothing stale). */
+    targets: GsproTargetId[];
+    status: GsproSyncJobStatus;
+    /** The running phase's id (the failed one once it failed); null before the first and once done. */
+    phase: string | null;
+    /** One line: what it is doing now, or did last. */
+    step: string;
+    phases: JobPhase[];
+    /** ISO; `startedAt` is null while the job waits in the queue. */
+    queuedAt: string;
+    startedAt: string | null;
+    finishedAt: string | null;
+    seconds: number;
+    results: GsproSyncTargetResult[];
+    error: string | null;
+}
+
+export interface GsproSyncStatus {
+    unity: GsproSyncUnity;
+    /** The Blender shaping worker (the `meshes` target runs through it). */
+    worker: ShapingWorkerStatus;
+    /** One per target, in board order. */
+    targets: GsproTargetStatus[];
+    /** The running job, else the first queued one, else the last finished one. */
+    job: GsproSyncJob | null;
+    /** The jobs waiting their turn, in FIFO order. */
+    queue: Array<{ id: string; target: GsproTargetId | 'stale' }>;
+}
+
+export interface GsproSyncDeps {
+    db: Kysely<Database>;
+    courses: Pick<CoursesService, 'get'>;
+    /** Every file and every Unity push the chains run. */
+    exports: GsproExportService;
+    /** The `meshes` chain: `apply` already does layers → worker → Unity refresh. */
+    shaping: Pick<ShapingService, 'apply' | 'job' | 'status' | 'layersDir' | 'whenIdle' | 'current'>;
+    /** The `terrain` chain's bake: the terrain tool's "Apply to terrain". */
+    mapBuild: Pick<MapBuildService, 'reTerrain' | 'waitForJob' | 'get'>;
+    /** Root of `sources/<siteId>/` — where the cleaned photo lives. */
+    dataDir: string;
+    history?: FeatureHistoryService;
+    terrainEdits?: TerrainEditsService;
+    unityBridge?: UnityBridge;
+    /** How often a mirrored shaping job is polled (ms; default 500). */
+    pollMs?: number;
+}
+
+/** `gspro.py shaping-global`'s first layer file — the `meshes` target's "last updated" fallback. */
+const GLOBAL_LAYER_FILE = '00-global.gen.json';
+
+/** The generator whose terrain edits are building pads (`TerrainGeneratorKind`). */
+const BUILDING_PADS_ORIGIN = 'building-pads';
+
+/** The order a `'stale'` run takes the targets in — the board's own order. */
+const STALE_ORDER: readonly GsproTargetId[] = GSPRO_TARGET_IDS;
+
+// --- Service ---
+
+export class GsproSyncService {
+    private readonly db: Kysely<Database>;
+    private readonly courses: Pick<CoursesService, 'get'>;
+    private readonly exports: GsproExportService;
+    private readonly shaping: GsproSyncDeps['shaping'];
+    private readonly mapBuild: GsproSyncDeps['mapBuild'];
+    private readonly dataDir: string;
+    private readonly history: FeatureHistoryService;
+    private readonly terrainEdits: TerrainEditsService;
+    private readonly unityBridge: UnityBridge;
+    private readonly pollMs: number;
+    /** Every job this process started, by id. */
+    private readonly jobs = new Map<string, JobRecord>();
+    /** Per course: the tail of the FIFO chain, so the next `update` starts after it. */
+    private readonly chain = new Map<string, Promise<void>>();
+
+    constructor(deps: GsproSyncDeps) {
+        this.db = deps.db;
+        this.courses = deps.courses;
+        this.exports = deps.exports;
+        this.shaping = deps.shaping;
+        this.mapBuild = deps.mapBuild;
+        this.dataDir = deps.dataDir;
+        this.history = deps.history ?? new FeatureHistoryService(deps.db);
+        this.terrainEdits = deps.terrainEdits ?? new TerrainEditsService(deps.db);
+        this.unityBridge = deps.unityBridge ?? defaultUnityBridge();
+        this.pollMs = deps.pollMs ?? 500;
+    }
+
+    // --- Status ---
+
+    /** The whole board: Unity, the shaping worker, every target, the job and the queue. */
+    async status(courseId: string): Promise<GsproSyncStatus> {
+        const ctx = await this.context(courseId);
+        const [unity, worker, targets] = await Promise.all([
+            this.unityStatus(ctx.dir),
+            this.shaping.status(courseId).then(s => s.worker),
+            this.targetStatuses(ctx),
+        ]);
+        return { unity, worker, targets, job: this.current(courseId), queue: this.queue(courseId) };
+    }
+
+    /** The Unity part of `status` alone — what the command bar's chip polls. */
+    async unity(courseId: string): Promise<GsproSyncUnity> {
+        const { dir } = await this.exports.settings(courseId);
+        return this.unityStatus(dir);
+    }
+
+    private async unityStatus(dir: string): Promise<GsproSyncUnity> {
+        const editors = await unityEditorsFor(this.unityBridge, dir);
+        return { editors, matched: editors.find(e => e.matches)?.projectName ?? null, exportDir: dir };
+    }
+
+    private async targetStatuses(ctx: SyncContext): Promise<GsproTargetStatus[]> {
+        const out: GsproTargetStatus[] = [];
+        for (const target of GSPRO_TARGETS) {
+            const entry = ctx.record.targets[target.id];
+            const lastRun = entry?.lastRun ?? await this.fallbackLastRun(ctx, target.id);
+            const changedSince = await this.changedSince(ctx, target.id, lastRun);
+            out.push({
+                id: target.id,
+                label: target.label,
+                lastRun,
+                seconds: entry?.seconds ?? null,
+                changedSince,
+                stale: changedSince.count > 0 || lastRun === null,
+                manual: target.manual,
+                blocked: await this.blocked(ctx, target.id),
+            });
+        }
+        return out;
+    }
+
+    /**
+     * When a target was last updated according to the files it writes — so a
+     * course exported before this service existed does not read "never".
+     * Only used where the record has no entry.
+     */
+    private async fallbackLastRun(ctx: SyncContext, target: GsproTargetId): Promise<string | null> {
+        switch (target) {
+            case 'terrain':
+                return ctx.terrain ? mtimeIso(ctx.demSidecar('inner')) : null;
+            case 'photo':
+                return newestMtime(await this.innerMeshTextures(ctx));
+            case 'shapes':
+                return (await FeatureHistoryService.latestSnapshot(ctx.dir))?.exportedAt ?? null;
+            case 'meshes':
+                return mtimeIso(path.join(await this.shaping.layersDir(ctx.courseId), GLOBAL_LAYER_FILE));
+            case 'vegetation':
+                return mtimeIso(ctx.file(zonesExportFileName(ctx.courseName, 'inner')));
+            case 'trees':
+                return mtimeIso(ctx.file(treesExportFileName(ctx.courseName, 'inner')));
+            case 'buildings':
+                return mtimeIso(ctx.file(buildingsExportFileName(ctx.courseName, 'inner')));
+            case 'creeks':
+                return mtimeIso(ctx.file(creeksExportFileName(ctx.courseName)));
+            case 'course-file':
+                return ctx.courseDir && ctx.gkdFile ? mtimeIso(path.join(ctx.courseDir, ctx.gkdFile)) : null;
+        }
+    }
+
+    /** The inner `-meshes.jpg` files in the export folder (cleaned or plain, any vintage). */
+    private async innerMeshTextures(ctx: SyncContext): Promise<string[]> {
+        let names: string[];
+        try {
+            names = await readdir(ctx.dir);
+        } catch {
+            return [];
+        }
+        return names
+            .filter(n => n.startsWith(`${ctx.slug}-`) && !n.startsWith(`${ctx.slug}-outer-`) && n.endsWith('-meshes.jpg'))
+            .map(n => ctx.file(n));
+    }
+
+    /**
+     * What has changed since the target was last updated: the course's
+     * features of the target's types, plus whatever else that target is made
+     * of (terrain edits, zone types, the cleaned photo, the course's holes and
+     * tees). Empty when `since` is null — with no last run there is nothing to
+     * count from, and `stale` is already true.
+     */
+    private async changedSince(ctx: SyncContext, target: GsproTargetId, since: string | null): Promise<ChangeCount> {
+        if (since === null) return { count: 0, kinds: [] };
+        const parts: ChangeCount[] = [];
+        const types = gsproTarget(target).featureTypes;
+        if (types.length > 0) parts.push(await this.history.countChangesSince(ctx.courseId, since, types));
+
+        switch (target) {
+            case 'terrain': {
+                if (ctx.siteId) {
+                    // Every op but `recipe` changes the DEM; a recipe shapes the Blender meshes (the Meshes row).
+                    parts.push(named(await this.terrainEdits.countChangesSince(ctx.siteId, since, { exceptOps: ['recipe'] }), 'terrain edits'));
+                    // Edits applied to the map but not yet in the exported heightmap are a change of their own.
+                    const unapplied = await this.innerStale(ctx);
+                    if (unapplied) parts.push({ count: 1, kinds: ['unapplied edits'] });
+                }
+                break;
+            }
+            case 'meshes':
+                if (ctx.siteId) parts.push(named(await this.terrainEdits.countChangesSince(ctx.siteId, since, { ops: ['recipe'] }), 'recipes'));
+                break;
+            case 'buildings':
+                if (ctx.siteId) {
+                    parts.push(named(await this.terrainEdits.countChangesSince(ctx.siteId, since, { origins: [BUILDING_PADS_ORIGIN] }), 'building pads'));
+                }
+                break;
+            case 'vegetation':
+                parts.push(await this.zoneTypeChanges(ctx.courseId, since));
+                break;
+            case 'photo':
+                parts.push(await this.cleanedPhotoChange(ctx, since));
+                break;
+            case 'course-file':
+                parts.push(await this.courseFileChanges(ctx.courseId, since));
+                break;
+            default:
+                break;
+        }
+        return merge(parts);
+    }
+
+    /** Zone types edited since (their item bindings decide what the masks hold). */
+    private async zoneTypeChanges(courseId: string, since: string): Promise<ChangeCount> {
+        const row = await this.db.selectFrom('course_zone_types').select(({ fn }) => fn.countAll<number>().as('n'))
+            .where('course_id', '=', courseId).where('updated_at', '>', sqlStamp(since)).executeTakeFirst();
+        return named({ count: Number(row?.n ?? 0), kinds: [] }, 'zone types');
+    }
+
+    /** The cleaned photo (`sources/<siteId>/ortho-*.cleaned.tif`) touched since. */
+    private async cleanedPhotoChange(ctx: SyncContext, since: string): Promise<ChangeCount> {
+        if (!ctx.siteId) return { count: 0, kinds: [] };
+        const cleaned = (await this.orthoSources(ctx)).filter(s => s.cleaned)
+            .map(s => path.join(this.dataDir, 'sources', ctx.siteId!, s.source));
+        const newest = await newestMtime(cleaned);
+        return newest !== null && newest > since ? { count: 1, kinds: ['cleaned photo'] } : { count: 0, kinds: [] };
+    }
+
+    /**
+     * The course's own tables the `.GKD` is written from. The course details
+     * (`courses.gspro_meta_json`) carry no time of their own — `courses.updated_at`
+     * moves on any course change at all — so a details-only edit does not show
+     * here; the row goes stale on the next tee, pin or hole change.
+     */
+    private async courseFileChanges(courseId: string, since: string): Promise<ChangeCount> {
+        const at = sqlStamp(since);
+        const holes = await this.db.selectFrom('holes').select(eb => eb.fn.countAll<number>().as('n'))
+            .where('course_id', '=', courseId).where('updated_at', '>', at).executeTakeFirst();
+        const tees = await this.db.selectFrom('tees').innerJoin('holes', 'holes.id', 'tees.hole_id')
+            .select(eb => eb.fn.countAll<number>().as('n'))
+            .where('holes.course_id', '=', courseId).where('tees.updated_at', '>', at).executeTakeFirst();
+        const greens = await this.db.selectFrom('greens').innerJoin('holes', 'holes.id', 'greens.hole_id')
+            .select(eb => eb.fn.countAll<number>().as('n'))
+            .where('holes.course_id', '=', courseId).where('greens.updated_at', '>', at).executeTakeFirst();
+        const pins = await this.db.selectFrom('pins').innerJoin('greens', 'greens.id', 'pins.green_id')
+            .innerJoin('holes', 'holes.id', 'greens.hole_id')
+            .select(eb => eb.fn.countAll<number>().as('n'))
+            .where('holes.course_id', '=', courseId).where('pins.updated_at', '>', at).executeTakeFirst();
+        const aims = await this.db.selectFrom('aim_points').innerJoin('holes', 'holes.id', 'aim_points.hole_id')
+            .select(eb => eb.fn.countAll<number>().as('n'))
+            .where('holes.course_id', '=', courseId).where('aim_points.updated_at', '>', at).executeTakeFirst();
+        const sets = await this.db.selectFrom('course_tee_sets').select(eb => eb.fn.countAll<number>().as('n'))
+            .where('course_id', '=', courseId).where('updated_at', '>', at).executeTakeFirst();
+        return merge([
+            named({ count: Number(holes?.n ?? 0), kinds: [] }, 'holes'),
+            named({ count: Number(tees?.n ?? 0), kinds: [] }, 'tees'),
+            named({ count: Number(greens?.n ?? 0), kinds: [] }, 'greens'),
+            named({ count: Number(pins?.n ?? 0), kinds: [] }, 'pins'),
+            named({ count: Number(aims?.n ?? 0), kinds: [] }, 'aim points'),
+            named({ count: Number(sets?.n ?? 0), kinds: [] }, 'tee sets'),
+        ]);
+    }
+
+    /**
+     * Why an update of `target` cannot run now, or null. Only the cheap,
+     * certain reasons — the chains still throw their own 409s for everything
+     * else; this is what the board greys out and what a `'stale'` run skips.
+     */
+    private async blocked(ctx: SyncContext, target: GsproTargetId): Promise<string | null> {
+        const noMap = 'Build the map first';
+        switch (target) {
+            case 'terrain':
+                if (!ctx.siteId) return noMap;
+                return ctx.terrainError;
+            case 'photo':
+                if (!ctx.siteId) return noMap;
+                return (await this.orthoSources(ctx)).length === 0 ? 'Build the map first — there is no orthophoto to render' : null;
+            case 'shapes':
+                return ctx.terrainError;
+            case 'meshes':
+                return (await this.blendFiles(ctx)).length === 0
+                    ? `No .blend in ${ctx.dir} — build the course's .blend with OPCD first`
+                    : null;
+            case 'vegetation':
+                return ctx.siteId ? null : noMap;
+            case 'trees':
+                return ctx.siteId ? null : noMap;
+            case 'buildings':
+                if (!ctx.siteId) return noMap;
+                return await statOrNull(path.join(this.dataDir, 'sources', ctx.siteId, BUILDINGS_SURVEY))
+                    ? null
+                    : 'Run "Generate building pads" in the terrain tool first';
+            case 'creeks':
+                return ctx.siteId ? null : noMap;
+            case 'course-file':
+                if (!ctx.courseDir) return 'Set the GSPro course folder first';
+                return ctx.siteId ? null : noMap;
+        }
+    }
+
+    // --- Jobs ---
+
+    /**
+     * Update one target — or every stale, unblocked one (`'stale'`, in board
+     * order) — and return the job at once. A job starts `queued` when another
+     * sync job, a legacy GSPro export or a shaping apply is still going for
+     * the course, and runs when its turn comes; poll `job(id)` or `status`.
+     * 404 for an unknown course.
+     */
+    async update(courseId: string, request: GsproTargetId | 'stale'): Promise<GsproSyncJob> {
+        const ctx = await this.context(courseId);
+        let targets: GsproTargetId[];
+        if (request === 'stale') {
+            const statuses = await this.targetStatuses(ctx);
+            const stale = new Set(statuses.filter(s => s.stale && s.blocked === null).map(s => s.id));
+            targets = STALE_ORDER.filter(id => stale.has(id));
+        } else {
+            const blocked = await this.blocked(ctx, request);
+            if (blocked) throw new ConflictError(`${gsproTarget(request).label} cannot be updated: ${blocked}`);
+            targets = [request];
+        }
+
+        // Forget this course's finished jobs: one live job plus its queue is all the board shows.
+        for (const [id, rec] of this.jobs) {
+            if (rec.job.courseId === courseId && (rec.job.status === 'succeeded' || rec.job.status === 'failed')) this.jobs.delete(id);
+        }
+
+        const phases = new JobPhases();
+        const waitFor = await this.busyWith(courseId);
+        if (waitFor) phases.add('wait', `Waiting for ${waitFor}`);
+        for (const target of targets) addPhases(phases, target, targets.length > 1);
+
+        const rec: JobRecord = {
+            job: {
+                id: crypto.randomUUID(), courseId, request, targets, status: 'queued',
+                queuedAt: new Date().toISOString(), startedAt: null, finishedAt: null, results: [], error: null,
+            },
+            phases,
+            t0: null,
+            t1: null,
+        };
+        this.jobs.set(rec.job.id, rec);
+
+        const previous = this.chain.get(courseId);
+        // Nothing of this course's ahead of it: it is running from this moment, so the
+        // board (and the caller's own answer) never shows a job as queued behind nothing.
+        if (!previous) this.begin(rec);
+        const done = (previous ?? Promise.resolve()).catch(() => {}).then(() => this.run(rec)).finally(() => {
+            if (this.chain.get(courseId) === done) this.chain.delete(courseId);
+        });
+        this.chain.set(courseId, done);
+        return snapshot(rec);
+    }
+
+    /** A job by id; 404 when this process never ran it. */
+    job(jobId: string): GsproSyncJob {
+        const rec = this.jobs.get(jobId);
+        if (!rec) throw new NotFoundError(`No GSPro sync job ${jobId} (the server may have restarted)`);
+        return snapshot(rec);
+    }
+
+    /** The course's running job, else the first queued one, else its last finished one. */
+    current(courseId: string): GsproSyncJob | null {
+        const mine = [...this.jobs.values()].filter(r => r.job.courseId === courseId);
+        const running = mine.find(r => r.job.status === 'running');
+        if (running) return snapshot(running);
+        const queued = mine.filter(r => r.job.status === 'queued').sort(byQueuedAt)[0];
+        if (queued) return snapshot(queued);
+        const last = mine.sort(byQueuedAt).at(-1);
+        return last ? snapshot(last) : null;
+    }
+
+    /** The course's waiting jobs, in FIFO order. */
+    queue(courseId: string): Array<{ id: string; target: GsproTargetId | 'stale' }> {
+        return [...this.jobs.values()]
+            .filter(r => r.job.courseId === courseId && r.job.status === 'queued')
+            .sort(byQueuedAt)
+            .map(r => ({ id: r.job.id, target: r.job.request }));
+    }
+
+    /** Resolves when the course has no sync job queued or running (tests, shutdown). */
+    async whenIdle(courseId: string): Promise<void> {
+        await this.chain.get(courseId);
+    }
+
+    /** What a new job would have to wait for, in words; null when it can start at once. */
+    private async busyWith(courseId: string): Promise<string | null> {
+        if (this.chain.has(courseId)) return 'the GSPro update already running for this course';
+        const exporting = this.exports.current(courseId);
+        if (exporting?.status === 'running') return `the ${exporting.label} export`;
+        const shaping = this.shaping.current(courseId);
+        if (shaping?.status === 'running') return 'the Blender shaping run';
+        return null;
+    }
+
+    // --- The job ---
+
+    /** Queued → running, once (a job with nothing ahead of it is marked by `update` itself). */
+    private begin(rec: JobRecord): void {
+        if (rec.job.status !== 'queued') return;
+        rec.job.status = 'running';
+        rec.job.startedAt = new Date().toISOString();
+        rec.t0 = Date.now();
+    }
+
+    private async run(rec: JobRecord): Promise<void> {
+        this.begin(rec);
+        try {
+            if (rec.phases.has('wait')) await this.waitTurn(rec);
+            const ctx = await this.context(rec.job.courseId);
+            // One probe for the whole job: every Unity push in the chains uses this answer.
+            const { editor, seen } = await editorForExportDir(this.unityBridge, ctx.dir);
+            const unity: UnityTarget = {
+                editor,
+                why: editor ? null : `Not in Unity: no open Unity editor imports from ${ctx.dir}`
+                    + (seen.length ? ` (${seen.join('; ')})` : ' (none is open)'),
+            };
+            for (const target of rec.job.targets) {
+                const t0 = Date.now();
+                const prefix = (step: string) => `${target}:${step}`;
+                try {
+                    const report = await this.runTarget(rec, ctx, target, unity, prefix);
+                    const seconds = secs(Date.now() - t0);
+                    rec.job.results.push({ target, label: gsproTarget(target).label, seconds, report, error: null });
+                    await this.writeRecordEntry(ctx, target, { lastRun: rec.job.startedAt!, seconds, report });
+                } catch (e) {
+                    const message = e instanceof Error ? e.message : String(e);
+                    rec.phases.failCurrent(firstLine(message));
+                    rec.phases.skipPending(`${gsproTarget(target).label} failed`);
+                    rec.job.results.push({ target, label: gsproTarget(target).label, seconds: secs(Date.now() - t0), report: [], error: message });
+                    throw new ConflictError(`${gsproTarget(target).label}: ${message}`);
+                }
+            }
+            rec.job.status = 'succeeded';
+            rec.phases.current = null;
+        } catch (err) {
+            rec.job.status = 'failed';
+            rec.job.error = err instanceof Error ? err.message : String(err);
+            rec.phases.failCurrent(firstLine(rec.job.error));
+        } finally {
+            rec.t1 = Date.now();
+            rec.job.finishedAt = new Date().toISOString();
+        }
+    }
+
+    /** The `wait` phase: the course's other jobs out of the way before anything is written. */
+    private async waitTurn(rec: JobRecord): Promise<void> {
+        const waiting = await this.busyWith(rec.job.courseId);
+        if (!waiting) {
+            rec.phases.skip('wait', 'nothing else was running');
+            return;
+        }
+        rec.phases.begin('wait', waiting);
+        await this.exports.whenIdle(rec.job.courseId);
+        await this.shaping.whenIdle();
+        rec.phases.end('wait', 'done', `waited for ${waiting}`);
+    }
+
+    private runTarget(rec: JobRecord, ctx: SyncContext, target: GsproTargetId, unity: UnityTarget, id: (s: string) => string): Promise<string[]> {
+        switch (target) {
+            case 'terrain': return this.updateTerrain(rec, ctx, unity, id);
+            case 'photo': return this.updatePhoto(rec, ctx, unity, id);
+            case 'shapes': return this.updateShapes(rec, ctx, id);
+            case 'meshes': return this.updateMeshes(rec, ctx, id);
+            case 'vegetation': return this.updateVegetation(rec, ctx, id);
+            case 'trees': return this.updateTrees(rec, ctx, unity, id);
+            case 'buildings': return this.updateBuildings(rec, ctx, unity, id);
+            case 'creeks': return this.updateCreeks(rec, ctx, unity, id);
+            case 'course-file': return this.updateCourseFile(rec, ctx, id);
+        }
+    }
+
+    // --- The chains ---
+
+    /**
+     * Terrain: bake the edits into the map when the exported heightmap lacks
+     * them, export both heightmaps, put them onto the Unity terrains, then
+     * re-export the files that read the heightmap — only those the folder
+     * already has, so a course that never exported buildings does not get
+     * them now.
+     */
+    private async updateTerrain(rec: JobRecord, ctx: SyncContext, unity: UnityTarget, id: (s: string) => string): Promise<string[]> {
+        const report: string[] = [];
+        const stale = await this.innerStale(ctx);
+        if (!stale) {
+            rec.phases.skip(id('apply'), 'the map already carries every terrain edit');
+        } else {
+            rec.phases.begin(id('apply'), stale);
+            const started = await this.mapBuild.reTerrain(ctx.courseId);
+            await this.mapBuild.waitForJob(started.id);
+            const done = await this.mapBuild.get(started.id);
+            if (done.status !== 'succeeded') {
+                throw new ConflictError(`Apply to terrain failed (${done.step ?? 'no step'}): ${done.error ?? 'see the build log'}`);
+            }
+            rec.phases.end(id('apply'), 'done', 'terrain edits baked into the map');
+            report.push('applied the terrain edits to the map (re-terrain)');
+        }
+
+        rec.phases.begin(id('dem'), 'the inner heightmap');
+        const before: Partial<Record<TerrainKind, number | null>> = {};
+        for (const kind of TERRAINS) {
+            rec.phases.note(`the ${kind} heightmap`);
+            before[kind] = await this.exports.demSidecarMinM(ctx.courseId, kind);
+            report.push(...prefixed(kind, (await this.exports.exportDem(ctx.courseId, kind)).report));
+        }
+        rec.phases.end(id('dem'), 'done', 'inner and outer heightmaps exported');
+
+        if (!unity.editor) {
+            rec.phases.skip(id('unity'), unity.why!);
+            report.push(unity.why!);
+        } else {
+            rec.phases.begin(id('unity'), `the inner terrain in ${unity.editor.projectName}`);
+            for (const kind of TERRAINS) {
+                rec.phases.note(`the ${kind} terrain in ${unity.editor.projectName}`);
+                report.push(...prefixed(kind, (await this.exports.pushUnityTerrain(ctx.courseId, kind, { minBefore: before[kind] ?? null })).report));
+            }
+            rec.phases.end(id('unity'), 'done', `both terrains updated in ${unity.editor.projectName}`);
+        }
+
+        rec.phases.begin(id('dependents'), 'finding the files that read the heightmap');
+        const again = await this.heightmapDependents(ctx);
+        if (again.length === 0) {
+            rec.phases.end(id('dependents'), 'done', 'no file in the folder reads the heightmap yet');
+        } else {
+            for (const dep of again) {
+                rec.phases.note(dep.what);
+                report.push(...prefixed(dep.what, (await dep.run()).report));
+            }
+            rec.phases.end(id('dependents'), 'done', `${again.map(d => d.what).join(', ')} re-exported`);
+        }
+        report.push('Still manual in Unity: Terrain › Export To OBJ for Blender, and the terrain conform once the meshes are rebuilt.');
+        return report;
+    }
+
+    /**
+     * The files already in the export folder that carry heights read from a
+     * heightmap sidecar, each as the re-export that refreshes it. Only the
+     * ones that are there: this is a refresh, not a first export.
+     */
+    private async heightmapDependents(ctx: SyncContext): Promise<Array<{ what: string; run: () => Promise<{ report: string[] }> }>> {
+        const out: Array<{ what: string; run: () => Promise<{ report: string[] }> }> = [];
+        const has = (name: string) => statOrNull(ctx.file(name)).then(s => s !== null);
+        for (const kind of TERRAINS) {
+            if (await has(treesExportFileName(ctx.courseName, kind))) {
+                out.push({ what: `${kind} trees`, run: () => this.exports.exportTrees(ctx.courseId, kind) });
+            }
+            if (await has(buildingsExportFileName(ctx.courseName, kind))) {
+                out.push({ what: `${kind} buildings`, run: () => this.exports.exportBuildings(ctx.courseId, kind) });
+            }
+            if (await has(zonesExportFileName(ctx.courseName, kind))) {
+                out.push({ what: `${kind} vegetation zones`, run: () => this.exports.exportZones(ctx.courseId, kind) });
+            }
+        }
+        if (await has(creeksExportFileName(ctx.courseName))) {
+            out.push({ what: 'creeks', run: () => this.exports.exportCreeks(ctx.courseId) });
+        }
+        if (ctx.courseDir && ctx.gkdFile && await statOrNull(path.join(ctx.courseDir, ctx.gkdFile))) {
+            out.push({ what: 'GreenKeeper course file', run: () => this.exports.exportGkd(ctx.courseId) });
+        }
+        return out;
+    }
+
+    /**
+     * Photo: the inner orthophoto — the cleaned vintage when the site has one
+     * — rendered with the export panel's defaults (forest floor, buildings
+     * removed, the grass surfaces tinted) and put onto the Unity course
+     * meshes, plus the outer terrain's texture for the newest vintage.
+     */
+    private async updatePhoto(rec: JobRecord, ctx: SyncContext, unity: UnityTarget, id: (s: string) => string): Promise<string[]> {
+        const sources = await this.orthoSources(ctx);
+        const picked = sources.find(s => s.cleaned) ?? sources[0];
+        if (!picked) throw new ConflictError('No orthophoto is persisted for this course — build its map first');
+        const report: string[] = [];
+
+        rec.phases.begin(id('inner'), `rendering ${picked.source}`);
+        // The panel's defaults: the tint (the `-meshes` file Unity takes), the forest floor and the roofs filled.
+        const exported = await this.exports.exportOrtho(ctx.courseId, picked.source, undefined, {}, {}, true);
+        const meshes = meshTextureFileName(path.basename(exported.path));
+        report.push(...prefixed('inner photo', exported.report));
+        rec.phases.end(id('inner'), 'done', `${path.basename(exported.path)} (+ its -terrain and -meshes twins)`);
+
+        if (!unity.editor) {
+            rec.phases.skip(id('unity'), unity.why!);
+            report.push(`${unity.why!} — ${meshes} is written, run GolfMap's orthos apply there to take it`);
+        } else {
+            rec.phases.begin(id('unity'), `${meshes} onto the course meshes in ${unity.editor.projectName}`);
+            report.push(...(await this.exports.pushUnityOrtho(ctx.courseId, meshes)).report);
+            rec.phases.end(id('unity'), 'done', `${meshes} onto the course meshes in ${unity.editor.projectName}`);
+        }
+
+        rec.phases.begin(id('outer'), `the outer square from ${sources[0]!.collection}`);
+        const outer = await this.exports.exportOuterOrtho(ctx.courseId, sources[0]!.collection, undefined, {}, {}, true);
+        report.push(...prefixed('outer photo', outer.report));
+        report.push('The outer texture is written only: there is no Unity push for the outer terrain — set it on the terrain by hand once.');
+        rec.phases.end(id('outer'), 'done', path.basename(outer.path));
+        return report;
+    }
+
+    /** Course shapes: the full SVG (kept as an export snapshot), then Blender by hand. */
+    private async updateShapes(rec: JobRecord, ctx: SyncContext, id: (s: string) => string): Promise<string[]> {
+        rec.phases.begin(id('svg'), 'gspro.py svg');
+        const exported = await this.exports.export(ctx.courseId, {});
+        rec.phases.end(id('svg'), 'done', path.basename(exported.path));
+        return [...exported.report, `Next: ${gsproTarget('shapes').manual}.`];
+    }
+
+    /**
+     * Meshes: `ShapingService.apply` does the whole chain already (layers →
+     * Blender worker → Unity refresh of the changed objects → the grass round
+     * a changed rock slab), so this mirrors its job's phases into ours while
+     * it runs.
+     */
+    private async updateMeshes(rec: JobRecord, ctx: SyncContext, id: (s: string) => string): Promise<string[]> {
+        const started = await this.shaping.apply(ctx.courseId, {});
+        let job: ShapingJob = started;
+        for (;;) {
+            this.mirror(rec, job, id);
+            if (job.status !== 'running') break;
+            await Bun.sleep(this.pollMs);
+            job = this.shaping.job(started.id);
+        }
+        if (job.status !== 'succeeded') throw new ConflictError(job.error ?? 'the shaping run failed');
+        const result = job.result!;
+        return [
+            ...result.layers,
+            `${result.changedObjects.length} object(s) re-shaped, ${result.exported.length} FBX exported`
+                + (result.changedObjects.length ? `: ${result.changedObjects.join(', ')}` : ''),
+            ...result.vegetation,
+            ...result.warnings.map(w => `warning: ${w}`),
+        ];
+    }
+
+    /** The shaping job's phases copied into this job's, one for one. */
+    private mirror(rec: JobRecord, job: ShapingJob, id: (s: string) => string): void {
+        for (const phase of job.phases) {
+            const mine = id(phase.id);
+            if (phase.status === 'running') rec.phases.begin(mine, phase.detail ?? 'running');
+            else if (phase.status === 'skipped') rec.phases.skip(mine, phase.detail ?? 'skipped');
+            else if (phase.status === 'done' || phase.status === 'failed') rec.phases.end(mine, phase.status, phase.detail);
+        }
+    }
+
+    /** Vegetation: the whole planting for the inner terrain, and the outer when it already has masks. */
+    private async updateVegetation(rec: JobRecord, ctx: SyncContext, id: (s: string) => string): Promise<string[]> {
+        const report: string[] = [];
+        rec.phases.begin(id('inner'), 'generators, masks, Unity, the Arborist file');
+        report.push(...prefixed('inner', (await this.exports.plantVegetation(ctx.courseId, 'inner')).report));
+        rec.phases.end(id('inner'), 'done', 'planted for the inner terrain');
+
+        if (!await statOrNull(ctx.file(zonesExportFileName(ctx.courseName, 'outer')))) {
+            rec.phases.skip(id('outer'), 'the outer terrain has no vegetation zones export to refresh');
+        } else {
+            rec.phases.begin(id('outer'), 'generators and masks for the outer terrain');
+            report.push(...prefixed('outer', (await this.exports.plantVegetation(ctx.courseId, 'outer')).report));
+            rec.phases.end(id('outer'), 'done', 'planted for the outer terrain');
+        }
+        return report;
+    }
+
+    /** Trees: both terrains' tree files, then the Tree Planter in Unity. */
+    private async updateTrees(rec: JobRecord, ctx: SyncContext, unity: UnityTarget, id: (s: string) => string): Promise<string[]> {
+        const report: string[] = [];
+        rec.phases.begin(id('files'), 'the inner trees');
+        for (const kind of TERRAINS) {
+            rec.phases.note(`the ${kind} trees`);
+            report.push(...prefixed(kind, (await this.exports.exportTrees(ctx.courseId, kind)).report));
+        }
+        rec.phases.end(id('files'), 'done', 'inner and outer trees exported');
+        await this.intoUnity(rec, unity, id('unity'), 'Tree Planter',
+            TERRAINS.map(kind => ({ what: `${kind} trees`, command: 'golfmap.trees.plant', args: { terrain: kind } })), report);
+        return report;
+    }
+
+    /** Buildings: both terrains' building files; the planting itself has no bridge command yet. */
+    private async updateBuildings(rec: JobRecord, ctx: SyncContext, unity: UnityTarget, id: (s: string) => string): Promise<string[]> {
+        const report: string[] = [];
+        rec.phases.begin(id('files'), 'the inner buildings');
+        for (const kind of TERRAINS) {
+            rec.phases.note(`the ${kind} buildings`);
+            report.push(...prefixed(kind, (await this.exports.exportBuildings(ctx.courseId, kind)).report));
+        }
+        rec.phases.end(id('files'), 'done', 'inner and outer buildings exported');
+        // No `[BridgeCommand]` plants buildings (unity/Editor/GolfMap/GolfMapBuildingPlanter.cs is a menu item only).
+        const manual = gsproTarget('buildings').manual!;
+        rec.phases.skip(id('unity'), `no bridge command plants buildings: ${manual}`);
+        report.push(`Next in Unity: ${manual}.`);
+        return report;
+    }
+
+    /** Creeks: the R.A.M. spline file, then the import in Unity. */
+    private async updateCreeks(rec: JobRecord, ctx: SyncContext, unity: UnityTarget, id: (s: string) => string): Promise<string[]> {
+        rec.phases.begin(id('file'), 'gspro.py creeks');
+        const exported = await this.exports.exportCreeks(ctx.courseId);
+        rec.phases.end(id('file'), 'done', path.basename(exported.path));
+        const report = [...exported.report];
+        await this.intoUnity(rec, unity, id('unity'), 'Creeks',
+            [{ what: 'creeks', command: 'golfmap.creeks.import', args: {} }], report);
+        return report;
+    }
+
+    /** Course file: GreenKeeper's `.GKD` in the course's GSPro folder. */
+    private async updateCourseFile(rec: JobRecord, ctx: SyncContext, id: (s: string) => string): Promise<string[]> {
+        rec.phases.begin(id('gkd'), 'gspro.py gkd');
+        const exported = await this.exports.exportGkd(ctx.courseId);
+        rec.phases.end(id('gkd'), 'done', path.basename(exported.path));
+        return exported.report;
+    }
+
+    /**
+     * One phase that runs a list of bridge commands in the matched editor, or
+     * is SKIPPED when none works on the course — the files are written either
+     * way, so "no Unity" is never a failure.
+     */
+    private async intoUnity(
+        rec: JobRecord, unity: UnityTarget, phaseId: string, what: string,
+        commands: Array<{ what: string; command: string; args: Record<string, unknown> }>, report: string[],
+    ): Promise<void> {
+        if (!unity.editor) {
+            rec.phases.skip(phaseId, unity.why!);
+            report.push(`${unity.why!} — the file(s) are written, run ${what} there to take them`);
+            return;
+        }
+        const editor = unity.editor;
+        rec.phases.begin(phaseId, `${what} in ${editor.projectName}`);
+        for (const c of commands) {
+            rec.phases.note(`${c.what} in ${editor.projectName}`);
+            const result = await editor.run(c.command, c.args, 600);
+            report.push(`Unity (${editor.projectName}): ${c.command} — ${describeUnityResult(result) ?? 'done'}`);
+        }
+        rec.phases.end(phaseId, 'done', `${what} run in ${editor.projectName}`);
+        report.push('Save the scene in Unity to keep it.');
+    }
+
+    // --- Internals ---
+
+    /** Everything the board and the chains need about the course, read once. */
+    private async context(courseId: string): Promise<SyncContext> {
+        const course = await this.courses.get(courseId);
+        const { dir, courseDir, gkdFile } = await this.exports.settings(courseId);
+        let terrain: CourseTerrain | null = null;
+        let terrainError: string | null = null;
+        try {
+            terrain = await this.exports.terrain(courseId);
+        } catch (e) {
+            terrainError = firstLine(e instanceof Error ? e.message : String(e));
+        }
+        const slug = courseSlug(course.name);
+        return {
+            courseId,
+            courseName: course.name,
+            slug,
+            siteId: course.siteId,
+            dir,
+            courseDir,
+            gkdFile,
+            terrain,
+            terrainError,
+            record: await readRecord(dir),
+            file: (name: string) => path.join(dir, name),
+            demSidecar: (kind: TerrainKind) => path.join(dir, demSidecarName(demExportFileName(course.name, kind, terrain![kind].sideM))),
+        };
+    }
+
+    /** Memoized per call chain: `orthoSources` reads the site's sources folder. */
+    private async orthoSources(ctx: SyncContext): Promise<GsproOrthoSource[]> {
+        ctx.orthos ??= await this.exports.orthoSources(ctx.courseId);
+        return ctx.orthos;
+    }
+
+    private async blendFiles(ctx: SyncContext): Promise<string[]> {
+        try {
+            return (await readdir(ctx.dir)).filter(n => n.toLowerCase().endsWith('.blend'));
+        } catch {
+            return [];
+        }
+    }
+
+    /** `innerDemStale`, or null for a course with no built map (the row is blocked for that). */
+    private async innerStale(ctx: SyncContext): Promise<string | null> {
+        if (!ctx.siteId) return null;
+        try {
+            return await this.exports.innerDemStale(ctx.courseId);
+        } catch {
+            return null;   // no DEM persisted at all: `blocked` already says to build the map
+        }
+    }
+
+    /** One target's entry in `<export dir>/gspro-sync.json`, the rest of the file kept. */
+    private async writeRecordEntry(ctx: SyncContext, target: GsproTargetId, entry: GsproSyncRecordEntry): Promise<void> {
+        await ensureDir(ctx.dir);
+        const file = path.join(ctx.dir, SYNC_RECORD_FILE);
+        // Re-read: another course on the same folder, or a run of the CLI, may have written since.
+        const record = await readRecord(ctx.dir);
+        record.targets[target] = entry;
+        ctx.record = record;
+        await writeFile(file, `${JSON.stringify(record, null, 2)}\n`);
+    }
+}
+
+// --- Helpers ---
+
+const TERRAINS: readonly TerrainKind[] = ['inner', 'outer'];
+
+/** The matched Unity editor for one job, or why there is none. */
+interface UnityTarget {
+    editor: UnityEditor | null;
+    /** Set exactly when `editor` is null: the line every skipped push uses. */
+    why: string | null;
+}
+
+interface SyncContext {
+    courseId: string;
+    courseName: string;
+    slug: string;
+    siteId: string | null;
+    dir: string;
+    courseDir: string | null;
+    gkdFile: string | null;
+    /** Null when the course has no map area; `terrainError` then says so. */
+    terrain: CourseTerrain | null;
+    terrainError: string | null;
+    record: GsproSyncRecord;
+    orthos?: GsproOrthoSource[];
+    file(name: string): string;
+    /** Only safe with `terrain` non-null. */
+    demSidecar(kind: TerrainKind): string;
+}
+
+/** A job as this process keeps it: the public job without its phases, plus them and the clocks. */
+interface JobRecord {
+    job: Omit<GsproSyncJob, 'phase' | 'phases' | 'step' | 'seconds'>;
+    phases: JobPhases;
+    /** When it started running (ms); null while queued. */
+    t0: number | null;
+    t1: number | null;
+}
+
+/** The phases one target's chain reports, in order. */
+export function targetPhases(target: GsproTargetId): ReadonlyArray<readonly [string, string]> {
+    switch (target) {
+        case 'terrain': return [
+            ['apply', 'Applying terrain edits'],
+            ['dem', 'Heightmaps'],
+            ['unity', 'Unity terrain'],
+            ['dependents', 'Files that read the heightmap'],
+        ];
+        case 'photo': return [['inner', 'Inner photo'], ['unity', 'Photo onto the Unity meshes'], ['outer', 'Outer photo']];
+        case 'shapes': return [['svg', 'Course SVG']];
+        case 'meshes': return SHAPING_PHASES;
+        case 'vegetation': return [['inner', 'Vegetation, inner'], ['outer', 'Vegetation, outer']];
+        case 'trees': return [['files', 'Tree files'], ['unity', 'Trees into Unity']];
+        case 'buildings': return [['files', 'Building files'], ['unity', 'Buildings into Unity']];
+        case 'creeks': return [['file', 'Creeks file'], ['unity', 'Creeks into Unity']];
+        case 'course-file': return [['gkd', 'GreenKeeper course file']];
+    }
+}
+
+/** One target's phases into the job's list, namespaced so a `'stale'` run's ids stay unique. */
+function addPhases(phases: JobPhases, target: GsproTargetId, withTargetLabel: boolean): void {
+    for (const [id, label] of targetPhases(target)) {
+        phases.add(`${target}:${id}`, withTargetLabel ? `${gsproTarget(target).label}: ${label}` : label);
+    }
+}
+
+function snapshot(rec: JobRecord): GsproSyncJob {
+    const started = rec.t0;
+    return {
+        ...rec.job,
+        phase: rec.phases.current,
+        phases: rec.phases.snapshot(),
+        step: rec.phases.step(rec.job.status, rec.job.error),
+        seconds: started === null ? 0 : secs((rec.t1 ?? Date.now()) - started),
+        targets: [...rec.job.targets],
+        results: rec.job.results.map(r => ({ ...r, report: [...r.report] })),
+    };
+}
+
+const byQueuedAt = (a: JobRecord, b: JobRecord) => a.job.queuedAt.localeCompare(b.job.queuedAt);
+
+/** A count with no kinds of its own given one word, so the board can name it. */
+function named(count: ChangeCount, kind: string): ChangeCount {
+    return { count: count.count, kinds: count.count > 0 ? [kind] : [] };
+}
+
+/** Several counts as one: the counts added, the kinds deduplicated in the order they came. */
+function merge(parts: ChangeCount[]): ChangeCount {
+    const kinds: string[] = [];
+    let count = 0;
+    for (const part of parts) {
+        count += part.count;
+        for (const kind of part.kinds) if (!kinds.includes(kind)) kinds.push(kind);
+    }
+    return { count, kinds };
+}
+
+const prefixed = (what: string, lines: string[]) => lines.map(l => `${what}: ${l}`);
+
+function firstLine(text: string): string {
+    return text.split('\n')[0] ?? text;
+}
+
+/** A bridge answer's own words, for the report; null when it says nothing useful. */
+function describeUnityResult(result: unknown): string | null {
+    const r = result as Record<string, unknown> | null | undefined;
+    for (const key of ['status', 'summary', 'message']) {
+        const value = r?.[key];
+        if (typeof value === 'string' && value.trim()) return firstLine(value.trim());
+    }
+    return r ? firstLine(JSON.stringify(r).slice(0, 300)) : null;
+}
+
+/** A file's mtime as an ISO timestamp; null when it is not there. */
+async function mtimeIso(file: string): Promise<string | null> {
+    const stats = await statOrNull(file);
+    return stats ? new Date(stats.mtimeMs).toISOString() : null;
+}
+
+/** The newest mtime among the files, as ISO; null when none of them is there. */
+async function newestMtime(files: string[]): Promise<string | null> {
+    let newest: string | null = null;
+    for (const file of files) {
+        const at = await mtimeIso(file);
+        if (at !== null && (newest === null || at > newest)) newest = at;
+    }
+    return newest;
+}
+
+/** The record in an export folder; an empty one when there is none or it is not ours. */
+export async function readRecord(dir: string): Promise<GsproSyncRecord> {
+    try {
+        const doc = JSON.parse(await readFile(path.join(dir, SYNC_RECORD_FILE), 'utf8')) as Partial<GsproSyncRecord>;
+        if (doc.format !== SYNC_RECORD_FORMAT || !doc.targets || typeof doc.targets !== 'object') {
+            return { format: SYNC_RECORD_FORMAT, targets: {} };
+        }
+        return { format: SYNC_RECORD_FORMAT, targets: doc.targets };
+    } catch {
+        return { format: SYNC_RECORD_FORMAT, targets: {} };
+    }
+}
