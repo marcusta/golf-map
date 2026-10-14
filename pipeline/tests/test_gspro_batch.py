@@ -13,9 +13,11 @@ built in tmp_path.
 
 from __future__ import annotations
 
+import codecs
 import io
 import json
 import sqlite3
+import sys
 from pathlib import Path
 
 import numpy as np
@@ -493,6 +495,34 @@ def test_a_rewritten_dem_is_read_again(tmp_path, batch_cache):
     assert batch_cache.stats()["demBands"] == {"hits": 1, "misses": 2}
 
 
+def test_a_value_the_cache_will_not_keep_is_never_copied(batch_cache, monkeypatch):
+    """The budget is decided before the copy. A window over its slot's limit
+    (the real one: an 8192² ortho window at 200 MB against `demWindows`' 96 MB)
+    would otherwise be duplicated only to be dropped, doubling peak memory for
+    nothing. The caller gets the value as it was built; only a value the cache
+    keeps is copied."""
+    monkeypatch.setitem(gspro.BATCH_VALUE_MAX_BYTES, "demWindows", 1 << 10)
+    copies = []
+
+    def copy(value):
+        copies.append(value)
+        return value.copy()
+
+    big = np.zeros(1 << 8, dtype="float64")                      # 2 KB, over the 1 KB limit
+    assert batch_cache.cached("demWindows", "big", lambda: big,
+                              sizeof=lambda a: a.nbytes, copy=copy) is big
+    assert copies == [] and batch_cache.slots["demWindows"] == {} and batch_cache.bytes == 0
+
+    small = np.zeros(1 << 6, dtype="float64")                    # 512 B, kept
+    assert batch_cache.cached("demWindows", "small", lambda: small,
+                              sizeof=lambda a: a.nbytes, copy=copy) is small
+    assert copies == [small] and batch_cache.bytes == small.nbytes
+    # What is held is the copy, so the caller writing into its array cannot
+    # change what the next job is served.
+    assert batch_cache.cached("demWindows", "small", lambda: None) is not small
+    assert batch_cache.stats()["demWindows"] == {"hits": 1, "misses": 2}
+
+
 def test_a_shared_connection_survives_a_commands_close(tmp_path, batch_cache):
     """Every command closes the database it opened; inside a batch that must
     not take the shared connection down with it."""
@@ -504,3 +534,56 @@ def test_a_shared_connection_survives_a_commands_close(tmp_path, batch_cache):
     batch_cache.close()
     with pytest.raises(sqlite3.ProgrammingError):
         conn.execute("SELECT 1")
+
+
+# --- A job's stdout ---------------------------------------------------------
+
+def test_a_jobs_stdout_answers_the_questions_a_stream_is_asked(tmp_path):
+    """`_JobOut` stands in for `sys.stdout` inside a job, so it has to answer
+    like a stream and not like a bare `TextIOBase` (encoding None, `fileno()`
+    raising): an encoding and errors — the real stream's, utf-8/strict when it
+    has none — not a tty, and the real stream's descriptor."""
+    out = gspro._JobOut("job", io.StringIO())
+    assert out.encoding == "utf-8" and out.errors == "strict"
+    assert out.isatty() is False and out.writable() is True
+    with pytest.raises(io.UnsupportedOperation):
+        out.fileno()                      # a StringIO has none, and says so
+
+    with open(tmp_path / "log.txt", "w", encoding="utf-8") as log:
+        through = gspro._JobOut("job", log)
+        assert through.encoding == "utf-8" and through.errors == "strict"
+        assert through.fileno() == log.fileno()
+
+
+def test_a_job_that_reads_sys_stdout_encoding_runs(tmp_path, monkeypatch):
+    """A library that asks `sys.stdout` about itself before printing (rich,
+    tqdm, click ... all do) must not fail inside a batch job. The job here is
+    that library: it reads the encoding, the errors, whether it is a tty and
+    the descriptor, then prints — and its line is still captured and prefixed."""
+    seen: dict = {}
+
+    def library_job(argv):
+        seen["argv"] = argv
+        seen["encoding"] = sys.stdout.encoding
+        seen["errors"] = sys.stdout.errors
+        seen["isatty"] = sys.stdout.isatty()
+        seen["fileno"] = sys.stdout.fileno()
+        seen["stderrEncoding"] = sys.stderr.encoding
+        print("a line through the library's stdout")
+        return 0
+
+    monkeypatch.setattr(gspro, "main", library_job)
+    result = tmp_path / "r.json"
+    with open(tmp_path / "batch.log", "w", encoding="utf-8") as log:
+        monkeypatch.setattr(sys, "stdout", log)
+        code = gspro.cmd_batch({"jobs": [{"id": "lib", "command": "svg", "args": ["--square-3006", SQUARE]}]},
+                               result)
+        descriptor = log.fileno()
+
+    assert code == 0
+    assert seen["argv"] == ["svg", "--square-3006", SQUARE]
+    assert codecs.lookup(seen["encoding"]) and codecs.lookup(seen["stderrEncoding"])
+    assert seen["errors"] and seen["isatty"] is False and seen["fileno"] == descriptor
+    job = json.loads(result.read_text(encoding="utf-8"))["jobs"][0]
+    assert job["ok"] and job["report"] == ["a line through the library's stdout"]
+    assert "[lib] a line through the library's stdout" in (tmp_path / "batch.log").read_text(encoding="utf-8")

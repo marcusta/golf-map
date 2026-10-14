@@ -27,14 +27,29 @@ depth (per object), timings, Terrain bounds.
 the conform used to run again for all of them (2.5 minutes on Vreta). So instead of pressing Conform
 to Terrain once for the whole scene, prepare runs the operator's own per-object body (the add-on's
 `flatten_mesh` / `project_mesh` / `fix_failed_projections`, in the operator's order) and caches each
-mesh's result in `<blend folder>/shaping-staging/conform-cache/`, keyed on the mesh's whole
-pre-conform state (`shape_apply.capture_state`, so positions, topology, paint, normals, props - not
-its name), the terrain OBJ's content hash, the conform button, Terrain Smooth, the seed and the
-add-on + engine sources. A hit writes the stored arrays back onto the mesh; a miss conforms and
-stores it. Afrod's retry nudges are seeded per mesh from that state hash instead of once per run, so
-one mesh's result never depends on the ones before it (identical on Vreta: nothing fails to project).
-`--no-conform-cache` (or `GOLFMAP_PREPARE_NO_CONFORM_CACHE=1`) presses the operator button as before;
-the cache is also skipped for a scene with pot bunkers, whose rename pass only the operator does.
+mesh's result in `<blend folder>/shaping-staging/conform-cache/`, keyed on
+
+- the mesh's whole pre-conform state (`shape_apply.capture_state`, so positions, topology, paint,
+  normals, props - not its name) **and its modifier stack** (names + types), which `capture_state`
+  does not see and the conform clears before flattening;
+- the *env*: the conform button, Terrain Smooth, the seed, the add-on + engine sources, the terrain
+  OBJ's content hash, and the state hash of every object a mesh can be projected onto
+  (`CONFORM_TARGETS` = `Outer` for Outerplot meshes, `Terrain` for Spline ones; `target_fingerprints`).
+  The OBJ's hash alone does not cover `Outer`, which OPCD builds inside the `.blend`.
+
+A hit clears the mesh's modifiers (as the operator does), writes the stored arrays back onto it and
+adds the stored `fixed` count - how many vertices Afrod's retry nudged when the result was computed -
+into the report, so a warm run's `fixFailedProjections` reads exactly like the cold run's. A miss
+conforms and stores both. Afrod's retry nudges are seeded per mesh from that state hash instead of
+once per run, so one mesh's result never depends on the ones before it (identical on Vreta: nothing
+fails to project). `--no-conform-cache` (or `GOLFMAP_PREPARE_NO_CONFORM_CACHE=1`) presses the operator
+button as before; the cache is also skipped for a scene with pot bunkers, whose rename pass only the
+operator does.
+
+**Terrain sidecar.** Every run (cache or not) writes `<name>.conformed.terrain.json`: the content sha
+of the terrain.obj the conformed `.blend` holds. `terrain.obj` is regenerated from each DEM export
+(`terrain_obj.py`), so its mtime moves on its own - `shape_worker.conformed_stale` compares the sha,
+not the mtime, and re-prepares only when the terrain really changed.
 """
 
 import argparse
@@ -55,6 +70,7 @@ import shape_apply as sa  # noqa: E402  (capture_state / apply_state / state_has
 
 FORMAT = "golfmap-shape-prepare-v1"
 CACHE_FORMAT = "golfmap-conform-cache-v1"
+TERRAIN_SIDECAR_FORMAT = "golfmap-conformed-terrain-v1"
 # OPCD's flatten_mesh lowers every vertex by this much before projecting; a vertex the projection
 # misses stays there (Afrod's fix_failed_projections looks for exactly this depth, within 1 cm).
 FLATTEN_DEPTH = 100.0
@@ -192,19 +208,79 @@ def terrain_fingerprint(path, folder):
     return sha, time.time() - t0
 
 
-def cache_env_key(conform_op, terrain_sha, terrain_smooth, seed):
-    """Everything besides the mesh itself that decides what the conform makes of it."""
+def terrain_sidecar_path(blend_path):
+    """Where a conformed .blend records the terrain.obj it was conformed against."""
+    return os.path.splitext(blend_path)[0] + ".terrain.json"
+
+
+def write_terrain_sidecar(out_path, source, terrain_path, terrain_sha, targets=None):
+    """Write that sidecar next to `<name>.conformed.blend`; returns its path (None when it cannot be
+    written - it is only a cache hint).
+
+    `terrain.obj` is regenerated from every DEM export (`terrain_obj.py`), so its mtime moves on its own.
+    The content sha here is what `shape_worker.conformed_stale` compares: a terrain rewritten from the
+    same heightmap keeps the conformed cache, a changed one makes it stale."""
+    doc = {"format": TERRAIN_SIDECAR_FORMAT, "blend": os.path.abspath(out_path), "source": source,
+           "terrainObj": os.path.abspath(terrain_path), "terrainSha": terrain_sha,
+           "conformTargets": targets or {},
+           "savedAt": time.strftime("%Y-%m-%dT%H:%M:%S", time.localtime())}
+    path = terrain_sidecar_path(out_path)
+    try:
+        with open(path, "w", encoding="utf-8") as f:
+            json.dump(doc, f, indent=1)
+    except OSError as e:
+        print(f"[shape_prepare] could not write {path}: {e}")
+        return None
+    return path
+
+
+def read_terrain_sidecar(blend_path):
+    """That sidecar, or {} when it is missing or unreadable."""
+    try:
+        with open(terrain_sidecar_path(blend_path), encoding="utf-8") as f:
+            doc = json.load(f)
+    except (OSError, ValueError):
+        return {}
+    return doc if isinstance(doc, dict) and doc.get("format") == TERRAIN_SIDECAR_FORMAT else {}
+
+
+def cache_env_key(conform_op, terrain_sha, terrain_smooth, seed, targets=None):
+    """Everything besides the mesh itself that decides what the conform makes of it: the engine, Blender,
+    the add-on sources, the conform button, Terrain Smooth, the seed, the terrain OBJ's content hash - and
+    `targets`, the state of every object a mesh can be projected onto (`target_fingerprints`)."""
     parts = [CACHE_FORMAT, sa.ENGINE_VERSION, bpy.app.version_string, conform_op,
              "smooth=%.6f" % terrain_smooth, "terrain=" + terrain_sha, "seed=%d" % seed,
              "prepare:" + str(sa._file_sha(os.path.abspath(__file__)))]
     for name in (AFROD_MODULE, OPCD_UTILS_MODULE):
         mod = sys.modules.get(name)
         parts.append(name + ":" + str(sa._file_sha(getattr(mod, "__file__", "") or "") if mod else None))
+    parts.append("targets=" + json.dumps(targets or {}, sort_keys=True))
     return hashlib.sha1("|".join(parts).encode()).hexdigest()
+
+
+# Every object a mesh can be shrinkwrapped onto: the Afrod loop projects Outerplot meshes onto "Outer"
+# (OPCD's outer-plot terrain, built inside the .blend) and Spline meshes onto "Terrain" (terrain.obj).
+# All of them are hashed into the env key - the terrain OBJ's content hash alone does not cover "Outer",
+# so a replaced outer terrain would otherwise still be served the old results.
+CONFORM_TARGETS = ("Outer", "Terrain")
 
 
 def _conform_target(obj):
     return "Outer" if "Outerplot" in obj.name else "Terrain"
+
+
+def target_fingerprints():
+    """(state hash per `CONFORM_TARGETS` object - None when the scene has none, seconds it cost).
+
+    The Shrinkwrap's result is decided by the target's geometry, so the cache's env key must carry it,
+    whole (`shape_apply.capture_state`: positions, topology, the matrix), not just the OBJ the Terrain was
+    imported from."""
+    t0 = time.time()
+    out = {}
+    for name in CONFORM_TARGETS:
+        obj = bpy.data.objects.get(name)
+        out[name] = sa.state_hash(*sa.capture_state(obj)) if obj is not None and obj.type == "MESH" else None
+    return out, time.time() - t0
 
 
 def _conform_funcs(conform_op):
@@ -240,10 +316,14 @@ def conform_reach(conform_op, limit_targets=None):
             and "WaterPlane" not in o.name and "Potwall" not in o.name]
 
 
-def conform_cached(reach, conform_op, override, seed, cache, env, verify_full=False):
-    """Conform every mesh in `reach` through the cache. Returns the cache stats."""
+def conform_cached(reach, conform_op, override, seed, cache, env, verify_full=False, fixed=None):
+    """Conform every mesh in `reach` through the cache. Returns the cache stats.
+
+    `fixed` is the dict `_count_fix_failed` fills on a miss; a hit adds the count stored with the cached
+    result back into it, so the report of a warm run says exactly what a cold run's does."""
     funcs = _conform_funcs(conform_op)
     stats = {"meshes": 0, "hits": 0, "misses": 0, "converted": 0, "renamedHits": 0, "mismatches": [],
+             "fixedHits": 0, "modifiersCleared": 0,
              "hashS": 0.0, "replayS": 0.0, "computeS": 0.0, "storeS": 0.0, "storedBytes": 0}
     order = sorted(reach, key=lambda o: o.name)
     with bpy.context.temp_override(**override):
@@ -268,10 +348,16 @@ def conform_cached(reach, conform_op, override, seed, cache, env, verify_full=Fa
             meta_in, arr_in = sa.capture_state(obj)
             sha_in = sa.state_hash(meta_in, arr_in)
             stats["hashS"] += time.time() - t0
-            key = hashlib.sha1("|".join((env, _conform_target(obj), sha_in)).encode()).hexdigest()
+            # capture_state does not see modifiers and the conform clears them before flattening, so two
+            # inputs that differ only in their stack are different inputs: the stack goes in the key.
+            mods = ",".join("%s:%s" % (m.name, m.type) for m in obj.modifiers)
+            key = hashlib.sha1("|".join((env, _conform_target(obj), sha_in, "mods=" + mods)).encode()).hexdigest()
             entry = cache.load(key)
             if entry is not None:
                 t0 = time.time()
+                if obj.modifiers:  # exactly as the operator - and the miss path - does before flatten/project
+                    obj.modifiers.clear()
+                    stats["modifiersCleared"] += 1
                 ok = _replay(obj, entry, arr_in, verify_full)
                 stats["replayS"] += time.time() - t0
                 if ok:
@@ -279,6 +365,11 @@ def conform_cached(reach, conform_op, override, seed, cache, env, verify_full=Fa
                     # the key is the mesh's state, not its name: a regenerated .blend that renamed or
                     # renumbered an otherwise identical mesh still hits
                     stats["renamedHits"] += int(entry[0].get("object") != obj.name)
+                    n_fixed = int(entry[0].get("fixed") or 0)
+                    if n_fixed:
+                        stats["fixedHits"] += 1
+                        if fixed is not None:  # the retry the cached result already carries, in the report
+                            fixed[obj.name] = fixed.get(obj.name, 0) + n_fixed
                     continue
                 stats["mismatches"].append(obj.name)
                 sa.apply_state(obj.name, meta_in, arr_in)  # put the input back, then compute
@@ -286,24 +377,28 @@ def conform_cached(reach, conform_op, override, seed, cache, env, verify_full=Fa
                 bpy.context.view_layer.objects.active = obj
             t0 = time.time()
             random.seed(sha_in + ":%d" % seed)  # per mesh: no mesh depends on the ones before it
+            was_fixed = (fixed or {}).get(obj.name, 0)
             _conform_one(obj, funcs)
+            n_fixed = (fixed or {}).get(obj.name, 0) - was_fixed
             stats["misses"] += 1
             stats["computeS"] += time.time() - t0
             t0 = time.time()
-            stats["storedBytes"] += _store(cache, key, obj, meta_in, arr_in, sha_in)
+            stats["storedBytes"] += _store(cache, key, obj, meta_in, arr_in, sha_in, n_fixed)
             stats["storeS"] += time.time() - t0
     for k in ("hashS", "replayS", "computeS", "storeS"):
         stats[k] = round(stats[k], 1)
     return stats
 
 
-def _store(cache, key, obj, meta_in, arr_in, sha_in):
+def _store(cache, key, obj, meta_in, arr_in, sha_in, n_fixed=0):
+    """Keep this mesh's conform result. `fixed` is how many vertices Afrod's retry had to nudge: the
+    arrays carry the nudge, but only the count makes a hit's report read like the miss that stored it."""
     meta_out, arr_out = sa.capture_state(obj)
     changed = {k: v for k, v in arr_out.items()
                if k not in arr_in or not np.array_equal(v, arr_in[k])}
     meta = {"format": CACHE_FORMAT, "object": obj.name, "target": _conform_target(obj),
             "in": sha_in, "out": sa.state_hash(meta_out, arr_out), "meta": meta_out,
-            "arrayKeys": sorted(arr_out), "changed": sorted(changed)}
+            "fixed": int(n_fixed), "arrayKeys": sorted(arr_out), "changed": sorted(changed)}
     cache.store(key, meta, changed)
     try:
         return os.path.getsize(cache.path(key))
@@ -380,18 +475,26 @@ def run(terrain_path, out_path, conform_op="afrod", limit=None, seed=0, cache=Tr
         cache = False
     cache_dir = cache_dir or cache_dir_for(source)
 
+    # Always: the sidecar next to the conformed .blend records which terrain.obj it holds, so the worker
+    # can tell a regenerated terrain from a rewritten one without a cache (`shape_worker.conformed_stale`).
+    terrain_sha, terrain_hash_s = terrain_fingerprint(terrain_path, cache_dir)
+    conform_targets, targets_hash_s = {}, 0.0
+
     t0 = time.time()
     fixed, restore = _count_fix_failed() if conform_op == "afrod" else (None, lambda: None)
     try:
         if cache:
-            terrain_sha, hash_s = terrain_fingerprint(terrain_path, cache_dir)
-            env = cache_env_key(conform_op, terrain_sha, float(_tool_props(conform_op).terrainsmooth), seed)
+            conform_targets, targets_hash_s = target_fingerprints()
+            env = cache_env_key(conform_op, terrain_sha, float(_tool_props(conform_op).terrainsmooth), seed,
+                                conform_targets)
             reach = conform_reach(conform_op, targets if limit else None)
             print(f"[shape_prepare] conform cache {cache_dir} (env {env[:12]}, {len(reach)} objects)")
             stats = conform_cached(reach, conform_op, override, seed, sa.OpCache(cache_dir), env,
-                                   verify_full=bool(os.environ.get("GOLFMAP_PREPARE_VERIFY_CACHE")))
+                                   verify_full=bool(os.environ.get("GOLFMAP_PREPARE_VERIFY_CACHE")),
+                                   fixed=fixed)
             cache_report = dict(stats, used=True, dir=cache_dir, env=env, terrainSha=terrain_sha,
-                                terrainHashS=round(hash_s, 1))
+                                terrainHashS=round(terrain_hash_s, 1), targets=conform_targets,
+                                targetHashS=round(targets_hash_s, 1))
             _tool_props(conform_op).conform_selection_type = "Selected"  # as the operator leaves it
         else:
             conform(targets, conform_op, all_meshes=not limit, override=override, seed=seed)
@@ -422,12 +525,16 @@ def run(terrain_path, out_path, conform_op="afrod", limit=None, seed=0, cache=Tr
     os.makedirs(out_dir, exist_ok=True)
     bpy.ops.wm.save_as_mainfile(filepath=out_path, copy=True)
     t_save = time.time() - t0
+    sidecar = write_terrain_sidecar(out_path, source, terrain_path, terrain_sha, conform_targets)
 
     return {
         "format": FORMAT,
         "source": source,
         "out": os.path.abspath(out_path),
         "terrainObj": os.path.abspath(terrain_path),
+        "terrainSha": terrain_sha,
+        "terrainSidecar": sidecar,
+        "conformTargets": conform_targets,
         "conformOp": ("wm.projectmesh (Afrod Mod v4)" if conform_op == "afrod" else "opcd.projectmesh (OPCD Base)")
                      + (", per mesh through the conform cache" if cache_report["used"] else ""),
         "cache": cache_report,
@@ -467,14 +574,22 @@ def summary(report):
                      "of {meshes} meshes ({converted} only converted); "
                      "hash {hashS} s, replay {replayS} s, compute {computeS} s, store {storeS} s "
                      "({storedBytes:.0f} MB written)".format(**dict(c, storedBytes=c["storedBytes"] / 1e6)))
+        lines.append("  conform targets {}; hashed in {} s{}".format(
+            ", ".join("%s %s" % (k, (v or "-")[:12]) for k, v in sorted((c.get("targets") or {}).items())) or "none",
+            c.get("targetHashS"),
+            "; modifiers cleared on %d hits" % c["modifiersCleared"] if c.get("modifiersCleared") else ""))
         if c["mismatches"]:
             lines.append(f"  !! {len(c['mismatches'])} cached results did not verify and were recomputed: "
                          f"{c['mismatches'][:5]}")
     elif c.get("skipped"):
         lines.append("Conform cache off: " + c["skipped"])
+    if report.get("terrainSha"):
+        lines.append(f"terrain.obj sha {report['terrainSha'][:12]}"
+                     + (f" -> {report['terrainSidecar']}" if report.get("terrainSidecar") else ""))
     fx = report["fixFailedProjections"]
     if fx is not None:
-        lines.append(f"fix_failed_projections found {fx['vertices']} missed vertices in {fx['objects']} objects")
+        lines.append(f"fix_failed_projections found {fx['vertices']} missed vertices in {fx['objects']} objects"
+                     + (" (%d of them replayed from the cache)" % c["fixedHits"] if c.get("fixedHits") else ""))
     lines.append(f"Left at the flatten depth: {report['failedVertices']} vertices in {report['failedObjects']} objects")
     for f in report["failures"][:20]:
         lines.append(f"  !! {f['object']}: {f.get('error') or str(f['vertices']) + ' of ' + str(f['of'])}")

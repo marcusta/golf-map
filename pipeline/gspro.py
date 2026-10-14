@@ -297,7 +297,11 @@ class _BatchCache:
     def cached(self, slot: str, key, build, *, sizeof=None, copy=None):
         """The value for `key` in `slot`, from `build()` on a miss. `sizeof`
         measures a big value against the budget; `copy` is applied on the way
-        in and out when the caller may change what it gets."""
+        in and out when the caller may change what it gets.
+
+        The budget is decided BEFORE the copy: a value the cache will not keep
+        is handed over as it was built, so an 8192² ortho window (200 MB, over
+        the `demWindows` budget) is never duplicated just to be dropped."""
         store = self.slots[slot]
         hit = key in store
         self.counts[slot][0 if hit else 1] += 1
@@ -305,15 +309,21 @@ class _BatchCache:
             value = store[key]
             return copy(value) if copy is not None else value
         value = build()
-        self.put(slot, key, copy(value) if copy is not None else value,
-                 sizeof(value) if sizeof is not None else 0)
+        size = sizeof(value) if sizeof is not None else 0
+        if self.fits(slot, size):
+            self.put(slot, key, copy(value) if copy is not None else value, size)
         return value
+
+    def fits(self, slot: str, size: int) -> bool:
+        """Whether a value of `size` bytes may be kept: inside the slot's own
+        limit and inside what the whole cache may hold."""
+        return (size <= BATCH_VALUE_MAX_BYTES.get(slot, BATCH_VALUE_DEFAULT_MAX_BYTES)
+                and self.bytes + size <= BATCH_BUDGET_BYTES)
 
     def put(self, slot: str, key, value, size: int = 0) -> None:
         """Keep `value` under `key` unless it busts the slot's or the whole
         cache's budget — a value too big is still handed back, just not held."""
-        if (size <= BATCH_VALUE_MAX_BYTES.get(slot, BATCH_VALUE_DEFAULT_MAX_BYTES)
-                and self.bytes + size <= BATCH_BUDGET_BYTES):
+        if self.fits(slot, size):
             self.slots[slot][key] = value
             self.bytes += size
 
@@ -6441,7 +6451,14 @@ BATCH_FORMAT = "golfmap-gspro-batch-v1"
 class _JobOut(io.TextIOBase):
     """One job's stdout and stderr: every finished line is kept for the result
     file and written through to the real stdout prefixed with the job's id, so
-    a batch log reads like the separate runs it replaces."""
+    a batch log reads like the separate runs it replaces.
+
+    It also answers the questions a library asks of `sys.stdout` before it
+    prints — `encoding`, `errors`, `isatty()`, `fileno()` — which a bare
+    `TextIOBase` answers with None or by raising. The text really does go
+    through the real stream's codec, so `encoding` and `errors` are its own
+    (utf-8 / strict when it has none): a library that checks whether it may
+    print a glyph gets the truth, not a promise this stream cannot keep."""
 
     def __init__(self, job_id: str, stream) -> None:
         self.lines: list[str] = []
@@ -6451,6 +6468,26 @@ class _JobOut(io.TextIOBase):
 
     def writable(self) -> bool:
         return True
+
+    @property
+    def encoding(self) -> str:
+        return getattr(self._stream, "encoding", None) or "utf-8"
+
+    @property
+    def errors(self) -> str:
+        return getattr(self._stream, "errors", None) or "strict"
+
+    def isatty(self) -> bool:
+        return False
+
+    def fileno(self) -> int:
+        """The real stream's descriptor: a subprocess handed it writes into the
+        batch log (unprefixed, but there), and only a real stream without one
+        makes this raise — as `sys.stdout` itself would have."""
+        try:
+            return self._stream.fileno()
+        except (AttributeError, OSError, ValueError):   # incl. io.UnsupportedOperation
+            raise io.UnsupportedOperation("fileno")
 
     def write(self, text: str) -> int:
         self._partial += text

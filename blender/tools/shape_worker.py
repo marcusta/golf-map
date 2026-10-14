@@ -22,7 +22,8 @@ takes an hour needs no held connection.
   answer the old blocking call returned, `error` its message.
 - GET /job/<id> -> that job alone, in the same shape (404 when this worker never ran it; the last few are kept).
 - POST /load {blend?, layersDir?, fbxFolder?, cache?, syncFbx?} -> open the conformed cache (running
-  shape_prepare first when it is missing or older than the source .blend), apply every layer (op-result cache:
+  shape_prepare first when it is missing, older than the source .blend, or conformed against a terrain.obj
+  whose content sha is not the one on disk now - `conformed_stale`), apply every layer (op-result cache:
   a cold load replays unchanged ops from <blend folder>/shaping-staging/cache), keep per-object snapshots, write
   shaping-report.json. syncFbx: also bring fbxFolder in step with the whole shaped course (fbx_sync).
 - POST /sync {dryRun?} -> re-read the layer files, diff the ops against the applied ones by layer:id + content,
@@ -80,6 +81,63 @@ class HttpError(Exception):
     def __init__(self, code, message):
         super().__init__(message)
         self.code = code
+
+
+# ------------------------------------------------------------ is the conformed cache still good?
+
+
+def terrain_obj_for(blend):
+    """The terrain OBJ a course's conform uses: `terrain.obj` next to the .blend, as shape_prepare's own
+    default. Regenerated from every DEM export by `terrain_obj.py`."""
+    return os.path.join(os.path.dirname(os.path.abspath(blend)), "terrain.obj")
+
+
+def conformed_stale(source, conformed, terrain=None):
+    """(stale, why) for a `<name>.conformed.blend`: must shape_prepare run again?
+
+    Three inputs decide what the conformed cache holds, and all three are checked:
+
+    - the conformed .blend itself - missing, so there is nothing to use;
+    - the source course .blend (OPCD regenerates it with new meshes, new names) - by mtime, which also
+      covers the `Outer` outer-plot terrain, since OPCD builds that inside the source .blend;
+    - `terrain.obj`, which `terrain_obj.py` rewrites from every DEM export, so its mtime moves even when
+      the heightmap did not. Compared by CONTENT: `shape_prepare` records the OBJ's sha1 in
+      `<name>.conformed.terrain.json` (and in the prepare report next to it), and that is what is
+      compared, so a terrain rewritten byte-for-byte the same keeps a 2.5-minute conform. Only when no
+      sha was ever recorded (a conformed .blend from before this sidecar) does the mtime decide.
+    """
+    if not conformed or not os.path.isfile(conformed):
+        return True, f"no conformed cache {conformed}"
+    if source and os.path.isfile(source) and os.path.getmtime(source) > os.path.getmtime(conformed):
+        return True, f"{os.path.basename(source)} is newer than {os.path.basename(conformed)}"
+    terrain = terrain or terrain_obj_for(source or conformed)
+    if not os.path.isfile(terrain):
+        return False, ""   # nothing to conform against; prepare would fail on it anyway
+    import shape_prepare
+    recorded = shape_prepare.read_terrain_sidecar(conformed).get("terrainSha") or _reported_terrain_sha(conformed)
+    if not recorded:
+        if os.path.getmtime(terrain) > os.path.getmtime(conformed):
+            return True, (f"{os.path.basename(terrain)} is newer than {os.path.basename(conformed)} "
+                          "and no terrain sha was recorded for it")
+        return False, ""
+    sha, _ = shape_prepare.terrain_fingerprint(terrain, shape_prepare.cache_dir_for(source or conformed))
+    if sha != recorded:
+        return True, (f"{os.path.basename(terrain)} changed: sha {sha[:12]} now, "
+                      f"{recorded[:12]} when {os.path.basename(conformed)} was conformed")
+    return False, ""
+
+
+def _reported_terrain_sha(conformed):
+    """The terrain sha out of the prepare report the worker writes next to a conformed .blend, for a cache
+    whose sidecar is gone (or that predates it)."""
+    try:
+        with open(os.path.splitext(conformed)[0] + ".json", encoding="utf-8") as f:
+            rep = json.load(f)
+    except (OSError, ValueError):
+        return None
+    if not isinstance(rep, dict):
+        return None
+    return rep.get("terrainSha") or (rep.get("cache") or {}).get("terrainSha")
 
 
 class Job:
@@ -228,29 +286,29 @@ class Worker:
         return blend, os.path.splitext(blend)[0] + ".conformed.blend"
 
     def ensure_conformed(self, blend):
-        """(source, conformed, prepare report or None). Runs shape_prepare when the conformed cache is missing or
-        older than its source .blend (a regenerated course). shape_prepare's own per-mesh conform cache
+        """(source, conformed, prepare report or None). Runs shape_prepare when `conformed_stale` says the
+        conformed cache no longer matches its inputs. shape_prepare's own per-mesh conform cache
         (`<blend folder>/shaping-staging/conform-cache`) then conforms only the meshes whose flat input
         changed, so a regenerated .blend costs seconds per changed mesh instead of the whole course."""
         source, conformed = self.resolve_blend(blend)
-        stale = not os.path.isfile(conformed) or (
-            source and os.path.isfile(source) and os.path.getmtime(source) > os.path.getmtime(conformed))
+        stale, why = conformed_stale(source, conformed)
         if not stale:
             return source, conformed, None
         if not source or not os.path.isfile(source):
             raise HttpError(400, f"no conformed cache {conformed} and no source .blend to prepare it from")
         import shape_prepare
         self.set_status(phase="prepare: opening " + os.path.basename(source))
-        print(f"[shape_worker] preparing {conformed} from {source}")
+        print(f"[shape_worker] preparing {conformed} from {source} ({why})")
         bpy.ops.wm.open_mainfile(filepath=source)
         self.set_status(phase="prepare: import terrain + conform")
-        rep = shape_prepare.run(os.path.join(os.path.dirname(source), "terrain.obj"), conformed)
+        rep = shape_prepare.run(terrain_obj_for(source), conformed)
         with open(os.path.splitext(conformed)[0] + ".json", "w", encoding="utf-8") as f:
             json.dump(rep, f, indent=1)
         print("[shape_worker]\n" + shape_prepare.summary(rep))
         cache = rep.get("cache") or {}
         return source, conformed, dict(
             {k: rep[k] for k in ("out", "conformed", "failedObjects", "timings")},
+            stale=why, terrainSha=rep.get("terrainSha"),
             conformCache={k: cache.get(k) for k in ("used", "hits", "misses", "skipped")})
 
     def op_list(self, layers_dir):
