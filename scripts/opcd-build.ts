@@ -51,6 +51,7 @@
 //   --out <folder>      where the .blend goes (default the course's export folder)
 //   --opcd-name <name>  the course's Course Name in OPCD, for this run
 //   --dry-run           walk to the SVG Jobs tab, print the job table, submit nothing
+//   --attach            submit nothing: wait for the newest job already in the table and download it
 //   --timeout <min>     cap on the build wait (default 8)
 //   --headed            show the browser (a real run is headless)
 //   --url <url>         override the start page (the launch proof uses `about:blank`)
@@ -89,7 +90,7 @@
 import * as path from 'node:path';
 import { spawn } from 'node:child_process';
 import { existsSync } from 'node:fs';
-import { mkdir, readdir, stat, writeFile } from 'node:fs/promises';
+import { mkdir, readdir, rename, rm, stat, writeFile } from 'node:fs/promises';
 import { fileURLToPath } from 'node:url';
 import { chromium, type BrowserContext, type Download, type Locator, type Page } from '@playwright/test';
 
@@ -189,6 +190,8 @@ export interface BuildArgs {
     opcdName: string | null;
     /** `--dry-run`: walk to the SVG Jobs tab and print the jobs, submit nothing. */
     dryRun: boolean;
+    /** `--attach`: submit nothing; wait for the newest job already in the table and download it. */
+    attach: boolean;
     /** `--timeout` in ms (from the submit). */
     timeoutMs: number;
     url: string | null;
@@ -228,6 +231,7 @@ export function parseArgs(argv: string[]): Args | { error: string } {
     let opcdName: string | null = null;
     let headless: boolean | null = null;
     let dryRun = false;
+    let attach = false;
     let timeoutMs = BUILD_TIMEOUT_MS;
     for (let i = 0; i < argv.length; i++) {
         const a = argv[i]!;
@@ -244,6 +248,7 @@ export function parseArgs(argv: string[]): Args | { error: string } {
         else if (a === '--headless') headless = true;
         else if (a === '--headed') headless = false;
         else if (a === '--dry-run') dryRun = true;
+        else if (a === '--attach') attach = true;
         else if (VALUE_FLAGS.has(a)) {
             const v = value();
             if (v === null) return { error: `${a} needs a value` };
@@ -265,7 +270,7 @@ export function parseArgs(argv: string[]): Args | { error: string } {
         return { mode: 'setup', course, url };
     }
     if (!course) return { error: 'name a course (or --setup to record a hand-run)' };
-    return { mode: 'build', course, svg, out, headless: headless ?? true, opcdName, dryRun, timeoutMs, url };
+    return { mode: 'build', course, svg, out, headless: headless ?? true, opcdName, dryRun, attach, timeoutMs, url };
 }
 
 // ───────────────────────────── the recording ─────────────────────────────
@@ -671,9 +676,16 @@ export async function openSvgJobsTab(page: Page, opcdName: string, deps: BuildDe
         throw new PageChanged('dashboard', `the course dashboard has no '${SVG_JOBS_TAB}' tab `
             + `(is '${opcdName}' the right course? its dashboard should read "Course: ${opcdName}")`);
     }
-    await tab.click();
-    // The submit box is what says the tab is really open, not just clicked.
-    await visibleText(page, /submit new svg job/i, false).waitFor({ timeout: STEP_TIMEOUT_MS }).catch(() => undefined);
+    // The submit box is what says the tab is really open, not just clicked: ZK sometimes
+    // takes the first click as a focus only, so the tab is clicked once more when the box
+    // does not come, and a tab that never opens is an error, not a shrug.
+    let opened = false;
+    for (let attempt = 1; attempt <= 2 && !opened; attempt++) {
+        await tab.click();
+        opened = await visible(visibleText(page, /submit new svg job/i, false), STEP_TIMEOUT_MS / 2);
+        if (!opened) deps.log(`the '${SVG_JOBS_TAB}' tab did not open on click ${attempt}`);
+    }
+    if (!opened) throw new PageChanged('dashboard', `the '${SVG_JOBS_TAB}' tab was clicked twice and never showed "Submit New SVG Job"`);
     deps.log(`SVG Jobs tab of '${opcdName}'`);
 }
 
@@ -744,7 +756,7 @@ export async function uploadSvg(page: Page, svgPath: string, deps: BuildDeps): P
     }
     // The upload is done when the box names the file instead of "No file selected".
     await visibleText(page, name, false)
-        .waitFor({ state: 'visible', timeout: DOWNLOAD_TIMEOUT_MS })
+        .waitFor({ state: 'visible', timeout: STEP_TIMEOUT_MS * 4 })
         .catch(() => { throw new PageChanged('upload', `the page never showed '${name}' after the upload — it may still read "No file selected"`); });
     deps.log(`uploaded ${name}`);
 }
@@ -757,19 +769,21 @@ export async function uploadSvg(page: Page, svgPath: string, deps: BuildDeps): P
  */
 export async function startBuild(page: Page, description: string, deps: BuildDeps): Promise<SvgJob[]> {
     const before = await readJobs(page);
-    const field = page.getByLabel(/description/i).first();
+    // The Description box is known by its placeholder: the page's FIRST text box is the
+    // global search (Alt+G), and typing there opens a popup that then covers the Submit
+    // button. No placeholder, no description — never "the first input".
+    const field = page.getByPlaceholder(/optional description/i).first();
     if (await visible(field, STEP_TIMEOUT_MS / 2)) {
         await field.fill(description);
     } else {
-        // ZK's label may not be tied to the input: the one text box in the submit box.
-        const box = page.locator('input[type=text]').first();
-        if (await box.count() > 0) await box.fill(description);
-        else deps.log('  (no Description field found — submitting without one)');
+        deps.log('  (no Description field found — submitting without one)');
     }
     const submit = page.getByRole('button', { name: /submit svg job/i }).first();
     if (!await visible(submit, STEP_TIMEOUT_MS)) {
         throw new PageChanged('submit', 'no button reads "Submit SVG Job"');
     }
+    // Any open ZK popup (the search bandbox, a dropdown) would intercept the click.
+    await page.keyboard.press('Escape').catch(() => undefined);
     await submit.click();
     deps.log(`submitted '${description}' (${before.length} job(s) in the table before it)`);
     return before;
@@ -826,9 +840,11 @@ export async function readJobs(page: Page): Promise<SvgJob[]> {
     const jobs: SvgJob[] = [];
     for (const row of candidates) {
         const cells = await rowCells(row);
-        const byRole = await row.getByRole('button').allTextContents().catch(() => [] as string[]);
+        // Download is a link and Re-submit a button (ZK): take both roles and the words, once each.
+        const byRole = [...await row.getByRole('button').allTextContents().catch(() => [] as string[]), ...await row.getByRole('link').allTextContents().catch(() => [] as string[])];
         // ZK's job-table buttons are not <button>s: read the words in the Actions cell instead.
-        const buttons = byRole.length ? byRole : await row.getByText(ACTION_WORDS).allTextContents().catch(() => [] as string[]);
+        const byText = await row.getByText(ACTION_WORDS).allTextContents().catch(() => [] as string[]);
+        const buttons = [...new Set([...byRole, ...byText].map((b) => b.trim()).filter(Boolean))];
         const job = jobFromCells(jobs.length, cells, buttons);
         if (job) jobs.push(job);
     }
@@ -915,22 +931,65 @@ export async function downloadBlend(
 ): Promise<{ file: string; megabytes: number; seconds: number }> {
     await mkdir(opts.outDir, { recursive: true });
     const t0 = deps.now();
-    const button = page.locator('tr').filter({ hasText: job.created }).first()
-        .getByText(/^ *download *$/i).first();
-    const [download] = await Promise.all([
-        page.waitForEvent('download', { timeout: DOWNLOAD_TIMEOUT_MS }),
-        button.click(),
-    ]);
+    // "Download" is a plain link (`<a class="z-a" target="_blank" href="https://app.opcdgolf.com/
+    // files/<hash>?filename=vreta_svg.zip">`), and the first row holding the job's time can be a
+    // hidden copy, so nothing is clicked: the href is read off any such row and fetched with the
+    // browser's own session. The file is a zip with the .blend inside.
+    const links = await page.locator('tr').filter({ hasText: job.created }).locator('a', { hasText: /download/i }).all();
+    let href: string | null = null;
+    for (const link of links) {
+        const h = await link.getAttribute('href').catch(() => null);
+        if (h && /\/files\//.test(h)) { href = h; break; }
+    }
+    if (!href) throw new PageChanged('download', `the row of ${job.created} has no Download link with a /files/ address`);
+    const fileName = new URL(href).searchParams.get('filename') || 'opcd-download.zip';
+    const zipPath = path.join(opts.outDir, `.opcd-${Date.now()}-${fileName}`);
+    deps.log(`downloading ${fileName} (${href})`);
+    const res = await page.request.get(href, { timeout: DOWNLOAD_TIMEOUT_MS });
+    if (!res.ok()) throw new PageChanged('download', `${href} answered ${res.status()} ${res.statusText()}`);
+    await writeFile(zipPath, await res.body());
     const existing = await readdir(opts.outDir);
-    const to = path.join(opts.outDir, nextBlendName(existing, opts.prefix, download.suggestedFilename()));
-    deps.log(`downloading ${download.suggestedFilename() || '(unnamed)'} -> ${to}`);
-    await download.saveAs(to);
+    let to: string;
+    if (/\.zip$/i.test(fileName)) {
+        const unzipDir = path.join(opts.outDir, `.opcd-unzip-${Date.now()}`);
+        await unzip(zipPath, unzipDir);
+        const blends = (await readdir(unzipDir)).filter((f) => /\.blend$/i.test(f));
+        if (!blends.length) throw new PageChanged('download', `${fileName} holds no .blend (${(await readdir(unzipDir)).join(', ') || 'empty'})`);
+        const inner = blends[0]!;
+        to = path.join(opts.outDir, nextBlendName(existing, opts.prefix, inner));
+        await rename(path.join(unzipDir, inner), to);
+        // OPCD's build log rides along as <blend>.opcd-log.txt (what it cut, warnings).
+        const logs = (await readdir(unzipDir)).filter((f) => /log.*\.txt$/i.test(f));
+        if (logs[0]) await rename(path.join(unzipDir, logs[0]), to.replace(/\.blend$/i, '.opcd-log.txt'));
+        await rm(unzipDir, { recursive: true, force: true });
+        await rm(zipPath, { force: true });
+        deps.log(`${fileName} -> ${inner} -> ${to}`);
+    } else {
+        to = path.join(opts.outDir, nextBlendName(existing, opts.prefix, fileName));
+        await rename(zipPath, to);
+    }
     const size = await stat(to);
     return {
         file: to,
         megabytes: Math.round(size.size / 1e6),
         seconds: Math.round((deps.now() - t0) / 1000),
     };
+}
+
+/**
+ * Expand a zip with `tar`: Windows 10+ ships bsdtar, which reads zip files, and PowerShell 5's
+ * Expand-Archive module does not load on every box (it did not here).
+ */
+export async function unzip(zipPath: string, toDir: string): Promise<void> {
+    await mkdir(toDir, { recursive: true });
+    // Windows: its own bsdtar (System32), not the GNU tar Git puts first on PATH, which cannot read zip.
+    const tar = process.platform === 'win32' ? path.join(process.env.SystemRoot ?? 'C:\Windows', 'System32', 'tar.exe') : 'tar';
+    const command = [tar, '-xf', zipPath, '-C', toDir];
+    await new Promise<void>((resolve, reject) => {
+        const child = spawn(command[0]!, command.slice(1), { stdio: ['ignore', 'inherit', 'inherit'] });
+        child.on('error', reject);
+        child.on('close', (code) => (code === 0 ? resolve() : reject(new Error(`${command[0]} exited with ${code}`))));
+    });
 }
 
 /** The description the submit writes, so a job in the table can be traced back to a run. */
@@ -1267,15 +1326,34 @@ async function main(): Promise<void> {
             console.log('\ndry run: nothing was submitted');
             return;
         }
-        await uploadSvg(page, svg, deps);
-        const before = await startBuild(page, jobDescription(course.name), deps);
-        const job = await waitForBuild(svgJobsLook(page, opcdName, deps), before, deps, { timeoutMs: parsed.timeoutMs });
+        let before: SvgJob[];
+        let firstLookMs: number | undefined;
+        if (parsed.attach) {
+            // The newest row is the job to follow: everything under it counts as "before".
+            const jobs = await readJobs(page);
+            if (!jobs.length) throw new PageChanged('attach', 'the job table is empty: nothing to attach to');
+            console.log(`attached to ${jobs[0]!.created}  ${jobs[0]!.status}  ${jobs[0]!.name}`);
+            before = jobs.slice(1);
+            firstLookMs = 0;
+        } else {
+            await uploadSvg(page, svg, deps);
+            before = await startBuild(page, jobDescription(course.name), deps);
+        }
+        const job = await waitForBuild(svgJobsLook(page, opcdName, deps), before, deps, { timeoutMs: parsed.timeoutMs, firstLookMs });
         const got = await downloadBlend(page, job, { outDir, prefix: blendPrefix(course.name) }, deps);
         const seconds = Math.round((Date.now() - t0) / 1000);
         console.log(`\ndone in ${Math.floor(seconds / 60)} min ${seconds % 60} s: ${got.file} `
             + `(${got.megabytes} MB in ${got.seconds} s)`);
         console.log('next, by hand: open it in Blender (the shaping replay), then '
             + `bun run gspro:update -- ${course.id} meshes`);
+    } catch (e) {
+        // What the page looked like when it went wrong, next to the recordings.
+        const dir = path.join(ROOT, 'data', RECORDING_DIR, `fail-${new Date().toISOString().replace(/[:.]/g, '-')}`);
+        await mkdir(dir, { recursive: true }).catch(() => undefined);
+        await page.screenshot({ path: path.join(dir, 'page.png'), fullPage: true }).catch(() => undefined);
+        await writeFile(path.join(dir, 'page.html'), await page.content().catch(() => ''), 'utf8').catch(() => undefined);
+        console.error(`the page at the failure: ${dir} (page.png, page.html)`);
+        throw e;
     } finally {
         await context.close().catch(() => undefined);
     }

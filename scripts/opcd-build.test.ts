@@ -76,7 +76,7 @@ describe('the command line', () => {
     test('a build run: the course, headless, the 8 min cap', () => {
         expect(parseArgs(['vreta'])).toEqual({
             mode: 'build', course: 'vreta', svg: null, out: null, headless: true,
-            opcdName: null, dryRun: false, timeoutMs: 8 * 60_000, url: null,
+            opcdName: null, dryRun: false, attach: false, timeoutMs: 8 * 60_000, url: null,
         });
         expect(parseArgs(['vreta', '--headed'])).toMatchObject({ headless: false });
         expect(parseArgs(['vreta', '--headed', '--headless'])).toMatchObject({ headless: true });
