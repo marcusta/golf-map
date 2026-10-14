@@ -53,8 +53,9 @@ function gate() {
 
 /**
  * The pipeline stand-in: records every invocation and writes what the real
- * commands write — `--out`, plus the `.json` sidecar `gspro.py dem` leaves
- * next to a heightmap (which is what makes the chains' prerequisites real).
+ * commands write — `--out`, plus the `.raw` heightmap and the `.json` sidecar
+ * `gspro.py dem` leaves next to it (which is what makes the chains'
+ * prerequisites, and the exports' input fingerprints, real).
  */
 function pipelineRunner(opts: { hold?: Promise<void>; holdFor?: string } = {}) {
     const calls: string[][] = [];
@@ -65,10 +66,25 @@ function pipelineRunner(opts: { hold?: Promise<void>; holdFor?: string } = {}) {
         const command = args[1] === 'golfpipe' ? args[2]! : args[1]!;
         if (opts.hold && opts.holdFor === command) await opts.hold;
         const out = flag(args, '--out');
+        // A vegetation generator (`<name>_zones.py`): its GeoJSON, with nothing in it.
+        if (out && path.basename(args[0]!).endsWith('_zones.py')) {
+            await writeFile(out, JSON.stringify({ type: 'FeatureCollection', features: [] }));
+            return { code: 0, stdout: `${path.basename(args[0]!)}: 0 zones\n`, stderr: '' };
+        }
         if (out) {
             await mkdir(path.dirname(out), { recursive: true });
             await writeFile(out, command === 'svg' ? '<svg/>' : '{}');
-            if (command === 'dem') await writeFile(`${out}.json`, JSON.stringify({ minM: 80, maxM: 140 }));
+            if (command === 'dem') {
+                await writeFile(`${out}.json`, JSON.stringify({ minM: 80, maxM: 140 }));
+                await writeFile(out.replace(/\.tif$/, '.raw'), 'raw');
+            }
+            if (command === 'ortho') {
+                // The darkened terrain twin and, with the tint, the -meshes file Unity takes.
+                for (const name of ['--terrain-out', '--tint-out']) {
+                    const twin = flag(args, name);
+                    if (twin) await writeFile(twin, 'jpg');
+                }
+            }
         }
         const outDir = flag(args, '--out-dir');
         if (outDir) {
@@ -102,7 +118,12 @@ function mapBuildRunner() {
     return { steps, runner };
 }
 
-/** A Unity editor whose active GolfMap course exports to `exportFolder`, on the bridge protocol. */
+/**
+ * A Unity editor whose active GolfMap course exports to `exportFolder`, on the
+ * bridge protocol. A command run with `save: true` answers with the
+ * `saved: {scenes, seconds}` the real bridge puts in its result
+ * (unity/README.md, "Saving what a command changed").
+ */
 function fakeEditor(exportFolder: string, projectName = 'linkan_v4') {
     const calls: Array<{ command: string; args: any }> = [];
     const server = Bun.serve({
@@ -112,16 +133,17 @@ function fakeEditor(exportFolder: string, projectName = 'linkan_v4') {
             const command = decodeURIComponent(new URL(req.url).pathname.replace('/cmd/', ''));
             const args = await req.json();
             calls.push({ command, args });
+            const saved = args?.save === true ? { saved: { scenes: ['Assets/Scenes/Linkan.unity'], seconds: 0.4 } } : {};
             if (command === 'golfmap.course') return Response.json({ ok: true, result: { active: { name: 'Linkan', exportFolder } } });
             if (command === 'golfmap.terrain.update') {
-                return Response.json({ ok: true, result: { terrains: [{ terrain: args.terrain, sidecar: INNER_SIDECAR, source: 'raw', movedM2: 0, maxMoveM: 0 }] } });
+                return Response.json({ ok: true, result: { terrains: [{ terrain: args.terrain, sidecar: INNER_SIDECAR, source: 'raw', movedM2: 0, maxMoveM: 0 }], ...saved } });
             }
             if (command === 'golfmap.orthos.apply') {
-                return Response.json({ ok: true, result: { target: 'Assets/Terrain/x.jpg', renderers: 761, status: 'backup x.jpg' } });
+                return Response.json({ ok: true, result: { target: 'Assets/Terrain/x.jpg', renderers: 761, status: 'backup x.jpg', ...saved } });
             }
-            if (command === 'golfmap.trees.plant') return Response.json({ ok: true, result: { terrain: args.terrain, status: `Planted the ${args.terrain} trees` } });
-            if (command === 'golfmap.creeks.import') return Response.json({ ok: true, result: { status: 'Imported 13 creeks' } });
-            return Response.json({ ok: true, result: { status: `${command} ok` } });
+            if (command === 'golfmap.trees.plant') return Response.json({ ok: true, result: { terrain: args.terrain, status: `Planted the ${args.terrain} trees`, ...saved } });
+            if (command === 'golfmap.creeks.import') return Response.json({ ok: true, result: { status: 'Imported 13 creeks', ...saved } });
+            return Response.json({ ok: true, result: { status: `${command} ok`, ...saved } });
         },
     });
     cleanup.push(() => server.stop(true));
@@ -572,6 +594,62 @@ test('a failing chain fails the job at its phase and leaves the record alone', a
     expect(job.phases.find(p => p.id === 'trees:unity')!.status).toBe('skipped');
     expect(job.step).toMatch(/^failed \(tree files\)/);
     expect(await Bun.file(path.join(t.exportDir, SYNC_RECORD_FILE)).exists()).toBe(false);
+});
+
+test('every Unity push a chain makes runs with save: true, and the report names the scene it saved', async () => {
+    const t = await setup({ unity: true });
+    const sources = await buildSite(t, ['dem.tif', 'dem-edited.tif', 'outer-dem.tif', 'ortho-orto-l2-2025.tif']);
+    // Tree stems for both terrains, so neither has to be detected here.
+    for (const stems of [t.assets.resolveTreeStemsPath(SITE_ID), path.join(sources, 'outer-trees', 'tree-stems.json')]) {
+        await mkdir(path.dirname(stems), { recursive: true });
+        await writeFile(stems, '{"trees":[]}');
+    }
+    await writeFile(path.join(t.exportDir, 'linkan-inner-surfaces.json'), '{}');
+
+    const reports: string[] = [];
+    for (const target of ['terrain', 'photo', 'trees', 'creeks', 'vegetation'] as const) {
+        const started = await t.svc.update(TEST_COURSE_ID, target);
+        await t.svc.whenIdle(TEST_COURSE_ID);
+        const job = t.svc.job(started.id);
+        expect(job.error).toBeNull();
+        reports.push(...job.results.flatMap(r => r.report));
+    }
+    const pushes = t.editor!.calls.filter(c => c.command !== 'golfmap.course');
+    expect(pushes.map(c => c.command)).toEqual([
+        'golfmap.terrain.update', 'golfmap.terrain.update', 'golfmap.orthos.apply',
+        'golfmap.trees.plant', 'golfmap.trees.plant', 'golfmap.creeks.import',
+        'golfmap.zones.import', 'golfmap.grass.apply',
+    ]);
+    expect(pushes.every(c => c.args.save === true)).toBe(true);
+    // The report says what Unity saved instead of asking for it to be saved.
+    const saved = 'Saved Assets/Scenes/Linkan.unity (0.4 s)';
+    expect(reports.filter(l => l === saved || l === `inner: ${saved}`).length).toBeGreaterThanOrEqual(4);
+    expect(reports.some(l => l.includes('Save the scene in Unity to keep it.'))).toBe(false);
+    expect(reports.some(l => l.includes('Save the scene to keep it.'))).toBe(false);
+});
+
+test('a second update of the same target renders nothing again, and --force does', async () => {
+    const t = await setup({ unity: true });
+    await buildSite(t, ['dem.tif', 'dem-edited.tif', 'outer-dem.tif']);
+
+    const first = await t.svc.update(TEST_COURSE_ID, 'terrain');
+    await t.svc.whenIdle(TEST_COURSE_ID);
+    expect(t.svc.job(first.id).error).toBeNull();
+    expect(t.pipeline.commands()).toEqual(['dem', 'dem']);
+
+    // Nothing changed: no render, but both heightmaps still go into Unity.
+    const again = await t.svc.update(TEST_COURSE_ID, 'terrain');
+    await t.svc.whenIdle(TEST_COURSE_ID);
+    const second = t.svc.job(again.id);
+    expect(second.error).toBeNull();
+    expect(t.pipeline.commands()).toEqual(['dem', 'dem']);
+    expect(second.results[0]!.report.filter(l => l.includes('unchanged: '))).toHaveLength(2);
+    expect(t.editor!.calls.filter(c => c.command === 'golfmap.terrain.update')).toHaveLength(4);
+
+    const forced = await t.svc.update(TEST_COURSE_ID, 'terrain', { force: true });
+    await t.svc.whenIdle(TEST_COURSE_ID);
+    expect(t.svc.job(forced.id).error).toBeNull();
+    expect(t.pipeline.commands()).toEqual(['dem', 'dem', 'dem', 'dem']);
 });
 
 test('the Unity chip lists every open editor and which one works on the course', async () => {

@@ -151,6 +151,35 @@ export class FeatureHistoryService {
         return { count: typeOf.size, kinds: [...new Set(typeOf.values())].sort() };
     }
 
+    /**
+     * The high-water mark of the course's feature edits, as one OPAQUE stamp
+     * (`<how many>:<newest updated_at>:<newest history row id>`): what an
+     * export fingerprint hashes to tell whether the features it reads have
+     * moved since the file was written (export-fingerprint.ts). Compare it for
+     * equality, not for order.
+     *
+     * The same two sources as `countChangesSince`: a row's `updated_at`
+     * (created, edited, restacked, toggled) and the migration-025 history's
+     * rows, the only trace a DELETED row leaves. The count catches a create,
+     * and the history's `history_id` an edit or delete inside the same second
+     * as the last export (`updated_at` has whole seconds only, so the time
+     * alone would miss it). `generated = 1` rows are left out, as there — they
+     * are pipeline output the next run replaces wholesale, so counting them
+     * would move the stamp on every generator run and nothing could ever be
+     * unchanged.
+     */
+    async latestStamp(courseId: string): Promise<string> {
+        const touched = await this.db.selectFrom('course_features')
+            .select(({ fn }) => [fn.countAll<number>().as('n'), fn.max<string | null>('updated_at').as('at')])
+            .where('course_id', '=', courseId).where('generated', '=', 0).executeTakeFirst();
+        const history = await this.db.selectFrom('course_feature_history')
+            .select(({ fn }) => fn.max<number | null>('history_id').as('id'))
+            .where('course_id', '=', courseId)
+            .where(sql<boolean>`coalesce(json_extract(row_json, '$.generated'), 0) = 0`)
+            .executeTakeFirst();
+        return `${Number(touched?.n ?? 0)}:${touched?.at ?? 'none'}:${history?.id ?? 0}`;
+    }
+
     /** Keep a full SVG export: the SVG and the features it was made from, under <dir>/export-history/<local time>/. */
     async snapshot(courseId: string, dir: string, svgPath: string, when = new Date()): Promise<string> {
         const name = localStamp(when);

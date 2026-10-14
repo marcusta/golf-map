@@ -397,6 +397,104 @@ the next 10 m (`SIDE_STEP_M`) so a hand-typed area is never a decimal-metre terr
   course defaults - 35 bunkers (`cesimgolf-conway`), 22 lakes (`kaustin-lake-gradual`), 13 creeks
   (`kaustin-creek`).
 
+#### `batch` — one export, one Python process
+
+An export is five or six of the commands above over the same course and the same square. As one
+process per kind they each pay the interpreter plus the rasterio/shapely imports (0.5 s on this
+machine), open the database, load and flatten the course's features again, re-read the DEM the
+previous one has just written and re-parse the same sidecar. `batch` runs them in order **in one
+process** over a per-process cache. It is additive: `main()`'s one-shot CLI is unchanged, and the
+server still calls it that way.
+
+The **job list** is `--jobs <file>`, or stdin when that is left out. Each job's `args` are the flags
+that command takes on the command line today, so a caller hands over the argv array it already
+builds, minus `gspro.py <command>`:
+
+```json
+{
+  "stopOnError": false,
+  "jobs": [
+    {"id": "dem-inner", "command": "dem",
+     "args": ["--square-3006", "529030,6486669,531080,6488719",
+              "--dem", "D:\\golf-map\\data\\sources\\<siteId>\\dem-edited.tif",
+              "--out", "D:\\gspro_courses\\vreta-opcd\\vreta-inner-dem-2050m.tif",
+              "--resolution", "0.5", "--terrain", "inner"]},
+    {"id": "trees-inner", "command": "trees", "args": ["--square-3006", "...", "..."]}
+  ]
+}
+```
+
+`id` is free-form and defaults to `<command>-<position>`; two jobs may not share one. `command`
+may not be `batch`. A malformed list is refused before anything runs.
+
+Jobs run **in order**. Each one's stdout and stderr are captured, recorded as its `report` and
+written through to the real stdout prefixed `[<id>]`, line by line as it goes, so a batch log reads
+like the separate runs it replaces. A job that fails — the `SystemExit("error: …")` a command
+raises, argparse's exit on a bad flag, any other exception — becomes that job's `error`, and the
+batch **carries on** with the next one; with `"stopOnError": true` (or `--stop-on-error`) it stops
+and the rest are reported as not run. The exit code is 0 only when every job succeeded.
+
+`--result <file>` writes `golfmap-gspro-batch-v1`:
+
+```json
+{
+  "format": "golfmap-gspro-batch-v1",
+  "jobs": [
+    {"id": "dem-inner", "command": "dem", "ok": true, "seconds": 2.109,
+     "report": ["Wrote …-inner-dem-2050m.tif  (4100×4100, 0.5 m/px, 2050 m square, 65.22..106.07 m)"],
+     "error": null},
+    {"id": "creeks-bad", "command": "creeks", "ok": false, "seconds": 0.004,
+     "report": [], "error": "error: no such DEM: D:\\…\\nope.tif"}
+  ],
+  "seconds": 14.068,
+  "shared": {
+    "db": {"hits": 12, "misses": 1},
+    "features": {"hits": 1, "misses": 2},
+    "shapes": {"hits": 1183, "misses": 1098},
+    "courseShapes": {"hits": 0, "misses": 1},
+    "demWindows": {"hits": 0, "misses": 2},
+    "demBands": {"hits": 1, "misses": 2},
+    "sidecars": {"hits": 2, "misses": 1},
+    "bytes": 403701760
+  }
+}
+```
+
+**What is shared** (`_BatchCache`, a module-level cache created when `batch` starts and cleared when
+it ends — outside a batch it does not exist, so a one-shot run behaves exactly as before). Only what
+cannot change while the batch runs, and everything keyed on a file carries that file's mtime and
+size, so the job that rewrites a DEM invalidates its readers instead of being served the old one:
+
+| Slot | What | Keyed on |
+|---|---|---|
+| `db` | the read-only sqlite connection (`_SharedConnection`: its `close()` is a no-op, so each command still closes "its" connection; the batch closes it for real at the end) | the database's resolved path |
+| `features` | `_load_course_features` — the course row and its features in paint order; the caller gets its own list to filter | (database file, course, `stack`) |
+| `shapes` | `_row_shape` — a feature's rings expanded (B-spline/bezier) and flattened into one shapely geometry | (feature id, geometry checksum, tolerance) |
+| `courseShapes` | every shape the SVG writes plus the STRtree over them ("is there a mesh near here", which each building pad asks) | (database file, the row ids, the fills) |
+| `demWindows` | `_reproject_square` — a resampled raster window | (file, extent, size, bands, dtype, resampling) |
+| `demBands` | `_read_dem_band` — band 1 of a DEM read whole, with `_fill_voids` and the valid mask computed once. `dem` **publishes** the array it has just written under that file's key, so `gkd` (whose DEM defaults to the sidecar's own `.tif`) reads it out of memory | the file |
+| `sidecars` | a heightmap sidecar's JSON (the `trees`, `zones`, `creeks` and `gkd` jobs all read the same one) | the file |
+
+Big values are held per slot up to `BATCH_VALUE_MAX_BYTES` (a whole DEM band 320 MB, a resampled
+window 96 MB, anything else 128 MB) and the cache as a whole up to `BATCH_BUDGET_BYTES` 1 GB; a
+value over that is still handed back, just not kept — an 8192² ortho window is 200 MB and is read
+once per job anyway.
+
+**Determinism** is the whole point: a batch writes byte-identical files to running the commands one
+by one. `pipeline/tests/test_gspro_batch.py` runs the same synthetic course both ways into two
+directories and compares every byte of the SVG, the GeoTIFF, the `.raw` heightmap, the sidecars, the
+zone PNGs, the creeks, the GKD and the two shaping layers; on real Vreta data the 35 files of
+[`svg`, `shaping-global`, `trees`, `zones`, `creeks`, `gkd`] came out identical too.
+
+**What it saves** (Vreta, 2050 m inner square, 2026-10-14): the four light commands `svg`,
+`shaping-global`, `trees`, `creeks` take 4.4-5.0 s as four processes and 2.4-2.7 s as one batch
+(−46 %) — 1.6 s of that is the three interpreter+import startups it no longer pays, the rest the
+shared connection, the one feature load the two shaping layers share, the sidecar parsed once and
+1183 of 2281 feature flattens reused (most of them inside `svg`, which wants every road shape four
+times). With `dem` and `gkd` added: 15.1-15.3 s vs 13.6-14.7 s. `zones` at 4096² is 94-104 s on its
+own and varies ±6 s run to run, so in any list containing it the saving is below the noise; `ortho`
+has nothing to share but the features and its render dominates likewise.
+
 ### Shaping from the Terrain editor (server, builder only)
 
 `ShapingService` (`server/services/shaping.service.ts`, API `server/api/shaping.api.ts`):
@@ -414,21 +512,45 @@ the next 10 m (`SIDE_STEP_M`) so a hand-typed area is never a decimal-metre terr
   --out-dir docs/gspro/<course slug>/shaping --library <library> [--db $DB_PATH]`; (b) the shaping
   worker on `GOLFMAP_SHAPING_URL` (default `http://127.0.0.1:8766`) — started when nothing answers
   there (`<blender> -b --python blender/tools/shape_worker.py -- --port <p> --blend <blend> --layers
-  <dir> --fbx-folder <fbx>`, output in `<data>/shaping-worker.log` + `.err`; it outlives a server
+  <dir> --fbx-folder <fbx>`, one log per spawn in `<data>/shaping-worker/`; it outlives a server
   restart), `POST /load {blend, layersDir, fbxFolder}` when it holds another .blend or layer folder
   (or is in error), then `POST /sync {dryRun?}`; (c) `golfmap.course.refresh only=<changedObjects + removed FBX names without .fbx>` (meshes.sync prunes a named object whose FBX is gone)
-  (+ `dryRun`) in the Unity editor whose active course exports to the course's folder, skipped when
+  (+ `dryRun`, + `save` when the caller asked for it) in the Unity editor whose active course exports to the course's folder, skipped when
   nothing changed or no editor is open (a warning, not a failure; a bridge that rejects `only` gets
   the whole refresh); (d) result `{changedObjects, exported, removed, warnings, places, seams,
   unityReport, unityError, layers, blend, layersDir, fbxFolder, dryRun, seconds}`.
-- `GET /api/courses/:courseId/shaping/status` → `{worker: {url, reachable, state, blend, conformed,
-  layersDir, appliedOps, lastRun, error, spawnedPid}, job}`; `GET /api/shaping/job?jobId=`.
+- `apply(courseId, {save: true})` (what the status board's `meshes` chain passes, not the web panel)
+  puts `save: true` on that `golfmap.course.refresh` and on the vegetation phase's planting, so the
+  scenes and assets it changed are written once the refresh succeeded.
+- **The worker's calls are jobs.** `POST /load` and `POST /sync` answer `202 {job, kind, state:
+  'running'}` at once (409 while one is going) and the service polls `/status`, whose
+  `job: {id, kind, state, phase, startedAt, seconds, result | error}` carries the run; `GET /job/<id>`
+  gives one by id. `?wait=1` on either POST holds the connection and answers the run itself, as
+  before (`curl` by hand, and the fake worker's old tests). An answer that IS a run is still read as
+  one, so an older worker works unchanged. The contract: [blender/README.md](../../blender/README.md)
+  "Shaping worker".
+- **A worker on another machine**: `GOLFMAP_SHAPING_URL` points at it and `GOLFMAP_SHAPING_TOKEN` is
+  the shared secret both sides use (`X-Golfmap-Token` on every request; the server spawns a local
+  worker with it in the environment, never on the command line). The paths it is given have to name
+  the same files there — the same mount on both sides, or UNC in `GOLFMAP_SHAPING_BLEND` /
+  `GOLFMAP_SHAPING_FBX_FOLDER` / `GOLFMAP_SHAPING_LAYERS_ROOT`; nothing on either side assumes a
+  drive letter. blender/README.md "A worker on another machine".
+- **Someone else's worker on the port** (it answers, holds another `blend`, and is not the process
+  this server started): it is never taken over mid-run. A `/load` only goes out once it is idle —
+  state `ready`, no running job — and until then the worker phase says
+  `another course's worker is busy on <blend> — waiting` (bounded by the load timeout, 60 min).
+- **The log**: one file per spawn, `<data>/shaping-worker/<yyyy-mm-dd-HHMMSS>-<pid>.log` with both
+  streams in it and nothing truncating it; `<data>/shaping-worker/latest.json` names the current one
+  (`{file, pid, startedAt, command}`) and the worker status carries it as `log`. Files older than 14
+  days are pruned on the next spawn. An error that ends the job quotes that log's last lines.
+- `GET /api/courses/:courseId/shaping/status` → `{worker: {url, reachable, state, phase, blend, conformed,
+  layersDir, appliedOps, lastRun, job, error, spawnedPid, log}, job}`; `GET /api/shaping/job?jobId=`.
 - Paths (env): `GOLFMAP_SHAPING_BLEND` (absolute or a name in the export folder; default the newest
   `*.conformed.blend` there, else the newest source `.blend` — a source newer than the cache is a
   warning), `GOLFMAP_SHAPING_FBX_FOLDER` (default `<Unity project>/Assets/fbx` of the course's open
   editor; a worker that must load with neither is a 409), `GOLFMAP_SHAPING_LAYERS_ROOT` (replaces
   `docs/gspro`), `GOLFMAP_BLENDER` (default Blender 4.5's install path, else `blender`),
-  `GOLFMAP_RECIPE_LIBRARY`.
+  `GOLFMAP_SHAPING_TOKEN`, `GOLFMAP_RECIPE_LIBRARY`.
 - Recipe edits are not DEM edits: `TerrainEditsService.listDemEdits` (every DEM replay: map build,
   inner staleness check, outer DEM) leaves them out.
 
@@ -475,6 +597,50 @@ the same bookkeeping as `ShapingJob`, extracted into `server/services/job-phases
 `add`/`begin`/`note`/`end`/`skip`/`skipPending`/`failCurrent`/`snapshot`/`step`), which
 `ShapingService` now uses too.
 
+**Every Unity push saves.** Each `editor.run(...)` a chain makes passes `save: true` (unity/README.md,
+"Saving what a command changed"): `golfmap.terrain.update`, `golfmap.orthos.apply`,
+`golfmap.zones.import` + `golfmap.grass.apply` (through `plantVegetation`'s own `save?` option,
+default false so the legacy export jobs behave as before), `golfmap.creeks.import`,
+`golfmap.trees.plant`, and `golfmap.course.refresh` (through `ShapingService.apply`'s `save?`). So
+what an Update changed is on disk when the job is done instead of waiting for a Ctrl+S — the thing
+that cost 13 meshes on 2026-10-09. The report then names what was saved
+(`Saved Assets/Scenes/<scene>.unity (0.4 s)`, from the result's `saved.scenes`) instead of the old
+"Save the scene in Unity to keep it." line, which is only still printed when the command saved
+nothing.
+
+**Unchanged inputs are not rendered again** ([export-fingerprint.ts](../../server/services/export-fingerprint.ts)).
+Every press used to re-render: the DEM TIF + 4097² RAW, the 8192² photo and its two twins (45-70 s on
+Vreta), the masks. Each output now carries `<output>.inputs.json` (`golfmap-export-inputs-v1`) with a
+hash of what it was made from; when it matches and every file of the output is still there, the
+pipeline is not called and the report says
+`unchanged: <file> (inputs unchanged since <when>)`. What goes in per kind:
+
+| Export | Source files (path, size, mtime) | Values |
+|---|---|---|
+| `exportDem` | `dem-edited.tif` + `dem.tif` (inner) or `outer-dem.tif`, every enabled Unity sculpt TIF, the inner sidecar (outer) | terrain, square, resolution, the site's enabled terrain edits as a stamp (count, newest `updated_at`, newest history row id), the pipeline scripts' mtimes |
+| `renderOrtho` (inner + outer photo) | the source GeoTIFF, `roofs.tif` and `buildings.geojson` when the roofs are filled | the whole `gspro.py ortho` argument list (darken, tint + opacity, floor colour/mix, remove buildings, sizes, quality), the course's feature stamp when the tint or the floor is on, the zones' content digest with the floor |
+| `exportZones` | the terrain's heightmap sidecar | the argument list, the course's vegetation_zone features as a CONTENT digest (ids left out: the generators delete and re-insert their rows, so identical zones have to count as unchanged), the newest `course_zone_types.updated_at`, the feature stamp |
+| `exportTrees` | the tree stems file, the sidecar, `stone-walls.json` | the argument list, the feature stamp (the species areas) |
+| `exportBuildings` | the building survey, the sidecar | the argument list |
+| `exportCreeks` | the raw DEM, the inner sidecar | the argument list, the feature stamp |
+
+The outputs that must all exist: the DEM's TIF + RAW + sidecar, the photo's plain + `-terrain` +
+`-meshes`, the zones file plus the mask PNGs the last run wrote (recorded in the sidecar, so a
+hand-deleted mask is noticed). The feature stamp is `FeatureHistoryService.latestStamp(courseId)` —
+count, newest `updated_at` and newest history row id over the course's non-`generated` features, the
+same two sources `countChangesSince` takes (the history row id catches an edit inside the same second
+as the last export, since `updated_at` has whole seconds only).
+
+`force` bypasses it: `POST /api/gspro-sync/update {courseId, target, force: true}`,
+`POST /api/gspro-export/start {… force: true}`, `bun run gspro:update -- <course> <target> --force`,
+`bun run gspro:export -- <course> <kind> --force`. `updateZones`' fall back to the whole planting
+passes it itself (the masks are out of step with the bindings there, which is the reason to render).
+Left out: `runGenerators` — its output is rows in the database, not a file a sidecar can sit next to,
+and whether those rows are still there cannot be told from the inputs, so every planting still runs
+the generators (and the masks after them are skipped when the generators reproduced the same zones);
+`exportGkd`, which merges into GreenKeeper's own file; the SVG, which keeps an export-history
+snapshot per run.
+
 **Staleness.** `stale = changedSince.count > 0 || lastRun === null`.
 
 - **`lastRun`** comes from `<export dir>/gspro-sync.json` (`golfmap-gspro-sync-v1`:
@@ -505,7 +671,7 @@ the same bookkeeping as `ShapingJob`, extracted into `server/services/job-phases
 
 **API** (builder only, `requireAuth()`): `GET /api/gspro-sync/status?courseId` →
 `{unity: {editors, matched, exportDir}, worker, targets, job, queue}`,
-`POST /api/gspro-sync/update {courseId, target}` → the job, `GET /api/gspro-sync/job?jobId`,
+`POST /api/gspro-sync/update {courseId, target, force?}` → the job, `GET /api/gspro-sync/job?jobId`,
 `GET /api/unity/editors?courseId` → the `unity` part alone (the command bar's chip).
 `unityEditorsFor` (`services/unity-bridge.ts`) probes EVERY open editor —
 `{projectName, projectPath, activeCourse, exportFolder, matches, error}` — and `editorForExportDir`

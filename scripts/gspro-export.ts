@@ -47,6 +47,11 @@
 // Ortho options (ortho, outer-ortho): --darken <x>, --tint, --tint-opacity <0..1>,
 // --forest-floor, --floor-color <#rrggbb>, --floor-mix <0..1>, --remove-buildings.
 //
+// An export whose inputs have not changed since the file in the folder was
+// written is skipped, and the report says `unchanged: <file>`
+// (server/services/export-fingerprint.ts); --force renders anyway. It works
+// for `update` too.
+//
 // Reads data/app.sqlite (DB_PATH) and data/ (DATA_DIR) like the server. The
 // server's one-export-per-course lock is per process: don't start the same
 // course's export here and in the panel at once.
@@ -76,10 +81,10 @@ function usage(message?: string): never {
     console.error([
         'usage: bun run gspro:export -- courses',
         '       bun run gspro:status -- <course>',
-        '       bun run gspro:update -- <course> <target|stale>',
+        '       bun run gspro:update -- <course> <target|stale> [--force]',
         '       bun run gspro:export -- <course> <kind[:inner|:outer]>... [--dir <folder>] [--course-dir <folder>] [--source <file>] [--collection <id>]',
         '                                 [--darken <x>] [--tint] [--tint-opacity <x>] [--forest-floor] [--floor-color <#hex>]',
-        '                                 [--floor-mix <x>] [--remove-buildings] [--arborist-out <folder>]',
+        '                                 [--floor-mix <x>] [--remove-buildings] [--arborist-out <folder>] [--force]',
         `kinds: ${KINDS.join(', ')}`,
         `targets: ${GSPRO_TARGET_IDS.join(', ')}, stale`,
     ].join('\n'));
@@ -93,7 +98,7 @@ function parseArgs(argv: string[]) {
         const a = argv[i];
         if (!a.startsWith('--')) { positional.push(a); continue; }
         const name = a.slice(2);
-        const boolean = ['tint', 'forest-floor', 'remove-buildings'].includes(name);
+        const boolean = ['tint', 'forest-floor', 'remove-buildings', 'force'].includes(name);
         if (boolean) flags[name] = true;
         else {
             const value = argv[++i];
@@ -260,13 +265,13 @@ async function follow(jobId: string): Promise<GsproSyncJob> {
     }
 }
 
-async function cmdUpdate(ident: string, target: string) {
+async function cmdUpdate(ident: string, target: string, force: boolean) {
     const course = await resolveCourse(ident);
     if (target !== 'stale' && !isGsproTargetId(target)) {
         usage(`unknown target '${target}' (have: ${GSPRO_TARGET_IDS.join(', ')}, stale)`);
     }
     const request = target as GsproTargetId | 'stale';
-    const started = await sync.update(course.id, request);
+    const started = await sync.update(course.id, request, { force });
     const what = started.targets.length === 0
         ? 'nothing to do'
         : started.targets.map(t => gsproTarget(t).label).join(', ');
@@ -299,20 +304,21 @@ function requestsFor(spec: string, flags: Record<string, string | true>, activeS
         floorMix: num(flags, 'floor-mix'),
         removeBuildings: flags['remove-buildings'] === true ? true : undefined,
     };
+    const force = flags['force'] === true ? true : undefined;
     return (async () => {
         if (TERRAIN_KINDS.has(kind)) {
             const terrains: TerrainKind[] = terrainText ? [terrainText as TerrainKind] : ['inner', 'outer'];
-            return terrains.map((terrain) => ({ kind, terrain }));
+            return terrains.map((terrain) => ({ kind, terrain, force }));
         }
         if (kind === 'ortho' || kind === 'unity-ortho') {
             const source = typeof flags['source'] === 'string' ? flags['source'] : await activeSource();
-            return [{ kind, source, ...ortho }];
+            return [{ kind, source, ...ortho, force }];
         }
         if (kind === 'outer-ortho') {
             if (typeof flags['collection'] !== 'string') usage('outer-ortho needs --collection <orto-l2-YYYY> (see status for the vintages)');
-            return [{ kind, collection: flags['collection'] as string, ...ortho }];
+            return [{ kind, collection: flags['collection'] as string, ...ortho, force }];
         }
-        return [{ kind }];
+        return [{ kind, force }];
     })();
 }
 
@@ -354,7 +360,8 @@ try {
     else if (first === 'courses') await cmdCourses();
     else if (first === 'status') await cmdStatus(rest[0] ?? usage('status needs a course'));
     else if (first === 'update') {
-        await cmdUpdate(rest[0] ?? usage('update needs a course'), rest[1] ?? usage(`update needs a target (${GSPRO_TARGET_IDS.join(', ')}, stale)`));
+        await cmdUpdate(rest[0] ?? usage('update needs a course'),
+            rest[1] ?? usage(`update needs a target (${GSPRO_TARGET_IDS.join(', ')}, stale)`), flags['force'] === true);
     }
     else if (rest.length === 0) usage('name at least one export');
     else await cmdExport(first, rest, flags);

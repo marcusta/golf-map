@@ -13,6 +13,8 @@ const CourseInput = Type.Object({
 const UpdateInput = Type.Object({
     courseId: Type.String(),
     target: Type.Union([...GSPRO_TARGET_IDS.map(id => Type.Literal(id)), Type.Literal('stale')]),
+    /** Render every file of the chain again, whatever its input fingerprint says (export-fingerprint.ts). */
+    force: Type.Optional(Type.Boolean()),
 });
 
 const JobInput = Type.Object({
@@ -43,12 +45,13 @@ export function createGsproSyncApi(svc: GsproSyncService) {
          * Update one target (the whole chain for it, both terrains, the files
          * and the Unity push) — or `stale` for every stale one. Returns at
          * once; `queued` while another update, export or shaping run of the
-         * course is still going. Poll `job`.
+         * course is still going. Poll `job`. Each file is rendered only when
+         * its inputs changed; `force` renders them all.
          */
         update: {
             method: 'POST' as const,
             path: '/gspro-sync/update',
-            fn: (input: Static<typeof UpdateInput>) => svc.update(input.courseId, input.target),
+            fn: (input: Static<typeof UpdateInput>) => svc.update(input.courseId, input.target, { force: input.force === true }),
             schema: UpdateInput,
             middleware: mw,
         },

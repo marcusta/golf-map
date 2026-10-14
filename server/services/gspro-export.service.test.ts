@@ -1,7 +1,7 @@
 import { test, expect } from 'bun:test';
 import * as path from 'node:path';
 import * as os from 'node:os';
-import { mkdtemp, mkdir, writeFile, readdir, readFile, utimes } from 'node:fs/promises';
+import { mkdtemp, mkdir, writeFile, readdir, readFile, rm, utimes } from 'node:fs/promises';
 import { existsSync, writeFileSync } from 'node:fs';
 import { createTestDb } from '../testing/db';
 import { seedCourse, TEST_COURSE_ID } from '../db/seeds/course';
@@ -2025,4 +2025,179 @@ test('arborist: the file alone, as a job; a course without a species file is ref
 
     const plain = await setup(runner, { unityBridge: defaultUnityBridge(discovery) });
     await expect(plain.svc.exportArborist(TEST_COURSE_ID)).rejects.toThrow(NOT_ARBORIST);
+});
+
+// --- Unchanged inputs: an export that would write the same file again is skipped (proposal 8) ---
+
+/**
+ * The pipeline stand-in that WRITES what each command writes (the DEM's RAW and
+ * sidecar, the photo's twins, a zones mask), so an export finds its own output
+ * and the input fingerprint next to it on the next run.
+ */
+function writingRunner() {
+    const calls: string[][] = [];
+    const commands = () => calls.map(a => (a[1] === 'golfpipe' ? a[2]! : a[1]!));
+    const runner: ExportRunner = async (args) => {
+        calls.push(args);
+        const command = args[1] === 'golfpipe' ? args[2]! : args[1]!;
+        const out = flag(args, '--out');
+        if (out) {
+            await mkdir(path.dirname(out), { recursive: true });
+            await writeFile(out, '{}');
+            if (command === 'dem') {
+                await writeFile(`${out}.json`, JSON.stringify({ minM: 80, maxM: 140 }));
+                await writeFile(out.replace(/\.tif$/, '.raw'), 'raw');
+            }
+            if (command === 'ortho') {
+                await writeFile(terrainTextureFileName(out), 'jpg');
+                const tinted = flag(args, '--tint-out');
+                if (tinted) await writeFile(tinted, 'jpg');
+            }
+            if (command === 'zones') await writeFile(out.replace(/\.json$/, '-0.png'), 'png');
+        }
+        return { code: 0, stdout: `${command} done\n`, stderr: '' };
+    };
+    return { calls, commands, runner };
+}
+
+/** A timestamp a touched file gets, far enough from the last write to be another mtime. */
+const later = () => new Date(Date.now() + 60_000);
+
+test('a second heightmap export with the same inputs is skipped; a touched DEM, a terrain edit, a missing output or force render it again', async () => {
+    const w = writingRunner();
+    const t = await setup(w.runner);
+    const sources = await buildSite(t, ['dem.tif']);
+    const dir = await mkdtemp(path.join(os.tmpdir(), 'gspro-out-'));
+    await t.svc.setDir(TEST_COURSE_ID, dir);
+
+    const first = await t.svc.exportDem(TEST_COURSE_ID, 'inner');
+    expect(w.commands()).toEqual(['dem']);
+    // The sidecar next to the output says what it was made from.
+    const inputs = JSON.parse(await readFile(`${first.path}.inputs.json`, 'utf8'));
+    expect(inputs.format).toBe('golfmap-export-inputs-v1');
+    expect(inputs.files.map((f: any) => path.basename(f.path))).toEqual(['dem-edited.tif', 'dem.tif']);
+    expect(inputs.files[0]).toMatchObject({ missing: true });   // no edits applied: the raw DEM is the source
+    expect(inputs.values.terrain).toBe('inner');
+    expect(inputs.outputs.map((f: string) => path.basename(f)))
+        .toEqual(['linkan-inner-dem-2050m.tif', 'linkan-inner-dem-2050m.raw', 'linkan-inner-dem-2050m.tif.json']);
+
+    // Nothing moved: no pipeline call at all, and the report says why.
+    const again = await t.svc.exportDem(TEST_COURSE_ID, 'inner');
+    expect(w.commands()).toEqual(['dem']);
+    expect(again.path).toBe(first.path);
+    expect(again.report).toHaveLength(1);
+    expect(again.report[0]).toMatch(/^unchanged: linkan-inner-dem-2050m\.tif \(inputs unchanged since \d{4}-\d\d-\d\dT/);
+
+    // The map build wrote a new DEM: rendered again.
+    await utimes(path.join(sources, 'dem.tif'), later(), later());
+    await t.svc.exportDem(TEST_COURSE_ID, 'inner');
+    expect(w.commands()).toEqual(['dem', 'dem']);
+    expect((await t.svc.exportDem(TEST_COURSE_ID, 'inner')).report[0]).toMatch(/^unchanged: /);
+
+    // A terrain edit is part of what the heightmap carries, so it counts as a change.
+    await new TerrainEditsService(t.db).create({
+        siteId: SITE_ID, op: 'plane', params: { featherM: 2, flat: true },
+        rings: [[{ x: 529400, y: 6487400 }, { x: 529420, y: 6487400 }, { x: 529420, y: 6487420 }]],
+    });
+    await t.svc.exportDem(TEST_COURSE_ID, 'inner');
+    expect(w.commands()).toEqual(['dem', 'dem', 'dem']);
+
+    // An output file that is gone (the .raw deleted by hand): rendered again.
+    await rm(first.path.replace(/\.tif$/, '.raw'));
+    await t.svc.exportDem(TEST_COURSE_ID, 'inner');
+    expect(w.commands()).toEqual(['dem', 'dem', 'dem', 'dem']);
+
+    // force renders whatever the fingerprint says — the option and the request field.
+    await t.svc.exportDem(TEST_COURSE_ID, 'inner', { force: true });
+    expect(w.commands()).toHaveLength(5);
+    const job = await t.svc.start(TEST_COURSE_ID, { kind: 'dem', terrain: 'inner', force: true });
+    await t.svc.whenIdle(TEST_COURSE_ID);
+    expect(t.svc.job(job.id).error).toBeNull();
+    expect(w.commands()).toHaveLength(6);
+});
+
+test('the photo, the masks, the trees and the creeks are skipped when their inputs are unchanged; a feature edit renders them again', async () => {
+    const w = writingRunner();
+    const t = await setup(w.runner);
+    const sources = await buildSite(t, ['dem.tif', 'ortho-orto-l2-2025.tif']);
+    const dir = await mkdtemp(path.join(os.tmpdir(), 'gspro-out-'));
+    await t.svc.setDir(TEST_COURSE_ID, dir);
+    const stems = t.assets.resolveTreeStemsPath(SITE_ID);
+    await mkdir(path.dirname(stems), { recursive: true });
+    await writeFile(stems, '{"trees":[]}');
+
+    // The photo with the surface tint (the panel's default), the masks, the trees and the creeks.
+    const photo = await t.svc.exportOrtho(TEST_COURSE_ID, 'ortho-orto-l2-2025.tif', undefined, {});
+    const zones = await t.svc.exportZones(TEST_COURSE_ID, 'inner');
+    await t.svc.exportTrees(TEST_COURSE_ID, 'inner');
+    await t.svc.exportCreeks(TEST_COURSE_ID);
+    expect(w.commands()).toEqual(['ortho', 'dem', 'zones', 'trees', 'creeks']);
+    // The zones sidecar records the masks that run wrote, so a hand-deleted one is noticed.
+    const zoneInputs = JSON.parse(await readFile(`${zones.path}.inputs.json`, 'utf8'));
+    expect(zoneInputs.outputs.map((f: string) => path.basename(f))).toEqual(['linkan-inner-zones.json', 'linkan-inner-zones-0.png']);
+
+    w.calls.length = 0;
+    for (const line of [
+        (await t.svc.exportOrtho(TEST_COURSE_ID, 'ortho-orto-l2-2025.tif', undefined, {})).report[0],
+        (await t.svc.exportZones(TEST_COURSE_ID, 'inner')).report[0],
+        (await t.svc.exportTrees(TEST_COURSE_ID, 'inner')).report[0],
+        (await t.svc.exportCreeks(TEST_COURSE_ID)).report[0],
+    ]) expect(line).toMatch(/^unchanged: /);
+    expect(w.commands()).toEqual([]);
+
+    // A drawn feature: the tint reads the course's surfaces, the masks its zones, the trees its species areas.
+    const features = new CourseFeaturesService(t.db);
+    const ring = { points: [{ x: 529400, y: 6487400 }, { x: 529420, y: 6487400 }, { x: 529420, y: 6487420 }] };
+    await features.create({ courseId: TEST_COURSE_ID, holeId: null, type: 'fairway', geometry: { crs: 'EPSG:3006', rings: [ring] } });
+    await t.svc.exportOrtho(TEST_COURSE_ID, 'ortho-orto-l2-2025.tif', undefined, {});
+    await t.svc.exportZones(TEST_COURSE_ID, 'inner');
+    await t.svc.exportTrees(TEST_COURSE_ID, 'inner');
+    await t.svc.exportCreeks(TEST_COURSE_ID);
+    expect(w.commands()).toEqual(['ortho', 'zones', 'trees', 'creeks']);
+
+    // A deleted mask: the zones export runs again even though nothing else moved.
+    w.calls.length = 0;
+    await rm(path.join(dir, 'linkan-inner-zones-0.png'));
+    await t.svc.exportZones(TEST_COURSE_ID, 'inner');
+    expect(w.commands()).toEqual(['zones']);
+
+    // A touched source photo, and a changed option (another brightness), each render again.
+    w.calls.length = 0;
+    await utimes(path.join(sources, 'ortho-orto-l2-2025.tif'), later(), later());
+    await t.svc.exportOrtho(TEST_COURSE_ID, 'ortho-orto-l2-2025.tif', undefined, {});
+    await t.svc.exportOrtho(TEST_COURSE_ID, 'ortho-orto-l2-2025.tif', 0.6, {});
+    expect(w.commands()).toEqual(['ortho', 'ortho']);
+    expect(path.basename(photo.path)).toBe('linkan-orto-l2-2025-8192.jpg');
+});
+
+test('a skipped heightmap render still goes into Unity: the push reads the files in the folder, and save keeps them', async () => {
+    const discovery = await mkdtemp(path.join(os.tmpdir(), 'bridges-'));
+    const exportDir = await mkdtemp(path.join(os.tmpdir(), 'gspro-out-'));
+    const project = await mkdtemp(path.join(os.tmpdir(), 'unity-proj-'));
+    const w = writingRunner();
+    const ours = fakeEditor('Linkan', path.relative(path.join(project, 'Assets'), exportDir), {
+        terrains: [{ terrain: 'Terrain (Inner)', sidecar: 'linkan-inner-dem-2050m.tif.json', source: 'dem.tif', movedM2: 0, maxMoveM: 0 }],
+        saved: { scenes: ['Assets/Scenes/Linkan.unity'], seconds: 1.2 },
+    });
+    writeFileSync(path.join(discovery, 'bridge-1.json'), JSON.stringify({
+        pid: process.pid, port: ours.server.port!, token: 'tok', projectPath: project, projectName: 'linkan_v4', unityVersion: '', started: '',
+    }));
+    try {
+        const t = await setup(w.runner, { unityBridge: defaultUnityBridge(discovery) });
+        await buildSite(t, ['dem.tif']);
+        await t.svc.setDir(TEST_COURSE_ID, exportDir);
+
+        await t.svc.exportUnityTerrain(TEST_COURSE_ID, 'inner');
+        const again = await t.svc.exportUnityTerrain(TEST_COURSE_ID, 'inner', { save: true });
+        // Rendered once, pushed twice.
+        expect(w.commands()).toEqual(['dem']);
+        expect(again.report[0]).toMatch(/^unchanged: /);
+        expect(ours.calls.filter(c => c.command === 'golfmap.terrain.update').map(c => c.args))
+            .toEqual([{ terrain: 'inner' }, { terrain: 'inner', save: true }]);
+        // With `save` the report names what Unity saved instead of asking for it.
+        expect(again.report).toContain('Saved Assets/Scenes/Linkan.unity (1.2 s)');
+        expect(again.report.some(l => l.includes('Save the scene to keep it.'))).toBe(false);
+    } finally {
+        ours.server.stop(true);
+    }
 });

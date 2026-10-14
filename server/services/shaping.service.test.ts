@@ -12,7 +12,7 @@ import { ConflictError, NotFoundError } from '@basics/core/server/auth';
 import { createTestDb } from '../testing/db';
 import { seedCourse, TEST_COURSE_ID } from '../db/seeds/course';
 import { startFakeShapingWorker, type FakeShapingWorker } from '../testing/fake-shaping-worker';
-import { ShapingService, objectName, isRockSlab } from './shaping.service';
+import { ShapingService, objectName, isRockSlab, LATEST_LOG, LOG_KEEP_DAYS } from './shaping.service';
 import { defaultUnityBridge } from './unity-bridge';
 import { GsproExportService, type ExportRunner } from './gspro-export.service';
 
@@ -118,7 +118,8 @@ function fakeEditor(exportFolder: string, opts: { rejectOnly?: boolean; refreshM
 
 async function setup(opts: {
     worker?: FakeShapingWorker; workerUrl?: string; workerLauncher?: string[]; unity?: 'ours' | 'none' | 'reject-only';
-    library?: unknown; runner?: ExportRunner; editor?: { refreshMs?: number; steps?: object[]; failSurfaces?: boolean }; plantFails?: boolean;
+    library?: unknown; runner?: ExportRunner; editor?: { refreshMs?: number; steps?: object[]; failSurfaces?: boolean };
+    plantFails?: boolean; token?: string;
 } = {}) {
     const ctx = await createTestDb(seedCourse);
     const exportDir = await tmp('shaping-export-');
@@ -149,7 +150,7 @@ async function setup(opts: {
         courses: ctx.coursesService, exportSettings: exporter, dataDir,
         pipelineDir: '/pipeline', runner: opts.runner ?? layers.runner, unityBridge: defaultUnityBridge(discovery),
         workerUrl: opts.worker?.url ?? opts.workerUrl ?? 'http://127.0.0.1:9', workerLauncher: opts.workerLauncher,
-        layersRoot, recipeLibrary, dbPath: '/data/app.sqlite',
+        token: opts.token, layersRoot, recipeLibrary, dbPath: '/data/app.sqlite',
         timeouts: { pollMs: 25, startMs: 20_000, loadMs: 20_000, syncMs: 20_000, unitySec: 30 },
     });
     cleanup.push(() => svc.stopWorker());
@@ -173,7 +174,7 @@ async function blends(dir: string) {
     return path.join(dir, 'linkan_svg_1.conformed.blend');
 }
 
-async function run(svc: ShapingService, opts: { dryRun?: boolean; skipUnity?: boolean; paths?: boolean } = {}) {
+async function run(svc: ShapingService, opts: { dryRun?: boolean; skipUnity?: boolean; paths?: boolean; save?: boolean } = {}) {
     const job = await svc.apply(TEST_COURSE_ID, opts);
     expect(job.status).toBe('running');
     await svc.whenIdle();
@@ -258,8 +259,42 @@ test('the worker is started on demand with the course\'s paths when nothing answ
     const layersDir = path.join(t.layersRoot, 'linkan', 'shaping');
     expect(argv.argv).toEqual(['--port', String(port), '--blend', conformed, '--layers', layersDir, '--fbx-folder', path.join(t.project, 'Assets', 'fbx')]);
 
+    // One log per spawn, both streams in it, with `latest.json` naming the current one; the old one is pruned.
+    const logs = path.join(t.dataDir, 'shaping-worker');
+    const names = (await readdir(logs)).filter(n => n.endsWith('.log'));
+    expect(names).toHaveLength(1);
+    expect(names[0]).toMatch(new RegExp(`^\\d{4}-\\d\\d-\\d\\d-\\d{6}(-${status.worker.spawnedPid})?\\.log$`));
+    expect(await Bun.file(path.join(logs, names[0]!)).text()).toContain(`fake shaping worker on ${port}`);
+    expect(JSON.parse(await Bun.file(path.join(logs, LATEST_LOG)).text())).toMatchObject({ file: names[0]!, pid: status.worker.spawnedPid });
+    expect(status.worker.log).toBe(path.join(logs, names[0]!));
+
     await t.svc.stopWorker();
     expect((await t.svc.status(TEST_COURSE_ID)).worker.reachable).toBe(false);
+});
+
+test('worker logs older than two weeks are pruned on the next spawn, and a live one is kept', async () => {
+    const probe = Bun.serve({ port: 0, fetch: () => new Response('') });
+    const port = probe.port!;
+    probe.stop(true);
+    const script = path.join(import.meta.dir, '..', 'testing', 'fake-shaping-worker.ts');
+    const t = await setup({ workerUrl: `http://127.0.0.1:${port}`, workerLauncher: [process.execPath, script] });
+    await blends(t.exportDir);
+    const logs = path.join(t.dataDir, 'shaping-worker');
+    await mkdir(logs, { recursive: true });
+    const old = path.join(logs, '2000-01-01-120000-42.log');
+    const young = path.join(logs, '2000-01-02-120000-43.log');
+    for (const [file, days] of [[old, LOG_KEEP_DAYS + 1], [young, LOG_KEEP_DAYS - 1]] as const) {
+        await writeFile(file, 'older run\n');
+        const at = new Date(Date.now() - days * 24 * 3600_000);
+        await utimes(file, at, at);
+    }
+
+    const job = await run(t.svc);
+    expect(job.error).toBeNull();
+    const names = (await readdir(logs)).filter(n => n.endsWith('.log')).sort();
+    expect(names).toContain(path.basename(young));
+    expect(names).not.toContain(path.basename(old));
+    await t.svc.stopWorker();
 });
 
 test('the job reports its phases live — layers, the cold start with its seconds, Blender, Unity — and ends done with timings', async () => {
@@ -503,7 +538,8 @@ test('a changed rock slab with Unity closed or on a dry run: the phase is skippe
     // Loaded earlier (while Unity was open), as in the test above.
     const layersDir = path.join(closed.layersRoot, 'linkan', 'shaping');
     await mkdir(layersDir, { recursive: true });
-    await fetch(`${worker.url}/load`, { method: 'POST', body: JSON.stringify({ blend: path.join(closed.exportDir, 'linkan_svg_1.conformed.blend'), layersDir, fbxFolder: await tmp('fbx-') }) });
+    // `?wait=1`: the blocking form of the job, so the load is done when the apply starts.
+    await fetch(`${worker.url}/load?wait=1`, { method: 'POST', body: JSON.stringify({ blend: path.join(closed.exportDir, 'linkan_svg_1.conformed.blend'), layersDir, fbxFolder: await tmp('fbx-') }) });
 
     const job = await run(closed.svc);
     expect(job.error).toBeNull();
@@ -550,7 +586,7 @@ test('with Unity closed: a loaded worker still syncs and the refresh is reported
 
     // Loaded earlier (e.g. while Unity was open): the sync runs, Unity is skipped.
     const layersDir = path.join(t.layersRoot, 'linkan', 'shaping');
-    await fetch(`${worker.url}/load`, { method: 'POST', body: JSON.stringify({ blend: path.join(t.exportDir, 'linkan_svg_1.conformed.blend'), layersDir, fbxFolder: await tmp('fbx-') }) });
+    await fetch(`${worker.url}/load?wait=1`, { method: 'POST', body: JSON.stringify({ blend: path.join(t.exportDir, 'linkan_svg_1.conformed.blend'), layersDir, fbxFolder: await tmp('fbx-') }) });
     const job = await run(t.svc);
     expect(job.error).toBeNull();
     expect(job.result!.changedObjects).toEqual(['Spline_recipe-10', 'Spline_recipe-11', 'Spline_tees']);
@@ -631,6 +667,123 @@ test("recipes: each entry's declared params (without the engine's maps); malform
         { id: 'edgeDirt', label: 'edgeDirt', min: 0, max: 1, default: 0.3 },
     ]);
     expect(plain!.params).toEqual([]);
+});
+
+test('the worker protocol: a POST answers with a job id at once, /status and /job/<id> carry it, ?wait=1 answers the run itself', async () => {
+    // A load that takes a moment, so the answer really does come back before the work is done.
+    const worker = startFakeShapingWorker({ loadMs: 300 });
+    cleanup.push(() => worker.stop());
+    const t = await setup({ worker });
+    const layersDir = path.join(t.layersRoot, 'linkan', 'shaping');
+    await mkdir(layersDir, { recursive: true });
+    await writeFile(path.join(layersDir, '00-global.gen.json'), JSON.stringify({ format: 'golfmap-shaping-layer-v1', ops: [TEES] }));
+    const post = (route: string, body: unknown) =>
+        fetch(`${worker.url}${route}`, { method: 'POST', body: JSON.stringify(body) });
+
+    // /load as a job: {job, kind, state} with 202, and /status carries it until it is done.
+    const load = await post('/load', { blend: path.join(t.exportDir, 'x.conformed.blend'), layersDir, fbxFolder: await tmp('fbx-') });
+    expect(load.status).toBe(202);
+    const started = await load.json() as { job: string; kind: string; state: string };
+    expect(started).toEqual({ job: '1', kind: 'load', state: 'running' });
+    // A second job while one goes is refused, not queued.
+    expect((await post('/sync', {})).status).toBe(409);
+
+    for (;;) {
+        const status = await (await fetch(`${worker.url}/status`)).json() as any;
+        expect(status.job.id).toBe(started.job);
+        if (status.job.state !== 'running') {
+            expect(status.job).toMatchObject({ id: '1', kind: 'load', state: 'succeeded', phase: null, error: null });
+            expect(typeof status.job.startedAt).toBe('string');
+            expect(status.job.seconds).toBeGreaterThanOrEqual(0);
+            expect(status.job.result).toMatchObject({ layersDir, appliedOps: 1 });
+            break;
+        }
+        await Bun.sleep(5);
+    }
+    expect(await (await fetch(`${worker.url}/job/1`)).json()).toMatchObject({ id: '1', kind: 'load', state: 'succeeded' });
+    expect((await fetch(`${worker.url}/job/nope`)).status).toBe(404);
+
+    // `?wait=1`: the old blocking shape, the run as the answer.
+    const run = await (await post('/sync?wait=1', {})).json() as { changedObjects: string[] };
+    expect(run.changedObjects).toEqual(['Spline_tees']);
+    expect(await (await fetch(`${worker.url}/job/2`)).json()).toMatchObject({ id: '2', kind: 'sync', state: 'succeeded' });
+});
+
+test('a worker that wants a token: the service sends it, and without it the job fails saying so', async () => {
+    const worker = startFakeShapingWorker({ token: 'sekret' });
+    cleanup.push(() => worker.stop());
+    const t = await setup({ worker, token: 'sekret' });
+    await blends(t.exportDir);
+
+    const job = await run(t.svc);
+    expect(job.error).toBeNull();
+    expect(job.result!.changedObjects).toEqual(['Spline_recipe-10', 'Spline_recipe-11', 'Spline_tees']);
+    const status = await t.svc.status(TEST_COURSE_ID);
+    expect(status.worker.reachable).toBe(true);
+    expect(status.worker.job).toMatchObject({ kind: 'sync', state: 'succeeded' });
+
+    // The same worker without the secret: every call is refused.
+    const blind = await setup({ worker });
+    await blends(blind.exportDir);
+    const refused = await run(blind.svc);
+    expect(refused.status).toBe('failed');
+    expect(refused.error).toMatch(/X-Golfmap-Token is missing or wrong/);
+    expect((await blind.svc.status(TEST_COURSE_ID)).worker.state).toBe('error');
+    expect((await fetch(`${worker.url}/status`, { headers: { 'X-Golfmap-Token': 'sekret' } })).ok).toBe(true);
+});
+
+test("another course's worker on the port is waited for, never taken over mid-run", async () => {
+    const worker = startFakeShapingWorker({ loadMs: 400 });
+    cleanup.push(() => worker.stop());
+    const t = await setup({ worker });
+    await blends(t.exportDir);
+    const otherLayers = await tmp('other-layers-');
+    const other = (n: number) => path.join(otherLayers, `other_${n}.conformed.blend`);
+
+    // It holds another course and is busy loading a third: ours has to wait.
+    await fetch(`${worker.url}/load?wait=1`, { method: 'POST', body: JSON.stringify({ blend: other(1), layersDir: otherLayers, fbxFolder: await tmp('fbx-') }) });
+    await fetch(`${worker.url}/load`, { method: 'POST', body: JSON.stringify({ blend: other(2), layersDir: otherLayers, fbxFolder: await tmp('fbx-') }) });
+
+    const started = await t.svc.apply(TEST_COURSE_ID);
+    const seen: string[] = [];
+    let job = started;
+    while (job.status === 'running') {
+        const detail = job.phases.find(p => p.id === job.phase)?.detail;
+        if (detail && seen.at(-1) !== detail) seen.push(detail);
+        await Bun.sleep(10);
+        job = t.svc.job(started.id);
+    }
+    expect(job.error).toBeNull();
+    // The line names the .blend it is busy on, with the worker's own phase after it.
+    expect(seen.some(l => l.startsWith(`another course's worker is busy on ${other(1)} — waiting`))).toBe(true);
+    // Only once it was idle did ours load — and no /load went in while it was busy.
+    const loads = worker.calls.filter(c => c.route === '/load').map(c => c.body.blend);
+    expect(loads).toEqual([other(1), other(2), path.join(t.exportDir, 'linkan_svg_1.conformed.blend')]);
+    expect(job.result!.changedObjects).toEqual(['Spline_recipe-10', 'Spline_recipe-11', 'Spline_tees']);
+});
+
+test('save: the Unity refresh of a job started with save saves the scene, and the planting after a slab too', async () => {
+    const worker = startFakeShapingWorker();
+    cleanup.push(() => worker.stop());
+    const t = await setup({ worker });
+    await blends(t.exportDir);
+    await plantable(t);
+    t.layers.layers.features = [recipe('10'), SLAB];
+
+    const job = await run(t.svc, { save: true });
+    expect(job.error).toBeNull();
+    const refresh = t.editor!.calls.find(c => c.command === 'golfmap.course.refresh')!;
+    expect(refresh.args).toMatchObject({ save: true });
+    expect(t.editor!.calls.find(c => c.command === 'golfmap.zones.import')!.args).toMatchObject({ save: true });
+    expect(t.editor!.calls.find(c => c.command === 'golfmap.grass.apply')!.args).toMatchObject({ save: true });
+    // The surface map export is not one of the commands that take `save` (unity/README.md).
+    expect(t.editor!.calls.find(c => c.command === 'golfmap.surfaces.export')!.args).toEqual({ terrain: 'inner' });
+
+    // Without it, nothing is saved: the operator's own Ctrl+S, as before.
+    t.editor!.calls.length = 0;
+    t.layers.layers.features = [recipe('11'), SLAB];
+    await run(t.svc);
+    expect(t.editor!.calls.every(c => c.args.save === undefined)).toBe(true);
 });
 
 test('status with nothing on the worker URL: unreachable, no job', async () => {

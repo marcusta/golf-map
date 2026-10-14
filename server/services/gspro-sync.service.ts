@@ -28,6 +28,13 @@
 // waits for a legacy `GsproExportService` job or a `ShapingService` apply of
 // the course — they touch the same files and the same one Blender worker.
 //
+// Every Unity push a chain makes runs with `save: true` (unity/README.md,
+// "Saving what a command changed"), so what it changed is on disk when the job
+// is done instead of waiting for someone to press Ctrl+S; the report names the
+// scenes that were saved. And each file is only rendered again when its inputs
+// have changed (export-fingerprint.ts) — `update(…, { force: true })` renders
+// anyway, which is what `bun run gspro:update -- … --force` passes.
+//
 // "Last updated" comes from `<export dir>/gspro-sync.json`
 // (`golfmap-gspro-sync-v1`), written after each successful target, and falls
 // back to the mtime of the file that target writes, so a course that was
@@ -54,7 +61,7 @@ import type { CoursesService } from './courses.service';
 import type { MapBuildService } from './map-build.service';
 import {
     buildingsExportFileName, courseSlug, creeksExportFileName, demExportFileName, demSidecarName, ensureDir,
-    meshTextureFileName, statOrNull, treesExportFileName, zonesExportFileName,
+    meshTextureFileName, savedLine, statOrNull, treesExportFileName, zonesExportFileName,
     type GsproExportService, type GsproOrthoSource, type TerrainKind,
 } from './gspro-export.service';
 import { BUILDINGS_SURVEY } from './terrain-generators.service';
@@ -444,7 +451,7 @@ export class GsproSyncService {
      * the course, and runs when its turn comes; poll `job(id)` or `status`.
      * 404 for an unknown course.
      */
-    async update(courseId: string, request: GsproTargetId | 'stale'): Promise<GsproSyncJob> {
+    async update(courseId: string, request: GsproTargetId | 'stale', opts: { force?: boolean } = {}): Promise<GsproSyncJob> {
         const ctx = await this.context(courseId);
         let targets: GsproTargetId[];
         if (request === 'stale') {
@@ -473,6 +480,7 @@ export class GsproSyncService {
                 queuedAt: new Date().toISOString(), startedAt: null, finishedAt: null, results: [], error: null,
             },
             phases,
+            force: opts.force === true,
             t0: null,
             t1: null,
         };
@@ -544,7 +552,7 @@ export class GsproSyncService {
         this.begin(rec);
         try {
             if (rec.phases.has('wait')) await this.waitTurn(rec);
-            const ctx = await this.context(rec.job.courseId);
+            const ctx = { ...await this.context(rec.job.courseId), force: rec.force };
             // One probe for the whole job: every Unity push in the chains uses this answer.
             const { editor, seen } = await editorForExportDir(this.unityBridge, ctx.dir);
             const unity: UnityTarget = {
@@ -638,7 +646,7 @@ export class GsproSyncService {
         for (const kind of TERRAINS) {
             rec.phases.note(`the ${kind} heightmap`);
             before[kind] = await this.exports.demSidecarMinM(ctx.courseId, kind);
-            report.push(...prefixed(kind, (await this.exports.exportDem(ctx.courseId, kind)).report));
+            report.push(...prefixed(kind, (await this.exports.exportDem(ctx.courseId, kind, { force: ctx.force })).report));
         }
         rec.phases.end(id('dem'), 'done', 'inner and outer heightmaps exported');
 
@@ -649,7 +657,9 @@ export class GsproSyncService {
             rec.phases.begin(id('unity'), `the inner terrain in ${unity.editor.projectName}`);
             for (const kind of TERRAINS) {
                 rec.phases.note(`the ${kind} terrain in ${unity.editor.projectName}`);
-                report.push(...prefixed(kind, (await this.exports.pushUnityTerrain(ctx.courseId, kind, { minBefore: before[kind] ?? null })).report));
+                // A heightmap whose render was skipped still goes in: the push reads the files in the folder.
+                const pushed = await this.exports.pushUnityTerrain(ctx.courseId, kind, { minBefore: before[kind] ?? null, save: true });
+                report.push(...prefixed(kind, pushed.report));
             }
             rec.phases.end(id('unity'), 'done', `both terrains updated in ${unity.editor.projectName}`);
         }
@@ -677,19 +687,20 @@ export class GsproSyncService {
     private async heightmapDependents(ctx: SyncContext): Promise<Array<{ what: string; run: () => Promise<{ report: string[] }> }>> {
         const out: Array<{ what: string; run: () => Promise<{ report: string[] }> }> = [];
         const has = (name: string) => statOrNull(ctx.file(name)).then(s => s !== null);
+        const force = { force: ctx.force };
         for (const kind of TERRAINS) {
             if (await has(treesExportFileName(ctx.courseName, kind))) {
-                out.push({ what: `${kind} trees`, run: () => this.exports.exportTrees(ctx.courseId, kind) });
+                out.push({ what: `${kind} trees`, run: () => this.exports.exportTrees(ctx.courseId, kind, force) });
             }
             if (await has(buildingsExportFileName(ctx.courseName, kind))) {
-                out.push({ what: `${kind} buildings`, run: () => this.exports.exportBuildings(ctx.courseId, kind) });
+                out.push({ what: `${kind} buildings`, run: () => this.exports.exportBuildings(ctx.courseId, kind, force) });
             }
             if (await has(zonesExportFileName(ctx.courseName, kind))) {
-                out.push({ what: `${kind} vegetation zones`, run: () => this.exports.exportZones(ctx.courseId, kind) });
+                out.push({ what: `${kind} vegetation zones`, run: () => this.exports.exportZones(ctx.courseId, kind, force) });
             }
         }
         if (await has(creeksExportFileName(ctx.courseName))) {
-            out.push({ what: 'creeks', run: () => this.exports.exportCreeks(ctx.courseId) });
+            out.push({ what: 'creeks', run: () => this.exports.exportCreeks(ctx.courseId, force) });
         }
         if (ctx.courseDir && ctx.gkdFile && await statOrNull(path.join(ctx.courseDir, ctx.gkdFile))) {
             out.push({ what: 'GreenKeeper course file', run: () => this.exports.exportGkd(ctx.courseId) });
@@ -711,7 +722,7 @@ export class GsproSyncService {
 
         rec.phases.begin(id('inner'), `rendering ${picked.source}`);
         // The panel's defaults: the tint (the `-meshes` file Unity takes), the forest floor and the roofs filled.
-        const exported = await this.exports.exportOrtho(ctx.courseId, picked.source, undefined, {}, {}, true);
+        const exported = await this.exports.exportOrtho(ctx.courseId, picked.source, undefined, {}, {}, true, { force: ctx.force });
         const meshes = meshTextureFileName(path.basename(exported.path));
         report.push(...prefixed('inner photo', exported.report));
         rec.phases.end(id('inner'), 'done', `${path.basename(exported.path)} (+ its -terrain and -meshes twins)`);
@@ -721,12 +732,12 @@ export class GsproSyncService {
             report.push(`${unity.why!} — ${meshes} is written, run GolfMap's orthos apply there to take it`);
         } else {
             rec.phases.begin(id('unity'), `${meshes} onto the course meshes in ${unity.editor.projectName}`);
-            report.push(...(await this.exports.pushUnityOrtho(ctx.courseId, meshes)).report);
+            report.push(...(await this.exports.pushUnityOrtho(ctx.courseId, meshes, { save: true })).report);
             rec.phases.end(id('unity'), 'done', `${meshes} onto the course meshes in ${unity.editor.projectName}`);
         }
 
         rec.phases.begin(id('outer'), `the outer square from ${sources[0]!.collection}`);
-        const outer = await this.exports.exportOuterOrtho(ctx.courseId, sources[0]!.collection, undefined, {}, {}, true);
+        const outer = await this.exports.exportOuterOrtho(ctx.courseId, sources[0]!.collection, undefined, {}, {}, true, { force: ctx.force });
         report.push(...prefixed('outer photo', outer.report));
         report.push('The outer texture is written only: there is no Unity push for the outer terrain — set it on the terrain by hand once.');
         rec.phases.end(id('outer'), 'done', path.basename(outer.path));
@@ -748,7 +759,7 @@ export class GsproSyncService {
      * it runs.
      */
     private async updateMeshes(rec: JobRecord, ctx: SyncContext, id: (s: string) => string): Promise<string[]> {
-        const started = await this.shaping.apply(ctx.courseId, {});
+        const started = await this.shaping.apply(ctx.courseId, { save: true });
         let job: ShapingJob = started;
         for (;;) {
             this.mirror(rec, job, id);
@@ -758,10 +769,12 @@ export class GsproSyncService {
         }
         if (job.status !== 'succeeded') throw new ConflictError(job.error ?? 'the shaping run failed');
         const result = job.result!;
+        const saved = savedLine(result.unityReport);
         return [
             ...result.layers,
             `${result.changedObjects.length} object(s) re-shaped, ${result.exported.length} FBX exported`
                 + (result.changedObjects.length ? `: ${result.changedObjects.join(', ')}` : ''),
+            ...(saved ? [saved] : []),
             ...result.vegetation,
             ...result.warnings.map(w => `warning: ${w}`),
         ];
@@ -781,14 +794,15 @@ export class GsproSyncService {
     private async updateVegetation(rec: JobRecord, ctx: SyncContext, id: (s: string) => string): Promise<string[]> {
         const report: string[] = [];
         rec.phases.begin(id('inner'), 'generators, masks, Unity, the Arborist file');
-        report.push(...prefixed('inner', (await this.exports.plantVegetation(ctx.courseId, 'inner')).report));
+        const plant = { save: true, force: ctx.force };
+        report.push(...prefixed('inner', (await this.exports.plantVegetation(ctx.courseId, 'inner', plant)).report));
         rec.phases.end(id('inner'), 'done', 'planted for the inner terrain');
 
         if (!await statOrNull(ctx.file(zonesExportFileName(ctx.courseName, 'outer')))) {
             rec.phases.skip(id('outer'), 'the outer terrain has no vegetation zones export to refresh');
         } else {
             rec.phases.begin(id('outer'), 'generators and masks for the outer terrain');
-            report.push(...prefixed('outer', (await this.exports.plantVegetation(ctx.courseId, 'outer')).report));
+            report.push(...prefixed('outer', (await this.exports.plantVegetation(ctx.courseId, 'outer', plant)).report));
             rec.phases.end(id('outer'), 'done', 'planted for the outer terrain');
         }
         return report;
@@ -800,7 +814,7 @@ export class GsproSyncService {
         rec.phases.begin(id('files'), 'the inner trees');
         for (const kind of TERRAINS) {
             rec.phases.note(`the ${kind} trees`);
-            report.push(...prefixed(kind, (await this.exports.exportTrees(ctx.courseId, kind)).report));
+            report.push(...prefixed(kind, (await this.exports.exportTrees(ctx.courseId, kind, { force: ctx.force })).report));
         }
         rec.phases.end(id('files'), 'done', 'inner and outer trees exported');
         await this.intoUnity(rec, unity, id('unity'), 'Tree Planter',
@@ -814,7 +828,7 @@ export class GsproSyncService {
         rec.phases.begin(id('files'), 'the inner buildings');
         for (const kind of TERRAINS) {
             rec.phases.note(`the ${kind} buildings`);
-            report.push(...prefixed(kind, (await this.exports.exportBuildings(ctx.courseId, kind)).report));
+            report.push(...prefixed(kind, (await this.exports.exportBuildings(ctx.courseId, kind, { force: ctx.force })).report));
         }
         rec.phases.end(id('files'), 'done', 'inner and outer buildings exported');
         // No `[BridgeCommand]` plants buildings (unity/Editor/GolfMap/GolfMapBuildingPlanter.cs is a menu item only).
@@ -827,7 +841,7 @@ export class GsproSyncService {
     /** Creeks: the R.A.M. spline file, then the import in Unity. */
     private async updateCreeks(rec: JobRecord, ctx: SyncContext, unity: UnityTarget, id: (s: string) => string): Promise<string[]> {
         rec.phases.begin(id('file'), 'gspro.py creeks');
-        const exported = await this.exports.exportCreeks(ctx.courseId);
+        const exported = await this.exports.exportCreeks(ctx.courseId, { force: ctx.force });
         rec.phases.end(id('file'), 'done', path.basename(exported.path));
         const report = [...exported.report];
         await this.intoUnity(rec, unity, id('unity'), 'Creeks',
@@ -846,7 +860,9 @@ export class GsproSyncService {
     /**
      * One phase that runs a list of bridge commands in the matched editor, or
      * is SKIPPED when none works on the course — the files are written either
-     * way, so "no Unity" is never a failure.
+     * way, so "no Unity" is never a failure. Each command runs with
+     * `save: true`, and the report names what it saved instead of asking for
+     * it (a command that saved nothing still gets the old line).
      */
     private async intoUnity(
         rec: JobRecord, unity: UnityTarget, phaseId: string, what: string,
@@ -859,13 +875,16 @@ export class GsproSyncService {
         }
         const editor = unity.editor;
         rec.phases.begin(phaseId, `${what} in ${editor.projectName}`);
+        const saved: string[] = [];
         for (const c of commands) {
             rec.phases.note(`${c.what} in ${editor.projectName}`);
-            const result = await editor.run(c.command, c.args, 600);
+            const result = await editor.run(c.command, { ...c.args, save: true }, 600);
             report.push(`Unity (${editor.projectName}): ${c.command} — ${describeUnityResult(result) ?? 'done'}`);
+            const line = savedLine(result);
+            if (line && !saved.includes(line)) saved.push(line);
         }
         rec.phases.end(phaseId, 'done', `${what} run in ${editor.projectName}`);
-        report.push('Save the scene in Unity to keep it.');
+        report.push(...(saved.length ? saved : ['Save the scene in Unity to keep it.']));
     }
 
     // --- Internals ---
@@ -893,6 +912,7 @@ export class GsproSyncService {
             terrain,
             terrainError,
             record: await readRecord(dir),
+            force: false,
             file: (name: string) => path.join(dir, name),
             demSidecar: (kind: TerrainKind) => path.join(dir, demSidecarName(demExportFileName(course.name, kind, terrain![kind].sideM))),
         };
@@ -957,6 +977,8 @@ interface SyncContext {
     terrain: CourseTerrain | null;
     terrainError: string | null;
     record: GsproSyncRecord;
+    /** This job's `--force`: render every file again, whatever its inputs say (false while only reading the board). */
+    force: boolean;
     orthos?: GsproOrthoSource[];
     file(name: string): string;
     /** Only safe with `terrain` non-null. */
@@ -967,6 +989,8 @@ interface SyncContext {
 interface JobRecord {
     job: Omit<GsproSyncJob, 'phase' | 'phases' | 'step' | 'seconds'>;
     phases: JobPhases;
+    /** Render every file again, whatever its input fingerprint says. */
+    force: boolean;
     /** When it started running (ms); null while queued. */
     t0: number | null;
     t1: number | null;

@@ -81,6 +81,9 @@ import {
     type CourseTerrain, type TerrainSquare,
 } from './terrain-square';
 import { DEFAULT_PIPELINE_DIR } from './pipeline-dir';
+import {
+    digest, fingerprint, mtimeMs, recordInputs, unchangedLine, type ExportInputs,
+} from './export-fingerprint';
 import { FeatureHistoryService } from './feature-history.service';
 import { CourseFeaturesService } from './course-features.service';
 import { ZoneTypesService } from './zone-types.service';
@@ -166,6 +169,12 @@ export interface GsproExportRequest {
     variant?: string;
     /** `vegetation-update`: the vegetation_zone features to update in Unity. */
     zoneIds?: string[];
+    /**
+     * Render even when the output's inputs are unchanged
+     * (export-fingerprint.ts): `dem`, `ortho`, `outer-ortho`, `unity-terrain`,
+     * `unity-ortho`, `trees`, `buildings`, `zones`, `creeks`, `vegetation`.
+     */
+    force?: boolean;
 }
 
 /** Feature types the SVG draws as another OPCD surface than the pipeline's default (`gspro.py svg --map`): canopy as pine straw. */
@@ -765,7 +774,8 @@ export class GsproExportService {
      * never name a path outside the site's sources folder.
      */
     async exportOrtho(courseId: string, source: string, darken?: number, tint?: TerrainTintOptions,
-                      floor?: ForestFloorOptions, removeBuildings = false): Promise<GsproExportResult> {
+                      floor?: ForestFloorOptions, removeBuildings = false,
+                      opts: { force?: boolean } = {}): Promise<GsproExportResult> {
         const course = await this.courses.get(courseId);
         const chosen = (await this.orthoSources(courseId)).find(s => s.source === source);
         if (!chosen) {
@@ -777,7 +787,7 @@ export class GsproExportService {
         const out = path.join(await this.exportDir(courseId), orthoExportFileName(course.name, chosen, clean));
         const buildings = removeBuildings ? await this.buildingSources(course.siteId!) : undefined;
         return this.renderOrtho('GSPro orthophoto', inner, path.join(this.sourcesDir(course.siteId!), chosen.source), out,
-            courseId, darken, tint, floor, buildings);
+            courseId, darken, tint, floor, buildings, opts.force);
     }
 
     /**
@@ -788,7 +798,8 @@ export class GsproExportService {
      * <collection>.tif`; later exports render from that copy.
      */
     async exportOuterOrtho(courseId: string, collection: string, darken?: number, tint?: TerrainTintOptions,
-                           floor?: ForestFloorOptions, removeBuildings = false): Promise<GsproExportResult> {
+                           floor?: ForestFloorOptions, removeBuildings = false,
+                           opts: { force?: boolean } = {}): Promise<GsproExportResult> {
         const course = await this.courses.get(courseId);
         if (!COLLECTION_RE.test(collection)) {
             throw new ConflictError(`'${collection}' is not an orthophoto collection id (expected e.g. orto-l2-2025)`);
@@ -808,7 +819,7 @@ export class GsproExportService {
         const out = path.join(await this.exportDir(courseId), outerOrthoExportFileName(course.name, collection, clean));
         const buildings = removeBuildings ? await this.buildingSources(siteId) : undefined;
         const rendered = await this.renderOrtho('GSPro outer orthophoto', outer, src, out, courseId, darken,
-            tint && { ...tint, darkenTint: true, grade: OUTER_TERRAIN_GRADE }, floor, buildings);
+            tint && { ...tint, darkenTint: true, grade: OUTER_TERRAIN_GRADE }, floor, buildings, opts.force);
         return { path: rendered.path, report: [...fetched, ...rendered.report] };
     }
 
@@ -823,16 +834,50 @@ export class GsproExportService {
      * `ensureOuterDem`) into `sources/<siteId>/outer-dem.tif` at 1 m. An
      * outer export is handed the inner's sidecar when it is in the folder,
      * so its sidecar carries the outer terrain's Unity position.
+     *
+     * Skipped when nothing it reads has changed since the last one — the DEM
+     * source files, the site's enabled terrain edits, the Unity sculpt layers
+     * and (for the outer) the inner's sidecar — and the TIF, the RAW and the
+     * sidecar are all still there; `force` renders anyway
+     * (export-fingerprint.ts). The push into Unity does not go through here,
+     * so a skipped render still ends up on the terrain.
      */
-    async exportDem(courseId: string, kind: TerrainKind): Promise<GsproExportResult> {
+    async exportDem(courseId: string, kind: TerrainKind, opts: { force?: boolean } = {}): Promise<GsproExportResult> {
         const course = await this.courses.get(courseId);
         const siteId = this.builtSiteId(course);
         const terrain = await this.resolveTerrain(courseId, `export the GSPro ${kind} DEM for`);
         const square = terrain[kind];
-        const { src, fetched } = await this.demSource(siteId, kind, square);
 
         const dir = await this.exportDir(courseId);
         const out = path.join(dir, demExportFileName(course.name, kind, square.sideM));
+        // Before the source is resolved: an outer export otherwise grids, replays the
+        // edits and exports the inner first, which is the work this skip is about.
+        const sculptRasters = await this.sculptRasters(siteId);
+        const innerSidecarFile = kind === 'outer'
+            ? path.join(dir, demSidecarName(demExportFileName(course.name, 'inner', terrain.inner.sideM)))
+            : null;
+        const inputs: ExportInputs = {
+            files: [
+                ...(kind === 'inner' ? ['dem-edited.tif', 'dem.tif'] : [OUTER_DEM_SOURCE])
+                    .map(name => path.join(this.sourcesDir(siteId), name)),
+                ...sculptRasters,
+                innerSidecarFile,
+            ],
+            values: {
+                terrain: kind,
+                square: terrainArg(square),
+                resolution: DEM_EXPORT_RESOLUTION_M[kind],
+                edits: await this.editsStamp(siteId),
+                pipeline: await this.pipelineStamp(),
+            },
+            outputs: [out, out.replace(/\.tif$/i, '.raw'), demSidecarName(out)],
+        };
+        if (!opts.force) {
+            const unchanged = await unchangedLine(await fingerprint(out, inputs));
+            if (unchanged) return { path: out, report: [unchanged] };
+        }
+
+        const { src, fetched } = await this.demSource(siteId, kind, square);
         const args = [
             path.join(this.pipelineDir, 'gspro.py'), 'dem',
             '--square-3006', terrainArg(square),
@@ -845,23 +890,24 @@ export class GsproExportService {
         const notes: string[] = [];
         // The Unity sculpt layers this DEM contains: Unity subtracts them from
         // what it keeps, so its next capture is the whole layer.
-        for (const raster of await this.sculptRasters(siteId)) args.push('--sculpt', raster);
-        if (kind === 'outer') {
-            const innerSidecar = path.join(dir, demSidecarName(demExportFileName(course.name, 'inner', terrain.inner.sideM)));
+        for (const raster of sculptRasters) args.push('--sculpt', raster);
+        if (innerSidecarFile) {
             // The outer sidecar records the outer terrain's Unity position from
             // the inner's, so the inner has to be exported first: do it rather
             // than leave a note asking for it.
-            if (!await statOrNull(innerSidecar)) {
-                const inner = await this.exportDem(courseId, 'inner');
+            if (!await statOrNull(innerSidecarFile)) {
+                const inner = await this.exportDem(courseId, 'inner', opts);
                 before.push(`exported the inner heightmap first, for the outer terrain's Unity position (${path.basename(inner.path)})`, ...inner.report);
             }
-            if (await statOrNull(innerSidecar)) {
-                args.push('--inner-sidecar', innerSidecar);
+            if (await statOrNull(innerSidecarFile)) {
+                args.push('--inner-sidecar', innerSidecarFile);
             } else {
-                notes.push(`note: the inner heightmap export wrote no sidecar (${path.basename(innerSidecar)}), so the outer terrain's Unity position is not recorded`);
+                notes.push(`note: the inner heightmap export wrote no sidecar (${path.basename(innerSidecarFile)}), so the outer terrain's Unity position is not recorded`);
             }
         }
         const rendered = await this.run(`GSPro ${kind} DEM`, args, out);
+        // Hashed again: an outer export may have written the inner sidecar it reads on its way here.
+        await recordInputs(await fingerprint(out, inputs));
         return { path: rendered.path, report: [...before, ...fetched, ...rendered.report, ...notes] };
     }
 
@@ -979,15 +1025,17 @@ export class GsproExportService {
      * at a world height from the old one — trees, buildings, creeks, the
      * course meshes — is that much off until it is placed again.
      */
-    async exportUnityTerrain(courseId: string, kind: TerrainKind): Promise<GsproExportResult> {
+    async exportUnityTerrain(courseId: string, kind: TerrainKind,
+                             opts: { force?: boolean; save?: boolean } = {}): Promise<GsproExportResult> {
         const course = await this.courses.get(courseId);
         const terrain = await this.resolveTerrain(courseId, `export the GSPro ${kind} DEM for`);
         const dir = await this.exportDir(courseId);
         const editor = await this.unityTerrainEditor(courseId, kind, dir);
         const sidecar = path.join(dir, demSidecarName(demExportFileName(course.name, kind, terrain[kind].sideM)));
         const before = await readSidecarMin(sidecar);
-        const exported = await this.exportDem(courseId, kind);
-        const pushed = await this.terrainIntoUnity(editor, kind, sidecar, before);
+        // A skipped render (inputs unchanged) still goes into Unity: the push reads the files.
+        const exported = await this.exportDem(courseId, kind, { force: opts.force });
+        const pushed = await this.terrainIntoUnity(editor, kind, sidecar, before, opts.save);
         return { path: exported.path, report: [...exported.report, ...pushed.report] };
     }
 
@@ -998,14 +1046,15 @@ export class GsproExportService {
      * per terrain is not worth repeating. `minBefore`: the sidecar's `minM`
      * before that export, so the moved-zero warning can still be given.
      */
-    async pushUnityTerrain(courseId: string, kind: TerrainKind, opts: { minBefore?: number | null } = {}): Promise<GsproExportResult> {
+    async pushUnityTerrain(courseId: string, kind: TerrainKind,
+                           opts: { minBefore?: number | null; save?: boolean } = {}): Promise<GsproExportResult> {
         const course = await this.courses.get(courseId);
         const terrain = await this.resolveTerrain(courseId, `put the GSPro ${kind} heightmap of`);
         const dir = await this.exportDir(courseId);
         const editor = await this.unityTerrainEditor(courseId, kind, dir);
         const sidecar = path.join(dir, demSidecarName(demExportFileName(course.name, kind, terrain[kind].sideM)));
         if (!await statOrNull(sidecar)) throw new ConflictError(`No ${kind} heightmap in ${dir} yet (${path.basename(sidecar)}): export it first`);
-        return this.terrainIntoUnity(editor, kind, sidecar, opts.minBefore ?? null);
+        return this.terrainIntoUnity(editor, kind, sidecar, opts.minBefore ?? null, opts.save);
     }
 
     /** The editor a heightmap push goes to; 409 when the inner is stale or no editor works on the course. */
@@ -1024,12 +1073,13 @@ export class GsproExportService {
         return editor;
     }
 
-    /** `golfmap.terrain.update` in `editor`, and what it reports. */
-    private async terrainIntoUnity(editor: UnityEditor, kind: TerrainKind, sidecar: string, before: number | null): Promise<GsproExportResult> {
+    /** `golfmap.terrain.update` in `editor` (with `save`, saving what it changed), and what it reports. */
+    private async terrainIntoUnity(editor: UnityEditor, kind: TerrainKind, sidecar: string, before: number | null,
+                                   save?: boolean): Promise<GsproExportResult> {
         const after = await readSidecarMin(sidecar);
         let result: any;
         try {
-            result = await editor.run('golfmap.terrain.update', { terrain: kind }, 600);
+            result = await editor.run('golfmap.terrain.update', { terrain: kind, ...(save ? { save: true } : {}) }, 600);
         } catch (e) {
             throw new ConflictError(`The heightmap was exported, but Unity (${editor.projectName}) could not take it: ${(e as Error).message.split('\n')[0]}`);
         }
@@ -1051,7 +1101,10 @@ export class GsproExportService {
             report.push(`warning: the outer plot is at or above the inner ground on ${through.areaM2} m² (up to ${through.worstM} m, at x ${through.worstAt[0]}, z ${through.worstAt[1]}): `
                 + 'it will show through the rebuilt meshes there — put the other terrain\'s heightmap into Unity too, or lower the outer plot');
         }
-        report.push('Next: Terrain › Export To OBJ in Unity for Blender; re-run the terrain conform once the course meshes are rebuilt. Save the scene to keep it.');
+        const saved = savedLine(result);
+        report.push('Next: Terrain › Export To OBJ in Unity for Blender; re-run the terrain conform once the course meshes are rebuilt.'
+            + (saved ? '' : ' Save the scene to keep it.'));
+        if (saved) report.push(saved);
         return { path: sidecar, report };
     }
 
@@ -1066,12 +1119,13 @@ export class GsproExportService {
      * it is the one the meshes use.
      */
     async exportUnityOrtho(courseId: string, source: string, darken?: number, tint?: TerrainTintOptions,
-                           floor?: ForestFloorOptions, removeBuildings = false): Promise<GsproExportResult> {
+                           floor?: ForestFloorOptions, removeBuildings = false,
+                           opts: { force?: boolean; save?: boolean } = {}): Promise<GsproExportResult> {
         const dir = await this.exportDir(courseId);
         // Find the editor first: no point rendering for a Unity that is not open.
         const editor = await this.unityOrthoEditor(dir);
-        const exported = await this.exportOrtho(courseId, source, darken, tint ?? {}, floor, removeBuildings);
-        const pushed = await this.orthoIntoUnity(editor, meshTextureFileName(path.basename(exported.path)));
+        const exported = await this.exportOrtho(courseId, source, darken, tint ?? {}, floor, removeBuildings, { force: opts.force });
+        const pushed = await this.orthoIntoUnity(editor, meshTextureFileName(path.basename(exported.path)), opts.save);
         return { path: exported.path, report: [...exported.report, ...pushed.report] };
     }
 
@@ -1081,10 +1135,10 @@ export class GsproExportService {
      * chain writes the file in one phase and pushes it in the next, and an
      * 8192 px render is not worth repeating.
      */
-    async pushUnityOrtho(courseId: string, file: string): Promise<GsproExportResult> {
+    async pushUnityOrtho(courseId: string, file: string, opts: { save?: boolean } = {}): Promise<GsproExportResult> {
         const dir = await this.exportDir(courseId);
         if (!await statOrNull(path.join(dir, file))) throw new ConflictError(`No ${file} in ${dir} yet: export the orthophoto first`);
-        return this.orthoIntoUnity(await this.unityOrthoEditor(dir), file);
+        return this.orthoIntoUnity(await this.unityOrthoEditor(dir), file, opts.save);
     }
 
     private async unityOrthoEditor(dir: string): Promise<UnityEditor> {
@@ -1096,11 +1150,11 @@ export class GsproExportService {
         return editor;
     }
 
-    /** `golfmap.orthos.apply file=<file>` in `editor`, and what it reports. */
-    private async orthoIntoUnity(editor: UnityEditor, file: string): Promise<GsproExportResult> {
+    /** `golfmap.orthos.apply file=<file>` in `editor` (with `save`, saving what it changed), and what it reports. */
+    private async orthoIntoUnity(editor: UnityEditor, file: string, save?: boolean): Promise<GsproExportResult> {
         let result: any;
         try {
-            result = await editor.run('golfmap.orthos.apply', { file }, 300);
+            result = await editor.run('golfmap.orthos.apply', { file, ...(save ? { save: true } : {}) }, 300);
         } catch (e) {
             throw new ConflictError(`The orthophoto was exported, but Unity (${editor.projectName}) could not take it: ${(e as Error).message.split('\n')[0]}`);
         }
@@ -1108,7 +1162,7 @@ export class GsproExportService {
             path: file,
             report: [
                 `Unity (${editor.projectName}): ${file} put onto ${result?.target} (${result?.renderers ?? 0} renderers sample it; ${result?.status})`,
-                'Save the Unity project to keep it.',
+                savedLine(result) ?? 'Save the Unity project to keep it.',
             ],
         };
     }
@@ -1148,7 +1202,7 @@ export class GsproExportService {
      * plot's height range is read from that terrain's heightmap sidecar in
      * the folder; the heightmap is exported first when it is not there.
      */
-    async exportTrees(courseId: string, kind: TerrainKind): Promise<GsproExportResult> {
+    async exportTrees(courseId: string, kind: TerrainKind, opts: { force?: boolean } = {}): Promise<GsproExportResult> {
         const course = await this.courses.get(courseId);
         const siteId = this.builtSiteId(course);
         const terrain = await this.resolveTerrain(courseId, `export the GSPro ${kind} trees for`);
@@ -1186,7 +1240,11 @@ export class GsproExportService {
         // The course's placed rocks (golfmap.walls.build's spec): the lidar reads a boulder as a low bush.
         const rocks = path.join(this.courseDocsRoot, courseSlug(course.name), 'stone-walls.json');
         if (await statOrNull(rocks)) args.push('--rocks', rocks);
-        const rendered = await this.run(`GSPro ${kind} trees`, args, out);
+        const rendered = await this.runIfChanged(`GSPro ${kind} trees`, args, out, {
+            // The file carries the course's tree species areas, so its feature stamp joins the hash.
+            files: [stems, sidecar, rocks],
+            values: { features: await this.history.latestStamp(courseId) },
+        }, opts.force);
         return { path: rendered.path, report: [...prepared, ...fetched, ...rendered.report] };
     }
 
@@ -1199,7 +1257,7 @@ export class GsproExportService {
      * sidecar — exported first when the folder has none; the outer leaves
      * the inner square to the inner file.
      */
-    async exportZones(courseId: string, kind: TerrainKind): Promise<GsproExportResult> {
+    async exportZones(courseId: string, kind: TerrainKind, opts: { force?: boolean } = {}): Promise<GsproExportResult> {
         const course = await this.courses.get(courseId);
         const terrain = await this.resolveTerrain(courseId, `export the GSPro ${kind} vegetation zones for`);
         const square = terrain[kind];
@@ -1218,7 +1276,14 @@ export class GsproExportService {
             '--terrain', kind,
         ];
         if (kind === 'outer') args.push('--exclude-square', terrainArg(terrain.inner));
-        const rendered = await this.run(`GSPro ${kind} vegetation zones`, args, out);
+        const rendered = await this.runIfChanged(`GSPro ${kind} vegetation zones`, args, out, {
+            files: [sidecar],
+            // The zones themselves by content (so a generator run that reproduced them counts as
+            // unchanged), the zone types' bindings, and the rest of the course's features.
+            values: { ...await this.zonesStamp(courseId), features: await this.history.latestStamp(courseId) },
+            // The masks are only known once it has run: recorded, so a hand-deleted one is noticed.
+            outputsAfter: async () => [out, ...await this.zoneMasks(dir, out)],
+        }, opts.force);
         return { path: rendered.path, report: [...prepared, ...rendered.report] };
     }
 
@@ -1240,22 +1305,33 @@ export class GsproExportService {
      *
      * The report says which ran. A half that fails fails the job, after the
      * other has run, with both outcomes in the message. The scene is left for
-     * the operator to save. `dryRun` only writes the generators' GeoJSON (the
+     * the operator to save unless `save` is passed, and then the report says
+     * what was saved instead. `dryRun` only writes the generators' GeoJSON (the
      * CLI's --dry-run).
+     *
+     * The generators always run (their output is rows in the database, not a
+     * file with a fingerprint to compare), but the masks are only rasterized
+     * again when the zones, the zone types or the heightmap sidecar moved —
+     * `force` renders them anyway.
      */
     async plantVegetation(courseId: string, kind: TerrainKind,
-                          opts: Omit<VegetationOptions, 'workDir'> & { dbPath?: string; exportZones?: boolean; unity?: boolean; arborist?: 'lower' | false } = {}): Promise<GsproExportResult> {
+                          opts: Omit<VegetationOptions, 'workDir'> & {
+                              dbPath?: string; exportZones?: boolean; unity?: boolean;
+                              arborist?: 'lower' | false; save?: boolean; force?: boolean;
+                          } = {}): Promise<GsproExportResult> {
         const dir = await this.exportDir(courseId);
         const generated = await this.runGenerators(courseId, kind, opts);
         const report = [...generated.report];
         if (opts.dryRun || opts.exportZones === false) return { path: dir, report };
 
-        const exported = await this.exportZones(courseId, kind);
+        const exported = await this.exportZones(courseId, kind, { force: opts.force });
         report.push(...exported.report);
 
         // Half one, Unity: the course's own VSP (grass, and what the palette keeps there).
         let editor: UnityEditor | null = null;
         let unityError: string | null = null;
+        /** What `save` saved in Unity, when it was asked for: the line that replaces "Save the scene …". */
+        let saved: string | null = null;
         if (opts.unity !== false) {
             const found = await editorForExportDir(this.unityBridge, dir);
             editor = found.editor;
@@ -1268,15 +1344,17 @@ export class GsproExportService {
                     // Import binds each item's mask and include rules; apply makes and styles the items and
                     // turns spawning on for those with rules. An item apply only now added (a new species in a
                     // palette) had no rules at the import: a second round binds it and lets it spawn.
+                    const saving = opts.save ? { save: true } : {};
                     for (let round = 1; round <= 2; round++) {
-                        const imported = await editor.run('golfmap.zones.import', { terrain: kind, package: LOWER_VEGETATION_PACKAGE }, 600);
+                        const imported = await editor.run('golfmap.zones.import', { terrain: kind, package: LOWER_VEGETATION_PACKAGE, ...saving }, 600);
                         report.push(`Unity (${editor.projectName}): imported ${path.basename(exported.path)} into '${LOWER_VEGETATION_PACKAGE}'`
                             + (imported?.status ? ` - ${firstLine(String(imported.status))}` : ''));
-                        const applied = await editor.run('golfmap.grass.apply', { terrain: kind }, 600);
+                        const applied = await editor.run('golfmap.grass.apply', { terrain: kind, ...saving }, 600);
                         const items = Array.isArray(applied?.items) ? applied.items.length : 0;
                         report.push(`Unity (${editor.projectName}): grass palettes applied (${items} items on ${applied?.system ?? "the terrain's system"})`);
                         const log = (applied?.log ?? []) as string[];
                         for (const line of log) report.push(`  ${line}`);
+                        saved = savedLine(applied) ?? saved;
                         if (!log.some(l => /^(added|replaced) item /.test(l))) break;
                     }
                 } catch (e) {
@@ -1297,7 +1375,7 @@ export class GsproExportService {
                 + (arborist.written.length ? ` and the Arborist ${arborist.written.join(' and ')} written` : '')
                 + `, but: ${arborist.error}`);
         }
-        if (editor) report.push('Save the scene in Unity to keep it.');
+        if (editor) report.push(saved ?? 'Save the scene in Unity to keep it.');
         return { path: exported.path, report };
     }
 
@@ -1473,10 +1551,12 @@ export class GsproExportService {
      */
     private async plantInsteadOfPatch(courseId: string, kinds: TerrainKind[], why: string): Promise<GsproExportResult> {
         const report = [why];
-        let last = await this.plantVegetation(courseId, 'inner');
+        // `force`: the masks are here because they are out of step with the zone types' bindings
+        // (or not there at all), which is a reason to rasterize them however the fingerprint reads.
+        let last = await this.plantVegetation(courseId, 'inner', { force: true });
         report.push(...last.report);
         if (kinds.includes('outer')) {
-            last = await this.plantVegetation(courseId, 'outer');
+            last = await this.plantVegetation(courseId, 'outer', { force: true });
             report.push(...last.report);
         }
         return { path: last.path, report };
@@ -1492,7 +1572,7 @@ export class GsproExportService {
      * and the water belongs above them. Reads the inner heightmap sidecar for
      * the terrain's zero, exporting the inner heightmap first when there is none.
      */
-    async exportCreeks(courseId: string): Promise<GsproExportResult> {
+    async exportCreeks(courseId: string, opts: { force?: boolean } = {}): Promise<GsproExportResult> {
         const course = await this.courses.get(courseId);
         if (!course.siteId) throw new ConflictError('This course has no built map on this machine — build its map first');
         const terrain = await this.resolveTerrain(courseId, 'export the GSPro creeks for');
@@ -1503,14 +1583,17 @@ export class GsproExportService {
         const sidecar = path.join(dir, demSidecarName(demExportFileName(course.name, 'inner', terrain.inner.sideM)));
         const prepared = await this.ensureDemSidecar(courseId, 'inner', sidecar);
         const out = path.join(dir, creeksExportFileName(course.name));
-        const rendered = await this.run('GSPro creeks', [
+        const rendered = await this.runIfChanged('GSPro creeks', [
             path.join(this.pipelineDir, 'gspro.py'), 'creeks',
             '--square-3006', terrainArg(terrain.inner),
             '--course', courseId,
             '--dem', dem,
             '--sidecar', sidecar,
             '--out', out,
-        ], out);
+        ], out, {
+            files: [dem, sidecar],
+            values: { features: await this.history.latestStamp(courseId) },
+        }, opts.force);
         return { path: rendered.path, report: [...prepared, ...rendered.report] };
     }
 
@@ -1609,22 +1692,24 @@ export class GsproExportService {
 
     /** The synchronous export behind a job request. */
     private perform(courseId: string, r: GsproExportRequest): Promise<GsproExportResult> {
+        /** `--force`: render even when the fingerprint says the inputs are unchanged. */
+        const force = { force: r.force === true };
         switch (r.kind) {
             case 'svg': return this.export(courseId, { excludeFeatureIds: r.excludeFeatureIds, variant: r.variant });
-            case 'ortho': return this.exportOrtho(courseId, r.source!, r.darken, tintOptions(r), floorOptions(r), r.removeBuildings === true);
-            case 'outer-ortho': return this.exportOuterOrtho(courseId, r.collection!, r.darken, tintOptions(r), floorOptions(r), r.removeBuildings === true);
-            case 'dem': return this.exportDem(courseId, r.terrain!);
-            case 'unity-terrain': return this.exportUnityTerrain(courseId, r.terrain!);
+            case 'ortho': return this.exportOrtho(courseId, r.source!, r.darken, tintOptions(r), floorOptions(r), r.removeBuildings === true, force);
+            case 'outer-ortho': return this.exportOuterOrtho(courseId, r.collection!, r.darken, tintOptions(r), floorOptions(r), r.removeBuildings === true, force);
+            case 'dem': return this.exportDem(courseId, r.terrain!, force);
+            case 'unity-terrain': return this.exportUnityTerrain(courseId, r.terrain!, force);
             case 'unity-sculpt': return this.exportUnitySculpt(courseId, r.terrain!);
-            case 'unity-ortho': return this.exportUnityOrtho(courseId, r.source!, r.darken, tintOptions(r), floorOptions(r), r.removeBuildings === true);
+            case 'unity-ortho': return this.exportUnityOrtho(courseId, r.source!, r.darken, tintOptions(r), floorOptions(r), r.removeBuildings === true, force);
             case 'hillshade': return this.exportHillshade(courseId, r.terrain!);
-            case 'trees': return this.exportTrees(courseId, r.terrain!);
-            case 'buildings': return this.exportBuildings(courseId, r.terrain!);
-            case 'zones': return this.exportZones(courseId, r.terrain!);
-            case 'vegetation': return this.plantVegetation(courseId, r.terrain!);
+            case 'trees': return this.exportTrees(courseId, r.terrain!, force);
+            case 'buildings': return this.exportBuildings(courseId, r.terrain!, force);
+            case 'zones': return this.exportZones(courseId, r.terrain!, force);
+            case 'vegetation': return this.plantVegetation(courseId, r.terrain!, force);
             case 'vegetation-update': return this.updateZones(courseId, r.zoneIds!);
             case 'arborist': return this.exportArborist(courseId);
-            case 'creeks': return this.exportCreeks(courseId);
+            case 'creeks': return this.exportCreeks(courseId, force);
             case 'gkd': return this.exportGkd(courseId);
         }
     }
@@ -1724,7 +1809,7 @@ export class GsproExportService {
      * The plot's height range comes from the terrain's heightmap sidecar,
      * exported first when the folder has none — with the pads in it.
      */
-    async exportBuildings(courseId: string, kind: TerrainKind): Promise<GsproExportResult> {
+    async exportBuildings(courseId: string, kind: TerrainKind, opts: { force?: boolean } = {}): Promise<GsproExportResult> {
         const course = await this.courses.get(courseId);
         const siteId = this.builtSiteId(course);
         const terrain = await this.resolveTerrain(courseId, `export the GSPro ${kind} buildings for`);
@@ -1749,7 +1834,8 @@ export class GsproExportService {
             '--terrain', kind,
         ];
         if (kind === 'outer') args.push('--exclude-square', terrainArg(terrain.inner));
-        const rendered = await this.run(`GSPro ${kind} buildings`, args, out);
+        const rendered = await this.runIfChanged(`GSPro ${kind} buildings`, args, out,
+            { files: [survey, sidecar] }, opts.force);
         return { path: rendered.path, report: [...prepared, ...rendered.report] };
     }
 
@@ -1870,7 +1956,7 @@ export class GsproExportService {
      */
     private async renderOrtho(what: string, square: TerrainSquare, src: string, out: string, courseId: string,
                               darken?: number, tint?: TerrainTintOptions, floor?: ForestFloorOptions,
-                              buildings?: BuildingSources): Promise<GsproExportResult> {
+                              buildings?: BuildingSources, force?: boolean): Promise<GsproExportResult> {
         const factor = darken ?? TERRAIN_TEXTURE_DARKEN;
         const [lo, hi] = TERRAIN_TEXTURE_DARKEN_RANGE;
         if (!Number.isFinite(factor) || factor < lo || factor > hi) {
@@ -1930,7 +2016,15 @@ export class GsproExportService {
             ...floorArgs,
             ...buildingArgs,
         ];
-        const rendered = await this.run(what, args, out);
+        // The tint and the forest floor read the course's own features, so their stamps join the hash.
+        const rendered = await this.runIfChanged(what, args, out, {
+            files: [src, buildings?.roofs, buildings?.survey],
+            values: {
+                ...(tint || floor ? { features: await this.history.latestStamp(courseId) } : {}),
+                ...(floor ? { zones: (await this.zonesStamp(courseId)).zones } : {}),
+            },
+            more: [terrainTextureFileName(out), ...(tint ? [meshTextureFileName(out)] : [])],
+        }, force);
         return notes.length ? { path: rendered.path, report: [...notes, ...rendered.report] } : rendered;
     }
 
@@ -1948,6 +2042,94 @@ export class GsproExportService {
         const { code, stdout, stderr } = await this.runner(args, this.pipelineDir);
         if (code !== 0) throw failure(`${what} export`, code, stdout, stderr);
         return { path: out, report: reportLines(stdout) };
+    }
+
+    /**
+     * `run`, unless the output's inputs are unchanged (export-fingerprint.ts):
+     * the source files it reads, the run's own arguments (so every option is
+     * in the hash), the database stamps `inputs.values` carries and the
+     * pipeline scripts' mtimes. Then the pipeline is not called at all and the
+     * report says `unchanged: …`; after a real run the sidecar is rewritten.
+     * `more` names output files besides `out` that have to be there for a skip
+     * (the photo's twins), `outputsAfter` the ones only the run itself knows
+     * (the zones export's masks).
+     */
+    private async runIfChanged(
+        what: string, args: string[], out: string,
+        inputs: {
+            files: ReadonlyArray<string | null | undefined>;
+            values?: Record<string, unknown>;
+            more?: readonly string[];
+            outputsAfter?: () => Promise<string[]>;
+        },
+        force?: boolean,
+    ): Promise<GsproExportResult> {
+        const fp = await fingerprint(out, {
+            files: inputs.files,
+            values: { ...inputs.values, args, pipeline: await this.pipelineStamp() },
+            outputs: [out, ...(inputs.more ?? [])],
+        });
+        if (!force) {
+            const unchanged = await unchangedLine(fp);
+            if (unchanged) return { path: out, report: [unchanged] };
+        }
+        const result = await this.run(what, args, out);
+        if (inputs.outputsAfter) fp.doc.outputs = await inputs.outputsAfter();
+        await recordInputs(fp);
+        return result;
+    }
+
+    /** The mtimes of the pipeline code an export runs through, so an edited exporter renders again. */
+    private async pipelineStamp(): Promise<Record<string, number | null>> {
+        return {
+            'gspro.py': await mtimeMs(path.join(this.pipelineDir, 'gspro.py')),
+            golfpipe: await mtimeMs(path.join(this.pipelineDir, 'golfpipe', '__init__.py')),
+        };
+    }
+
+    /**
+     * The site's enabled terrain edits as one opaque stamp: how many, the
+     * newest `updated_at`, and the newest history row id — what a DEM export
+     * carries. A created or deleted edit changes the count, an edited or
+     * toggled one the time, and the history id catches an edit inside the same
+     * second as the last export (`updated_at` has whole seconds only).
+     */
+    private async editsStamp(siteId: string): Promise<string> {
+        const edits = (await this.terrainEdits.listBySite(siteId)).filter(e => e.enabled);
+        const history = await this.db.selectFrom('terrain_edit_history')
+            .select(({ fn }) => fn.max<number | null>('history_id').as('id'))
+            .where('site_id', '=', siteId).executeTakeFirst();
+        return `${edits.length}:${edits.map(e => e.updatedAt).sort().at(-1) ?? 'none'}:${history?.id ?? 0}`;
+    }
+
+    /**
+     * What the vegetation masks are rasterized from: the course's
+     * vegetation_zone features as CONTENT (the ids are left out — the
+     * generators delete and re-insert their rows, so an id would never match
+     * twice, while identical zones must count as unchanged), plus the newest
+     * change to the zone types, whose item bindings decide the channels.
+     */
+    private async zonesStamp(courseId: string): Promise<{ zones: string; zoneTypes: string | null }> {
+        const rows = await this.db.selectFrom('course_features')
+            .select(['layer', 'hole_id', 'sort_order', 'geometry_json', 'attributes_json', 'generated', 'source'])
+            .where('course_id', '=', courseId).where('type', '=', 'vegetation_zone').execute();
+        const types = await this.db.selectFrom('course_zone_types')
+            .select(({ fn }) => fn.max<string | null>('updated_at').as('at'))
+            .where('course_id', '=', courseId).executeTakeFirst();
+        return { zones: `${rows.length}:${digest(rows.map(r => JSON.stringify(r)))}`, zoneTypes: types?.at ?? null };
+    }
+
+    /** The mask PNGs `gspro.py zones` wrote next to a zones file, so a hand-deleted one is noticed. */
+    private async zoneMasks(dir: string, zonesJson: string): Promise<string[]> {
+        const prefix = `${path.basename(zonesJson).replace(/\.json$/i, '')}-`;
+        try {
+            return (await readdir(dir))
+                .filter(n => n.startsWith(prefix) && n.toLowerCase().endsWith('.png'))
+                .sort()
+                .map(n => path.join(dir, n));
+        } catch {
+            return [];
+        }
     }
 
     /** The vintage the map serves, from the site's tile-manifest registration. */
@@ -2004,6 +2186,23 @@ function arboristAfterFailure(arborist: ArboristResult | null): string {
 
 function firstLine(text: string): string {
     return text.split('\n')[0] ?? '';
+}
+
+/**
+ * The report line of a bridge command run with `save: true` — what replaces
+ * "Save the scene in Unity to keep it." (unity/README.md, "Saving what a
+ * command changed": the result carries `saved: {scenes, seconds}`, or
+ * `saved.skipped` saying why it did not). Null when the command did not save,
+ * so the caller keeps its own line.
+ */
+export function savedLine(result: unknown): string | null {
+    const saved = (result as { saved?: Record<string, unknown> } | null | undefined)?.saved;
+    if (!saved || typeof saved !== 'object') return null;
+    const scenes = Array.isArray(saved.scenes) ? saved.scenes.filter((s): s is string => typeof s === 'string') : [];
+    if (scenes.length > 0) {
+        return `Saved ${scenes.join(', ')}${typeof saved.seconds === 'number' ? ` (${saved.seconds} s)` : ''}`;
+    }
+    return typeof saved.skipped === 'string' ? `Not saved: ${saved.skipped}` : null;
 }
 
 export function reportLines(stdout: string): string[] {

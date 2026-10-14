@@ -1,22 +1,36 @@
 // A stand-in for blender/tools/shape_worker.py on its HTTP contract
-// (blender/SHAPING-PLAN.md, "Shaping worker"): `GET /status`, `POST /load`,
-// `POST /sync`. No Blender: `/load` applies the layers, `/sync` re-reads them
-// and reports every op whose content differs from what the FBX folder holds
-// (added, edited or removed since the last export; everything after a load
-// into a new folder, as fbx_sync's manifest would) as one changed object
-// `Spline_<op id>`, whose (empty) FBX it writes into the FBX folder. Used in-process by the shaping service tests, and as a real process
-// (`bun fake-shaping-worker.ts -- --port <p> --blend <b> --layers <dir>
-// --fbx-folder <dir>`, the worker's own command line; FAKE_SHAPING_LOAD_MS = its load time) for the on-demand start.
+// (blender/README.md, "Shaping worker"): `GET /status`, `GET /job/<id>`,
+// `POST /load`, `POST /sync`. No Blender: `/load` applies the layers, `/sync`
+// re-reads them and reports every op whose content differs from what the FBX
+// folder holds (added, edited or removed since the last export; everything
+// after a load into a new folder, as fbx_sync's manifest would) as one changed
+// object `Spline_<op id>`, whose (empty) FBX it writes into the FBX folder.
+//
+// Both POSTs are JOBS, as the worker's: they answer `{job, kind, state:
+// 'running'}` with 202 and the work goes on in the background (`/status`
+// carries the running or last job, `/job/<id>` one by id), and `?wait=1` holds
+// the connection until it is done and answers its result, as the worker's
+// blocking calls did. With a token (option, `--token` or
+// GOLFMAP_SHAPING_TOKEN) every request must carry it as `X-Golfmap-Token`.
+//
+// Used in-process by the shaping service tests, and as a real process (`bun
+// fake-shaping-worker.ts -- --port <p> --blend <b> --layers <dir>
+// --fbx-folder <dir>`, the worker's own command line;
+// FAKE_SHAPING_LOAD_MS = its load time) for the on-demand start.
 import * as path from 'node:path';
 import { readdirSync, readFileSync, writeFileSync, mkdirSync } from 'node:fs';
 
 export interface FakeShapingWorkerOptions {
     port?: number;
+    /** Interface to listen on (the worker's `--host`); default 127.0.0.1. */
+    host?: string;
     blend?: string;
     layersDir?: string;
     fbxFolder?: string;
     /** How long a load takes (the state is `starting`/`busy` meanwhile). */
     loadMs?: number;
+    /** When set, every request must carry it as `X-Golfmap-Token` (401 otherwise). */
+    token?: string;
     /** The command line it was started with (reported in /status). */
     argv?: string[];
 }
@@ -29,6 +43,27 @@ export interface FakeShapingWorker {
 }
 
 const LAYER_FILE = /^\d\d-[\w.-]+\.json$/;
+export const TOKEN_HEADER = 'X-Golfmap-Token';
+
+/** One /load or /sync run, as /status and /job/<id> report it. */
+interface FakeJob {
+    id: string;
+    kind: 'load' | 'sync';
+    state: 'running' | 'succeeded' | 'failed';
+    t0: number;
+    t1: number | null;
+    /** The body the blocking (`?wait=1`) answer carries, and its HTTP code. */
+    body: unknown;
+    code: number;
+    error: string | null;
+    done: Promise<void>;
+}
+
+class HttpError extends Error {
+    constructor(readonly code: number, message: string) {
+        super(message);
+    }
+}
 
 export function startFakeShapingWorker(opts: FakeShapingWorkerOptions = {}): FakeShapingWorker {
     const calls: Array<{ route: string; body: any }> = [];
@@ -40,6 +75,9 @@ export function startFakeShapingWorker(opts: FakeShapingWorkerOptions = {}): Fak
     let applied = new Map<string, string>();
     let exportedOps = new Map<string, string>();
     let lastRun: unknown = null;
+    let seq = 0;
+    let current: FakeJob | null = null;
+    const byId = new Map<string, FakeJob>();
 
     const readOps = (): Map<string, string> => {
         const ops = new Map<string, string>();
@@ -61,55 +99,122 @@ export function startFakeShapingWorker(opts: FakeShapingWorkerOptions = {}): Fak
         fbxFolder = f;
         applied = readOps();
         state = 'ready';
+        const { job: _running, ...loaded } = status();
+        return loaded;
     };
+    const sync = async (body: any) => {
+        if (!blend) throw new HttpError(409, 'nothing loaded: POST /load first');
+        state = 'busy';
+        phase = 'sync';
+        try {
+            const now = readOps();
+            const ids = new Set([...now.keys(), ...exportedOps.keys()]);
+            const changedIds = [...ids].filter(id => now.get(id) !== exportedOps.get(id)).sort();
+            const changed = changedIds.map(id => `Spline_${id}`);
+            const exported = body.dryRun ? [] : changed.map(n => `${n}.fbx`);
+            // An op may name objects it merges away (`removesFbx`, like a permanent-join recipe's blends): their FBX goes.
+            const removed = changedIds.flatMap(id => (JSON.parse(now.get(id) ?? '{}').removesFbx ?? []) as string[]).map(n => `${n}.fbx`);
+            if (!body.dryRun) {
+                applied = now;
+                exportedOps = now;
+                if (fbxFolder) {
+                    mkdirSync(fbxFolder, { recursive: true });
+                    for (const f of exported) writeFileSync(path.join(fbxFolder, f), '');
+                }
+            }
+            const run = {
+                changedObjects: changed, exported, removed, seconds: 0.1,
+                report: { warnings: ['1 seam gap under 1 mm'], seams: { gaps: 1 }, changedPlaces: changed.map(object => ({ object, hole: 1 })) },
+            };
+            lastRun = run;
+            return run;
+        } finally {
+            phase = null;
+            state = 'ready';
+        }
+    };
+
+    const publicJob = (job: FakeJob) => ({
+        id: job.id,
+        kind: job.kind,
+        state: job.state,
+        phase: job.state === 'running' ? phase : null,
+        startedAt: new Date(job.t0).toISOString(),
+        seconds: Math.round(((job.t1 ?? Date.now()) - job.t0) / 100) / 10,
+        result: job.state === 'succeeded' ? job.body : null,
+        error: job.error,
+    });
     const status = () => ({
         state, phase, blend, layersDir,
         conformed: blend ? blend.replace(/(\.conformed)?\.blend$/i, '.conformed.blend') : null,
         appliedOps: applied.size, lastRun, argv: opts.argv ?? [],
+        host: opts.host ?? '127.0.0.1',
+        job: current ? publicJob(current) : null,
     });
+
+    /** Queue a job, or null when one is already going (the caller answers 409). */
+    const start = (kind: 'load' | 'sync', body: any): FakeJob | null => {
+        if (current?.state === 'running') return null;
+        const job: FakeJob = {
+            id: String(++seq), kind, state: 'running', t0: Date.now(), t1: null,
+            body: null, code: 200, error: null, done: Promise.resolve(),
+        };
+        current = job;
+        byId.set(job.id, job);
+        job.done = (kind === 'load'
+            ? load(body.blend, body.layersDir, body.fbxFolder ?? null)
+            : sync(body)
+        ).then(
+            (result) => { job.body = result; job.state = 'succeeded'; },
+            (e: unknown) => {
+                job.code = e instanceof HttpError ? e.code : 500;
+                job.error = (e as Error).message;
+                job.body = { error: job.error };
+                job.state = 'failed';
+            },
+        ).finally(() => { job.t1 = Date.now(); });
+        return job;
+    };
 
     const server = Bun.serve({
         port: opts.port ?? 0,
+        hostname: opts.host,
         async fetch(req) {
-            const route = new URL(req.url).pathname;
+            const url = new URL(req.url);
+            const route = url.pathname;
             const body = req.method === 'POST' ? await req.json().catch(() => ({})) : null;
             calls.push({ route, body });
-            if (route === '/status') return Response.json(status());
-            if (route === '/load' && req.method === 'POST') {
-                if (!body.blend || !body.layersDir) return Response.json({ error: 'blend and layersDir are required' }, { status: 400 });
-                await load(body.blend, body.layersDir, body.fbxFolder ?? null);
-                return Response.json(status());
+            if (opts.token && req.headers.get(TOKEN_HEADER) !== opts.token) {
+                return Response.json({ error: `${TOKEN_HEADER} is missing or wrong` }, { status: 401 });
             }
-            if (route === '/sync' && req.method === 'POST') {
-                if (!blend) return Response.json({ error: 'nothing loaded: POST /load first' }, { status: 409 });
-                const now = readOps();
-                const ids = new Set([...now.keys(), ...exportedOps.keys()]);
-                const changedIds = [...ids].filter(id => now.get(id) !== exportedOps.get(id)).sort();
-                const changed = changedIds.map(id => `Spline_${id}`);
-                const exported = body.dryRun ? [] : changed.map(n => `${n}.fbx`);
-                // An op may name objects it merges away (`removesFbx`, like a permanent-join recipe's blends): their FBX goes.
-                const removed = changedIds.flatMap(id => (JSON.parse(now.get(id) ?? '{}').removesFbx ?? []) as string[]).map(n => `${n}.fbx`);
-                if (!body.dryRun) {
-                    applied = now;
-                    exportedOps = now;
-                    if (fbxFolder) {
-                        mkdirSync(fbxFolder, { recursive: true });
-                        for (const f of exported) writeFileSync(path.join(fbxFolder, f), '');
-                    }
+            if (route === '/status') return Response.json(status());
+            if (route.startsWith('/job/')) {
+                const job = byId.get(route.slice('/job/'.length));
+                return job ? Response.json(publicJob(job)) : Response.json({ error: `no job ${route.slice(5)}` }, { status: 404 });
+            }
+            const kind = route === '/load' ? 'load' : route === '/sync' ? 'sync' : null;
+            if (kind && req.method === 'POST') {
+                if (kind === 'load' && (!body.blend || !body.layersDir)) {
+                    return Response.json({ error: 'blend and layersDir are required' }, { status: 400 });
                 }
-                const run = {
-                    changedObjects: changed, exported, removed, seconds: 0.1,
-                    report: { warnings: ['1 seam gap under 1 mm'], seams: { gaps: 1 }, changedPlaces: changed.map(object => ({ object, hole: 1 })) },
-                };
-                lastRun = run;
-                return Response.json(run);
+                const job = start(kind, body);
+                if (!job) {
+                    return Response.json({ error: `a ${current!.kind} job is already going (job ${current!.id}): wait for it`, job: current!.id, state: 'running' }, { status: 409 });
+                }
+                if (!wanted(url.searchParams.get('wait'))) {
+                    return Response.json({ job: job.id, kind, state: 'running' }, { status: 202 });
+                }
+                await job.done;
+                return Response.json(job.body, { status: job.code });
             }
             return Response.json({ error: `no route ${route}` }, { status: 404 });
         },
     });
-    if (opts.blend && opts.layersDir) void load(opts.blend, opts.layersDir, opts.fbxFolder ?? null);
+    if (opts.blend && opts.layersDir) start('load', { blend: opts.blend, layersDir: opts.layersDir, fbxFolder: opts.fbxFolder ?? null });
     return { url: `http://127.0.0.1:${server.port}`, port: server.port!, calls, stop: () => server.stop(true) };
 }
+
+const wanted = (value: string | null) => value !== null && !['0', 'false', 'no', ''].includes(value.toLowerCase());
 
 if (import.meta.main) {
     const argv = process.argv.slice(2);
@@ -119,7 +224,8 @@ if (import.meta.main) {
         return i >= 0 ? rest[i + 1] : undefined;
     };
     startFakeShapingWorker({
-        port: Number(flag('--port')), blend: flag('--blend'), layersDir: flag('--layers'), fbxFolder: flag('--fbx-folder'),
+        port: Number(flag('--port')), host: flag('--host'), blend: flag('--blend'), layersDir: flag('--layers'),
+        fbxFolder: flag('--fbx-folder'), token: flag('--token') ?? process.env.GOLFMAP_SHAPING_TOKEN,
         loadMs: Number(process.env.FAKE_SHAPING_LOAD_MS ?? 200), argv: rest,
     });
     console.log(`fake shaping worker on ${flag('--port')}`);

@@ -228,7 +228,7 @@ function fakeSyncApi(opts: { targets?: GsproTargetStatus[]; statusJob?: GsproSyn
                 },
                 worker: {
                     url: 'http://127.0.0.1:8777', reachable: true, state: 'loaded', phase: null, blend: null,
-                    conformed: null, layersDir: null, appliedOps: null, lastRun: null, error: null, spawnedPid: null,
+                    conformed: null, layersDir: null, appliedOps: null, lastRun: null, error: null, spawnedPid: null, job: null, log: null,
                 },
                 targets: opts.targets ?? BOARD(),
                 job: started ?? opts.statusJob ?? null,

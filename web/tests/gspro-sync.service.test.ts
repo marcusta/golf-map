@@ -103,7 +103,7 @@ function fakeApi(opts: {
                 worker: {
                     url: 'http://127.0.0.1:8777', reachable: true, state: 'loaded', phase: null,
                     blend: 'vreta.conformed.blend', conformed: null, layersDir: null,
-                    appliedOps: null, lastRun: null, error: null, spawnedPid: null,
+                    appliedOps: null, lastRun: null, error: null, spawnedPid: null, job: null, log: null,
                 },
                 targets: opts.targets ?? boardTargets(),
                 job: at > 0 ? sequence[Math.min(at - 1, sequence.length - 1)] : null,

@@ -42,8 +42,10 @@ export interface ShapingWorkerStatus {
     layersDir: null | string;
     appliedOps: unknown;
     lastRun: unknown;
+    job: null | ShapingWorkerJob;
     error: null | string;
     spawnedPid: null | number;
+    log: null | string;
 }
 
 export interface GsproTargetStatus {
@@ -82,6 +84,17 @@ export interface UnityEditorInfo {
     error: null | string;
 }
 
+export interface ShapingWorkerJob {
+    id: string;
+    kind: null | string;
+    state: string;
+    phase: null | string;
+    startedAt: null | string;
+    seconds: null | number;
+    result: unknown;
+    error: null | string;
+}
+
 export interface ChangeCount {
     count: number;
     kinds: string[];
@@ -89,7 +102,7 @@ export interface ChangeCount {
 
 export interface GsproSyncApi {
     status(input: { courseId: string }): Promise<GsproSyncStatus>;
-    update(input: { courseId: string; target: 'trees' | 'buildings' | 'vegetation' | 'creeks' | 'terrain' | 'photo' | 'shapes' | 'meshes' | 'course-file' | 'stale' }): Promise<GsproSyncJob>;
+    update(input: { force?: boolean; courseId: string; target: 'trees' | 'buildings' | 'vegetation' | 'creeks' | 'terrain' | 'photo' | 'shapes' | 'meshes' | 'course-file' | 'stale' }): Promise<GsproSyncJob>;
     job(input: { jobId: string }): Promise<GsproSyncJob>;
     editors(input: { courseId: string }): Promise<GsproSyncUnity>;
 }

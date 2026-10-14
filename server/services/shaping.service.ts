@@ -36,10 +36,21 @@
 // scripts/shaping-apply.ts (`bun run shaping`).
 //
 // The worker speaks JSON over HTTP on GOLFMAP_SHAPING_URL (default
-// http://127.0.0.1:8766): `GET /status`, `POST /load {blend?, layersDir?,
-// fbxFolder?}`, `POST /sync {dryRun?}` (contract in the plan). One worker for
-// the machine, so one apply at a time across courses. Paths, all overridable
-// (env, or deps in tests):
+// http://127.0.0.1:8766): `GET /status`, `GET /job/<id>`, `POST /load {blend?,
+// layersDir?, fbxFolder?}`, `POST /sync {dryRun?}` (contract in
+// blender/README.md, "Shaping worker"). The two POSTs are JOBS: they answer
+// `{job, kind, state: 'running'}` at once (409 while one is going) and this
+// service polls `/status` — `job: {id, kind, state, phase, startedAt, seconds,
+// result | error}` — for the outcome, so a sync that runs for an hour holds no
+// connection. A worker that answers with the run itself (`?wait=1`, or an older
+// one) is still read as before.
+//
+// The worker may be on another machine: GOLFMAP_SHAPING_URL points at it,
+// GOLFMAP_SHAPING_TOKEN is the shared secret both sides use (`X-Golfmap-Token`
+// on every request), and the paths it is given (blend, layersDir, fbxFolder)
+// must be ones it can open — the same mount on both sides, or UNC.
+// One worker for the machine, so one apply at a time across courses. Paths,
+// all overridable (env, or deps in tests):
 //   - blend:      GOLFMAP_SHAPING_BLEND (absolute, or a name in the export
 //                 folder), else the newest `*.conformed.blend` in the course's
 //                 export folder, else its newest source `.blend` (the worker
@@ -49,11 +60,12 @@
 //   - FBX folder: GOLFMAP_SHAPING_FBX_FOLDER, else `<Unity project>/Assets/fbx`
 //                 of the editor whose active course exports to the folder;
 //   - Blender:    GOLFMAP_BLENDER, else Blender 4.5's default install path on
-//                 Windows, else `blender` on PATH; the worker's output goes to
-//                 `<data>/shaping-worker.log`.
+//                 Windows, else `blender` on PATH; one log per spawn in
+//                 `<data>/shaping-worker/` (both streams), the current one
+//                 named by `latest.json`, older than 14 days pruned.
 import * as path from 'node:path';
-import { readdir, readFile, stat } from 'node:fs/promises';
-import { existsSync } from 'node:fs';
+import { readdir, readFile, rm, stat, writeFile } from 'node:fs/promises';
+import { closeSync, existsSync, openSync, renameSync } from 'node:fs';
 import { ConflictError, NotFoundError } from '@basics/core/server/auth';
 import type { CoursesService } from './courses.service';
 import {
@@ -68,11 +80,35 @@ import {
 import { JobPhases, secs, type JobPhase, type JobPhaseStatus } from './job-phases';
 
 export const DEFAULT_SHAPING_URL = 'http://127.0.0.1:8766';
+/** The pointer file in `<data>/shaping-worker/` naming the log of the worker running now. */
+export const LATEST_LOG = 'latest.json';
+/** How long a worker log is kept (pruned on the next spawn). */
+export const LOG_KEEP_DAYS = 14;
 const REPO_DIR = path.resolve(import.meta.dir, '..', '..');
 /** Blender 4.5 LTS's default install (blender/AGENTS.md). */
 const WINDOWS_BLENDER = 'C:\\Program Files\\Blender Foundation\\Blender 4.5\\blender.exe';
 
 // --- Public types ---
+
+/**
+ * The worker's current (else last) job as `/status` carries it — a `/load` or
+ * a `/sync`, which the worker now runs as a job instead of holding the
+ * connection. Null for a worker that reports none.
+ */
+export interface ShapingWorkerJob {
+    id: string;
+    /** `load` | `sync` (the worker's own word). */
+    kind: string | null;
+    /** `running` | `succeeded` | `failed`. */
+    state: string;
+    /** What it is doing now (`sync: export`), null once done. */
+    phase: string | null;
+    startedAt: string | null;
+    seconds: number | null;
+    /** The answer the job produced (a `/sync`'s run), null while it goes and when it failed. */
+    result: unknown;
+    error: string | null;
+}
 
 /** The worker as the status endpoint reports it. */
 export interface ShapingWorkerStatus {
@@ -88,10 +124,14 @@ export interface ShapingWorkerStatus {
     layersDir: string | null;
     appliedOps: unknown;
     lastRun: unknown;
+    /** Its running (else last) job; null for a worker that reports none. */
+    job: ShapingWorkerJob | null;
     /** Why it is unreachable or in error, when known. */
     error: string | null;
     /** The worker process this server started (null: started elsewhere, or not running). */
     spawnedPid: number | null;
+    /** The log of the worker this server started (`<data>/shaping-worker/<when>-<pid>.log`); null for someone else's. */
+    log: string | null;
 }
 
 /** One Unity refresh step as its report gives it (golfmap.course.refresh `steps`). */
@@ -177,6 +217,13 @@ export interface ShapingApplyOptions {
     skipUnity?: boolean;
     /** Take the paths' surfaces through as well (see the header): surfaces file first, path materials last. */
     paths?: boolean;
+    /**
+     * Save in Unity what the refresh changed (`golfmap.course.refresh
+     * save=true`: the dirty scenes and the changed assets, once the refresh
+     * succeeded) and in the vegetation phase's planting. Default false — the
+     * scene is left dirty for the operator, as before.
+     */
+    save?: boolean;
 }
 
 export interface ShapingTimeouts {
@@ -200,7 +247,7 @@ export interface ShapingDeps {
     courses: Pick<CoursesService, 'get'>;
     /** The course's export folder (where its .blend lives). */
     exportSettings: Pick<GsproExportService, 'settings' | 'svgCommand' | 'plantVegetation'>;
-    /** Where the worker's log goes (`<dataDir>/shaping-worker.log`). */
+    /** Where the worker's logs go (`<dataDir>/shaping-worker/<when>-<pid>.log`, one per spawn). */
     dataDir: string;
     pipelineDir?: string;
     python?: string;
@@ -209,6 +256,8 @@ export interface ShapingDeps {
     /** The app database shaping-global reads (default DB_PATH; unset = gspro.py's own default). */
     dbPath?: string;
     workerUrl?: string;
+    /** The shared secret the worker wants as `X-Golfmap-Token` (default GOLFMAP_SHAPING_TOKEN; unset = no header). */
+    token?: string;
     /** The command before the worker's own arguments (default `[blender, -b, --python, <repo>/blender/tools/shape_worker.py]`). */
     workerLauncher?: string[];
     /** Replaces `<repo>/docs/gspro`: the course's layers are `<root>/<course slug>/shaping`. */
@@ -246,6 +295,7 @@ export class ShapingService {
     private readonly unityBridge: UnityBridge;
     private readonly dbPath: string | undefined;
     private readonly workerUrl: string;
+    private readonly token: string | undefined;
     private readonly workerLauncher: string[];
     private readonly layersRoot: string;
     private readonly recipeLibrary: string;
@@ -266,6 +316,7 @@ export class ShapingService {
         this.unityBridge = deps.unityBridge ?? defaultUnityBridge();
         this.dbPath = deps.dbPath ?? process.env.DB_PATH;
         this.workerUrl = (deps.workerUrl ?? process.env.GOLFMAP_SHAPING_URL ?? DEFAULT_SHAPING_URL).replace(/\/+$/, '');
+        this.token = deps.token ?? process.env.GOLFMAP_SHAPING_TOKEN ?? undefined;
         this.workerLauncher = deps.workerLauncher ?? [
             blenderExecutable(), '-b', '--python', path.join(REPO_DIR, 'blender', 'tools', 'shape_worker.py'),
         ];
@@ -426,7 +477,11 @@ export class ShapingService {
             beginPhase(rec, 'unity', refresh ? `refreshing ${unityObjects.length} object(s) in ${editor.projectName}` : `path materials in ${editor.projectName}`);
             try {
                 // With `paths` the look goes on every path mesh afterwards, so the refresh leaves its own (named meshes only) out.
-                if (refresh) unityReport = await this.refreshUnity(editor, unityObjects, dryRun, warnings, opts.paths ? { skip: 'paths.materials' } : {});
+                const more = {
+                    ...(opts.save && !dryRun ? { save: true } : {}),
+                    ...(opts.paths ? { skip: 'paths.materials' } : {}),
+                };
+                if (refresh) unityReport = await this.refreshUnity(editor, unityObjects, dryRun, warnings, more);
                 if (opts.paths) {
                     notePhase(rec, `path materials in ${editor.projectName}`);
                     pathMaterials = await editor.run('golfmap.paths.materials', dryRun ? { dryRun: true } : {}, this.timeouts.unitySec);
@@ -440,7 +495,9 @@ export class ShapingService {
                 endPhase(rec, 'unity', 'failed', unityError);
             }
         }
-        const vegetation = await this.vegetationPhase(rec, { editor, unityObjects, unityReport, dryRun, warnings });
+        const vegetation = await this.vegetationPhase(rec, {
+            editor, unityObjects, unityReport, dryRun, warnings, save: opts.save === true,
+        });
         return {
             changedObjects,
             exported,
@@ -472,7 +529,8 @@ export class ShapingService {
      * planting's report lines.
      */
     private async vegetationPhase(rec: JobRecord, c: {
-        editor: UnityEditor | null; unityObjects: string[]; unityReport: unknown; dryRun: boolean; warnings: string[];
+        editor: UnityEditor | null; unityObjects: string[]; unityReport: unknown; dryRun: boolean;
+        warnings: string[]; save: boolean;
     }): Promise<string[]> {
         const slabs = c.unityObjects.filter(isRockSlab);
         if (slabs.length === 0) {
@@ -499,7 +557,8 @@ export class ShapingService {
             if (!exported) await editor.run('golfmap.surfaces.export', { terrain: 'inner' }, this.timeouts.unitySec);
             what = 'vegetation planting';
             notePhase(rec, `planting vegetation for ${names}`);
-            const planted = await this.exportSettings.plantVegetation(rec.job.courseId, 'inner', { dbPath: this.dbPath, arborist: 'lower' });
+            const planted = await this.exportSettings.plantVegetation(rec.job.courseId, 'inner',
+                { dbPath: this.dbPath, arborist: 'lower', save: c.save });
             endPhase(rec, 'vegetation', 'done', `${slabs.length} rock slab(s): surface map ${exported ? 'from the refresh' : 'exported'}, grass planted in ${editor.projectName}`);
             return planted.report;
         } catch (e) {
@@ -575,9 +634,9 @@ export class ShapingService {
     /** `GET /status`, never throwing: unreachable is a status. */
     async workerStatus(): Promise<ShapingWorkerStatus> {
         const spawnedPid = this.worker && this.worker.exitCode === null ? this.worker.proc.pid : null;
-        const base = { url: this.workerUrl, spawnedPid };
+        const base = { url: this.workerUrl, spawnedPid, log: this.worker?.log ?? null };
         try {
-            const res = await fetch(`${this.workerUrl}/status`, { signal: AbortSignal.timeout(5000) });
+            const res = await fetch(`${this.workerUrl}/status`, { headers: this.headers(), signal: AbortSignal.timeout(5000) });
             const body = await res.json().catch(() => ({})) as Record<string, unknown>;
             const str = (v: unknown) => typeof v === 'string' && v ? v : null;
             return {
@@ -590,12 +649,13 @@ export class ShapingService {
                 layersDir: str(body.layersDir),
                 appliedOps: body.appliedOps ?? null,
                 lastRun: body.lastRun ?? null,
+                job: workerJob(body.job),
                 error: str(body.error) ?? (res.ok ? null : `HTTP ${res.status}`),
             };
         } catch (e) {
             return {
                 ...base, reachable: false, state: null, phase: null, blend: null, conformed: null, layersDir: null,
-                appliedOps: null, lastRun: null, error: (e as Error).message,
+                appliedOps: null, lastRun: null, job: null, error: (e as Error).message,
             };
         }
     }
@@ -616,8 +676,13 @@ export class ShapingService {
             await this.spawnWorker(target);
             st = await this.waitFor(s => s.reachable, this.timeouts.startMs, 'the shaping worker to answer');
         }
-        if (st.state === 'starting' || st.state === 'busy') {
-            const what = cold ? `cold start: Blender loading ${name}` : `waiting for the worker (${st.state})`;
+        // Someone else's worker on the port, holding another course: wait for it to finish
+        // rather than take it over mid-run (a `/load` would throw its work away).
+        const foreign = !cold && st.spawnedPid === null && st.blend !== null && !holds(st, target);
+        if (!idle(st)) {
+            const what = cold ? `cold start: Blender loading ${name}`
+                : foreign ? `another course's worker is busy on ${st.blend} — waiting`
+                    : `waiting for the worker (${st.job?.state === 'running' ? `${st.job.kind ?? 'job'} running` : st.state})`;
             notePhase(rec, st.phase ? `${what}: ${st.phase}` : what);
             st = await this.waitFor(idle, this.timeouts.loadMs, 'the shaping worker to be ready', follow(what));
         }
@@ -628,36 +693,74 @@ export class ShapingService {
         }
         notePhase(rec, `loading ${name}`);
         try {
-            await this.post('/load', { blend: target.blend, layersDir: target.layersDir, fbxFolder: target.fbxFolder }, this.timeouts.loadMs);
+            // A job: it answers at once and the load goes on (minutes, when the conformed cache has to be made).
+            await this.post('/load', { blend: target.blend, layersDir: target.layersDir, fbxFolder: target.fbxFolder }, this.timeouts.startMs);
         } catch (e) {
-            // A long load may outlast the request; the worker's own status says how it went.
-            if (!(await this.workerStatus()).reachable) throw e;
+            // An older worker holds the connection for the whole load, and a long one can outlast the
+            // request: its own status says how it went. A refusal leaves it idle and untouched, so that stands.
+            const after = await this.workerStatus();
+            if (!after.reachable || (idle(after) && !holds(after, target))) throw e;
         }
         st = await this.waitFor(idle, this.timeouts.loadMs, 'the shaping worker to load the course', follow(`loading ${name}`));
-        if (st.state === 'error') throw new ConflictError(`The shaping worker failed to load ${target.blend}: ${st.error ?? describeRun(st.lastRun) ?? 'see its log'}`);
+        if (st.state === 'error' || st.job?.state === 'failed') {
+            throw new ConflictError(`The shaping worker failed to load ${target.blend}: `
+                + (st.job?.error ?? st.error ?? describeRun(st.lastRun) ?? 'see its log'));
+        }
         if (!holds(st, target)) throw new ConflictError(`The shaping worker loaded ${st.blend ?? st.conformed ?? 'nothing'} / ${st.layersDir ?? '?'}, not ${target.blend} / ${target.layersDir}`);
         return `loaded ${name}`;
     }
 
+    /**
+     * Start the worker for `target`, its two streams into one log of its own
+     * (`<data>/shaping-worker/<when>-<pid>.log`, nothing truncated; the current
+     * one named in `latest.json`, logs older than `LOG_KEEP_DAYS` pruned). The
+     * token, when there is one, goes through the environment rather than the
+     * command line, where every process list would show it.
+     */
     private async spawnWorker(target: WorkerTarget): Promise<void> {
-        await ensureDir(this.dataDir);
+        const dir = path.join(this.dataDir, 'shaping-worker');
+        await ensureDir(dir);
+        await pruneLogs(dir);
         const port = new URL(this.workerUrl).port || '8766';
         const args = ['--', '--port', port, '--blend', target.blend, '--layers', target.layersDir];
         if (target.fbxFolder) args.push('--fbx-folder', target.fbxFolder);
-        const log = path.join(this.dataDir, 'shaping-worker.log');
         const cmd = [...this.workerLauncher, ...args];
-        const proc = Bun.spawn(cmd, {
-            cwd: REPO_DIR,
-            env: { ...process.env, GOLFMAP_SHAPING_PORT: port, PYTHONIOENCODING: 'utf-8' },
-            stdin: 'ignore',
-            stdout: Bun.file(log),
-            stderr: Bun.file(`${log}.err`),
-        });
+        const stamp = logStamp(new Date());
+        let log = path.join(dir, `${stamp}.log`);
+        const fd = openSync(log, 'a');
+        let proc: ReturnType<typeof Bun.spawn>;
+        try {
+            proc = Bun.spawn(cmd, {
+                cwd: REPO_DIR,
+                env: {
+                    ...process.env,
+                    GOLFMAP_SHAPING_PORT: port,
+                    ...(this.token ? { GOLFMAP_SHAPING_TOKEN: this.token } : {}),
+                    PYTHONIOENCODING: 'utf-8',
+                },
+                stdin: 'ignore',
+                stdout: fd,
+                stderr: fd,
+            });
+        } finally {
+            closeSync(fd);   // the child holds its own copy
+        }
+        try {
+            // Named after the run it holds; the child writes through its inherited handle either way.
+            const named = path.join(dir, `${stamp}-${proc.pid}.log`);
+            renameSync(log, named);
+            log = named;
+        } catch {
+            // Windows may refuse while the child has it open: the timestamp alone names the run then.
+        }
         const worker = { proc, exitCode: null as number | null, log };
         proc.exited.then(code => { worker.exitCode = code; });
         // The worker outlives a server restart (bun --watch): the next server finds it on its port.
         proc.unref();
         this.worker = worker;
+        await writeFile(path.join(dir, LATEST_LOG), `${JSON.stringify({
+            file: path.basename(log), pid: proc.pid, startedAt: new Date().toISOString(), command: cmd,
+        }, null, 2)}\n`);
     }
 
     /** Poll `/status` until `ok`; fails early when the worker this server started exits. */
@@ -678,25 +781,65 @@ export class ShapingService {
         }
     }
 
-    /** `POST /sync`; a request that outlasts the connection falls back to the worker's `lastRun`. */
+    /**
+     * `POST /sync` as a job: the answer names it, `/status` is polled until it
+     * is done and its `result` is the run (`GET /job/<id>` when the status has
+     * moved on to another job). A worker that answers with the run itself
+     * (`?wait=1`, or one that predates the job protocol) is taken as it is, and
+     * a connection that drops under it falls back to the worker's `lastRun`.
+     */
     private async sync(dryRun: boolean, rec: JobRecord): Promise<SyncAnswer> {
+        const follow = (w: ShapingWorkerStatus) =>
+            notePhase(rec, w.phase ? `re-shaping what changed: ${w.phase}` : 're-shaping what changed');
+        let started: unknown;
         try {
-            return await this.post('/sync', dryRun ? { dryRun: true } : {}, this.timeouts.syncMs) as SyncAnswer;
+            started = await this.post('/sync', dryRun ? { dryRun: true } : {}, this.timeouts.startMs);
         } catch (e) {
             const st = await this.workerStatus();
             if (!st.reachable) throw e;
-            const done = await this.waitFor(idle, this.timeouts.syncMs, 'the shaping worker to finish the sync',
-                w => notePhase(rec, w.phase ? `re-shaping what changed: ${w.phase}` : 're-shaping what changed'));
-            const last = done.lastRun as SyncAnswer | null;
+            const done = await this.waitFor(idle, this.timeouts.syncMs, 'the shaping worker to finish the sync', follow);
+            const last = (done.job?.result ?? done.lastRun) as SyncAnswer | null;
             if (done.state === 'error' || !last || !Array.isArray(last.changedObjects)) throw e;
             return last;
         }
+        const id = jobIdOf(started);
+        if (id === null) return started as SyncAnswer;   // the run itself: an older worker, or `?wait=1`
+        const done = await this.waitFor(
+            s => !s.reachable || s.job === null || s.job.id !== id || s.job.state !== 'running',
+            this.timeouts.syncMs, 'the shaping worker to finish the sync', follow);
+        if (!done.reachable) throw new ConflictError(`The shaping worker stopped answering during the sync: ${done.error ?? 'unreachable'}`);
+        // Its status has moved on to another job (another course took the worker over): ask for ours by id.
+        const job = done.job?.id === id ? done.job : await this.jobById(id);
+        if (!job) throw new ConflictError(`The shaping worker forgot the sync job ${id} (${describeRun(done.lastRun) ?? `state ${done.state}`})`);
+        if (job.state === 'failed') throw new ConflictError(`Shaping worker /sync failed: ${job.error ?? 'see its log'}`);
+        const result = job.result as SyncAnswer | null;
+        if (!result || !Array.isArray(result.changedObjects)) {
+            throw new ConflictError(`The shaping worker's sync job ${id} came back without a run (state ${job.state})`);
+        }
+        return result;
+    }
+
+    /** `GET /job/<id>`; null when the worker does not know it (or cannot be asked). */
+    private async jobById(id: string): Promise<ShapingWorkerJob | null> {
+        try {
+            const res = await fetch(`${this.workerUrl}/job/${encodeURIComponent(id)}`,
+                { headers: this.headers(), signal: AbortSignal.timeout(30_000) });
+            if (!res.ok) return null;
+            return workerJob(await res.json());
+        } catch {
+            return null;
+        }
+    }
+
+    /** The shared secret both sides use, when there is one. */
+    private headers(): Record<string, string> {
+        return this.token ? { 'X-Golfmap-Token': this.token } : {};
     }
 
     private async post(route: string, body: unknown, timeoutMs: number): Promise<unknown> {
         const res = await fetch(`${this.workerUrl}${route}`, {
             method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
+            headers: { 'Content-Type': 'application/json', ...this.headers() },
             body: JSON.stringify(body),
             signal: AbortSignal.timeout(timeoutMs),
         });
@@ -790,7 +933,60 @@ function unitySteps(report: unknown): ShapingUnityStep[] {
     });
 }
 
-const idle = (s: ShapingWorkerStatus) => s.reachable && s.state !== 'starting' && s.state !== 'busy';
+/** Reachable, not loading or syncing, and with no job of its own still running. */
+const idle = (s: ShapingWorkerStatus) =>
+    s.reachable && s.state !== 'starting' && s.state !== 'busy' && s.job?.state !== 'running';
+
+/** `/status`'s `job` (or a `/job/<id>` answer) read leniently; null when there is none. */
+export function workerJob(value: unknown): ShapingWorkerJob | null {
+    const j = value as Record<string, unknown> | null | undefined;
+    if (!j || typeof j !== 'object' || j.id === undefined || j.id === null) return null;
+    const str = (v: unknown) => typeof v === 'string' && v ? v : null;
+    return {
+        id: String(j.id),
+        kind: str(j.kind),
+        state: str(j.state) ?? 'running',
+        phase: str(j.phase),
+        startedAt: str(j.startedAt),
+        seconds: typeof j.seconds === 'number' ? j.seconds : null,
+        result: j.result ?? null,
+        error: str(j.error),
+    };
+}
+
+/** The job id a `POST /load`/`/sync` answered with; null when it answered with the run itself. */
+function jobIdOf(answer: unknown): string | null {
+    const a = answer as Record<string, unknown> | null;
+    if (!a || typeof a !== 'object' || Array.isArray(a.changedObjects)) return null;
+    return typeof a.job === 'string' || typeof a.job === 'number' ? String(a.job) : null;
+}
+
+/** `2026-10-14-153012`: one log per spawn, sortable, and the day a prune reads. */
+export function logStamp(when: Date): string {
+    const p = (n: number) => String(n).padStart(2, '0');
+    return `${when.getFullYear()}-${p(when.getMonth() + 1)}-${p(when.getDate())}`
+        + `-${p(when.getHours())}${p(when.getMinutes())}${p(when.getSeconds())}`;
+}
+
+/** Worker logs older than `LOG_KEEP_DAYS` (by mtime), dropped on every spawn. */
+async function pruneLogs(dir: string): Promise<void> {
+    const cutoff = Date.now() - LOG_KEEP_DAYS * 24 * 3600_000;
+    let names: string[] = [];
+    try {
+        names = await readdir(dir);
+    } catch {
+        return;
+    }
+    for (const name of names) {
+        if (!name.endsWith('.log')) continue;
+        const file = path.join(dir, name);
+        try {
+            if ((await stat(file)).mtimeMs < cutoff) await rm(file, { force: true });
+        } catch {
+            // in use, or gone already
+        }
+    }
+}
 
 const samePath = (a: string | null, b: string) => a !== null && path.resolve(a).replace(/\\/g, '/').toLowerCase() === path.resolve(b).replace(/\\/g, '/').toLowerCase();
 
@@ -818,15 +1014,13 @@ function describeRun(run: unknown): string | null {
     return typeof err === 'string' ? err : null;
 }
 
-/** The last lines of the worker's stderr and stdout logs, for an error message. */
+/** The last lines of this run's log (both streams go into the one file), for an error message. */
 async function logTail(file: string): Promise<string> {
-    const lines: string[] = [];
-    for (const f of [`${file}.err`, file]) {
-        try {
-            lines.push(...(await readFile(f, 'utf8')).trim().split('\n').slice(-4).filter(Boolean));
-        } catch {
-            // not written
-        }
+    try {
+        const lines = (await readFile(file, 'utf8')).trim().split('\n').slice(-4).filter(Boolean);
+        if (lines.length) return `${path.basename(file)}: ${lines.join(' | ')}`;
+    } catch {
+        // not written (yet)
     }
-    return lines.length ? lines.join(' | ') : `(nothing in ${file})`;
+    return `(nothing in ${file})`;
 }

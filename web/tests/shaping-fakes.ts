@@ -100,7 +100,7 @@ export function fakeShapingApi(library: LibraryEntry[] = []): FakeShapingApi {
         },
         async status() {
             return { worker: { url: 'http://127.0.0.1:8766', reachable: true, state: 'ready', phase: null, blend: null, conformed: null,
-                layersDir: null, appliedOps: null, lastRun: null, error: null, spawnedPid: null }, job: f.current };
+                layersDir: null, appliedOps: null, lastRun: null, error: null, spawnedPid: null, job: null, log: null }, job: f.current };
         },
         async job(input) {
             f.calls.job.push(input.jobId);

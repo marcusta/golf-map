@@ -194,6 +194,36 @@ test('generated features are not counted: the next pipeline run replaces them wh
     expect(await t.history.countChangesSince(TEST_COURSE_ID, since, ['trees'])).toEqual({ count: 0, kinds: [] });
 });
 
+test('latestStamp moves on a create, an edit and a delete — inside the same second too — but not on a generator run', async () => {
+    const t = await editedCourse();
+    const features = new CourseFeaturesService(t.db);
+    const first = await t.history.latestStamp(TEST_COURSE_ID);
+    expect(await t.history.latestStamp(TEST_COURSE_ID)).toBe(first);   // read twice, same stamp
+
+    const drawn = await features.create({ courseId: TEST_COURSE_ID, type: 'bunker', geometry: square(60, 0) });
+    const created = await t.history.latestStamp(TEST_COURSE_ID);
+    expect(created).not.toBe(first);
+
+    // An edit and a delete in the same second as the stamp: the history row id catches them.
+    const edited = await features.update(drawn.id, drawn.version, { geometry: square(60, 0, 7) });
+    const afterEdit = await t.history.latestStamp(TEST_COURSE_ID);
+    expect(afterEdit).not.toBe(created);
+    await features.remove(edited.id, edited.version);
+    expect(await t.history.latestStamp(TEST_COURSE_ID)).not.toBe(afterEdit);
+
+    // Generated rows are pipeline output the next run replaces wholesale: they are not edits.
+    const before = await t.history.latestStamp(TEST_COURSE_ID);
+    await features.replaceGenerated(TEST_COURSE_ID, 'tall-grass', {
+        type: 'FeatureCollection',
+        features: [{
+            type: 'Feature',
+            geometry: { type: 'Polygon', coordinates: [[[0, 0], [10, 0], [10, 10], [0, 0]]] },
+            properties: { type: 'vegetation_zone', source: 'tall-grass', zoneType: 'rough_tall', weight: 1, feather: 1, noise: 0 },
+        }],
+    });
+    expect(await t.history.latestStamp(TEST_COURSE_ID)).toBe(before);
+});
+
 test('the newest export snapshot is found without parsing every one of them', async () => {
     const t = await editedCourse();
     const dir = await mkdtemp(path.join(os.tmpdir(), 'gspro-snap-'));

@@ -184,6 +184,8 @@ class Worker:
             except queue.Empty:
                 continue
             state_before = self.status["state"]
+            job.state = "running"
+            job.t0 = time.time()
             self.set_status(state="busy", phase=job.kind)
             try:
                 if job.kind == "load":
@@ -195,10 +197,11 @@ class Worker:
                     self.running = False
                 else:
                     raise HttpError(404, f"unknown job {job.kind}")
+                job.state = "succeeded"
                 self.set_status(state="ready" if self.app is not None or job.kind == "shutdown" else state_before,
                                 phase=None, error=None)
             except HttpError as e:
-                job.code, job.result = e.code, {"error": str(e)}
+                job.code, job.result, job.error, job.state = e.code, {"error": str(e)}, str(e), "failed"
                 if self.app is not None:
                     self.set_status(state="ready", phase=None)
                 else:
@@ -207,10 +210,12 @@ class Worker:
             except Exception as e:  # the scene may be half-done: a /load is needed
                 traceback.print_exc()
                 job.code, job.result = 500, {"error": f"{type(e).__name__}: {e}", "trace": traceback.format_exc()}
+                job.error, job.state = job.result["error"], "failed"
                 self.set_status(state="error", phase=None, error=job.result["error"])
                 if job.kind == "sync":
                     self.app = None  # force a /load
             finally:
+                job.t1 = time.time()
                 job.done.set()
 
     # ------------------------------------------------------------ load
@@ -611,15 +616,38 @@ def make_handler(worker):
             self.end_headers()
             self.wfile.write(raw)
 
+        def allowed(self):
+            """With a shared secret set, every request must carry it (a worker on 0.0.0.0 is reachable)."""
+            if not worker.token:
+                return True
+            if self.headers.get(TOKEN_HEADER) == worker.token:
+                return True
+            # The body is never read, so the connection cannot be kept alive: what is left of
+            # the refused request would be parsed as the next one ("Bad request syntax").
+            self.close_connection = True
+            self.send_json(401, {"error": f"{TOKEN_HEADER} is missing or wrong"})
+            return False
+
         def do_GET(self):
-            if self.path.split("?")[0] == "/status":
+            if not self.allowed():
+                return
+            path = self.path.split("?")[0]
+            if path == "/status":
                 self.send_json(200, worker.get_status())
+            elif path.startswith("/job/"):
+                job = worker.job_by_id(path[len("/job/"):])
+                if job is None:
+                    self.send_json(404, {"error": "no job " + path[len("/job/"):]})
+                else:
+                    self.send_json(200, job)
             else:
                 self.send_json(404, {"error": "unknown path " + self.path})
 
         def do_POST(self):
-            path = self.path.split("?")[0]
-            kind = {"/load": "load", "/sync": "sync", "/shutdown": "shutdown"}.get(path)
+            if not self.allowed():
+                return
+            parts = urllib.parse.urlsplit(self.path)
+            kind = {"/load": "load", "/sync": "sync", "/shutdown": "shutdown"}.get(parts.path)
             if kind is None:
                 self.send_json(404, {"error": "unknown path " + self.path})
                 return
@@ -631,16 +659,37 @@ def make_handler(worker):
             except ValueError as e:
                 self.send_json(400, {"error": f"bad JSON body: {e}"})
                 return
-            job = worker.submit(kind, body)
+            wait = kind == "shutdown" or truthy(urllib.parse.parse_qs(parts.query).get("wait"))
+            job, busy = worker.submit(kind, body, alone=kind != "shutdown")
+            if job is None:
+                self.send_json(409, {"error": f"a {busy.kind} job is already going (job {busy.id}"
+                                              f"{', ' + busy_phase(worker) if busy_phase(worker) else ''}): wait for it",
+                                     "job": busy.id, "kind": busy.kind, "state": "running"})
+                return
+            if not wait:
+                self.send_json(202, {"job": job.id, "kind": kind, "state": "running"})
+                return
             job.done.wait()
             self.send_json(job.code, job.result)
 
     return Handler
 
 
+def truthy(values):
+    return bool(values) and str(values[0]).lower() not in ("", "0", "false", "no")
+
+
+def busy_phase(worker):
+    return worker.get_status().get("phase")
+
+
 def main(argv):
     ap = argparse.ArgumentParser(prog="shape_worker.py")
     ap.add_argument("--port", type=int, default=int(os.environ.get("GOLFMAP_SHAPING_PORT", DEFAULT_PORT)))
+    ap.add_argument("--host", default=os.environ.get("GOLFMAP_SHAPING_HOST", DEFAULT_HOST),
+                    help="interface to listen on (default 127.0.0.1; 0.0.0.0 for a server on another machine)")
+    ap.add_argument("--token", default=os.environ.get("GOLFMAP_SHAPING_TOKEN", ""),
+                    help=f"shared secret every request must carry as {TOKEN_HEADER} (default $GOLFMAP_SHAPING_TOKEN)")
     ap.add_argument("--blend", help="course .blend or its .conformed.blend: loaded at start")
     ap.add_argument("--layers", help="shaping layers folder (docs/gspro/<course>/shaping)")
     ap.add_argument("--fbx-folder", help="FBX folder /sync exports into (e.g. the Unity project's Assets/fbx)")
@@ -649,10 +698,11 @@ def main(argv):
     ap.add_argument("--no-cache", action="store_true", help="do not use the op-result cache")
     args = ap.parse_args(argv)
     worker = Worker(args)
-    server = ThreadingHTTPServer(("127.0.0.1", args.port), make_handler(worker))
+    server = ThreadingHTTPServer((args.host, args.port), make_handler(worker))
     server.daemon_threads = True
     threading.Thread(target=server.serve_forever, name="shape_worker-http", daemon=True).start()
-    print(f"[shape_worker] listening on http://127.0.0.1:{args.port} (pid {os.getpid()})")
+    print(f"[shape_worker] listening on http://{args.host}:{args.port} (pid {os.getpid()}"
+          f"{', token required' if worker.token else ''})")
     if args.blend and args.layers:
         worker.submit("load", {})
     else:

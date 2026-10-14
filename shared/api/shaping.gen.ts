@@ -81,14 +81,27 @@ export interface ShapingWorkerStatus {
     layersDir: null | string;
     appliedOps: unknown;
     lastRun: unknown;
+    job: null | ShapingWorkerJob;
     error: null | string;
     spawnedPid: null | number;
+    log: null | string;
 }
 
 export interface ShapingUnityStep {
     id: string;
     status: string;
     seconds: null | number;
+}
+
+export interface ShapingWorkerJob {
+    id: string;
+    kind: null | string;
+    state: string;
+    phase: null | string;
+    startedAt: null | string;
+    seconds: null | number;
+    result: unknown;
+    error: null | string;
 }
 
 export interface ShapingApi {
