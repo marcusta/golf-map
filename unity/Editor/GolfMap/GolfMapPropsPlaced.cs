@@ -27,6 +27,12 @@
 //   scene object -> spec     the same PairNearest on x/z, for golfmap.props.record (which has no records
 //                            to go by: GolfMapProps.Record).
 //
+// Two lists come out beside the per-spec-entry decisions: `dropped`, the records no spec entry claimed
+// (the spec lost that place(...) call), and `handAdded`, the instances in the scene no record claimed -
+// the tool never made them, so they were duplicated by hand ("<asset>#3 (1)") and are left standing.
+// GolfMapProps keeps those out of placed.json on purpose: "no record claims it" is what finds them, and
+// a record with spec null would be claimed by nothing and dropped by the next place.
+//
 // The same rule mirrored in JS and tested with bun: unity/props-matching.mjs + props-matching.test.mjs.
 // Change both together.
 using System;
@@ -104,11 +110,13 @@ namespace GolfMap.Editor
         // ---- the rule ------------------------------------------------------------------------
 
         // specs/records/scene are one asset's. dropped gets the records no spec entry claimed (the spec
-        // lost that place() call).
-        public static List<Decision> Decide(List<SpecEntry> specs, List<Record> records, List<SceneInstance> scene, Tolerance tol, out List<Record> dropped)
+        // lost that place() call); handAdded the scene instances no record claimed (duplicated by hand
+        // in Unity: the place leaves them standing).
+        public static List<Decision> Decide(List<SpecEntry> specs, List<Record> records, List<SceneInstance> scene, Tolerance tol,
+            out List<Record> dropped, out List<SceneInstance> handAdded)
         {
             if (tol == null) tol = new Tolerance();
-            var inScene = PairScene(records, scene, tol);
+            var inScene = PairScene(records, scene, tol, out handAdded);
             var paired = PairSpecs(specs, records);
 
             var decisions = new List<Decision>();
@@ -172,8 +180,9 @@ namespace GolfMap.Editor
         }
 
         // record -> the instance standing in the scene for it: by name, else the nearest unclaimed
-        // instance within matchM of where the tool left it (a renamed object).
-        static Dictionary<Record, Pose> PairScene(List<Record> records, List<SceneInstance> scene, Tolerance tol)
+        // instance within matchM of where the tool left it (a renamed object). handAdded gets what no
+        // record claimed: the tool never made it, so somebody duplicated it in Unity ("<asset>#3 (1)").
+        static Dictionary<Record, Pose> PairScene(List<Record> records, List<SceneInstance> scene, Tolerance tol, out List<SceneInstance> handAdded)
         {
             var found = new Dictionary<Record, Pose>();
             var taken = new HashSet<string>();
@@ -197,6 +206,7 @@ namespace GolfMap.Editor
                 }
                 if (best != null) { found[r] = best.pose; taken.Add(best.name); }
             }
+            handAdded = scene.Where(s => !taken.Contains(s.name)).ToList();
             return found;
         }
 
@@ -217,6 +227,10 @@ namespace GolfMap.Editor
         // array holds, per point of a, the index of the point of b it paired with, or -1 when b ran out.
         // Coordinates stay double (EPSG:3006 northings lose half a metre as float), and distances are
         // rounded to the millimetre so this and the JS mirror break ties the same way.
+        //
+        // MidpointRounding.AwayFromZero, not Math.Round's default: that one is banker's rounding
+        // (half to even, 2.5 -> 2) while JS Math.round is half up for a positive number, so an exact
+        // half-millimetre tie - two candidates at x.5 mm - used to pair differently in C# and in JS.
         public static int[] PairNearest(IList<double> ax, IList<double> ay, IList<double> bx, IList<double> by)
         {
             var paired = new int[ax.Count];
@@ -226,7 +240,7 @@ namespace GolfMap.Editor
                 for (int k = 0; k < bx.Count; k++)
                 {
                     double dx = ax[i] - bx[k], dy = ay[i] - by[k];
-                    pairs.Add(new[] { (long)Math.Round(Math.Sqrt(dx * dx + dy * dy) * 1000), (long)i, (long)k });
+                    pairs.Add(new[] { (long)Math.Round(Math.Sqrt(dx * dx + dy * dy) * 1000, MidpointRounding.AwayFromZero), (long)i, (long)k });
                 }
             pairs.Sort((p, q) => p[0] != q[0] ? p[0].CompareTo(q[0]) : (p[1] != q[1] ? p[1].CompareTo(q[1]) : p[2].CompareTo(q[2])));
             var used = new HashSet<int>();

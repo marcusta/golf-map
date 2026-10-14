@@ -2,12 +2,17 @@
 
 Per-tool behaviour notes moved out of unity/AGENTS.md. They complement [unity/README.md](../unity/README.md), which has the user-facing sections (Bunker Materials, Cart paths, Vertex paint, FBX sync, Creeks, Water planes, Course props, Stone walls); read the matching section there too.
 
-Saving: every command that writes into the scene takes `save=false` (`GolfMapSceneSave.cs`, README "Saving what a
-command changed"). With `save: true` it saves the open dirty scenes and `AssetDatabase.SaveAssets()` **after** it has
-succeeded and reports `saved: {scenes, seconds}`; a dry run and a failed run never save (`saved.skipped` says why),
-and `golfmap.course.refresh` saves once at the end rather than per chained step. Without it nothing changed: the
-scene is marked dirty and the user is asked (or `scene.save`). Pass it when a run is unattended or long - the
-2026-10-09 editor crash lost 13 meshes that were only in memory.
+Saving: every command takes `save=false` (`GolfMapSceneSave.cs`, README "Saving what a command changed"). With
+`save: true` the open dirty scenes and `AssetDatabase.SaveAssets()` are saved **after** the command has succeeded
+and reported as `saved: {scenes, seconds}`; a dry run and a failed run never save (`saved.skipped` says why), a
+dirty scene with no file of its own is left as `saved.skippedScenes`, and `golfmap.course.refresh` saves once at
+the end rather than per chained step. It is the bridge dispatcher that does this - it runs the registered command
+`golfmap.scene.save` after any job whose args carry `save: true` - so no command can ignore the argument any more
+(a dozen of them used to: `roughgrass.plant`, `look.apply`, `paint.apply`, `vegpalette.*`, `walls.colors` ...).
+Without it nothing changed: the scene is marked dirty and the user is asked (or `golfmap.scene.save`). Pass it
+when a run is unattended or long - the 2026-10-09 editor crash lost 13 meshes that were only in memory. The one
+odd one out is `golfmap.course.build`, whose `saveBefore=true` saves **before** the build (the bundle comes from
+the file on disk).
 
 Bunkers: `GolfMap > Bunker Materials` (`GolfMapBunkerMaterials.cs` + `GolfMapBunkerChannels.cs`) checks
 vertex paint and builds copies of OPCD's `ChannelMaterials` from `bunker-channels.json` (owned by
@@ -73,7 +78,15 @@ Course build: `golfmap.course.build` holds the main thread for ~12 minutes, so p
 bridge at all (`bun unity/mcp/build-status.ts`, also folded into `unity_status` as `courseBuild`) - instead of
 watching the `.gspcrse` mtime. Phases: `starting`, `saving-scene`, `preparing`, `building-bundle` (the long one),
 `refreshing-vegetation` or `failed-restoring-wind`, `done`, `failed`; `seconds` of a running build counts from `startedAt`, `lastResult` is the
-previous build's result or error (README "Course build").
+previous build's result or error (README "Course build"). A build holds the main thread to its end, so it can never
+write "I stopped": the file carries the editor's `pid`, and a `running` file whose process is gone reads as phase
+`interrupted` (running false) rather than building for ever. `saveBefore=true` (not `save`) saves the scene before
+the build - the bundle is built from the file on disk.
+
+`unity_status` is one shape, always: the off-thread snapshot (`scenes` with `dirty`, `compiling`, `updating`,
+`busy`, `queued`, `consoleSeq`, `jobStamp`) merged with the main-thread `status` command (`activeScene`,
+`selection`, `sceneView`). A command holding the main thread leaves the second half out and adds `commandError`;
+it no longer nests everything under `.snapshot`.
 
 Blender shaping loop ([SHAPING-PLAN](../blender/SHAPING-PLAN.md)): `golfmap.course.refresh` (`GolfMapCourseRefresh.cs`) chains
 mesh sync, bunker convention, paint, `golfmap.terrain.conform mode=match` (terrain both ways under the meshes, feathered),
@@ -126,6 +139,12 @@ the prop was placed, so one `place(...)` call added or removed shifts every late
 The result's `kept`/`handPlaced` and the report's `KEPT (hand-placed)` lines are what to carry into the spec: nothing
 is written back into `docs/gspro/<course>/*-props.gen.py`, and only the spec survives another machine or a
 `props.clear` + rebuilt spec. `keepHandEdits=false` restores the old replace-everything behaviour.
+Two lists cover what has no spec entry at all. An instance **no record made** (a Ctrl+D duplicate in Unity,
+`<asset>#3 (1)`) is left standing where it is: result `handAdded`, and kept out of `placed.json` on purpose, since
+"no record claims it" is the rule that finds it and a `spec: null` record would make the next place drop it
+(it used to pair with nothing and be destroyed without a word; `keepHandEdits=false` still removes it). A
+hand-placed instance the spec - or the whole asset in the manifest - no longer has does go, because the spec is the
+intent, but its asset, name and transform are listed under `droppedHand` and as a report warning first.
 A scene from before this existed has no record: run `golfmap.props.record` once (`mark=moved|all`, touches no prop)
 before the first place, or the hand moves go one last time. Read its `pairing` (`indexStillRight` vs
 `pairedByPosition`), `unpairedInstances`, `notInScene` and per-asset `assets` before trusting its `handPlaced`.

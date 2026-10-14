@@ -113,6 +113,11 @@ namespace GolfMap.Bridge
 
         public static IEnumerable<Entry> All { get { return Registry().Values.OrderBy(e => e.name, StringComparer.Ordinal); } }
 
+        // Is this command registered in this project? The bridge asks before reaching for one of the
+        // project's own commands by name (BridgeServer's save hook, VSP watchdog): a project without
+        // it must not be told "Unknown command".
+        public static bool Has(string name) { return Registry().ContainsKey(name); }
+
         public static object Invoke(string name, BridgeArgs args)
         {
             Entry entry;

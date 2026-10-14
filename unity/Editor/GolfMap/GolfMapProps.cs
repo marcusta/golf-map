@@ -31,23 +31,23 @@ namespace GolfMap.Editor
         [MenuItem("GolfMap/Props/Place props from manifest")]
         static void Menu() { Debug.Log("[GolfMap Props] " + GolfMapJson.Serialize(Place(null, false, null, true, true), false)); }
 
-        [BridgeCommand("golfmap.props.place", "Place the course's Blender-built props (<course>/Props/props.json, golfmap-props-v1 from blender/tools/build_props.py): Standard materials from the manifest (textures set up as albedo/normal maps), FBX materials remapped onto them, then every instance under 'GolfMap Props' at its EPSG:3006 position on the highest collider below (course meshes, else terrain), rotated to its yawDeg, with MeshColliders on buildings/structures. Replaces what the last place made, except the instances the user moved or rotated in Unity: those keep their transform (kept=true in the report, with both transforms), until the spec moves that instance itself. Marks the scene dirty unless save.",
+        [BridgeCommand("golfmap.props.place", "Place the course's Blender-built props (<course>/Props/props.json, golfmap-props-v1 from blender/tools/build_props.py): Standard materials from the manifest (textures set up as albedo/normal maps), FBX materials remapped onto them, then every instance under 'GolfMap Props' at its EPSG:3006 position on the highest collider below (course meshes, else terrain), rotated to its yawDeg, with MeshColliders on buildings/structures. Replaces what the last place made, except the instances the user moved or rotated in Unity: those keep their transform (kept=true in the report, with both transforms), until the spec moves that instance itself. An instance no record made (duplicated by hand in Unity, '<asset>#3 (1)') is left standing and listed under `handAdded`; it is kept out of placed.json on purpose, so every later place finds it the same way. A hand-placed instance the spec or the manifest no longer has does go, with its transform listed under `droppedHand` so nothing vanishes in silence. Marks the scene dirty unless save.",
             args = "folder (default <course>/Props/), dryRun=false (ground heights and the plan, kept instances included, nothing written), only (asset ids, comma-separated: place just these, keep the rest), materials=true (rebuild materials and FBX import settings), keepHandEdits=true (false: every instance from the spec, hand moves dropped - the old behaviour), " + GolfMapSceneSave.Arg)]
         static object Command(BridgeArgs a)
         {
             var only = a.Strings("only").SelectMany(s => s.Split(',')).Select(s => s.Trim()).Where(s => s.Length > 0).ToList();
-            return GolfMapSceneSave.After(a, Place(a.String("folder"), a.Bool("dryRun", false), only.Count == 0 ? null : new HashSet<string>(only), a.Bool("materials", true), a.Bool("keepHandEdits", true)));
+            return Place(a.String("folder"), a.Bool("dryRun", false), only.Count == 0 ? null : new HashSet<string>(only), a.Bool("materials", true), a.Bool("keepHandEdits", true));
         }
 
         [BridgeCommand("golfmap.props.clear", "Delete 'GolfMap Props' (everything golfmap.props.place made). The placed.json record stays, so the next place still keeps what was moved by hand. Marks the scene dirty unless save.", args = GolfMapSceneSave.Arg)]
-        static object Clear(BridgeArgs a)
+        static object Clear()
         {
             var root = FindRoot();
             if (root == null) return new Dictionary<string, object> { { "removed", 0 } };
             int n = root.GetComponentsInChildren<Transform>(true).Length - 1;
             Undo.DestroyObjectImmediate(root);
             EditorSceneManager.MarkSceneDirty(EditorSceneManager.GetActiveScene());
-            return GolfMapSceneSave.After(a, new Dictionary<string, object> { { "removed", n } });
+            return new Dictionary<string, object> { { "removed", n } };
         }
 
         static GameObject FindRoot()
@@ -578,9 +578,13 @@ namespace GolfMap.Editor
             var specByAsset = SpecsByAsset(insts);
             var sceneByAsset = SceneInstances(FindRoot());
             var decisions = new Dictionary<int, Placed.Decision>();
-            var droppedHand = new List<string>();
+            var droppedHand = new List<object>();      // hand-placed instances nothing in the spec claims any more
+            var droppedWarnings = new List<string>();  // the same, as the report's one-liners
+            var handAddedRows = new List<object>();     // duplicated by hand in Unity: left standing
+            var handAddedNames = new List<string>();    // ... and so the objects the replace must not destroy
             var tolerance = new Placed.Tolerance();
             if (keepHandEdits)
+            {
                 foreach (var kv in specByAsset)
                 {
                     if (only != null && !only.Contains(kv.Key)) continue;
@@ -589,10 +593,35 @@ namespace GolfMap.Editor
                     List<Placed.SceneInstance> standing;
                     if (!sceneByAsset.TryGetValue(kv.Key, out standing)) standing = new List<Placed.SceneInstance>();
                     List<Placed.Record> gone;
-                    foreach (var d in Placed.Decide(kv.Value, known, standing, tolerance, out gone)) decisions[d.index] = d;
+                    List<Placed.SceneInstance> added;
+                    foreach (var d in Placed.Decide(kv.Value, known, standing, tolerance, out gone, out added)) decisions[d.index] = d;
                     foreach (var g in gone)
-                        if (g.hand) droppedHand.Add(kv.Key + " " + g.name + ": hand-placed, but the spec no longer has this instance");
+                        if (g.hand) Dropped(droppedHand, droppedWarnings, kv.Key, g, "hand-placed, but the spec no longer has this instance");
+                    // Nothing the tool made: somebody duplicated it in Unity. Keep it standing and
+                    // record it, instead of deleting the user's prop without a word.
+                    foreach (var s in added)
+                    {
+                        handAddedNames.Add(s.name);
+                        handAddedRows.Add(new Dictionary<string, object>
+                        {
+                            { "asset", kv.Key }, { "name", s.name },
+                            { "pos", new object[] { s.pose.pos.x, s.pose.pos.y, s.pose.pos.z } },
+                            { "yaw", Math.Round(s.pose.euler.y, 2) },
+                            { "scale", new object[] { s.pose.scale.x, s.pose.scale.y, s.pose.scale.z } },
+                            { "note", "added by hand in Unity (no record made it): left standing, and left out of the record so the next place finds it the same way" },
+                        });
+                    }
                 }
+                // Records of an asset the manifest no longer lists at all: the loop above walks the
+                // spec, so it never sees them, and the replace below destroys their objects. The spec
+                // is the intent, so they do go - but the user gets to see what vanished.
+                foreach (var kv in records)
+                {
+                    if (specByAsset.ContainsKey(kv.Key) || (only != null && !only.Contains(kv.Key))) continue;
+                    foreach (var r in kv.Value)
+                        if (r.hand) Dropped(droppedHand, droppedWarnings, kv.Key, r, "hand-placed, but the manifest no longer has this asset");
+                }
+            }
 
             AssetDatabase.Refresh();
             recolorCache.Clear();
@@ -647,7 +676,8 @@ namespace GolfMap.Editor
                 // replace: everything (or the selected assets) the last place made
                 // placed objects are named "<asset>#<index>" (no custom component: GSPro would load it as a missing script)
                 foreach (var t in root.GetComponentsInChildren<Transform>(true).Where(t => t.name.Contains("#")).ToList())
-                    if (only == null || only.Contains(t.name.Substring(0, t.name.IndexOf('#')))) Undo.DestroyObjectImmediate(t.gameObject);
+                    if ((only == null || only.Contains(t.name.Substring(0, t.name.IndexOf('#')))) && !handAddedNames.Contains(t.name))
+                        Undo.DestroyObjectImmediate(t.gameObject);
             }
             Physics.SyncTransforms();
             var groups = new Dictionary<string, Transform>();
@@ -811,8 +841,11 @@ namespace GolfMap.Editor
                 probe.farClipPlane = 2000f;
                 probe.RenderProbe();
             }
-            warnings.AddRange(droppedHand);
+            warnings.AddRange(droppedWarnings);
             foreach (var w in warnings) sb.AppendLine("!! " + w);
+            if (handAddedRows.Count > 0)
+                sb.AppendLine("-- " + handAddedRows.Count + " instance(s) added by hand in Unity (no record made them) were left standing,"
+                    + " and stay so until the spec or a props.record claims them: " + string.Join(", ", handAddedNames.ToArray()));
             if (keptCount > 0)
                 sb.AppendLine("-- " + keptCount + " instance(s) kept their hand transform. To make a hand move permanent (and survive on another machine),"
                     + " carry it into docs/gspro/<course>/*-props.gen.py: workflow 4 in docs/workflows.md.");
@@ -820,6 +853,10 @@ namespace GolfMap.Editor
             var specHashes = specByAsset.ToDictionary(kv => kv.Key, kv => Placed.SpecHash(kv.Value));
             if (!dryRun)
             {
+                // The hand-added instances are deliberately NOT written into the record: "no record
+                // claims it" is the very rule that finds them, so leaving them out is what keeps them
+                // standing through every later place. A record with spec null is the one thing that
+                // would undo this - no spec entry can ever claim it, so the next place would drop it.
                 Placed.Save(sidecar, manifest, written, specHashes);
                 if (sidecar.StartsWith("Assets/", StringComparison.Ordinal)) AssetDatabase.ImportAsset(sidecar);
                 EditorSceneManager.MarkSceneDirty(EditorSceneManager.GetActiveScene());
@@ -830,10 +867,26 @@ namespace GolfMap.Editor
                 { "axis", axis }, { "warnings", warnings }, { "report", GolfMapCourses.ReportPath(course, "props.txt") },
                 { "placedRecord", sidecar }, { "keepHandEdits", keepHandEdits }, { "kept", keptCount },
                 { "handPlaced", handPlaced }, { "specWon", specWon },
+                { "handAdded", handAddedRows }, { "droppedHand", droppedHand },
             };
             if (sidecarNote != null) result["placedRecordNote"] = sidecarNote;
             if (dryRun) result["rows"] = rows;
             return result;
+        }
+
+        // A hand-placed instance nothing in the spec claims any more: its object goes with this place,
+        // so the row carries the transform it stood at, and a warning says so in the report.
+        static void Dropped(List<object> rows, List<string> warnings, string asset, Placed.Record r, string why)
+        {
+            rows.Add(new Dictionary<string, object>
+            {
+                { "asset", asset }, { "name", r.name }, { "index", r.index }, { "why", why },
+                { "pos", new object[] { r.placed.pos.x, r.placed.pos.y, r.placed.pos.z } },
+                { "yaw", Math.Round(r.placed.euler.y, 2) },
+                { "scale", new object[] { r.placed.scale.x, r.placed.scale.y, r.placed.scale.z } },
+            });
+            warnings.Add(string.Format("{0} {1}: {2} (it stood at x {3:F2} y {4:F2} z {5:F2} yaw {6:F1}; capture it into the spec to keep it)",
+                asset, r.name, why, r.placed.pos.x, r.placed.pos.y, r.placed.pos.z, r.placed.euler.y));
         }
 
         // One row of the place report's hand-edit lists: the spec entry, where the instance now stands,

@@ -30,6 +30,12 @@
 //   hand-moved      moved/rotated/scaled in Unity since the tool placed it -> kept
 //   hand-kept       kept by an earlier place and still standing there -> kept
 //   hand-recorded   hand-placed earlier, nothing in the scene now -> kept, at the recorded transform
+//
+// Outside the per-spec-entry decisions, two lists say what has no spec entry at all:
+//   dropped         records no spec entry claimed: that place(...) call is gone from the spec
+//   handAdded       instances in the scene no record claimed: duplicated by hand in Unity
+//                   ("<asset>#3 (1)"), so the place leaves them standing - and out of the record,
+//                   which is what makes the next place find them the same way
 // matchM is only the radius for finding a RENAMED scene object by its recorded position; the spec
 // pairing has no radius.
 export const DEFAULT_TOLERANCE = { positionM: 0.01, rotDeg: 0.5, scale: 0.001, matchM: 2 };
@@ -46,7 +52,9 @@ const scaleDelta = (a, b) => Math.max(...[0, 1, 2].map(i => Math.abs(a[i] - b[i]
 const pose = p => ({ pos: [...p.pos], euler: [...(p.euler || [0, 0, 0])], scale: [...(p.scale || [1, 1, 1])] });
 
 // record -> the instance standing in the scene for it: by name, else the nearest unclaimed instance
-// within matchM of where the tool left it.
+// within matchM of where the tool left it. `handAdded` gets the instances no record claimed: the tool
+// never made them, so they were added by hand (a Ctrl+D duplicate, "<asset>#3 (1)") and the next place
+// must leave them where they are instead of deleting them without a word.
 function pairScene(records, scene, tol) {
  const found = new Map(), taken = new Set();
  for (const r of records) {
@@ -64,12 +72,14 @@ function pairScene(records, scene, tol) {
    }
    if (best) { found.set(r, best.pose); taken.add(best.name); }
  }
- return found;
+ return {found, handAdded: scene.filter(s => !taken.has(s.name))};
 }
 
 // One-to-one nearest pairing of two sets of points ([[x, y], ...]), closest pair first and no radius:
 // returns, per point of a, the index of the point of b it paired with, or -1 when b ran out.
-// Distances are rounded to the millimetre so this and the C# break ties the same way.
+// Distances are rounded to the millimetre so this and the C# break ties the same way: Math.round is
+// half UP for a positive number, which is why the C# side asks for MidpointRounding.AwayFromZero
+// (its default is banker's rounding, half to even, and an exact x.5 mm tie would pair differently).
 export function pairNearest(a, b) {
  const paired = a.map(() => -1), pairs = [];
  for (let i = 0; i < a.length; i++)
@@ -97,10 +107,11 @@ function pairSpecs(specs, records) {
 // scene:   [{name, pose:{pos, euler, scale}}]                          what stands in the scene now
 // -> {decisions: [{index, kept, rule, record, keep, was, movedM, movedDeg, movedScale,
 //                  specMovedM, specMovedDeg, specMovedScale}],
-//     dropped: [record, ...]}   records no spec entry claimed (the spec lost that place() call)
+//     dropped: [record, ...],      records no spec entry claimed (the spec lost that place() call)
+//     handAdded: [scene, ...]}     instances no record claimed: added by hand, kept as they stand
 export function matchPlacedProps({ specs, records = [], scene = [], tolerance } = {}) {
  const tol = { ...DEFAULT_TOLERANCE, ...(tolerance || {}) };
- const inScene = pairScene(records, scene, tol);
+ const {found: inScene, handAdded} = pairScene(records, scene, tol);
  const paired = pairSpecs(specs, records);
  const decisions = specs.map((entry, i) => {
    const d = {
@@ -134,7 +145,7 @@ export function matchPlacedProps({ specs, records = [], scene = [], tolerance } 
    return d;
  });
  const claimed = new Set(paired.filter(k => k >= 0));
- return { decisions, dropped: records.filter((_, k) => !claimed.has(k)) };
+ return { decisions, dropped: records.filter((_, k) => !claimed.has(k)), handAdded };
 }
 
 // `golfmap.props.record` (GolfMapProps.Record): seed the records from the scene as it stands, for an

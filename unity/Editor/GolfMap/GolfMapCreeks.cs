@@ -111,12 +111,12 @@ namespace GolfMap.Editor
             o.searchM = (float)a.Number("searchM", o.searchM);
             o.trace = a.String("trace");
             o.water = a.String("water") ?? o.water;
-            return GolfMapSceneSave.After(a, Import(a.String("file"), a.Bool("dryRun", false), o));
+            return Import(a.String("file"), a.Bool("dryRun", false), o);
         }
 
         [BridgeCommand("golfmap.creeks.water", "Set the look of the imported creeks without refitting them: water=lake gives every creek under 'GolfMap Creeks' the lakes' water (a copy of OPCD's AQUAS water plane material in <course>/Creeks/, made once and then kept, so hand tuning stays) and the nearest lake's reflection probe; water=profile puts back each spline's R.A.M. profile material. Marks the scene dirty; save=true saves it (and the assets it changed) once it has succeeded.",
             args = "water=lake|profile, " + GolfMapSceneSave.Arg)]
-        static object WaterCommand(BridgeArgs a) { return GolfMapSceneSave.After(a, Style(a.String("water") ?? "lake")); }
+        static object WaterCommand(BridgeArgs a) { return Style(a.String("water") ?? "lake"); }
 
         public static Dictionary<string, object> Import(string file, bool dryRun, FitOptions fit)
         {

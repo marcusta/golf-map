@@ -516,11 +516,11 @@ namespace GolfMap.Editor
             EditorSceneManager.MarkSceneDirty(terrain.gameObject.scene);
             AssetDatabase.SaveAssets();
             SceneView.RepaintAll();
-            return GolfMapSceneSave.After(a, new Dictionary<string, object>
+            return new Dictionary<string, object>
             {
                 { "terrain", terrain.name }, { "system", system.name }, { "plantDistance", system.VegetationSettings.PlantDistance },
                 { "log", log }, { "items", items },
-            });
+            };
         }
 
         [BridgeCommand("golfmap.grass.refresh", "Refresh the VSP system of a terrain (rebuild items and respawn), e.g. after editing items by hand.", args = "terrain=inner|outer")]

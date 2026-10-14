@@ -69,7 +69,7 @@ namespace GolfMap.Editor
             args = "dryRun=false (plan only), prune=false (delete stale objects), paint=true, replaceAll=false, folder (under Assets; default: the course's meshFolder), parent (default: the course's meshParent), exclude (comma-separated FBX name prefixes; default: the course's meshExclude), " + GolfMapSceneSave.Arg)]
         static object Command(BridgeArgs a)
         {
-            return GolfMapSceneSave.After(a, Sync(a.Bool("dryRun", false), a.Bool("prune", false), a.Bool("paint", true), a.String("folder"), a.String("parent"), a.Bool("replaceAll", false), a.String("exclude")));
+            return Sync(a.Bool("dryRun", false), a.Bool("prune", false), a.Bool("paint", true), a.String("folder"), a.String("parent"), a.Bool("replaceAll", false), a.String("exclude"));
         }
 
         // Read-only: renderers that may draw white or untextured after a sync/refresh. Per active MeshRenderer of the

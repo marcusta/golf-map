@@ -15,20 +15,38 @@ Agent-facing per-tool notes moved from `AGENTS.md`: [docs/unity-tool-notes.md](.
 ## Saving what a command changed: `save`
 
 Every command that writes into the scene marks it dirty and leaves saving to the user. That cost 13 meshes
-on 2026-10-09, when the editor crashed with the work only in memory. So each of them takes `save=false`
-(`GolfMapSceneSave.cs`): with `save: true` the command, **once it has succeeded**, saves every open scene
-that is dirty and runs `AssetDatabase.SaveAssets()` for the assets it changed (terrain data, palettes,
-materials, meshes), and puts `saved: { scenes: [<scene paths>], seconds }` in its result.
+on 2026-10-09, when the editor crashed with the work only in memory. So **every** command takes
+`save=false`: with `save: true` the command, **once it has succeeded**, saves every open scene that is
+dirty and runs `AssetDatabase.SaveAssets()` for the assets it changed (terrain data, palettes, materials,
+meshes), and reports `saved: { scenes: [<scene paths>], seconds }`.
+
+`save` is the bridge dispatcher's, not each command's: when a job finishes successfully and its args carry
+`save: true`, `BridgeServer` runs the registered command `golfmap.scene.save` (`GolfMapSceneSave.cs`) and
+merges its answer into the response as `saved` - and into the result too, when the result is an object, so
+a caller that sees only the result (`unity/mcp/bridge.ts` `run()`) gets it as well. It used to be threaded
+through each command's own return sites by hand, and the ones that never got a wrapper - `roughgrass.plant`,
+`powerlines.build`, `vehicles.build`, `look.apply`, `paint.apply`, `cti.apply`, `vegpalette.*`,
+`meshes.materials`, `walls.colliders`, `terrain.restore`, `vsp.merge`, `trees.colliders` and others -
+ignored `save: true` in silence.
 
 - Default `false`: a call without `save` behaves exactly as before (dirty scene, "save it in Unity").
-- A dry run never saves, and neither does a run that failed (a command that throws never gets that far;
-  `golfmap.course.refresh` with a failed step leaves the scene dirty on purpose). `saved.skipped` says why.
-- `golfmap.course.refresh` saves **once**, after its last step: the steps it chains never save of their own.
-- The commands that take it: `course.refresh`, `meshes.sync`, `terrain.update`, `terrain.conform`,
-  `zones.import`, `zones.patch`, `grass.apply`, `orthos.apply`, `orthos.update`, `creeks.import`,
-  `creeks.water`, `props.place`, `props.clear`, `walls.build`, `walls.clear`, `waterplanes.build`,
-  `trees.plant`.
-- Saving by itself, after a run without `save`: `unity_command scene.save` (mcp/README.md).
+- A dry run never saves (`dryRun: true` in the args, or in the result - `golfmap.trees.plant check=true`
+  reports it that way), and neither does a run that failed: one that throws never reaches the hook, and one
+  that reports its own failure (`failed: true`, `golfmap.course.refresh` with a failed step) is left dirty
+  on purpose. `saved.skipped` says which of the two it was.
+- `golfmap.course.refresh` saves **once**, after its last step: the hook runs per top-level job, and the
+  steps a command chains inside its own job are not jobs.
+- A dirty scene that has never been saved has no file to save to; it is left alone and listed as
+  `saved.skippedScenes` rather than failing the command (an untitled additive scene next to the course's).
+- If the save itself fails, the command's result still stands and `saved.failed` carries the message (plus a
+  console error): the work is not hidden because the saving went wrong.
+- A project without `golfmap.scene.save` (the bridge folder alone, no GolfMap scripts) reports
+  `saved: { skipped: "no golfmap.scene.save command" }`.
+- Saving by itself, after a run without `save`: `unity_command golfmap.scene.save`, or the bridge's own
+  course-agnostic `unity_command scene.save` (mcp/README.md).
+- `golfmap.course.build` is the one exception, and it has its own argument for it: `saveBefore=true` saves
+  the scene **before** the build, because the bundle is built from the file on disk. `save` on that command
+  means the same as everywhere else - save again afterwards.
 
 ## Terrain Importer
 
@@ -1299,7 +1317,9 @@ whether that transform is the user's (`hand`); plus `specHashes` per asset. The 
 | Tolerance | 1 cm of position, 0.5° on any rotation axis (a tilt counts: the tool only ever sets yaw), 0.1 % of scale |
 | Hand-placed | the instance stands somewhere else than the record says (`rule: hand-moved`), or an earlier place already kept it (`hand-kept`; `hand-recorded` when nothing is in the scene for it now) |
 | Spec wins | a hand-placed instance whose **spec entry** moved more than the tolerance since it was recorded (`rule: spec-moved`): the user edited the `.gen.py`, so that is the newer intent. Also `no-record` (a new `place(...)` call) and `unmoved` |
-| Result | `kept` = how many kept their transform, `handPlaced` and `specWon` list them with the spec entry, where they stand and where the tool had put them; `placedRecord` is the sidecar's path. The report repeats it per line (`KEPT (hand-placed)`) |
+| Added by hand | an instance in the scene **no record claims** - the tool never made it, so somebody duplicated it in Unity (`<asset>#3 (1)`). It is left exactly where it stands and nothing is placed for it: result `handAdded`. It is deliberately kept **out** of `placed.json`, because "no record claims it" is the rule that finds it, so every later place keeps it the same way (a record with `spec: null` would do the opposite - no spec entry could ever claim it, so the next place would drop it). Before this it paired with nothing and the replace destroyed it without a word; `keepHandEdits=false` still removes it |
+| Dropped | a hand-placed instance the spec no longer has - that `place(...)` call is gone, or the manifest has lost the whole asset. The spec is the intent, so the object does go, but its asset, name and transform are listed as a warning in the report and under `droppedHand` in the result, to be carried into the `.gen.py` if it was wanted |
+| Result | `kept` = how many kept their transform, `handPlaced` and `specWon` list them with the spec entry, where they stand and where the tool had put them; `handAdded` and `droppedHand` the two above; `placedRecord` is the sidecar's path. The report repeats it per line (`KEPT (hand-placed)`) |
 
 Nothing is written back into `docs/gspro/<course>/*-props.gen.py`: that is still the only way to make a hand move
 permanent across machines and through a `props.clear` + rebuilt spec, and the report's `handPlaced` is what to carry
@@ -1427,7 +1447,9 @@ A rebuild replaces everything under `GolfMap Power Lines`. The trees export keep
 ## Course build (the GSPro course file)
 
 `golfmap.course.build` (`GolfMapCourseBuild.cs`) does what `GSP > Build Course`'s Build button does, without the
-window: saves the open scene (the bundle is built from the file on disk), switches the four terrain colliders off as
+window: saves the open scene (`saveBefore=true`, the default - the bundle is built from the file on disk, and
+`saveBefore=false` refuses a dirty scene instead of saving it; it is NOT the other commands' `save`, which saves
+after a command has succeeded), switches the four terrain colliders off as
 the window does, runs OPCD's own builder (`BuildCourseDLL.Encryption`, reached by name) and puts the wind zone and the
 VSP systems back after it. Output: `<courses dir>/<scene>/<scene>.gspcrse` (`dir`, default the folder saved in the
 build window). It takes about 12 minutes, inside which the editor's main thread is OPCD's: no bridge command is
@@ -1435,13 +1457,15 @@ answered, and the call itself usually comes back as "still running".
 
 **Progress while it runs: `golfmap.course.build.status`.** The build writes
 `GolfMapSpelunk/<Course>_build-status.json` before it starts and at every milestone it can observe -
-`{ running, startedAt, seconds, phase, written, scene, lastResult }`, phases `starting`, `saving-scene`, `preparing`,
+`{ running, pid, startedAt, seconds, phase, written, scene, lastResult }`, phases `starting`, `saving-scene`, `preparing`,
 `building-bundle`, then `refreshing-vegetation` or `failed-restoring-wind`, and `done` / `failed` - so there is no
 need to guess from the `.gspcrse`
 mtime. `seconds` of a running build is counted from `startedAt` when the status is read, because the build cannot
 update its own file through the long phase; `lastResult` is the last finished build's result (file, megabytes,
 seconds) or its error, and is carried along while a new build runs. The file outlives a build that takes the editor
-with it.
+with it - and because the build holds the main thread to its end, it can never write "I stopped". That is what `pid`
+is for: a file that says `running` from a process that is gone reads as phase **`interrupted`** (and `running: false`)
+instead of building for ever, both in `golfmap.course.build.status` and in `bun unity/mcp/build-status.ts`.
 
 The bridge may be as silent as the editor, so the file is also read straight off disk:
 `bun unity/mcp/build-status.ts [project]`, and `unity_status` reports a running or lately finished build under

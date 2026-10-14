@@ -22,8 +22,9 @@ namespace GolfMap.Editor
             var component = terrain == "outer" ? GolfMapTreePlanter.Outer(host) : host;
             bool check = a.Bool("check", false);
             var status = GolfMapTreePlanter.For(component).RunFromBridge(!check);
-            var result = new System.Collections.Generic.Dictionary<string, object> { { "terrain", terrain }, { "planted", !check }, { "file", component.filePath }, { "status", status } };
-            return check ? (object)result : GolfMapSceneSave.After(a, result);
+            // check=true plants nothing, so the bridge's save hook must treat it as the dry run it is.
+            return new System.Collections.Generic.Dictionary<string, object>
+                { { "terrain", terrain }, { "planted", !check }, { "dryRun", check }, { "file", component.filePath }, { "status", status } };
         }
 
         [BridgeCommand("golfmap.course", "The active GolfMap course and every course in the project: folder, scene, palette, export files (present, size, modified) and reports.")]

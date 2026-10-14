@@ -25,7 +25,7 @@ namespace GolfMap.Editor
             args = "terrain=inner|outer or file, package (name), dryRun=false, brief=false (short result: the plan's long lists as counts, status cut to its first line), " + GolfMapSceneSave.Arg)]
         static object BridgeImport(BridgeArgs a)
         {
-            return GolfMapSceneSave.After(a, WithImporter(a, w =>
+            return WithImporter(a, w =>
             {
                 w.ValidateTarget();
                 bool dryRun = a.Bool("dryRun", false);
@@ -33,7 +33,7 @@ namespace GolfMap.Editor
                 var result = Result(w, !dryRun, a.Bool("brief", false));
                 result["dryRun"] = dryRun;
                 return result;
-            }));
+            });
         }
 
         static object WithImporter(BridgeArgs a, Func<GolfMapZoneImporter, object> action)

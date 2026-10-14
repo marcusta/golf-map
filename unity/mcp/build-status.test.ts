@@ -38,6 +38,34 @@ test("a running build's seconds count from when it started, not from the file", 
   expect(s.lastResult).toEqual({ file: "old.gspcrse" });
 });
 
+// A build cannot write "I stopped": it holds the main thread to the end, so an editor that
+// died inside it leaves running: true for ever. The pid is what gives it away.
+test("a build whose editor is gone reads as interrupted, not as still running", () => {
+  const startedAt = localStamp(new Date(Date.now() - 600_000));
+  const root = project({
+    "Vreta_build-status.json": { running: true, pid: 999999, startedAt, seconds: 3, phase: "building-bundle", lastResult: null },
+  });
+  const [s] = readBuildStatus(root);
+  expect(s.running).toBe(false);
+  expect(s.phase).toBe("interrupted");
+  expect(s.pid).toBe(999999);
+  expect(s.seconds).toBeGreaterThanOrEqual(599); // when it started, not the milestone it reached
+});
+
+test("a build running in a live editor stays running", () => {
+  const startedAt = localStamp(new Date(Date.now() - 60_000));
+  const root = project({
+    "Vreta_build-status.json": { running: true, pid: process.pid, startedAt, seconds: 3, phase: "building-bundle", lastResult: null },
+  });
+  expect(readBuildStatus(root)[0]).toMatchObject({ running: true, phase: "building-bundle", pid: process.pid });
+});
+
+// Written before the pid was in the file: nothing to check it against, so it is taken as it reads.
+test("a status file with no pid keeps its own running flag", () => {
+  const root = project({ "Vreta_build-status.json": { running: true, startedAt: "2026-10-14T09:00:00", seconds: 3, phase: "building-bundle" } });
+  expect(readBuildStatus(root)[0]).toMatchObject({ running: true, pid: null, phase: "building-bundle" });
+});
+
 test("a finished build keeps the elapsed seconds and the result it wrote", () => {
   const root = project({
     "Vreta_build-status.json": { running: false, startedAt: "2026-10-14T09:00:00", seconds: 740, phase: "done", lastResult: { megabytes: 812.3 } },

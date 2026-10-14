@@ -94,16 +94,27 @@ Throw `BridgeError` for a caller mistake (message only). Other exceptions return
 command that opens a modal dialog blocks the main thread until the user answers it; the MCP call
 returns "still running" and the job keeps going. Add new bridge files to `unity/check-planter.ps1`.
 
-**Every command must be idempotent** (ours are: sync and refresh steps re-read the scene and the
-exported files and do only what is still missing), because two robustness retries run a command a
-second time on their own:
+A command needs **nothing of its own for `save`**: the dispatcher runs the save after any job whose
+args carry `save: true` (`BridgeServer.Complete` → `golfmap.scene.save`), so every command takes it.
+Mark a run that changed nothing with `dryRun: true` in the args or in the result, and a run that
+failed on its own terms with `failed: true`; the hook then skips and says so in `saved.skipped`
+(unity/README.md, "Saving what a command changed").
+
+**Every `golfmap.*` command must be idempotent** (ours are: sync and refresh steps re-read the scene
+and the exported files and do only what is still missing), because two robustness retries run one a
+second time on their own. Both are limited to `golfmap.*` names: `menu`, `selection` and a project's
+own commands are never run twice behind the caller's back.
 
 | Retried when | Where | Shows as |
 |---|---|---|
-| The command's `AssetDatabase.Refresh()` set off a script reload, so the job died with the domain ("Unknown job (jobs do not survive a script reload)" / "The editor is reloading scripts; call again") - the known "`course.refresh` returned null right after `meshes.sync`" | `bridge.ts` `call()`: waits up to 90 s for the bridge to answer and the editor to be idle (`waitForBridge`), then submits the same command once | `retried: true` on the response and in the result, plus a stderr line from `run()`. A second failure surfaces as itself. |
-| The command threw VSP's "previously scheduled job ... JobHandle.Complete()" | `BridgeServer.Fail`: runs `golfmap.vsp.reset` through the registry, then the command once | `vspReset: true` with `vspResetAfter` / `vspResetResult` (see [unity-gotchas.md](../../docs/unity-gotchas.md)) |
+| The command's `AssetDatabase.Refresh()` set off a script reload, so the job died with the domain ("Unknown job (jobs do not survive a script reload)" / "The editor is reloading scripts; call again") - the known "`course.refresh` returned null right after `meshes.sync`" | `bridge.ts` `call()`: waits up to 90 s for the bridge to answer and the editor to be idle (`waitForBridge`), then submits the same command once | `retried: true` on the response and in the result, plus a stderr line from `run()`. A second failure surfaces as itself. A command that is not `golfmap.*` comes back with `retried: false` and the error says it was left alone. |
+| The command threw VSP's "previously scheduled job ... JobHandle.Complete()" | `BridgeServer.Fail`: runs `golfmap.vsp.reset` through the registry, then the command once | `vspReset: true` with `vspResetAfter` / `vspResetResult` (see [unity-gotchas.md](../../docs/unity-gotchas.md)). No reset command in the project, a reset that itself failed, or a command that is not `golfmap.*`: the stall's own error with `vspStall: true`, and nothing was run again. |
 
 Both retry **once per call**; neither retries a command that is still pending.
+
+Job ids are `<domainStamp>-<n>`: the counter restarts at 1 in every new domain, so a bare number let
+a client that was polling `/job/1` across a script reload read the *new* domain's job 1. `/status`
+publishes the live stamp as `jobStamp`.
 
 ## Tests
 

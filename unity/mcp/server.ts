@@ -51,22 +51,28 @@ const tools: Tool[] = [
   {
     name: "unity_status",
     description:
-      "Editor state for one project: open scenes (dirty?), compiling, busy command, selection, Scene view camera, console position. " +
-      "A golfmap.course.build running or lately finished is reported under courseBuild, read from its progress file on disk, " +
-      "so it shows even while the build holds the editor's main thread and no command is answered.",
+      "Editor state for one project, always the same shape: open scenes with dirty, compiling/updating/playing, the busy command (busy.command/job/seconds), queued, consoleSeq, jobStamp (this domain's half of every job id), activeScene, selection and the Scene view camera. " +
+      "The first group comes from the off-thread snapshot, so it is answered even while a command holds the main thread; the rest needs the main thread, and when that is busy it is simply absent and commandError says why. " +
+      "A golfmap.course.build running or lately finished is reported under courseBuild, read from its progress file on disk (phase 'interrupted': its editor went down with the build in it).",
     inputSchema: { type: "object", properties: { project } },
     async handler(a) {
       const b = pickBridge(a.project);
       const builds = readBuildStatus(b.projectPath).filter((s) => s.running || s.staleSeconds < 3600);
-      let live: unknown;
+      // Both halves, every time: the snapshot (off the main thread, so a busy editor still
+      // answers scenes/dirty, busy, consoleSeq) and the `status` command (needs the main
+      // thread: activeScene, selection, Scene view). A command holding the main thread
+      // (golfmap.course.build: minutes inside OPCD's builder) used to change the shape of
+      // this whole result; now it only leaves the second half out, with commandError.
+      const snapshot = (await status(b)) ?? null;
+      const out: Record<string, unknown> = { ...(snapshot ?? {}) };
       try {
-        live = await run(b, "status", {}, 20);
+        Object.assign(out, await run(b, "status", {}, 20));
       } catch (e) {
-        // A command holding the main thread (golfmap.course.build: minutes inside
-        // OPCD's builder) leaves only the off-thread snapshot and the build's own file.
-        live = { snapshot: (await status(b)) ?? null, commandError: (e as Error).message.split("\n")[0] };
+        out.commandError = (e as Error).message.split("\n")[0];
       }
-      return text(builds.length ? { ...(live as object), courseBuild: builds } : live);
+      if (snapshot === null) out.snapshotError = "the bridge did not answer /status (the editor is reloading scripts)";
+      if (builds.length) out.courseBuild = builds;
+      return text(out);
     },
   },
   {
@@ -222,7 +228,9 @@ const tools: Tool[] = [
     name: "unity_command",
     description:
       "Run any [BridgeCommand] registered in the project, e.g. golfmap.course (active course, export files, reports). Omit name to list every command with its arguments. " +
-      "Course tooling adds commands in C# without changes here.",
+      "Course tooling adds commands in C# without changes here. " +
+      "Every command also takes save=false, whatever its own args line says: with save=true the editor saves the open dirty scenes and the assets the command changed once it has succeeded, and answers with saved: {scenes, seconds} (or saved.skipped for a dry run or a failed run). " +
+      "golfmap.course.build is the exception - its saveBefore=true saves the scene BEFORE building, because the bundle comes from the file on disk.",
     inputSchema: {
       type: "object",
       properties: { project, name: { type: "string" }, args: { type: "object" }, timeout: { type: "number", default: 300, description: "Seconds to wait before returning; the command keeps running in Unity." } },

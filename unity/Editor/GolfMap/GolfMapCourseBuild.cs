@@ -59,7 +59,7 @@ namespace GolfMap.Editor
         }
 
         [BridgeCommand("golfmap.course.build", "Build the open scene into the GSPro course file, as GSP > Build Course's Build button does (OPCD's builder; takes minutes and the editor does not answer meanwhile, so call with a long timeout and expect the call to return late). The open scene is saved first: the bundle is built from the file on disk. Returns the course file with its size and time.",
-            args = "dir (courses folder; default the one saved in the build window), save=true, terrainCollider=false, outerCollider=false, foliageCollider=false, grassesCollider=false (true keeps that terrain's collider in the bundle; the window's default switches all four off)")]
+            args = "dir (courses folder; default the one saved in the build window), saveBefore=true (save the open scene before building - the bundle is built from the file on disk; false refuses to build a dirty scene rather than saving it. NOT the other commands' save=..., which saves AFTER a command succeeded), terrainCollider=false, outerCollider=false, foliageCollider=false, grassesCollider=false (true keeps that terrain's collider in the bundle; the window's default switches all four off)")]
         static object Build(BridgeArgs a)
         {
             var file = StatusFile();
@@ -82,7 +82,10 @@ namespace GolfMap.Editor
             if (string.IsNullOrEmpty(scene.path)) throw new BridgeError("The open scene has never been saved.");
             if (scene.isDirty)
             {
-                if (!a.Bool("save", true)) throw new BridgeError("The scene has unsaved changes, which a build would leave out. Save it or pass save=true.");
+                // `saveBefore`, not `save`: this one saves BEFORE the work (the bundle comes from the
+                // file on disk) and defaults to true, the opposite of every other command's `save`,
+                // which saves after a command succeeded and defaults to false (GolfMapSceneSave.cs).
+                if (!a.Bool("saveBefore", true)) throw new BridgeError("The scene has unsaved changes, which a build would leave out. Save it or pass saveBefore=true.");
                 WriteStatus(statusFile, true, begun, "saving-scene", previous);
                 if (!EditorSceneManager.SaveScene(scene)) throw new BridgeError("Could not save " + scene.path + ".");
             }
@@ -160,6 +163,10 @@ namespace GolfMap.Editor
                 File.WriteAllText(file, BridgeJson.Write(new Dictionary<string, object>
                 {
                     { "running", running },
+                    // Whose editor it is: a build that took the editor down leaves running=true for
+                    // ever, and only the pid tells a reader that nobody is building any more
+                    // (unity/mcp/build-status.ts turns that into phase "interrupted").
+                    { "pid", System.Diagnostics.Process.GetCurrentProcess().Id },
                     { "startedAt", begun.ToString("s") },
                     { "seconds", Elapsed(begun) },
                     { "phase", phase },
@@ -184,7 +191,7 @@ namespace GolfMap.Editor
             catch (Exception) { return null; }
         }
 
-        [BridgeCommand("golfmap.course.build.status", "How far golfmap.course.build has got, read from the file that build writes (GolfMapSpelunk/<Course>_build-status.json): { running, startedAt, seconds (a running build: how long it has been going; a finished one: how long it took), phase (starting, saving-scene, preparing, building-bundle, refreshing-vegetation or failed-restoring-wind, done, failed), lastResult (the last finished build's result or its error) }. The editor answers no command while the build holds the main thread, so poll this from a second process, or read the file itself with 'bun unity/mcp/build-status.ts'.")]
+        [BridgeCommand("golfmap.course.build.status", "How far golfmap.course.build has got, read from the file that build writes (GolfMapSpelunk/<Course>_build-status.json): { running, pid (the editor that was building), startedAt, seconds (a running build: how long it has been going; a finished one: how long it took), phase (starting, saving-scene, preparing, building-bundle, refreshing-vegetation or failed-restoring-wind, done, failed, and interrupted for a build whose editor went down: running from a process that is not this editor), lastResult (the last finished build's result or its error) }. The editor answers no command while the build holds the main thread, so poll this from a second process, or read the file itself with 'bun unity/mcp/build-status.ts'.")]
         static object BuildStatus()
         {
             var file = GolfMapCourses.ReportPath(GolfMapCourses.Require(), StatusSuffix);
@@ -194,12 +201,13 @@ namespace GolfMap.Editor
             {
                 status["running"] = false;
                 status["phase"] = "never-run";
+                status["pid"] = null;
                 status["startedAt"] = null;
                 status["seconds"] = 0;
                 status["lastResult"] = null;
                 return status;
             }
-            foreach (var key in new[] { "running", "startedAt", "seconds", "phase", "written", "scene", "lastResult" })
+            foreach (var key in new[] { "running", "pid", "startedAt", "seconds", "phase", "written", "scene", "lastResult" })
             {
                 object value;
                 status[key] = stored.TryGetValue(key, out value) ? value : null;
@@ -208,9 +216,19 @@ namespace GolfMap.Editor
             // builder), so how long ago it started is the only live number there is.
             var startedAt = status["startedAt"] as string;
             DateTime started;
-            if (status["running"] is bool && (bool)status["running"] && startedAt != null &&
+            bool running = status["running"] is bool && (bool)status["running"];
+            if (running && startedAt != null &&
                 DateTime.TryParse(startedAt, CultureInfo.InvariantCulture, DateTimeStyles.None, out started))
                 status["seconds"] = Elapsed(started);
+            // A build that is really running holds THIS editor's main thread, so a file that says
+            // running from another process is one whose editor went down with the build in it.
+            var pid = status["pid"] is double ? (int)(double)status["pid"] : 0;
+            if (running && pid != 0 && pid != System.Diagnostics.Process.GetCurrentProcess().Id)
+            {
+                status["running"] = false;
+                status["phase"] = "interrupted";
+                status["note"] = "the file says a build was running in process " + pid + ", which is not this editor: that build's editor went down";
+            }
             return status;
         }
     }

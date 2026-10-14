@@ -158,6 +158,17 @@ test('pairNearest is one to one, closest pair first, with no radius', () => {
                               [[512345.67, 6482212.4], [512345.67, 6482210.41]]), [1, 0]);
 });
 
+// The tie the two implementations used to break differently: C#'s Math.Round(double) is banker's
+// rounding (2.5 -> 2), JS Math.round is half up (2.5 -> 3). a1 is 2.5 mm from b0 and a0 is 3 mm from
+// it, so half up makes both 3 - a draw that the a index settles, giving b0 to a0 - while half to even
+// makes them 2 and 3 and gives b0 to a1 instead. C# now asks for MidpointRounding.AwayFromZero.
+test('pairNearest: an exact half-millimetre rounds half UP, as JS Math.round does', () => {
+ assert.equal(Math.round(2.5), 3);
+ assert.equal(Math.hypot(0.0025, 0) * 1000, 2.5, 'the half millimetre is exact in doubles');
+ const paired = pairNearest([[0.003, 0], [0.0025, 0]], [[0, 0], [100, 0]]);
+ assert.deepEqual(paired, [0, 1], 'both round to 3 mm, so the first a point takes b0');
+});
+
 // The bug this rule exists for: the scene was placed with an older spec, so every object's #i is off by
 // a constant. Names would pair each mat with the spec entry 2 along the row and report 5 "hand moves"
 // (on Vreta: 88 of them, 11 range_mat all off by exactly 5.745-5.805 m).
@@ -235,6 +246,22 @@ test('place: a record without a spec entry pairs with nothing and is reported dr
  const r = matchPlacedProps({specs: [{index: 0, spec: specOf(1000, 2000)}], records, scene});
  assert.deepEqual(ruleOf(r), [['unmoved', false]]);
  assert.deepEqual(r.dropped.map(d => d.name), ['shelter#9']);
+});
+
+test('place: an instance duplicated by hand in Unity is kept, not deleted', () => {
+ // Ctrl+D on shelter#1 in Unity, then dragged a few metres: no record made it, so the old rule
+ // paired it with nothing and the next place destroyed it without a word.
+ const scene = [...untouchedScene(), {name: 'shelter#1 (1)', pose: poseOf(60, 51, 24, 12)}];
+ const r = matchPlacedProps({specs: baseSpecs(), records: baseRecords(), scene});
+ assert.deepEqual(ruleOf(r), [['unmoved', false], ['unmoved', false]]);
+ assert.deepEqual(r.handAdded.map(s => s.name), ['shelter#1 (1)']);
+ assert.deepEqual(r.handAdded[0].pose.pos, [60, 51, 24]);
+ assert.equal(r.dropped.length, 0);
+ // it is only "added by hand" because no record claims it: a duplicate within matchM of a record
+ // whose own object is gone is still read as that record's instance, renamed
+ const renamed = [untouchedScene()[0], {name: 'shelter#1 (1)', pose: poseOf(40.5, 51, 20, 0)}];
+ const near = matchPlacedProps({specs: baseSpecs(), records: baseRecords(), scene: renamed});
+ assert.deepEqual(near.handAdded, []);
 });
 
 test('place: the record pairing has no radius either - a spec entry moved 30 m keeps its record and loses to it', () => {

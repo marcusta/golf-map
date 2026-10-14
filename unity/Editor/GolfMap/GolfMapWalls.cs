@@ -187,14 +187,14 @@ namespace GolfMap.Editor
         static object Command(BridgeArgs a)
         {
             var only = a.Strings("only").SelectMany(s => s.Split(',')).Select(s => s.Trim()).Where(s => s.Length > 0).ToList();
-            return GolfMapSceneSave.After(a, Build(a.String("file"), only.Count == 0 ? null : new HashSet<string>(only), a.Bool("dryRun", false), a.Int("variant", 0), a.String("profile")));
+            return Build(a.String("file"), only.Count == 0 ? null : new HashSet<string>(only), a.Bool("dryRun", false), a.Int("variant", 0), a.String("profile"));
         }
 
         [BridgeCommand("golfmap.walls.clear", "Delete the stones golfmap.walls.build placed ('GolfMap Walls', or only the named walls). Marks the scene dirty.", args = "only (wall ids, comma-separated), " + GolfMapSceneSave.Arg)]
         static object ClearCommand(BridgeArgs a)
         {
             var only = a.Strings("only").SelectMany(s => s.Split(',')).Select(s => s.Trim()).Where(s => s.Length > 0).ToList();
-            return GolfMapSceneSave.After(a, Clear(only.Count == 0 ? null : new HashSet<string>(only)));
+            return Clear(only.Count == 0 ? null : new HashSet<string>(only));
         }
 
         static GameObject FindRoot()

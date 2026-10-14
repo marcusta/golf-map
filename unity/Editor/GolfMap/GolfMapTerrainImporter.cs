@@ -409,7 +409,7 @@ namespace GolfMap.Editor
             args = "terrain=inner|outer|both (default both; both skips an outer the folder lacks), folder (default: the active course's export folder), outerSink (m below its sidecar position; default: keep the plot's current sink), dryRun=false, " + GolfMapSceneSave.Arg)]
         static object UpdateCommand(BridgeArgs a)
         {
-            return GolfMapSceneSave.After(a, UpdateHeights(a.String("terrain", "both"), a.String("folder"), (float)a.Number("outerSink", double.NaN), a.Bool("dryRun", false)));
+            return UpdateHeights(a.String("terrain", "both"), a.String("folder"), (float)a.Number("outerSink", double.NaN), a.Bool("dryRun", false));
         }
 
         // The course meshes' satellite (OPCD MAHS _Satellite) and the Stix grass colour map (_ColorMap) are a copy of the
@@ -452,7 +452,7 @@ namespace GolfMap.Editor
                 rows.Add(row);
             }
             if (!dryRun) SceneView.RepaintAll();
-            return GolfMapSceneSave.After(a, new Dictionary<string, object> { { "folder", folder }, { "match", match }, { "dryRun", dryRun }, { "files", rows } });
+            return new Dictionary<string, object> { { "folder", folder }, { "match", match }, { "dryRun", dryRun }, { "files", rows } };
         }
 
         // Overwrites the project texture at assetPath with the file src, keeping the asset (same GUID); the old file
@@ -517,11 +517,11 @@ namespace GolfMap.Editor
             var status = ReplaceOrthoInPlace(src, target, root, Path.Combine(root, "GolfMapSpelunk", "ortho-backups"), DateTime.Now.ToString("yyyyMMdd-HHmmss"), dryRun);
             if (!dryRun) SceneView.RepaintAll();
             int renderers; users.TryGetValue(target, out renderers);
-            return GolfMapSceneSave.After(a, new Dictionary<string, object>
+            return new Dictionary<string, object>
             {
                 { "file", file }, { "export", File.GetLastWriteTime(src).ToString("yyyy-MM-dd HH:mm") }, { "target", target },
                 { "renderers", renderers }, { "status", status }, { "dryRun", dryRun },
-            });
+            };
         }
 
         public static Dictionary<string, object> UpdateHeights(string which, string folder, float outerSinkM, bool dryRun)

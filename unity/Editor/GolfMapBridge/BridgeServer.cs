@@ -8,6 +8,11 @@
 //   POST /cmd/<name>      run a [BridgeCommand] on the main thread; JSON body = args
 //   GET  /job/<id>        result of a command that outlived the request timeout
 //
+// Job ids are "<domainStamp>-<n>": the counter restarts at 1 in every new domain,
+// so a bare number let a client that was polling /job/1 across a script reload read
+// the *new* domain's job 1 as if it were its own. The stamp is this domain's, and
+// /status publishes it as jobStamp, so a stale id simply does not exist here.
+//
 // Every request needs the X-Bridge-Token header. The token, port, pid and
 // project path are published in %LOCALAPPDATA%/GolfMapBridge/bridge-<pid>.json,
 // which is how the MCP server finds every open editor. Binds 127.0.0.1 only.
@@ -63,6 +68,9 @@ namespace GolfMap.Bridge
         // Main-thread state, copied every editor tick so /status never waits on the main thread.
         static volatile string snapshot = "{}";
         static readonly string domainStarted = DateTime.Now.ToString("s");
+        // This domain's half of every job id (see the header). Milliseconds masked to 32 bits:
+        // short enough to read in a URL, and two domains of one editor never share one.
+        static readonly string domainStamp = ((DateTime.UtcNow.Ticks / TimeSpan.TicksPerMillisecond) & 0xFFFFFFFFL).ToString("x8");
         static string projectPath, discoveryFile;
 
         public static int Port { get { return port; } }
@@ -221,7 +229,7 @@ namespace GolfMap.Bridge
                 var args = string.IsNullOrWhiteSpace(body) ? null : BridgeJson.Parse(body) as Dictionary<string, object>;
                 var job = new Job
                 {
-                    id = Interlocked.Increment(ref jobCounter).ToString(),
+                    id = domainStamp + "-" + Interlocked.Increment(ref jobCounter),
                     command = Uri.UnescapeDataString(path.Substring(5)),
                     args = new BridgeArgs(args),
                     started = DateTime.Now,
@@ -306,8 +314,62 @@ namespace GolfMap.Bridge
             running = null;
             runningSteps = null;
             var response = new Dictionary<string, object> { { "ok", true }, { "result", result }, { "consoleSeq", BridgeConsole.LastSeq } };
+            var saved = SaveAfter(job, result);
+            if (saved != null)
+            {
+                response["saved"] = saved;
+                // Clients that see the result alone (unity/mcp/bridge.ts run()) get it too.
+                var dict = result as Dictionary<string, object>;
+                if (dict != null) dict["saved"] = saved;
+            }
             if (job.vspReset) Note(response, job, result);
             Finish(job, response);
+        }
+
+        // ---- save hook ----
+        //
+        // `save: true` on any command is honoured here, not by the command: it used to be spliced
+        // into each command's own return sites by hand, and every command that never got that
+        // (a dozen of them) ignored the argument in silence.
+        // One hook per top-level job, which is also what keeps the promise that a chained command
+        // (golfmap.course.refresh's steps) saves once, at the end: a step is not a job.
+        //
+        // The saving itself stays in the project's scripts, reached as a command by name - this
+        // folder knows nothing about GolfMap (the golfmap.vsp.reset indirection below is the same
+        // pattern). A project without the command says so instead of saving nothing in silence.
+        const string SceneSaveCommand = "golfmap.scene.save";
+
+        static Dictionary<string, object> SaveAfter(Job job, object result)
+        {
+            if (job == null || !job.args.Bool("save", false)) return null;
+            if (job.command == SceneSaveCommand) return null;          // it is the save
+            var dict = result as Dictionary<string, object>;
+            if (job.args.Bool("dryRun", false) || Flag(dict, "dryRun")) return Skipped("dryRun: nothing was changed, so nothing was saved");
+            if (Flag(dict, "failed")) return Skipped("a step failed: the scene is left dirty and unsaved");
+            if (!BridgeCommands.Has(SceneSaveCommand)) return Skipped("no " + SceneSaveCommand + " command");
+            try
+            {
+                var saved = RunToEnd(BridgeCommands.Invoke(SceneSaveCommand, new BridgeArgs(null))) as Dictionary<string, object>;
+                return saved ?? Skipped(SceneSaveCommand + " returned nothing");
+            }
+            catch (Exception e)
+            {
+                // The command itself succeeded, so its result is still the answer; the save failure
+                // is reported in `saved` (and loudly in the console) rather than hiding the result.
+                Debug.LogError("[Bridge] " + job.command + " succeeded but save=true could not save: " + e.Message);
+                return new Dictionary<string, object> { { "failed", e.Message } };
+            }
+        }
+
+        static Dictionary<string, object> Skipped(string why)
+        {
+            return new Dictionary<string, object> { { "skipped", why } };
+        }
+
+        static bool Flag(Dictionary<string, object> d, string key)
+        {
+            object v;
+            return d != null && d.TryGetValue(key, out v) && v is bool && (bool)v;
         }
 
         static void Fail(Exception e)
@@ -338,7 +400,16 @@ namespace GolfMap.Bridge
         // stays free of GolfMap.Editor references, and the registry already holds
         // whatever the project's scripts registered. A project without them simply has
         // no such command, and the first error is reported as it was.
+        //
+        // Running a command a second time is only safe when both halves hold: the reset
+        // actually ran (otherwise the stall is still there and the second run throws the
+        // same thing, having done who knows what in between), and the command is one of
+        // ours - golfmap.* is idempotent by design (unity/mcp/README.md, "Adding a
+        // command"), while `menu`, `selection` or a project's own command may not be.
+        // Otherwise the first error is reported with vspStall so the caller knows what it
+        // was and what to do about it.
         const string VspResetCommand = "golfmap.vsp.reset";
+        const string RetryablePrefix = "golfmap.";
 
         static bool IsVspJobStall(Exception e)
         {
@@ -353,16 +424,29 @@ namespace GolfMap.Bridge
 
         static void RetryAfterVspReset(Job job, Exception stall)
         {
-            job.vspReset = true;
             job.vspFirstError = stall.GetType().Name + ": " + stall.Message;
             runningSteps = null;
+            if (!job.command.StartsWith(RetryablePrefix, StringComparison.Ordinal))
+            {
+                ReportStall(job, "'" + job.command + "' is not a " + RetryablePrefix + "* command, so it was not run a second time");
+                return;
+            }
+            if (!BridgeCommands.Has(VspResetCommand))
+            {
+                ReportStall(job, "this project has no " + VspResetCommand + ", so nothing cured the stall and the command was not run again");
+                return;
+            }
             Debug.LogWarning("[Bridge] " + job.command + " hit VSP's stalled job lists; running " + VspResetCommand + " and the command once more.\n" + stall);
-            try { job.vspResetResult = RunToEnd(BridgeCommands.Invoke(VspResetCommand, new BridgeArgs(null))); }
+            object resetResult;
+            try { resetResult = RunToEnd(BridgeCommands.Invoke(VspResetCommand, new BridgeArgs(null))); }
             catch (Exception resetFailure)
             {
-                job.vspResetResult = resetFailure.Message;
                 Debug.LogWarning("[Bridge] " + VspResetCommand + " did not run: " + resetFailure.Message);
+                ReportStall(job, VspResetCommand + " itself failed (" + resetFailure.Message + "), so the command was not run again");
+                return;
             }
+            job.vspReset = true;        // from here on: no second retry, and the response says so
+            job.vspResetResult = resetResult;
             try
             {
                 var result = BridgeCommands.Invoke(job.command, job.args);
@@ -370,6 +454,18 @@ namespace GolfMap.Bridge
                 if (runningSteps == null) Complete(result);
             }
             catch (Exception again) { Fail(again); } // job.vspReset is set: no second retry
+        }
+
+        // The command was not run again: the stall's own error, with what stopped the retry.
+        static void ReportStall(Job job, string why)
+        {
+            running = null;
+            runningSteps = null;
+            var response = Error(job.vspFirstError + " - VSP's job lists are stalled and " + why
+                + ". Run " + VspResetCommand + " (or reload scripts) and call again.");
+            response["vspStall"] = true;
+            response["consoleSeq"] = BridgeConsole.LastSeq;
+            Finish(job, response);
         }
 
         // The reset cannot be stepped frame by frame from inside this one, so a
@@ -405,6 +501,7 @@ namespace GolfMap.Bridge
                 { "projectPath", projectPath },
                 { "unityVersion", Application.unityVersion },
                 { "domainStarted", domainStarted },
+                { "jobStamp", domainStamp },
                 { "compiling", EditorApplication.isCompiling },
                 { "updating", EditorApplication.isUpdating },
                 { "playing", EditorApplication.isPlayingOrWillChangePlaymode },

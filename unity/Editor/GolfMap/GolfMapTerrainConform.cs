@@ -48,8 +48,6 @@ namespace GolfMap.Editor
 
         [BridgeCommand("golfmap.terrain.conform", "mode=raise (default): raise the terrain under the course meshes (Spline_*, Gap_Issue_*) to just below the mesh surface wherever it lies lower, so VSP grass is not buried along seams and dips; never lowers. mode=match: put the terrain under the meshes at exactly margin below the mesh surface (raise AND lower, for meshes shaped in Blender), feathered back to the untouched terrain over featherM outside the meshes. Backs up the TerrainData first (a windowed run - x0..z1 - backs up just its window: <course>/Backups/*.heights, golfmap.terrain.restore takes either).",
             args = "mode=raise|match, terrain=inner|outer (default inner), margin=0.01 (m below the mesh), featherM=2 (match: fade-out band outside the meshes), dryRun=false (counts only), debugX/debugZ (report one sample, change nothing), x0/z0/x1/z1 (world rectangle: change only inside it; only the meshes over it are read), " + GolfMapSceneSave.Arg)]
-        static IEnumerator ConformCommand(BridgeArgs a) { return GolfMapSceneSave.Then(a, Conform(a, null)); }
-
         internal static IEnumerator Conform(BridgeArgs a) { return Conform(a, null); }
 
         // within (golfmap.course.refresh only=): change only inside these world XZ rectangles (the union); only the meshes

@@ -30,6 +30,10 @@ export interface BridgeResponse {
   retried?: boolean;
   /** The editor hit VSP's stalled job lists, ran `golfmap.vsp.reset` and ran the command again. */
   vspReset?: boolean;
+  /** VSP's job lists were stalled and the command was NOT run again (the error says why). */
+  vspStall?: boolean;
+  /** `save: true`: what the editor saved once the command had succeeded, or why it did not. */
+  saved?: { scenes?: string[]; seconds?: number; skippedScenes?: string[]; skipped?: string; failed?: string };
 }
 
 export function discoveryDir(): string {
@@ -37,7 +41,9 @@ export function discoveryDir(): string {
   return base;
 }
 
-function alive(pid: number): boolean {
+// Is that process still there? Used for discovery files left by a crashed editor, and by
+// build-status.ts for a course build whose editor went down mid-build.
+export function alive(pid: number): boolean {
   try {
     process.kill(pid, 0);
     return true;
@@ -147,7 +153,15 @@ export async function waitForBridge(b: BridgeInfo, waitSec: number): Promise<Bri
 // The editor's own words when a command's job did not survive the domain reload its
 // AssetDatabase.Refresh set off (BridgeServer.cs: Route's /job lookup, Stop's queue
 // drain). The command usually ran to its end in the old domain, but its result is gone.
+//
+// A job id is "<domainStamp>-<n>" (/status publishes the live stamp as jobStamp), so an id
+// we were polling across a reload belongs to a domain that no longer exists and reads as
+// "Unknown job" here - it can no longer collide with the new domain's own job 1.
 const LOST_TO_RELOAD = /Unknown job \(jobs do not survive a script reload\)|The editor is reloading scripts; call again/i;
+
+// Only our own commands are resubmitted on their own (see `call`): golfmap.* is idempotent by
+// design, while `menu`, `selection`, `screenshot` or a project's own command may not be.
+const RESUBMITTABLE = /^golfmap\./;
 
 // One submission: POST the command, then poll its job until it finishes or `totalSec` runs out.
 async function submit(b: BridgeInfo, command: string, args: Record<string, unknown>, totalSec: number): Promise<BridgeResponse> {
@@ -167,10 +181,13 @@ async function submit(b: BridgeInfo, command: string, args: Record<string, unkno
 // as a lost job; the bridge is waited for (up to `reloadWaitSec`) and the same
 // command is submitted once more, with `retried` set on the response.
 //
-// Resubmitting is safe because every command of ours is idempotent by design: sync
+// Resubmitting is safe because every command of OURS is idempotent by design: sync
 // and refresh steps re-read the scene and the exported files and do only what is
-// still missing, so running one twice costs time, never correctness. A command that
-// is not idempotent must not go through here.
+// still missing, so running one twice costs time, never correctness. That is a
+// promise golfmap.* commands make (mcp/README.md, "Adding a command") and nothing
+// else does, so anything else gets the lost-job error with `retried: false` and is
+// left to the caller - a `menu` item or a project's own command may well not be
+// idempotent, and this is the last place that could tell.
 export async function call(
   b: BridgeInfo,
   command: string,
@@ -180,6 +197,12 @@ export async function call(
 ): Promise<BridgeResponse> {
   const first = await submit(b, command, args, totalSec);
   if (first.ok || first.pending || !LOST_TO_RELOAD.test(first.error ?? "")) return first;
+  if (!RESUBMITTABLE.test(command))
+    return {
+      ...first,
+      retried: false,
+      error: `${first.error} '${command}' is not a golfmap.* command, so it was not submitted again (only ours promise to be idempotent). It may well have run to its end in the old domain: check unity_console / unity_scene before calling it once more.`,
+    };
   const back = await waitForBridge(b, reloadWaitSec);
   if (!back)
     return { ...first, error: `${first.error} The bridge did not come back within ${reloadWaitSec} s, so '${command}' was not submitted again.` };

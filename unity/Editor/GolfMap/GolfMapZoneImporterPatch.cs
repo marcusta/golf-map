@@ -29,6 +29,9 @@ namespace GolfMap.Editor
     {
         const string kPatchFormat = "unity-zones-patch-v1";
 
+        // JsonUtility fills these by reflection, so the compiler sees no assignment: CS0649 off for
+        // the record, not for the file (check-planter.ps1 compiles it and would print 12 warnings).
+#pragma warning disable 0649
         [Serializable]
         class ZonesPatchRegion { public float x0, z0, x1, z1; }
 
@@ -41,16 +44,17 @@ namespace GolfMap.Editor
             public ZonesPatchRegion region;
             public List<string> zones, removed;
         }
+#pragma warning restore 0649
 
         [BridgeCommand("golfmap.zones.patch", "Take a zones-patch (gspro.py zones-patch) into the scene: reimport only the mask PNGs it changed and respawn VSP only inside its window. Needs a full golfmap.zones.import of the same export first; changes no groups or rules. Marks the scene dirty; save=true saves it (and the assets it changed) once the patch has succeeded.",
             args = "terrain=inner|outer or file (the zones JSON), patch=<unity-zones-patch-v1 json>, package (name), " + GolfMapSceneSave.Arg)]
         static object BridgePatch(BridgeArgs a)
         {
-            return GolfMapSceneSave.After(a, WithImporter(a, w =>
+            return WithImporter(a, w =>
             {
                 w.ValidateTarget();
                 return w.ApplyPatch(Path.GetFullPath(a.Require("patch")));
-            }));
+            });
         }
 
         Dictionary<string, object> ApplyPatch(string patchPath)
