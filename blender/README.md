@@ -168,6 +168,54 @@ the existing `vreta_svg_1988.conformed.blend` built by the operator have **ident
 1039 mesh objects** and max |dx| = |dy| = |dz| = 0 over all 4.11 M vertices (`scratch` scripts
 `dump_blend.py` / `diff_dumps.py`, run 2026-10-14).
 
+#### Key, hit and terrain sidecar (2026-10-14)
+
+**Key.** Two more things are in it, both of them silent staleness before:
+
+- **Every conform target's state hash** (`shape_prepare.target_fingerprints`, `CONFORM_TARGETS` =
+  `Outer`, `Terrain`). The Shrinkwrap's result is decided by the object it projects onto, and an
+  Outerplot mesh projects onto `Outer`, which OPCD builds *inside* the `.blend` — the terrain OBJ's
+  content hash says nothing about it, so a regenerated `.blend` with a new outer plot was served the old
+  results. Vreta has no `Outer` (`conform targets Outer -, Terrain 07f70b941617` in the summary), so
+  this costs it only the Terrain hash: **4.8–4.9 s** per run, the one new cost in the table below.
+- **The mesh's modifier stack** (names + types). `capture_state` cannot see modifiers and the conform
+  clears them before flattening, so two inputs that differ only in their stack hashed the same.
+
+**Hit.** A hit now does the two things the operator's own per-object body does and the replay did not:
+
+- it **clears the mesh's modifiers**, as `flatten`/`project` are preceded by `if o.modifiers:
+  o.modifiers.clear()`. A mesh that arrived with a modifier used to keep it through a hit, so the hit
+  and the miss left different objects behind (`cache.modifiersCleared` counts them);
+- it adds the **`fixed` count stored with the result** — how many vertices Afrod's retry nudged when the
+  result was computed — into the report, so `fixFailedProjections` on a warm run is what the cold run
+  said (`cache.fixedHits` counts the results that carried one). The nudged positions and the `TempFix`
+  vertex group were always replayed; only the count was lost, and the report was quietly wrong.
+
+**Terrain sidecar.** Every run — cache or not — now writes `<name>.conformed.terrain.json`
+(`golfmap-conformed-terrain-v1`): the content sha of the terrain.obj the conformed `.blend` holds, plus
+the conform-target hashes. The report gained `terrainSha`, `terrainSidecar` and `conformTargets`; the
+cache block gained `targets`, `targetHashS`, `fixedHits` and `modifiersCleared`.
+
+Vreta `vreta_svg_1988.blend` (996 Spline meshes, 4.11 M vertices, 644 MB OBJ, 51 MB of cache), with the
+target hash in the key:
+
+| run | import | conform | total | cache |
+|---|---|---|---|---|
+| cold, empty cache | 5.4 s | 151.4 s | **160.6 s** | 0 hits, 996 misses (hash 7.4, targets 4.9, compute 128.9, store 9.0) |
+| warm, same `.blend` | 5.6 s | 18.4 s | **25.9 s** | 996 hits (hash 7.2, targets 4.8, replay 4.9) |
+
+Both runs' reports agree on `fixFailedProjections` (`{objects: 0, vertices: 0, byObject: {}}`),
+`failedObjects`, `failures` and `unchanged`, and all **1039 mesh objects hash identically** to each
+other and to the existing `vreta_svg_1988.conformed.blend` (built by the Conform All button).
+
+Vreta cannot exercise any of this (nothing fails to project, no mesh arrives with a modifier, no
+`Outer`), so there is a synthetic headless test — a tilted `Terrain`, a flat `Outer`, a Spline mesh
+hanging off the terrain, an `Outerplot` mesh — over one cache:
+
+```powershell
+& 'C:/Program Files/Blender Foundation/Blender 4.5/blender.exe' -b --python-exit-code 1 --python blender/tools/shape_prepare_cache_test.py
+```
+
 ### terrain.obj without Unity
 
 `tools/terrain_obj.py` writes the `terrain.obj` prepare imports straight from the inner heightmap `.raw` the
@@ -293,7 +341,8 @@ per op: paint for recipes, grey at 5x relief for the rest), `--no-cache`, `--cac
   `featureId(s)`, `type` (`footprint` / the op's `origin` for footprint ops, which name their feature), `hole`,
   `maxAbsDz`, `op`, `opKey`, `unit`, `note`, centre and bounds over all its objects in blend, EPSG:3006 and
   Unity coordinates; the older per-object list is `changedObjectsDetail`; position/colour hashes of the touched
-  meshes (replays must match).
+  meshes (replays must match); `phases` = the seconds the ops' own numbers leave out (`snapshot` and `diff`
+  per op, `fingerprints`, `seamCheck`, `checks`, `places`, `hashes`), printed with the report's path.
 - **Headless shims** (only around Afrod calls, add-ons unchanged): Blender's `mesh.loopcut` crashes in
   background mode (its preview draw callback needs a region type), so Afrod's `loopcut` gets an equivalent
   bmesh edge-ring subdivide; Afrod's `get_loop_at_depth`/`get_boundary_loop` (`list(set)`) and Edit Mesh
@@ -301,7 +350,7 @@ per op: paint for recipes, grey at 5x relief for the rest), `--no-cache`, `--cac
   run; `find_closest_vert` keeps its KD tree (same answers, minutes faster on long roads). After a recipe the
   engine puts back what Afrod's `meshblendseparate` breaks: the mesh comes back as `<name>.001`, the blend as
   `<mesh base>Blend` with the mesh's `opcd_kind`.
-- **Speed shims** (same results, checked: positions, colour and FBX-fingerprint hashes of all 776 Vreta meshes
+- **Speed shims** (same results, checked: positions, colour and FBX-fingerprint hashes of all Vreta meshes
   equal with and without them; `GOLFMAP_SHAPE_NO_FAST_SHIMS=1` turns them off): `find_nearby_vertices`
   (smoothcartpaths' ripple) keeps each Spline mesh's 2D KD tree while its XY is unchanged and skips meshes whose
   XY box is out of reach (it rebuilt one per mesh per path mesh); the knife cut tests "near the cut" with a set
@@ -309,8 +358,36 @@ per op: paint for recipes, grey at 5x relief for the rest), `--no-cache`, `--cac
   `color_to_vertices`' Edit -> Object -> Edit round trip of every selected mesh (the cut only adds elements, so
   the order is what the round trip gives); `color_to_vertices` at full strength (recipes) writes the colour as
   arrays instead of a Python loop over every corner. The tee flatten already hides meshes out of its proportional
-  reach so only those enter Edit Mode. Vreta, all layers, nothing cached: 312 s -> 153 s (cut 145 -> 53 s,
+  reach so only those enter Edit Mode. Vreta, the Afrod ops, nothing cached: 312 s -> 153 s (cut 145 -> 53 s,
   smooth 84 -> 16 s). The cut's candidate search is ~3 % of its time and was left alone.
+- **Speed shims of our own ops** (2026-10-14; same rule, same switch). `weld_tjunctions` (the T-junction weld
+  behind `golfmap.cut_out`, `golfmap.path_edge_fade` and `golfmap.split_surfaces`) read the boundary of every
+  neighbour of every named mesh - a slab's four cut meshes have ~270 neighbours each because a cut mesh's box
+  spans the course - and put all of it into a KD tree and a segment grid. Its answers can only come from within
+  a millimetre of one of the named mesh's own boundary vertices, so: the boundary points and edges are kept per
+  call (one read per neighbour, forgotten when the weld changes a mesh); a neighbour whose box holds none of the
+  1 m cells of those vertices (nor a neighbouring cell) is left out entirely (a summed-area table over the cells
+  answers all ~996 boxes at once, `_cell_cover`); and of the ones that stay, only the points in those cells and
+  the segments whose padded box covers one of the 2 m cells `_segment_grid` looks up are offered. Every dropped
+  point or segment is further than the tolerance from every own vertex, and a dropped segment can only have been
+  one the all-segments arithmetic rejected, so the chosen edge and `t` are the same. `tjunction_check` (the
+  report's T-junction check, which measures every unpartnered vertex against every neighbour segment) uses the
+  same neighbour filter. `collapse_cut_slivers` finds the cut's new vertices by matching positions (a cut leaves
+  the old ones exactly where they were, so an exact match settles all but a few hundred, which are then measured
+  against the old positions in their box) instead of a KD tree over every vertex of the mesh, and only the faces
+  of a cut vertex offer pairs - the candidate list is sorted by (distance, indices), so which face offers a pair
+  first never mattered. `golfmap.cut_out`'s border check filters the neighbours' boundary points the same way.
+  `shape_transition.apply` gets the array path (next section). `diff`, `seam_check` and `tjunction_check` build
+  their KD trees from `tolist()` instead of numpy scalars (same tree, no boxing). Vreta, all three layers,
+  nothing cached: the whole run 1768 s -> 944 s, the ops' own seconds 1165 -> 468 s (transitions 494 -> 94 s,
+  the 37 cut-outs 451 -> 184 s, edge fade 64 -> 48 s, surfaces 34 -> 23 s), and the report's `checks` phase,
+  where the T-junction check takes the same filter, 555 -> 379 s. With `GOLFMAP_SHAPE_NO_FAST_SHIMS=1` the
+  same run takes 2112 s
+  (ops 1460 s; it also drops the older Afrod shims, so smoothcartpaths goes 29 -> 145 s) and leaves exactly
+  the same geometry: all-mesh position and colour hashes equal, the position hash of each of the 659 touched
+  meshes equal, 13 warnings of the same kinds, 0 seam gaps of 1664 pairs, the same 41 T-junction objects and
+  the same path-surface counts. The FBX fingerprints differ for a few cut meshes in `custom_normal` only,
+  which two runs of the same code do as well (section "Shaping: cut-outs").
 - **Op-result cache** (`<blend folder>/shaping-staging/cache`, CLI and worker): every op runs as units (one per
   feature group; `"*"` for footprint and weld ops). A unit's reads are its targets plus every Spline mesh within
   its reach (tee flatten: its proportional radius; cut: 1 m, the weld looks 0.5 m around; smooth: the smooth
@@ -321,9 +398,13 @@ per op: paint for recipes, grey at 5x relief for the rest), `--no-cache`, `--cac
   materials, props) of each read mesh. Value: the changed meshes' arrays that differ from the input (+ meta,
   created/removed names, the run record) as `.npz`. A replay is verified against the stored result hashes (a
   mismatch restores the inputs and computes). Anything an op changes outside its units' reads is reported as an
-  `escape` warning and not cached. Report `cache`: hits, misses, replay/compute seconds. Vreta, all layers: 106
-  units, 63 MB: CLI cold 153-166 s, warm 68 s (ops 106 hits: 11 s replay + 18 s hashing the inputs; the rest is
-  the whole-course fingerprints and seam checks).
+  `escape` warning and not cached. Report `cache`: hits, misses, replay/compute seconds. Vreta, all three
+  layers (2026-10-14, 218 units, 1.1 GB of entries - the folder keeps every earlier engine's too, 10 GB on
+  this machine, and nothing prunes them): CLI cold 944 s, warm 584-590 s and bit-equal to the cold run
+  (all 218 hits: 32-35 s replay + 43-47 s hashing the inputs, ops 91-97 s). What is left of a warm run is the report's
+  own work, `phases` `checks` 400 s of it: `path_surface_check` and `tjunction_check` over the path meshes the
+  transitions refine to 2.4 M vertices. `neighbour_planes`' `np.add.at` is the single biggest line there; a
+  stable sort by vertex plus `np.add.reduceat` would sum in the same order for the same result.
 - Pure-Python parts (layer validation, SVG parsing, selectors, seeds, footprint maths) are in
   `tools/shape_layers.py`; tests: `python blender/tools/shape_layers_test.py`.
 
@@ -451,14 +532,22 @@ course meshes and lifts the inside out as one new object. Hand layer, one op per
 - **Keep the outline off other meshes' edges**: a corner that pokes 1 cm into the next mesh takes a sliver of it
   (report `sources[]` with a tiny `areaOutM2`). Move the corner.
 - **Reach** (`plan_units`): one unit per op; reads = every Spline mesh within 1 m of the outline's box.
-- **Time**: about 10-20 s a slab where a course-wide road blend is under the outline's box, nearly all of it
-  `weld_tjunctions` (it gathers the boundary of every neighbour of every mesh under the box). The weld looks up
-  the neighbour edges near each unpartnered vertex in a 2 m grid (`_segment_grid`): before 2026-10-11 it measured
-  each against every edge, 260 s a slab after the path transitions on Vreta and 673 s inside the edge fade (now
-  28 s). Same positions, colours, seams and weld counts as the all-edges arithmetic on the path ops and four slabs.
-- **Not reproducible to the bit**: two runs of the same code gave another FBX fingerprint for a slab's source mesh
-  (`Spline_Outer_Deep_Sat_2_1_piece1_-_Mesh` under hall-208; positions and colours equal), so something other
-  than those two differs. Not found yet; it costs a re-export of that mesh, no gap.
+- **Time**: 2-7 s a slab (Vreta's 37: 184 s uncached, 5.0 s each), most of it still `weld_tjunctions` and the
+  cut's two `insert_polyline` passes over the meshes under the box. It was 10-20 s before the weld's neighbour
+  filters (README "Speed shims of our own ops"), and 260 s a slab before the 2 m segment grid
+  (`_segment_grid`) replaced measuring every unpartnered vertex against every neighbour edge. What is left of the
+  weld is reading the boundary of the neighbours that survive the filter, once per slab; a boundary cache that
+  survived a whole op (with a forget on every mesh the engine changes) would take that out too.
+- **Not reproducible to the bit: the custom normals** (found 2026-10-14; it was an open question before). Two
+  runs of the same code give a different FBX fingerprint for a few of the cut meshes and slabs (4 of 1037 in one
+  pair, e.g. `Spline_hall_217_Rock_-_Mesh`), and the only thing that differs is the `custom_normal` attribute
+  (CORNER, INT16_2D) that `_drop_cut_attrs` writes with `normals_split_custom_set_from_vertices`: Blender
+  encodes a custom normal against the mesh's own computed normals, which it sums in parallel, so a corner here
+  and there lands on the next int16 step. Positions, colour bytes and every other attribute are equal, and so is
+  the result of a replay (the cache stores what it computed). A run with and without the speed shims differs the
+  same way and no more: 15 of 1037 fingerprints over all of `00-global` with all 1037 position and colour hashes
+  equal, and of five slab cut-outs re-run with every attribute hashed, the one mesh that differed differed in
+  `custom_normal` only. It costs a re-export of those meshes, no gap.
 - **Vreta** (`vreta_svg_1985`, two slabs east of hole 11's green, out of `Spline_Outer_Deep_Sat_3_5_piece2_-_Mesh`):
   41.6 m² / 92 faces and 54.2 m² / 115 faces, border 57 and 61 vertices with 0 unmatched, 0 new seam gaps and 0
   T-junctions over the course, 1.9 s each, op-cache replay 0.1 s with the fresh apply's all-mesh hash. The op only
@@ -491,7 +580,7 @@ heights):
   (`widthM`, default 0.3 m, at most 60 % of the piece's half width, so a narrow path keeps a core; a piece with less
   than 0.1 m to give is left alone) into the path, its outer edge (welded to the rough / deep / fairway mesh beside it)
   does not move, and the path loses that much mesh. Faces grow with 1 / `maxEdgeM`^2: default 0.3 m; Vreta's whole
-  `roads_124` gravel (8 pieces, 3 blends, ~6 km of strip edge) takes ~70 s and ~0.4 M faces, at 0.2 m ~1.1 M. Raise
+  `roads_124` gravel (8 pieces, 3 blends, ~6 km of strip edge) takes ~40 s and ~0.4 M faces, at 0.2 m ~1.1 M. Raise
   `maxEdgeM` on a big course; Stix 3D grass runs on every triangle of the blend. The inner edge of the strip is a
   staircase at that resolution (invisible: the strip is pure path paint there).
 - **Paint** (`shape_edgefade.strip_value`): the strip's colour is `red = 1 - s`, `green = s` with `s` a smoothstep of the
@@ -516,7 +605,9 @@ heights):
 - **Limits**: a path piece keeps its own paint through the subdivision (plain red, or the fade toward another surface
   that `split_surfaces` painted on it); a strip whose inner edge does not sit on a piece's boundary (an unsplit mixed shape) is left alone; there
   is no face budget beyond `maxEdgeM`. `edge_fade_core(pieces, blends, ...)` takes the objects, so a quick check on
-  imported FBX needs no replay (Vreta `roads_124`: 70 s).
+  imported FBX needs no replay (Vreta `roads_124`: 12 s, 5.5 s of it the five phases the run reports and the
+  rest its weld). The whole op on Vreta (18 road shapes) takes 48 s uncached, 21 s of that the units
+  themselves and the rest the op cache hashing the state of everything their welds can reach.
 
 ## Shaping: path transitions
 
@@ -561,7 +652,24 @@ black, where Unity draws the surface's `tracks` look (unity/README.md "Worn grav
 so Stix grass and transition dirt stay as they were. A worn path outside its transitions is sampled as all path; a
 transition of any entry wins over another entry's wear. Wear refines the whole path to `maxEdgeM`.
 
-Centrelines are indexed in a grid of band-sized cells (`LineIndex`), and paint is memoised per position.
+Centrelines are indexed in a grid of band-sized cells (`LineIndex`) behind a box of their own (a point outside
+it needs no grid lookup), and paint is memoised per position.
+
+**The array path** (a speed shim, `GOLFMAP_SHAPE_NO_FAST_SHIMS=1` leaves it out and runs the scalar one below
+it). Wear refines every gravel path to `maxEdgeM`, so Vreta's 15 road shapes come out of this op with 2.4 M
+vertices and 4.5 M triangles: per vertex and per corner Python objects cost 494 s. `_object_fast` does the same
+work on numpy arrays - the paint is sampled once per vertex into an array instead of being looked up per corner
+and per refinement pass (and only for the vertices inside some centreline's box), the longest-edge choice and
+the red-green face split run over all faces at once (`SPLIT_PARTS` is the scalar path's part order per set of
+split edges), the corner normals, UVs and colours are interpolated and written as arrays, the new mesh is built
+with `foreach_set` instead of `from_pydata`, and the fringes' seam tree is built once (the meshes are painted
+first, so rebuilding it after each of them was wasted) - in 93 s. Every float is the one the scalar path
+computes: mathutils' `length_squared` is a double sum of float products, `normalized()` scales by
+`float32(1 / float32(sqrt(exact double dot)))`, a midpoint is a float32 average, a barycentric midpoint a double
+average (both exact), and the colours go through the same float32 -> byte conversion. Checked against the scalar
+path on the fixture (whole mesh state equal, UVs, two materials, mixed smooth flags, custom normals, every
+pattern, wear, 2 to 12 refinement passes) and on a full Vreta apply (all 996 meshes' position and colour hashes
+equal).
 
 Refinement bisects shared interior edges instead of using bmesh n-gon triangulation,
 avoiding new collinear slivers. Existing object boundaries remain unchanged, so their
@@ -701,18 +809,29 @@ removed):
 
 `tools/shape_worker.py` keeps a course shaped in a long-running headless Blender so the Terrain editor's edits
 reach the meshes in seconds ([SHAPING-PLAN.md](SHAPING-PLAN.md), "Terrain editor -> Blender"). JSON over HTTP on
-127.0.0.1 (`--port`, else `GOLFMAP_SHAPING_PORT`, else 8766):
+`--host` (else `GOLFMAP_SHAPING_HOST`, else 127.0.0.1) and `--port` (else `GOLFMAP_SHAPING_PORT`, else 8766):
 
 ```bash
 "C:/Program Files/Blender Foundation/Blender 4.5/blender.exe" -b --python blender/tools/shape_worker.py -- --port 8766 --blend "D:/gspro_courses/vreta-opcd/vreta_svg_1985.blend" --layers docs/gspro/vreta/shaping --fbx-folder "<Unity project>/Assets/fbx"
 ```
 
+A `/load` or `/sync` is a **job**: the call answers at once and the work goes on in the main thread, so a sync that
+takes an hour holds no connection. `?wait=1` on either POST keeps the old blocking behaviour — the answer is the
+run itself — which is what `curl` by hand wants.
+
 | Call | Does | Answers |
 |---|---|---|
-| `GET /status` | never waits | `state` (`starting` / `ready` / `busy` / `error`), `phase`, `blend`, `conformed`, `layersDir`, `fbxFolder`, `appliedOps`, `lastRun`, `error` |
-| `POST /load {blend?, layersDir?, fbxFolder?, cache?, syncFbx?}` | opens `<name>.conformed.blend` (runs shape_prepare first when it is missing or older than the source `.blend`; `blend` may name either), applies every layer through the op cache, writes `shaping-staging/shaping-report.json`; `syncFbx` also brings `fbxFolder` in step with the whole course | `appliedOps`, `errors`, `warnings`, `cache`, `hash`, `timings`, `seconds` |
-| `POST /sync {dryRun?}` | re-reads the layers, diffs the ops by `layer:id` + content, restores the affected meshes, re-runs what reaches them, seam-checks, exports their FBX (fbx_sync exporter, fingerprints and manifest, so a later full fbx_sync agrees) and deletes the FBX of meshes that are gone (e.g. blends a `meshblendjoinpermanent` recipe merged). The first sync after a load also exports every mesh whose fingerprint differs from the folder's manifest (all of them when it has none), so Unity is in step on first use | `changedObjects` (incl. removed), `exported`, `removed` (FBX names), `seconds`, `report: {warnings, seams, changedPlaces, changedObjectsDetail}` (places of the ops this sync ran), plus `changedOps`, `restorePoint`, `affectedObjects`, `rerunUnits`, `ranOps`, `cache`, `hash`; `dryRun` stops after the plan. Also written to `shaping-staging/shaping-sync.json` |
-| `POST /shutdown` | stops the worker | |
+| `GET /status` | never waits | `state` (`starting` / `ready` / `busy` / `error`), `phase`, `blend`, `conformed`, `layersDir`, `fbxFolder`, `appliedOps`, `lastRun`, `error`, `host`, `port`, `pid`, `queued`, and `job` = the running (else last) one: `{id, kind, state: running\|succeeded\|failed, phase, startedAt, seconds, result, error}`, where `result` is what the blocking call would have answered |
+| `GET /job/<id>` | never waits | that job in the same shape (404 when this worker never ran it; the last 20 are kept) |
+| `POST /load {blend?, layersDir?, fbxFolder?, cache?, syncFbx?}` | opens `<name>.conformed.blend` (runs shape_prepare first when it is missing or older than the source `.blend`; `blend` may name either), applies every layer through the op cache, writes `shaping-staging/shaping-report.json`; `syncFbx` also brings `fbxFolder` in step with the whole course | `202 {job, kind, state: "running"}`; the job's `result`: `appliedOps`, `errors`, `warnings`, `cache`, `hash`, `timings`, `seconds` |
+| `POST /sync {dryRun?}` | re-reads the layers, diffs the ops by `layer:id` + content, restores the affected meshes, re-runs what reaches them, seam-checks, exports their FBX (fbx_sync exporter, fingerprints and manifest, so a later full fbx_sync agrees) and deletes the FBX of meshes that are gone (e.g. blends a `meshblendjoinpermanent` recipe merged). The first sync after a load also exports every mesh whose fingerprint differs from the folder's manifest (all of them when it has none), so Unity is in step on first use | `202 {job, kind, state: "running"}`; the job's `result`: `changedObjects` (incl. removed), `exported`, `removed` (FBX names), `seconds`, `report: {warnings, seams, changedPlaces, changedObjectsDetail}` (places of the ops this sync ran), plus `changedOps`, `restorePoint`, `affectedObjects`, `rerunUnits`, `ranOps`, `cache`, `hash`; `dryRun` stops after the plan. Also written to `shaping-staging/shaping-sync.json` |
+| `POST /shutdown` | stops the worker; always waits | `{ok: true}` |
+
+- **One job at a time**: a POST while one is going is `409 {error, job, kind, state}` — it is never queued behind it.
+  `/shutdown` always gets through.
+- **A shared secret**: with `--token <t>` (else `GOLFMAP_SHAPING_TOKEN`) every request must carry it as
+  `X-Golfmap-Token`, or it is `401` and the connection is closed. The server sends the same env var's value; it
+  spawns the worker with it in the environment rather than on the command line, where a process list would show it.
 
 - **Threads:** the HTTP server only queues jobs (and answers `/status` from a copy); every bpy call runs on the
   main thread's job loop, one job at a time.
@@ -731,6 +850,55 @@ reach the meshes in seconds ([SHAPING-PLAN.md](SHAPING-PLAN.md), "Terrain editor
 - FBX go through this repo's `tools/fbx_sync.py` loaded by path (`shape_apply.fbx_sync_module()`): an enabled
   fbx_sync add-on copy in Blender's addons folder shadows `import fbx_sync` and may be older (the one on the
   Vreta machine exports the Gap_Issue markers). Reinstall the add-on from the repo file so UI and worker agree.
+
+#### When /load re-prepares (2026-10-14)
+
+`/load` re-prepares when `shape_worker.conformed_stale(source, conformed)` says so, which is now three
+inputs instead of one:
+
+- the conformed `.blend` is missing;
+- the source course `.blend` is newer (OPCD regenerated it — which also covers `Outer`, since that
+  object lives in the source file);
+- **`terrain.obj` holds other bytes than the ones the cache was conformed against.** `terrain_obj.py`
+  rewrites it from every DEM export, so its mtime moves on its own and a mtime test would re-conform the
+  whole course for nothing; the sha in `<name>.conformed.terrain.json` (or `terrainSha` in the prepare
+  report next to it) is what is compared. Only a conformed `.blend` that never recorded a sha falls back
+  to the mtime. Before this, a regenerated terrain was *never* noticed: the course kept being shaped
+  against the old heights.
+
+The `prepared` block of a `/load` result gained `stale` (why it re-prepared) and `terrainSha`.
+
+```powershell
+& 'C:/Program Files/Blender Foundation/Blender 4.5/blender.exe' -b --factory-startup --python-exit-code 1 --python blender/tools/shape_worker_stale_test.py
+```
+
+On the real files, the existing `vreta_svg_1988.conformed.blend` (no sidecar, a report from before the
+field) stays valid: terrain.obj is older than it, so the mtime fallback says "not stale" and nobody pays
+a 2.5-minute conform for this change.
+
+### A worker on another machine
+
+`--host 0.0.0.0` (plus `--token`, since the port is then reachable from the network) lets a golf-map server on
+another machine drive it: point that server's `GOLFMAP_SHAPING_URL` at `http://<host>:8766` and give both sides the
+same `GOLFMAP_SHAPING_TOKEN`. The server only ever STARTS a worker when nothing answers on that URL and the command
+it runs is local, so start the remote one by hand (and leave `GOLFMAP_SHAPING_URL` unset on the machine that is to
+start its own).
+
+The paths go over the wire as text (`blend`, `layersDir`, `fbxFolder` in `/load`), so they have to name the same
+files on the worker's machine. Nothing in the worker, `shape_apply` or `fbx_sync` assumes a drive letter, so either
+way works:
+
+- the **same mount on both sides** — `D:\gspro_courses\...` on the one, the same letter mapped to the share on the
+  other — and nothing else to set, or
+- **UNC paths**: `GOLFMAP_SHAPING_BLEND=\\host\share\gspro_courses\vreta-opcd\vreta_svg_1988.blend`,
+  `GOLFMAP_SHAPING_FBX_FOLDER=\\host\share\vreta_v4\Assets\fbx`, `GOLFMAP_SHAPING_LAYERS_ROOT=\\host\share\docs\gspro`.
+  The staging the worker writes next to the `.blend` (`shaping-staging/`: the op cache, shape_prepare's conformed
+  cache and the reports) then lives on the share as well — slower on a cold load, but correct, and its
+  `os.replace` of a cache entry stays within the one share.
+
+A mapped drive letter only exists for the session that mapped it: a worker started as a service or a scheduled task
+sees no `Z:\`, so use UNC there. The share must allow writing — the worker writes the conformed cache, the staging
+and the FBX.
 
 Measured on Vreta (`vreta_svg_1985.conformed.blend`, 776 meshes; 32 ops, 106 units):
 

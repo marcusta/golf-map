@@ -2,8 +2,14 @@
 import math
 import hashlib
 import json
+import os
 from collections import Counter
 from shape_edgefade import value_noise, smoothstep
+
+# Speed shims (same results; GOLFMAP_SHAPE_NO_FAST_SHIMS=1 leaves them out, which is how they are compared):
+# the refinement, the paint and the write-out run on arrays instead of per vertex / corner Python objects,
+# a centreline is rejected by its box before its grid, and the fringes' seam tree is built once.
+FAST = os.environ.get("GOLFMAP_SHAPE_NO_FAST_SHIMS") != "1"
 
 
 def project(point, line):
@@ -48,8 +54,16 @@ class LineIndex:
                     self.grid.setdefault((ix, iy), []).append(index)
         if not self.segments:
             raise ValueError('transition centreline needs two distinct points')
+        # Everything this index can answer lies in here (a point outside is beyond the band of every
+        # segment, which project() answers with None anyway).
+        self.box = (min(min(a[0], b[0]) for a, b, _ in self.segments)-band,
+                    min(min(a[1], b[1]) for a, b, _ in self.segments)-band,
+                    max(max(a[0], b[0]) for a, b, _ in self.segments)+band,
+                    max(max(a[1], b[1]) for a, b, _ in self.segments)+band)
 
     def project(self, point):
+        if FAST and not (self.box[0] <= point[0] <= self.box[2] and self.box[1] <= point[1] <= self.box[3]):
+            return None
         best = None
         for index in self.grid.get((math.floor(point[0]/self.cell), math.floor(point[1]/self.cell)), ()):
             a, b, station = self.segments[index]
@@ -132,6 +146,317 @@ def byte_weights(rgb, worn=0.):
     return ((255-g-b)/255, round(g*(1-worn))/255, b/255, 1.0)
 
 
+# ---------------------------------------------------------------- the array path (speed shim)
+#
+# Same algorithm as the scalar path below, on numpy arrays: a vertex's paint is kept per vertex instead of
+# memoised per position lookup, the longest-edge choice and the face split run over all faces at once, and
+# the corner normals / UVs / colours are interpolated and written as arrays. Every float is the one the
+# scalar path computes: mathutils' length_squared is a double sum of float products, its normalized() scales
+# by float32(1 / float32(sqrt(exact double dot))), a midpoint is a float32 average, a barycentric midpoint a
+# double average (exactly representable either way), and the colours go through the same float32 -> byte
+# conversion. Checked by a full Vreta apply against GOLFMAP_SHAPE_NO_FAST_SHIMS=1.
+
+EDGE_BASE = 1 << 24    # an edge key is lo * EDGE_BASE + hi, so sorting the keys sorts by (lo, hi)
+# Per set of split edges {0: v0v1, 1: v1v2, 2: v2v0} the parts the scalar path leaves, in its order, as
+# indices into (v0, v1, v2, mid01, mid12, mid20) - the barycentrics follow the same indices.
+SPLIT_PARTS = {
+    0: ((0, 1, 2),),
+    1: ((0, 3, 2), (3, 1, 2)),
+    2: ((1, 4, 0), (4, 2, 0)),
+    4: ((2, 5, 1), (5, 0, 1)),
+    3: ((0, 3, 2), (1, 4, 3), (4, 2, 3)),
+    5: ((2, 5, 3), (5, 0, 3), (3, 1, 2)),
+    6: ((1, 4, 0), (2, 5, 4), (5, 0, 4)),
+    7: ((2, 5, 3), (5, 0, 3), (1, 4, 3), (4, 2, 3)),
+}
+
+
+def _world(obj, co):
+    """`obj.matrix_world @ v.co` per vertex as an (N, 3) float32 array."""
+    import numpy as np
+    m = obj.matrix_world
+    if all(m[r][c] == (1.0 if r == c else 0.0) for r in range(4) for c in range(4)):
+        return co.copy()
+    from mathutils import Vector
+    return np.array([tuple(m @ Vector(p)) for p in co.tolist()], dtype=np.float32) if len(co) \
+        else np.zeros((0, 3), dtype=np.float32)
+
+
+def _paint_rows(world, sample, curves):
+    """(N, 4) paint and an (N,) painted mask for world positions. Only the points inside some centreline's
+    box are sampled: paint_at answers None for every other one."""
+    import numpy as np
+    paint = np.zeros((len(world), 4))
+    painted = np.zeros(len(world), dtype=bool)
+    if not len(world):
+        return paint, painted
+    inside = np.zeros(len(world), dtype=bool)
+    for _, line in curves:
+        b = line.box
+        inside |= ((world[:, 0] >= b[0]) & (world[:, 0] <= b[2])
+                   & (world[:, 1] >= b[1]) & (world[:, 1] <= b[3]))
+    index = np.nonzero(inside)[0]
+    for i, p in zip(index.tolist(), world[index].tolist()):
+        rgb = sample(p)
+        if rgb is not None:
+            paint[i] = rgb
+            painted[i] = True
+    return paint, painted
+
+
+def _length_squared(d):
+    """mathutils' Vector.length_squared of the (..., 3) float32 differences: float products in a double sum."""
+    p = (d * d).astype(float)
+    return (p[..., 0] + p[..., 1]) + p[..., 2]
+
+
+def _normalized(acc):
+    """mathutils' Vector.normalized() of an (..., 3) float32 array."""
+    import numpy as np
+    q = acc.astype(float)
+    d = (q[..., 0] * q[..., 0] + q[..., 1] * q[..., 1]) + q[..., 2] * q[..., 2]
+    inv = (np.float32(1.0) / np.sqrt(d).astype(np.float32))[..., None]
+    return np.where((d > 1.0e-35)[..., None], acc * inv, np.float32(0.0))
+
+
+def _interpolate(values, loops, bary):
+    """Per corner the barycentric mix of its source triangle's three corner values, in the scalar path's
+    order: (v0 * b0 + v1 * b1) + v2 * b2. `values` (L, k), `loops` (F, 3), `bary` (F, 3, 3) [face, corner, q]
+    in `values`' dtype. Returns (F, 3, k)."""
+    v = values[loops]                                    # (F, 3 = q, k)
+    return ((v[:, 0][:, None, :] * bary[:, :, 0:1] + v[:, 1][:, None, :] * bary[:, :, 1:2])
+            + v[:, 2][:, None, :] * bary[:, :, 2:3])
+
+
+def _attr(data, key, width, dtype):
+    import numpy as np
+    buf = np.empty(len(data) * width, dtype=dtype)
+    data.foreach_get(key, buf)
+    return buf.reshape(-1, width)
+
+
+class _SeamPaint:
+    """What the meshes painted at each position, so a fringe can copy their bytes where it shares a vertex.
+    The meshes are done first (they sort before the fringes), so the tree is built once, when the first
+    fringe asks: the scalar path rebuilds it after every mesh."""
+
+    def __init__(self):
+        self.chunks = []
+        self.tree = None
+        self.values = None
+
+    def put(self, positions, values):
+        """Positions (n, 3) and their bytes (n, 4), in the order the scalar path's dict sees them (later
+        entries win)."""
+        self.chunks.append((positions, values))
+        self.tree = None
+
+    def build(self):
+        import numpy as np
+        from mathutils.kdtree import KDTree
+        pos = np.concatenate([c[0] for c in self.chunks])
+        val = np.concatenate([c[1] for c in self.chunks])
+        _, first, inverse = np.unique(pos, axis=0, return_index=True, return_inverse=True)
+        inverse = np.asarray(inverse).reshape(-1)
+        last = np.zeros(len(first), dtype=np.int64)
+        np.maximum.at(last, inverse, np.arange(len(inverse)))   # the dict keeps the last value of a key
+        order = np.argsort(first, kind="stable")                # ... in the order the keys first appeared
+        self.tree = KDTree(len(order))
+        self.values = val[last[order]]
+        for i, p in enumerate(pos[first[order]].tolist()):
+            self.tree.insert(p, i)
+        self.tree.balance()
+
+    def match(self, positions):
+        """Per position the mesh bytes within a millimetre of it, or None."""
+        if not self.chunks:
+            return [None] * len(positions)
+        if self.tree is None:
+            self.build()
+        out = []
+        for p in positions:
+            _, index, distance = self.tree.find(p)
+            out.append(self.values[index] if distance < .001 else None)
+        return out
+
+
+def _object_fast(obj, sample, curves, max_edge, seam):
+    """One object's refinement and paint on arrays; the report entry, or None when nothing is painted."""
+    import bpy
+    import numpy as np
+    me = obj.data
+    blend = obj.get('opcd_kind') == 'blend'
+    verts = _attr(me.vertices, 'co', 3, np.float32)
+    world = _world(obj, verts)
+    paint, painted = _paint_rows(world, sample, curves)
+    if not painted.any():
+        return None
+    me.calc_loop_triangles()
+    area = np.empty(len(me.loop_triangles), dtype=np.float32)
+    me.loop_triangles.foreach_get('area', area)
+    # OPCD cuts can leave zero-area triangulation slivers (see the scalar path).
+    keep = area > 1e-10
+    dropped_area = float(area[~keep].astype(float).sum())
+    tri_v = _attr(me.loop_triangles, 'vertices', 3, np.int32)[keep].astype(np.int64)
+    tri_l = _attr(me.loop_triangles, 'loops', 3, np.int32)[keep]
+    tri_m = np.empty(len(me.loop_triangles), dtype=np.int32)
+    me.loop_triangles.foreach_get('material_index', tri_m)
+    tri_m = tri_m[keep]
+    tri_p = np.empty(len(me.loop_triangles), dtype=np.int32)
+    me.loop_triangles.foreach_get('polygon_index', tri_p)
+    tri_p = tri_p[keep]
+    poly_smooth = np.empty(len(me.polygons), dtype=bool)
+    me.polygons.foreach_get('use_smooth', poly_smooth)
+    faces, src = tri_v, np.arange(len(tri_v), dtype=np.int64)
+    bary = np.zeros((len(faces), 3, 3))
+    bary[:, 0, 0] = bary[:, 1, 1] = bary[:, 2, 2] = 1.0
+    edges = np.concatenate([faces[:, [0, 1]], faces[:, [1, 2]], faces[:, [2, 0]]])
+    code = np.minimum(edges[:, 0], edges[:, 1]) * EDGE_BASE + np.maximum(edges[:, 0], edges[:, 1])
+    unique, count = np.unique(code, return_counts=True)
+    boundary = unique[count == 1]
+    iteration = 0
+    for iteration in range(12):
+        rows = np.arange(len(faces))
+        side = _length_squared(world[faces] - world[faces[:, [1, 2, 0]]])
+        longest = np.argmax(side, axis=1)                       # the first maximum, as max() takes it
+        a, b = faces[rows, longest], faces[rows, (longest + 1) % 3]
+        code = np.minimum(a, b) * EDGE_BASE + np.maximum(a, b)
+        want = ((np.sqrt(side[rows, longest]) > max_edge) & painted[faces].any(axis=1)
+                & ~_has(boundary, code))
+        chosen = np.unique(code[want])
+        if not len(chosen):
+            break
+        base = len(verts)
+        middle = (verts[chosen // EDGE_BASE] + verts[chosen % EDGE_BASE]) * np.float32(.5)
+        verts = np.concatenate([verts, middle])
+        more = _world(obj, middle)
+        world = np.concatenate([world, more])
+        rgb, mask = _paint_rows(more, sample, curves)
+        paint, painted = np.concatenate([paint, rgb]), np.concatenate([painted, mask])
+        mid_v, mid_b, case = [], [], np.zeros(len(faces), dtype=np.int64)
+        for i, (p, q) in enumerate(((0, 1), (1, 2), (2, 0))):
+            key = (np.minimum(faces[:, p], faces[:, q]) * EDGE_BASE
+                   + np.maximum(faces[:, p], faces[:, q]))
+            found = np.searchsorted(chosen, key)
+            hit = chosen[np.minimum(found, len(chosen) - 1)] == key
+            case |= hit.astype(np.int64) << i
+            mid_v.append(base + found)
+            mid_b.append((bary[:, p, :] + bary[:, q, :]) * .5)
+        symbol_v = [faces[:, 0], faces[:, 1], faces[:, 2]] + mid_v
+        symbol_b = [bary[:, 0, :], bary[:, 1, :], bary[:, 2, :]] + mid_b
+        start = np.concatenate([[0], np.cumsum(np.array([1, 2, 2, 3, 2, 3, 3, 4])[case])])
+        new_f = np.empty((int(start[-1]), 3), dtype=np.int64)
+        new_b = np.empty((int(start[-1]), 3, 3))
+        new_src = np.empty(int(start[-1]), dtype=np.int64)
+        for bits, recipe in SPLIT_PARTS.items():
+            index = np.nonzero(case == bits)[0]
+            if not len(index):
+                continue
+            for n, part in enumerate(recipe):
+                where = start[index] + n
+                new_f[where] = np.stack([symbol_v[s][index] for s in part], axis=1)
+                new_b[where] = np.stack([symbol_b[s][index] for s in part], axis=1)
+                new_src[where] = src[index]
+        faces, bary, src = new_f, new_b, new_src
+    # float-precision output slivers (see the scalar path)
+    e1, e2 = verts[faces[:, 1]] - verts[faces[:, 0]], verts[faces[:, 2]] - verts[faces[:, 0]]
+    length = np.sqrt(_length_squared(np.cross(e1, e2)))
+    keep = length > 1e-9
+    dropped_area += float((length[~keep] * .5).sum())
+    faces, bary, src = faces[keep], bary[keep], src[keep]
+    new = bpy.data.meshes.new(me.name + ' transition')
+    new.vertices.add(len(verts))
+    new.loops.add(faces.size)
+    new.polygons.add(len(faces))
+    new.vertices.foreach_set('co', verts.reshape(-1))
+    new.polygons.foreach_set('loop_start', np.arange(len(faces), dtype=np.int32) * 3)
+    new.polygons.foreach_set('vertices', faces.astype(np.int32).reshape(-1))
+    new.shade_flat()
+    new.update(calc_edges=True)
+    for material in me.materials:
+        new.materials.append(material)
+    # Same order as the scalar path, so the mesh carries its attributes in the same order: the colour
+    # attributes and UV layers, then material_index and sharp_face, and the custom normals last.
+    attrs = [(a, new.color_attributes.new(name=a.name, type=a.data_type, domain='CORNER'))
+             for a in me.color_attributes if a.domain == 'CORNER']
+    if not attrs:
+        attrs = [(None, new.color_attributes.new(name='Col', type='BYTE_COLOR', domain='CORNER'))]
+    uvs = [(old, new.uv_layers.new(name=old.name)) for old in me.uv_layers]
+    new.polygons.foreach_set('material_index', tri_m[src])
+    new.polygons.foreach_set('use_smooth', poly_smooth[tri_p[src]])
+    loops = tri_l[src]
+    bary32 = bary.astype(np.float32)
+    normals = _normalized(_interpolate(_attr(me.corner_normals, 'vector', 3, np.float32), loops, bary32))
+    for old, uv in uvs:
+        uv.data.foreach_set('uv', _interpolate(_attr(old.data, 'uv', 2, np.float32), loops,
+                                               bary32).reshape(-1))
+    corner_paint = paint[faces]                      # (F, 3, 4)
+    corner_painted = painted[faces]
+    worn = corner_paint[:, :, 3]
+    bytes_out = None
+    for old, col in attrs:
+        if old is None:
+            base = np.zeros((len(faces), 3, 4))
+            base[:, :, 1] = base[:, :, 3] = 1.0
+        else:
+            base = _interpolate(_attr(old.data, 'color_srgb', 4, np.float32).astype(float), loops, bary)
+        # Keep the fringe's transverse grass ramp; meshes use canonical G path.
+        coverage = base[:, :, 1] if blend else 1.0
+        value = _byte_weights(coverage * corner_paint[:, :, 1], coverage * corner_paint[:, :, 2], worn)
+        # Unity's current path SurfaceMaterial maps every original channel to the same own surface. Full
+        # green therefore preserves its rendered appearance under the RGB convention.
+        plain = base.copy()
+        if not blend:
+            plain[:, :, 0], plain[:, :, 1], plain[:, :, 2] = 0.0, 1.0, 0.0
+        out = np.where(corner_painted[:, :, None], value, plain)
+        col.data.foreach_set('color_srgb', out.reshape(-1).astype(np.float32))
+        bytes_out = _attr(col.data, 'color_srgb', 4, np.float32)
+    if blend:
+        # A vertex the meshes also painted takes their actual bytes.
+        hit = seam.match(world.tolist())
+        found = np.array([v is not None for v in hit])
+        if found.any():
+            value = np.zeros((len(verts), 4), dtype=np.float32)
+            value[found] = np.array([v for v in hit if v is not None], dtype=np.float32)
+            take = found[faces].reshape(-1)
+            mine = faces.reshape(-1)[take]
+            for _old, col in attrs:
+                buf = _attr(col.data, 'color_srgb', 4, np.float32)
+                buf[take] = value[mine]
+                col.data.foreach_set('color_srgb', buf.reshape(-1))
+    else:
+        flat = faces.reshape(-1)
+        last = np.full(len(verts), -1, dtype=np.int64)
+        np.maximum.at(last, flat, np.arange(len(flat)))
+        used = np.nonzero(last >= 0)[0]
+        used = used[np.argsort(last[used], kind="stable")]
+        seam.put(world[used], bytes_out.reshape(-1, 4)[last[used]])
+    new.normals_split_custom_set(normals.reshape(-1, 3).tolist())
+    new.update()
+    obj.data = new
+    return {'vertices': len(verts), 'triangles': len(faces), 'iterations': iteration,
+            'droppedSliverArea': dropped_area}
+
+
+def _has(sorted_keys, keys):
+    """Mask of the keys present in the ascending `sorted_keys`."""
+    import numpy as np
+    if not len(sorted_keys):
+        return np.zeros(len(keys), dtype=bool)
+    at = np.searchsorted(sorted_keys, keys)
+    return sorted_keys[np.minimum(at, len(sorted_keys) - 1)] == keys
+
+
+def _byte_weights(g, b, worn):
+    """byte_weights over arrays: (..., 4) sRGB whose bytes sum to 255 less `worn` of the green (the red is
+    what is left, as in the scalar one)."""
+    import numpy as np
+    gb = np.minimum(np.maximum(np.rint(g * 255), 0), 255)
+    bb = np.minimum(np.maximum(np.rint(b * 255), 0), 255 - gb)
+    return np.stack([(255 - gb - bb) / 255, np.rint(gb * (1 - worn)) / 255, bb / 255,
+                     np.ones(np.shape(gb))], axis=-1)
+
+
 def apply(objects, entries, frame, max_edge=.3):
     """Refine interior triangles without moving vertices or transferring faces between objects.
 
@@ -172,11 +497,19 @@ def apply(objects, entries, frame, max_edge=.3):
     seam = {}
     from mathutils.kdtree import KDTree
     seam_tree = None
+    fast_seam = _SeamPaint()
     # Meshes first; fringes reuse their actual paint bytes at coincident vertices.
     for obj in sorted(objects,key=lambda o:(o.get('opcd_kind')=='blend',o.name)):
         if obj.get('golfmap_path_transition') == marker:
             continue
         me = obj.data
+        if FAST:
+            rec = _object_fast(obj, sample, curves, max_edge, fast_seam)
+            if rec is None:
+                continue
+            obj['golfmap_path_transition'] = marker
+            report[obj.name] = rec
+            continue
         if not any(sample(obj.matrix_world@v.co) is not None for v in me.vertices):
             continue
         me.calc_loop_triangles()

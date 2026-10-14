@@ -184,7 +184,7 @@ def footprint(rec):
 class Worker:
     def __init__(self, args):
         self.args = args
-        self.token = args.token or None
+        self.token = getattr(args, "token", None) or None
         self.lock = threading.Lock()
         self.jobs = queue.Queue()
         self.running = True
@@ -197,7 +197,7 @@ class Worker:
         self.by_id = {}  # the last JOBS_KEPT jobs, for /job/<id>
         self.status = {"format": FORMAT, "state": "starting", "phase": None, "blend": None, "conformed": None,
                        "layersDir": None, "fbxFolder": None, "appliedOps": 0, "lastRun": None, "error": None,
-                       "pid": os.getpid(), "host": args.host, "port": args.port}
+                       "pid": os.getpid(), "host": getattr(args, "host", "127.0.0.1"), "port": args.port}
 
     # ------------------------------------------------------------ status (any thread)
 

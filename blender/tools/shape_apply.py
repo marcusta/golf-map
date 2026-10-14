@@ -41,6 +41,9 @@ REPORT_FORMAT = "golfmap-shaping-report-v1"
 SEAM_XY = 1e-4  # boundary vertices this close in XY are one seam vertex
 SEAM_DZ = 1e-3  # ... and a gap when their heights differ by more
 FOCUS_MARGIN = 1.0
+# Speed shims (same results, README "Speed shims"): GOLFMAP_SHAPE_NO_FAST_SHIMS=1 leaves them out, which is
+# how a run is compared against them.
+FAST_SHIMS = os.environ.get("GOLFMAP_SHAPE_NO_FAST_SHIMS") != "1"
 
 
 # ---------------------------------------------------------------- scene helpers
@@ -474,7 +477,7 @@ class afrod_headless:
     results faster (speed), and in background mode a `bpy` whose ops.mesh.loopcut is loopcut_headless (in
     the UI Blender's own operator works). `fast=False` leaves the speed shims out (to compare)."""
 
-    fast = os.environ.get("GOLFMAP_SHAPE_NO_FAST_SHIMS") != "1"
+    fast = FAST_SHIMS
 
     def __enter__(self):
         self.module = sys.modules.get(AFROD_MODULE)
@@ -563,16 +566,17 @@ def diff(before, after):
                              "maxAbsDxy": float(np.hypot(d[:, 0], d[:, 1]).max()),
                              "at": [float(a[k, 0]), float(a[k, 1])]}
             continue
+        old = b.tolist()
         kd = KDTree(len(b))
-        for i, (x, y, _) in enumerate(b):
-            kd.insert((float(x), float(y), 0.0), i)
+        for i, (x, y, _) in enumerate(old):
+            kd.insert((x, y, 0.0), i)
         kd.balance()
         dz, at = 0.0, None
-        for x, y, z in a:
-            _, i, _ = kd.find((float(x), float(y), 0.0))
-            dzi = abs(float(z) - float(b[i][2]))
+        for x, y, z in a.tolist():
+            _, i, _ = kd.find((x, y, 0.0))
+            dzi = abs(z - old[i][2])
             if dzi > dz:
-                dz, at = dzi, [float(x), float(y)]
+                dz, at = dzi, [x, y]
         out[name] = {"topology": [len(b), len(a)], "vertsMoved": None, "maxAbsDz": dz, "at": at}
     for name in after:
         if name not in before:
@@ -620,25 +624,23 @@ def seam_check(names=None, neighbour_pad=0.5):
     if not owner:
         return {"pairs": {}, "unmatched": {}}
     allp = np.concatenate(pts)
-    kd = KDTree(len(allp))
-    for i, p in enumerate(allp):
-        kd.insert((float(p[0]), float(p[1]), 0.0), i)
-    kd.balance()
+    kd = _xy_kd(allp)
+    points = allp.tolist()
     pairs, unmatched = {}, {}
     focus_set = set(focus)
-    for i, p in enumerate(allp):
+    for i, p in enumerate(points):
         a = owner[i]
         if a not in focus_set:
             continue
         partner = False
-        for _, j, _ in kd.find_range((float(p[0]), float(p[1]), 0.0), SEAM_XY):
+        for _, j, _ in kd.find_range((p[0], p[1], 0.0), SEAM_XY):
             b = owner[j]
             if b == a:
                 continue
             partner = True
             if b in focus_set and b < a:
                 continue  # counted from b's side
-            dz = abs(float(allp[j][2]) - float(p[2]))
+            dz = abs(points[j][2] - p[2])
             key = "|".join(sorted((a, b)))
             rec = pairs.setdefault(key, {"vertices": 0, "gaps": 0, "maxAbsDz": 0.0})
             rec["vertices"] += 1
@@ -646,7 +648,7 @@ def seam_check(names=None, neighbour_pad=0.5):
                 rec["gaps"] += 1
                 if dz > rec["maxAbsDz"]:
                     rec["maxAbsDz"] = dz
-                    rec["at"] = [round(float(p[0]), 3), round(float(p[1]), 3)]
+                    rec["at"] = [round(p[0], 3), round(p[1], 3)]
         if not partner:
             unmatched[a] = unmatched.get(a, 0) + 1
     return {"pairs": pairs, "unmatched": unmatched}
@@ -678,7 +680,10 @@ def tjunction_check(names, tol_xy=1e-3):
         obj = bpy.data.objects.get(n)
         if obj is None or not boxes.get(n):
             continue
-        near = [o for o in objs if o.name != n and boxes[o.name] and sl.bbox_distance(boxes[n], boxes[o.name]) <= 0.5]
+        own = boundary_points(obj)
+        # Same filter as the weld (a shim): only a mesh whose box holds a cell of this one's boundary
+        # vertices can have a partner within SEAM_XY or an edge within tol_xy of one of them.
+        near = _weld_neighbours(objs, boxes, n, own)
         if not near:
             continue
         segs = np.concatenate([boundary_segments(o) for o in near])
@@ -688,12 +693,9 @@ def tjunction_check(names, tol_xy=1e-3):
         ab = b[:, :2] - a[:, :2]
         L = np.maximum((ab ** 2).sum(axis=1), 1e-18)
         others = np.concatenate([boundary_points(o) for o in near])
-        kd = KDTree(len(others))
-        for i, p in enumerate(others):
-            kd.insert((float(p[0]), float(p[1]), 0.0), i)
-        kd.balance()
+        kd = _xy_kd(others)
         rec = {"vertices": 0, "onEdge": 0, "gaps": 0, "maxAbsDz": 0.0}
-        for p in boundary_points(obj):
+        for p in own:
             if kd.find_range((float(p[0]), float(p[1]), 0.0), SEAM_XY):
                 continue  # has a partner: seam_check covers it
             rec["vertices"] += 1
@@ -730,6 +732,7 @@ def boundary_edges(obj):
 
 
 SEGMENT_GRID_M = 2.0
+WELD_CELL_M = 1.0   # the weld's filter cells (>> its tolerances, so one ring of neighbour cells is enough)
 
 
 def _segment_grid(a, b, pad, cell=SEGMENT_GRID_M):
@@ -761,6 +764,153 @@ def _segment_grid(a, b, pad, cell=SEGMENT_GRID_M):
     return lookup
 
 
+# ---------------------------------------------------------------- speed shims for the T-junction weld
+#
+# A weld asks for the same neighbour's boundary once per named mesh (a slab's cut touches four meshes, each
+# with ~270 neighbours), and a neighbour is often a course-wide road blend offering its whole boundary while
+# the answers can only come from within a millimetre of one of the named mesh's own boundary vertices. Both
+# shims below leave every answer as it was: the cache hands out the same arrays (and forgets a mesh the weld
+# changes), and a point or segment outside the 1 m cells of those vertices is beyond every tolerance.
+
+class _BoundaryCache:
+    """`boundary_points` / `boundary_edges` per object, until `forget(name)` (the weld changes a mesh)."""
+
+    def __init__(self):
+        self._points, self._edges = {}, {}
+
+    def points(self, obj):
+        if obj.name not in self._points:
+            self._points[obj.name] = boundary_points(obj)
+        return self._points[obj.name]
+
+    def edges(self, obj):
+        if obj.name not in self._edges:
+            self._edges[obj.name] = boundary_edges(obj)
+        return self._edges[obj.name]
+
+    def forget(self, name):
+        self._points.pop(name, None)
+        self._edges.pop(name, None)
+
+
+CELL_KEY = 1 << 24      # cell (x, y) -> x * CELL_KEY + y (one key per cell for |x|, |y| < 2^23)
+
+
+def _cells(points, cell):
+    c = np.floor(points[:, :2] / cell).astype(np.int64)
+    return c[:, 0] * CELL_KEY + c[:, 1]
+
+
+def _grown_cells(points, cell):
+    """The keys of the cells of `points` and of their eight neighbours, ascending: whatever is within `cell`
+    of one of the points lies in one of them."""
+    c = np.floor(points[:, :2] / cell).astype(np.int64)
+    return np.unique(np.concatenate([(c[:, 0] + dx) * CELL_KEY + c[:, 1] + dy
+                                     for dx in (-1, 0, 1) for dy in (-1, 0, 1)]))
+
+
+def _in_cells(points, cells, cell):
+    """Mask of the points whose cell is one of `cells` (ascending)."""
+    return _has(cells, _cells(points, cell))
+
+
+def _segments_in_cells(a, b, cells, pad, cell):
+    """Mask of the segments whose box, grown by `pad`, covers one of the `cells` (ascending) - a segment
+    over more than four cells is kept without the test (there are few, and keeping one changes nothing)."""
+    lo = np.floor((np.minimum(a[:, :2], b[:, :2]) - pad) / cell).astype(np.int64)
+    hi = np.floor((np.maximum(a[:, :2], b[:, :2]) + pad) / cell).astype(np.int64)
+    small = (hi[:, 0] - lo[:, 0] <= 1) & (hi[:, 1] - lo[:, 1] <= 1)
+    hit = np.zeros(len(lo), dtype=bool)
+    for dx in (0, 1):
+        for dy in (0, 1):
+            hit |= _has(cells, np.minimum(lo[:, 0] + dx, hi[:, 0]) * CELL_KEY
+                        + np.minimum(lo[:, 1] + dy, hi[:, 1]))
+    return ~small | hit
+
+
+def _has(sorted_keys, keys):
+    """Mask of the keys present in the ascending `sorted_keys`."""
+    if not len(sorted_keys) or not len(keys):
+        return np.zeros(len(keys), dtype=bool)
+    at = np.searchsorted(sorted_keys, keys)
+    return sorted_keys[np.minimum(at, len(sorted_keys) - 1)] == keys
+
+
+def _cell_cover(points, cell):
+    """`cover(boxes)` -> which of the XY boxes (N, 4) hold a cell of `points` or of their eight neighbours.
+    A summed-area table over the points' own cell range, so one `cumsum` answers every box in one step."""
+    c = np.floor(points[:, :2] / cell).astype(np.int64)
+    lo = c.min(axis=0) - 1
+    size = c.max(axis=0) + 2 - lo
+    grid = np.zeros((int(size[0]), int(size[1])), dtype=np.int32)
+    for dx in (-1, 0, 1):
+        for dy in (-1, 0, 1):
+            grid[c[:, 0] + dx - lo[0], c[:, 1] + dy - lo[1]] = 1
+    table = np.zeros((int(size[0]) + 1, int(size[1]) + 1), dtype=np.int64)
+    table[1:, 1:] = grid.cumsum(axis=0).cumsum(axis=1)
+
+    def cover(boxes):
+        b = np.asarray(boxes, dtype=np.float64)
+        x0 = np.floor(b[:, 0] / cell).astype(np.int64) - lo[0]
+        y0 = np.floor(b[:, 1] / cell).astype(np.int64) - lo[1]
+        x1 = np.floor(b[:, 2] / cell).astype(np.int64) - lo[0]
+        y1 = np.floor(b[:, 3] / cell).astype(np.int64) - lo[1]
+        outside = (x1 < 0) | (y1 < 0) | (x0 > size[0] - 1) | (y0 > size[1] - 1)
+        x0, x1 = np.clip(x0, 0, size[0] - 1), np.clip(x1, 0, size[0] - 1)
+        y0, y1 = np.clip(y0, 0, size[1] - 1), np.clip(y1, 0, size[1] - 1)
+        got = (table[x1 + 1, y1 + 1] - table[x0, y1 + 1] - table[x1 + 1, y0] + table[x0, y0])
+        return ~outside & (got > 0)
+    return cover
+
+
+def _weld_neighbours(objs, boxes, name, own, pad=0.5):
+    """The Spline meshes whose boundary the weld has to read for the named mesh: those whose box is within
+    `pad` of its box and (the shim) holds a cell of its own boundary vertices or a neighbouring cell. Only
+    such a mesh can have a boundary vertex or edge within the weld's tolerances of one of them: both lie in
+    its box, which then covers that vertex's cell."""
+    near = [o for o in objs if o.name != name and boxes[o.name]
+            and sl.bbox_distance(boxes[name], boxes[o.name]) <= pad]
+    if not FAST_SHIMS or not near or not len(own):
+        return near
+    keep = _cell_cover(own, WELD_CELL_M)([boxes[o.name] for o in near])
+    return [o for o, k in zip(near, keep.tolist()) if k]
+
+
+def _added_vertices(cur, old):
+    """Which vertices of `cur` (N, 3) a cut added: those further than 1e-5 from every position in `old`.
+    A cut leaves the old vertices exactly where they were, so an exact match settles nearly all of them and
+    only the rest are measured (speed shim: the KD tree held every vertex of a course-wide road blend)."""
+    cur = cur.astype(np.float64)
+    old = old.reshape(-1, 3)
+    both = np.concatenate([old, cur])
+    _, inv = np.unique(both, axis=0, return_inverse=True)
+    inv = np.asarray(inv).reshape(-1)
+    seen = np.zeros(int(inv.max()) + 1, dtype=bool)
+    seen[inv[:len(old)]] = True
+    rest = np.nonzero(~seen[inv[len(old):]])[0]
+    if not len(rest):
+        return set()
+    p = cur[rest]
+    lo, hi = p.min(axis=0) - 1e-5, p.max(axis=0) + 1e-5
+    sub = old[((old >= lo) & (old <= hi)).all(axis=1)]
+    if not len(sub):
+        return {int(i) for i in rest}
+    out, block = [], max(1, int(4e6 / len(sub)))
+    for k in range(0, len(rest), block):
+        d2 = ((p[k:k + block, None, :] - sub[None, :, :]) ** 2).sum(axis=2).min(axis=1)
+        out.append(rest[k:k + block][np.sqrt(d2) > 1e-5])
+    return {int(i) for i in np.concatenate(out)}
+
+
+def _xy_kd(points):
+    """KD tree of the points' XY (z = 0), in their order - as the weld and the seam checks build it."""
+    kd = KDTree(len(points))
+    for i, (x, y) in enumerate(points[:, :2].tolist()):
+        kd.insert((x, y, 0.0), i)
+    kd.balance()
+    return kd
+
+
 def weld_tjunctions(names, tol=1e-3):
     """Close the T-junctions around the named meshes (Afrod's cutcartpaths adds boundary vertices a
     neighbour does not have): every boundary vertex of theirs with no coincident partner that lies within
@@ -769,6 +919,7 @@ def weld_tjunctions(names, tol=1e-3):
     the exact position, so later ripples (smoothcartpaths) move both alike."""
     objs = spline_meshes()
     boxes = {o.name: bbox_xy(o) for o in objs}
+    cache = _BoundaryCache()
     inserts = {}  # neighbour -> {edge index: [(t, point)]}
     snaps = {}  # neighbour -> {vertex index: point}
     merged = 0
@@ -777,50 +928,63 @@ def weld_tjunctions(names, tol=1e-3):
         obj = bpy.data.objects.get(n)
         if obj is None or not boxes.get(n):
             continue
-        near = [o for o in objs if o.name != n and boxes[o.name] and sl.bbox_distance(boxes[n], boxes[o.name]) <= 0.5]
-        pts = np.concatenate([boundary_points(o) for o in near] or [np.zeros((0, 3))])
-        nkd = KDTree(len(pts))
-        for i, p in enumerate(pts):
-            nkd.insert((float(p[0]), float(p[1]), 0.0), i)
-        nkd.balance()
+        # merge_near_duplicates only asks which of this mesh's own boundary vertices has a neighbour
+        # within SEAM_XY: a point more than a metre from all of them can answer nothing.
+        own = cache.points(obj) if FAST_SHIMS else boundary_points(obj)
+        near = _weld_neighbours(objs, boxes, n, own)
+        pts = []
+        own_cells = _grown_cells(own, WELD_CELL_M) if FAST_SHIMS and len(own) else None
+        for o in near:
+            p = cache.points(o) if FAST_SHIMS else boundary_points(o)
+            pts.append(p[_in_cells(p, own_cells, WELD_CELL_M)] if own_cells is not None and len(p) else p)
+        nkd = _xy_kd(np.concatenate(pts or [np.zeros((0, 3))]))
         merged += merge_near_duplicates(obj, nkd, tol)
+        cache.forget(n)
     found = 0
     for n in sorted(names):
         obj = bpy.data.objects.get(n)
         if obj is None or not boxes.get(n):
             continue
-        near = [o for o in objs if o.name != n and boxes[o.name] and sl.bbox_distance(boxes[n], boxes[o.name]) <= 0.5]
+        own = cache.points(obj) if FAST_SHIMS else boundary_points(obj)
+        near = _weld_neighbours(objs, boxes, n, own)
         if not near:
             continue
-        edges = [(o.name,) + boundary_edges(o) for o in near]
+        own_cells = _grown_cells(own, WELD_CELL_M) if FAST_SHIMS and len(own) else None
+        grid_cells = np.unique(_cells(own, SEGMENT_GRID_M)) if FAST_SHIMS and len(own) else None
+        edges = [(o.name,) + (cache.edges(o) if FAST_SHIMS else boundary_edges(o)) for o in near]
         o_owner, o_index, o_co = [], [], []
         for name, _, pairs, co in edges:
             vi = np.unique(pairs)
+            p = co[vi]
+            if own_cells is not None and len(p):
+                # A neighbour vertex answers only within `tol` of an own boundary vertex, or within SEAM_XY
+                # of such a neighbour vertex (the snap's second query) - both far inside a metre.
+                m = _in_cells(p, own_cells, WELD_CELL_M)
+                vi, p = vi[m], p[m]
             o_owner += [name] * len(vi)
             o_index += [int(i) for i in vi]
-            o_co.append(co[vi])
+            o_co.append(p)
         others = np.concatenate(o_co or [np.zeros((0, 3))])
-        kd = KDTree(len(others))
-        for i, p in enumerate(others):
-            kd.insert((float(p[0]), float(p[1]), 0.0), i)
-        kd.balance()
+        kd = _xy_kd(others)
         seg_owner, seg_edge, seg_a, seg_b = [], [], [], []
         for name, idx, pairs, co in edges:
+            sa, sb = co[pairs[:, 0]], co[pairs[:, 1]]
+            if grid_cells is not None and len(idx):
+                # A segment is only ever offered to an own boundary vertex whose grid cell its padded box
+                # covers (_segment_grid), so the cells of those vertices decide.
+                m = _segments_in_cells(sa, sb, grid_cells, 2.0 * tol, SEGMENT_GRID_M)
+                idx, sa, sb = idx[m], sa[m], sb[m]
             seg_owner += [name] * len(idx)
             seg_edge += [int(e) for e in idx]
-            seg_a.append(co[pairs[:, 0]])
-            seg_b.append(co[pairs[:, 1]])
-        if not seg_edge:
-            continue
-        a, b = np.concatenate(seg_a), np.concatenate(seg_b)
+            seg_a.append(sa)
+            seg_b.append(sb)
+        if not seg_edge and not FAST_SHIMS:
+            continue  # (the shim's filter may leave no segment while there is still a vertex to snap)
+        a, b = np.concatenate(seg_a or [np.zeros((0, 3))]), np.concatenate(seg_b or [np.zeros((0, 3))])
         ab = b[:, :2] - a[:, :2]
         L2 = np.maximum((ab ** 2).sum(axis=1), 1e-18)
         near_segments = _segment_grid(a, b, 2.0 * tol)
-        own = boundary_points(obj)
-        own_kd = KDTree(len(own))
-        for i, p in enumerate(own):
-            own_kd.insert((float(p[0]), float(p[1]), 0.0), i)
-        own_kd.balance()
+        own_kd = _xy_kd(own)
         for p in own:
             if kd.find_range((float(p[0]), float(p[1]), 0.0), SEAM_XY):
                 continue
@@ -1862,22 +2026,31 @@ def collapse_cut_slivers(names, snap, tol=SLIVER_M, mark_attr=None):
         old = (snap or {}).get(n)
         if obj is None or old is None or not len(old["co"]):
             continue
-        kd = KDTree(len(old["co"]))
-        for i, p in enumerate(old["co"].tolist()):
-            kd.insert(p, i)
-        kd.balance()
         me = obj.data
         bm = bmesh.new()
         bm.from_mesh(me)
         bm.verts.ensure_lookup_table()
         bm.verts.index_update()
-        new = {v.index for v in bm.verts if kd.find(tuple(v.co))[2] > 1e-5}
+        if FAST_SHIMS:
+            new = _added_vertices(positions(obj), old["co"])
+        else:
+            kd = KDTree(len(old["co"]))
+            for i, p in enumerate(old["co"].tolist()):
+                kd.insert(p, i)
+            kd.balance()
+            new = {v.index for v in bm.verts if kd.find(tuple(v.co))[2] > 1e-5}
         if not new:
             bm.free()
             continue
         cands = []  # (XY distance, lower index, higher index, a, b): vertex pairs of one face, one a cut vertex
         seen = set()
-        for f in bm.faces:
+        faces = bm.faces
+        if FAST_SHIMS:
+            # a face with no cut vertex offers no pair; `cands` is sorted by (distance, indices) below, so
+            # which face offers a pair first does not matter
+            bm.faces.index_update()
+            faces = sorted({f for i in sorted(new) for f in bm.verts[i].link_faces}, key=lambda f: f.index)
+        for f in faces:
             fv = list(f.verts)
             for i, a in enumerate(fv):
                 for b in fv[i + 1:]:
@@ -3765,11 +3938,12 @@ def cut_out(ctx, op):
     outside = np.concatenate([boundary_points(o) for o in spline_meshes()
                               if o.name != name and ctx.box(o.name) is not None
                               and sl.bbox_distance(box, bbox_xy(o)) <= 1.0] or [np.zeros((0, 3))])
-    kd = KDTree(len(outside))
-    for i, p in enumerate(outside):
-        kd.insert((float(p[0]), float(p[1]), 0.0), i)
-    kd.balance()
     own = boundary_points(new)
+    if FAST_SHIMS and len(outside) and len(own):
+        # Only a point within SEAM_XY of one of the slab's own boundary vertices is ever looked up (speed
+        # shim: a road blend under the outline's box offers its whole course-long boundary).
+        outside = outside[_in_cells(outside, _grown_cells(own, WELD_CELL_M), WELD_CELL_M)]
+    kd = _xy_kd(outside)
     unmatched, max_dz = 0, 0.0
     for p in own:
         hit = kd.find_range((float(p[0]), float(p[1]), 0.0), SEAM_XY)
@@ -4554,6 +4728,7 @@ class Applier:
     def reset(self):
         self.ops_report, self.unresolved, self.warnings = [], [], []
         self.targeted, self.selected, self.changed_by, self.renders = set(), set(), {}, {}
+        self.spent = {"snapshot": 0.0, "diff": 0.0}  # report `phases`: what the ops' own seconds leave out
 
     def svg_report(self):
         unmapped = sorted(r["name"] for r in self.ctx.index if not r["svgId"])
@@ -4595,7 +4770,9 @@ class Applier:
             color, exaggerate, tag = render_style(op)
             self.renders[key] = {"targets": entry["targets"], "style": [color, exaggerate], "before": render_targets(
                 entry["targets"], os.path.join(self.render, f"{layer['id']}-{op['id']}-before{tag}.png"), color, exaggerate)}
+        t0 = time.time()
         before = snapshot()
+        self.spent["snapshot"] += time.time() - t0
         t = time.time()
         self.runner.begin_op(index, key, unit_filter)
         hits0, misses0 = self.runner.stats["hits"], self.runner.stats["misses"]
@@ -4621,8 +4798,12 @@ class Applier:
             object_mode()
         entry["seconds"] = round(time.time() - t, 2)
         entry["cache"] = {"hits": self.runner.stats["hits"] - hits0, "misses": self.runner.stats["misses"] - misses0}
+        t0 = time.time()
         after = snapshot()
+        self.spent["snapshot"] += time.time() - t0
+        t0 = time.time()
         d = diff(before, after)
+        self.spent["diff"] += time.time() - t0
         escaped = self.runner.end_op(d)
         if escaped:
             self.warnings.append({"layer": layer["id"], "op": op["id"], "kind": "escape", "objects": escaped,
@@ -4861,8 +5042,16 @@ def main(argv):
 
     only = set(args.only.split(",")) if args.only else None
     object_mode()
-    fp_before = None if args.dry_run else fingerprints()
-    seams_before = None if args.dry_run else seam_check()
+    phases = {}
+
+    def took(name, fn):
+        t = time.time()
+        got = fn()
+        phases[name] = round(phases.get(name, 0.0) + time.time() - t, 1)
+        return got
+
+    fp_before = None if args.dry_run else took("fingerprints", fingerprints)
+    seams_before = None if args.dry_run else took("seamCheck", seam_check)
     index = 0
     for path, layer in layers:
         for op in layer["ops"]:
@@ -4873,10 +5062,12 @@ def main(argv):
     report["warnings"] = ([stale] if stale else []) + app.warnings
     report["untouched"] = app.untouched()
     if not args.dry_run:
-        fp_after = fingerprints()
+        fp_after = took("fingerprints", fingerprints)
         changed = sorted(n for n in fp_after if fp_before.get(n) != fp_after[n])
         touched = sorted(set(changed) | set(app.changed_by))
-        report["checks"] = app.checks(changed, seams_before, seam_check(), cut_objects(app.ops_report))
+        seams_after = took("seamCheck", seam_check)
+        report["checks"] = took("checks", lambda: app.checks(changed, seams_before, seams_after,
+                                                             cut_objects(app.ops_report)))
         report["checks"]["nans"] = sorted(n for n, a in snapshot().items() if not np.isfinite(a).all())
         ps = report["checks"]["pathSurface"]
         if ps["steepFaces"] or ps["shadingFaults"]:
@@ -4888,10 +5079,11 @@ def main(argv):
                 f"{worst[1].get('epsg3006')}")))
         report["changed"] = {"objects": changed, "byOp": {n: app.changed_by.get(n, []) for n in changed},
                              "removed": sorted(set(fp_before) - set(fp_after))}
-        report["changedPlaces"] = app.places(changed)
-        report["changedObjectsDetail"] = app.places_detail(changed)
-        report["hash"] = hash_objects(touched)
-        report["hashAll"] = dict(hash_all(), fbx=hashlib.sha256(json.dumps(sorted(fp_after.items())).encode()).hexdigest())
+        report["changedPlaces"] = took("places", lambda: app.places(changed))
+        report["changedObjectsDetail"] = took("places", lambda: app.places_detail(changed))
+        report["hash"] = took("hashes", lambda: hash_objects(touched))
+        report["hashAll"] = took("hashes", lambda: dict(
+            hash_all(), fbx=hashlib.sha256(json.dumps(sorted(fp_after.items())).encode()).hexdigest()))
         report["cache"] = app.runner.summary()
         if args.render:
             for key, r in app.renders.items():
@@ -4912,8 +5104,12 @@ def main(argv):
             report["syncFbx"]["deletedOrphans"] = synced.get("deletedOrphans", 0)
             print("[shape_apply] " + fbx_sync.summary(synced).splitlines()[0])
     report["seconds"] = round(time.time() - started, 1)
+    phases["ops"] = round(sum(e.get("seconds") or 0.0 for e in app.ops_report), 1)
+    phases.update({k: round(v, 1) for k, v in app.spent.items()})
+    report["phases"] = phases
     _write(report_path, report)
-    print(f"[shape_apply] report {report_path} ({report['seconds']} s)")
+    print(f"[shape_apply] report {report_path} ({report['seconds']} s; "
+          + ", ".join(f"{k} {v} s" for k, v in sorted(report['phases'].items())) + ")")
     if not args.dry_run:
         s = report["checks"]["seams"]
         print(f"[shape_apply] {len(report['changed']['objects'])} objects changed; seams: {len(s['gaps'])} gap pairs "
