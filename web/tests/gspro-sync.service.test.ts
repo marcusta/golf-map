@@ -1,4 +1,5 @@
 import { test, expect } from 'bun:test';
+import { ApiError } from '@basics/core/client/api-error';
 import { GsproSyncService, agoLabel, changedLabel, aboutLabel, rowStatusLabel } from '../src/export/gspro-sync.service';
 import type {
     GsproSyncApi, GsproSyncStatus, GsproSyncJob, GsproTargetStatus, JobPhase,
@@ -76,16 +77,28 @@ function job(patch: Partial<GsproSyncJob> = {}): GsproSyncJob {
  */
 function fakeApi(opts: {
     targets?: GsproTargetStatus[];
-    jobs?: GsproSyncJob[];
+    /** One board per status call (the last repeats), each after its own delay — for the refresh race. */
+    boards?: Array<{ targets: GsproTargetStatus[]; delayMs?: number }>;
+    jobs?: Array<GsproSyncJob | Error>;
     updateFails?: Error;
     matched?: string | null;
 } = {}) {
     const calls = { status: 0, update: [] as string[], job: 0 };
     const sequence = opts.jobs ?? [];
+    /** The last job the server actually answered with (a poll that threw left it where it was). */
+    const lastJob = (upTo: number): GsproSyncJob | null => {
+        for (let i = Math.min(upTo, sequence.length) - 1; i >= 0; i--) {
+            const j = sequence[i];
+            if (!(j instanceof Error)) return j;
+        }
+        return null;
+    };
     let at = 0;
     const api: GsproSyncApi = {
         async status() {
-            calls.status++;
+            const n = calls.status++;
+            const board = opts.boards?.[Math.min(n, opts.boards.length - 1)];
+            if (board?.delayMs) await new Promise(r => setTimeout(r, board.delayMs));
             return {
                 unity: {
                     editors: opts.matched === undefined || opts.matched
@@ -105,8 +118,8 @@ function fakeApi(opts: {
                     blend: 'vreta.conformed.blend', conformed: null, layersDir: null,
                     appliedOps: null, lastRun: null, error: null, spawnedPid: null, job: null, log: null,
                 },
-                targets: opts.targets ?? boardTargets(),
-                job: at > 0 ? sequence[Math.min(at - 1, sequence.length - 1)] : null,
+                targets: board?.targets ?? opts.targets ?? boardTargets(),
+                job: at > 0 ? lastJob(at) : null,
                 queue: [],
             } satisfies GsproSyncStatus;
         },
@@ -114,12 +127,17 @@ function fakeApi(opts: {
             calls.update.push(target);
             if (opts.updateFails) throw opts.updateFails;
             at = 1;
-            return sequence[0];
+            const first = sequence[0];
+            if (first instanceof Error) throw first;
+            return first;
         },
         async job() {
             calls.job++;
             at = Math.min(at + 1, sequence.length);
-            return sequence[at - 1];
+            const next = sequence[at - 1];
+            // An Error in the sequence is a poll that fails (a dropped connection, a 404).
+            if (next instanceof Error) throw next;
+            return next;
         },
         async editors() {
             throw new Error('not used by the board');
@@ -252,6 +270,114 @@ test('a failed job keeps its phases and its targets\' reports, with the error', 
     expect(svc.running.peek()).toBe(false);
     // The refresh that follows a failed job must not wipe its reason.
     expect(svc.error.peek()).toBe('Trees: no tree stems for this course');
+    svc.close();
+});
+
+test('a poll that fails is retried, says so after a few, and the job still finishes', async () => {
+    const dead = new Error('fetch failed');
+    const { api, calls } = fakeApi({
+        jobs: [
+            job({ status: 'running', step: 'inner trees' }),
+            dead, dead, dead,
+            job({ status: 'succeeded', step: 'done', seconds: 9, phases: PHASES(['done', 'done']), results: [] }),
+        ],
+    });
+    const svc = service(api);
+
+    const ok = await svc.update('course-1', 'trees');
+
+    expect(ok).toBe(true);
+    // Every failed poll was retried, not taken for the end of the job.
+    expect(calls.job).toBeGreaterThanOrEqual(4);
+    expect(svc.job.peek()?.status).toBe('succeeded');
+    // The "still trying" line is gone once a poll answered again.
+    expect(svc.error.peek()).toBe('');
+    expect(svc.running.peek()).toBe(false);
+    svc.close();
+});
+
+test('while the polls keep failing the board says it lost contact, and stays busy', async () => {
+    const dead = new Error('fetch failed');
+    const { api } = fakeApi({ jobs: [job({ status: 'running', step: 'inner trees' }), dead, dead, dead, dead] });
+    // A slow poll, so the follow is still going when we look.
+    const svc = new GsproSyncService(api, 5, 60_000);
+    const pending = svc.update('course-1', 'trees');
+    await new Promise(r => setTimeout(r, 60));
+
+    expect(svc.error.peek()).toContain('Lost contact with the server');
+    expect(svc.error.peek()).toContain('still trying');
+    expect(svc.running.peek()).toBe(true);
+    // The job it holds is the last one the server answered with.
+    expect(svc.job.peek()?.status).toBe('running');
+    svc.close();
+    await Promise.race([pending, new Promise(r => setTimeout(r, 0))]);
+});
+
+test('a job the server has forgotten (404) ends the follow as failed, with the reason', async () => {
+    const gone = new ApiError(404, 'No GSPro job job-1');
+    const { api, calls } = fakeApi({ jobs: [job({ status: 'running', step: 'inner trees' }), gone, gone] });
+    const svc = service(api);
+
+    const ok = await svc.update('course-1', 'trees');
+
+    expect(ok).toBe(false);
+    expect(svc.error.peek()).toContain('the server may have restarted');
+    expect(svc.job.peek()?.status).toBe('failed');
+    // It stopped following instead of polling a job that will never answer.
+    expect(calls.job).toBe(1);
+    // And the board is free again: every Update button works.
+    expect(svc.running.peek()).toBe(false);
+    svc.close();
+});
+
+test('running follows the job itself, so nothing can leave the board busy', async () => {
+    const { api } = fakeApi();
+    const svc = service(api);
+    expect(svc.running.peek()).toBe(false);
+
+    svc.job.set(job({ status: 'queued' }));
+    expect(svc.running.peek()).toBe(true);
+    svc.job.set(job({ status: 'running' }));
+    expect(svc.running.peek()).toBe(true);
+    svc.job.set(job({ status: 'failed', error: 'no open Unity editor' }));
+    expect(svc.running.peek()).toBe(false);
+    svc.close();
+});
+
+test('an update refused because another one runs says which, and keeps the running job', async () => {
+    const { api, calls } = fakeApi({
+        jobs: [job({ status: 'running', step: 'inner trees' }), job({ status: 'succeeded', results: [] })],
+    });
+    const svc = new GsproSyncService(api, 20, 60_000);
+    const first = svc.update('course-1', 'trees');
+    await new Promise(r => setTimeout(r, 0));
+    expect(svc.running.peek()).toBe(true);
+
+    expect(await svc.update('course-1', 'terrain')).toBe(false);
+    expect(svc.error.peek()).toBe('A GSPro update is already running: inner trees');
+    expect(calls.update).toEqual(['trees']);  // nothing was started for the second one
+
+    expect(await first).toBe(true);
+    svc.close();
+});
+
+test('only the newest status read lands on the board', async () => {
+    // The first read is slow and finds three stale rows; the second is quick
+    // and finds none (the run that triggered it fixed them).
+    const { api } = fakeApi({
+        boards: [
+            { targets: boardTargets(), delayMs: 20 },
+            { targets: boardTargets().map(t => ({ ...t, stale: false })) },
+        ],
+    });
+    const svc = service(api);
+
+    const slow = svc.refresh('course-1');
+    const quick = svc.refresh('course-1');
+    await Promise.all([slow, quick]);
+
+    expect(svc.staleCount.peek()).toBe(0);
+    expect(svc.loading.peek()).toBe(false);
     svc.close();
 });
 

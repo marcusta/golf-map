@@ -64,6 +64,7 @@ function fakeApi(dir: string | null, run?: () => never, sources: GsproOrthoSourc
     const orthoCalls: string[] = [];
     const outerCalls: string[] = [];
     const demCalls: string[] = [];
+    const unityTerrainCalls: string[] = [];
     const hillshadeCalls: string[] = [];
     const treesCalls: string[] = [];
     const zonesCalls: string[] = [];
@@ -106,6 +107,14 @@ function fakeApi(dir: string | null, run?: () => never, sources: GsproOrthoSourc
             demCalls.push(kind);
             return { path: `${dir ?? DEFAULT_DIR}\\vreta-${kind}-dem-2010m.tif`, report: ['Wrote x.tif', 'Wrote x.tif.json'] };
         },
+        async runUnityTerrain({ terrain: kind }) {
+            if (run) run();
+            unityTerrainCalls.push(kind);
+            return {
+                path: `${dir ?? DEFAULT_DIR}\\vreta-${kind}-dem-2010m.raw`,
+                report: [`Unity ${kind} (vreta_v4_2025_12_02): heights from vreta-${kind}-dem.tif.json`],
+            };
+        },
         async runHillshade({ terrain: kind }) {
             if (run) run();
             hillshadeCalls.push(kind);
@@ -123,7 +132,7 @@ function fakeApi(dir: string | null, run?: () => never, sources: GsproOrthoSourc
         },
     };
     const api = jobApi(handlers);
-    return { api, svgCalls, orthoCalls, outerCalls, demCalls, hillshadeCalls, treesCalls, zonesCalls, floorCalls, gkdCalls, metaCalls, gkd };
+    return { api, svgCalls, orthoCalls, outerCalls, demCalls, unityTerrainCalls, hillshadeCalls, treesCalls, zonesCalls, floorCalls, gkdCalls, metaCalls, gkd };
 }
 
 
@@ -143,6 +152,7 @@ function jobApi(h: Record<string, (input: any) => Promise<any>>, current: () => 
                 : kind === 'ortho' ? await h.runOrtho({ courseId, source: input.source, darken: input.darken, tint: input.tint, tintOpacity: input.tintOpacity, forestFloor: input.forestFloor, floorColor: input.floorColor })
                 : kind === 'outer-ortho' ? await h.runOuterOrtho({ courseId, collection: input.collection, darken: input.darken, tint: input.tint, tintOpacity: input.tintOpacity })
                 : kind === 'dem' ? await h.runDem({ courseId, terrain: input.terrain })
+                : kind === 'unity-terrain' ? await h.runUnityTerrain({ courseId, terrain: input.terrain })
                 : kind === 'hillshade' ? await h.runHillshade({ courseId, terrain: input.terrain })
                 : kind === 'zones' ? await h.runZones({ courseId, terrain: input.terrain })
                 : kind === 'gkd' ? await h.runGkd({ courseId })
@@ -255,7 +265,7 @@ function fakeSyncApi(opts: { targets?: GsproTargetStatus[]; statusJob?: GsproSyn
 
 async function mount(dir: string | null = null, run?: () => never, sources?: GsproOrthoSource[], terrain?: CourseTerrain | null,
     syncOpts?: Parameters<typeof fakeSyncApi>[0]) {
-    const { api, orthoCalls, outerCalls, demCalls, hillshadeCalls, treesCalls, zonesCalls, floorCalls, gkdCalls, metaCalls, gkd } = fakeApi(dir, run, sources, terrain);
+    const { api, orthoCalls, outerCalls, demCalls, unityTerrainCalls, hillshadeCalls, treesCalls, zonesCalls, floorCalls, gkdCalls, metaCalls, gkd } = fakeApi(dir, run, sources, terrain);
     const svc = new GsproExportService(api, 1);
     di.set(GsproExportService, svc);
     const { api: syncApi, updates } = fakeSyncApi(syncOpts);
@@ -263,7 +273,7 @@ async function mount(dir: string | null = null, run?: () => never, sources?: Gsp
     di.set(GsproSyncService, sync);
     const host = document.createElement('div');
     new GsproExportPanelComponent({}).mount(host);
-    return { host, svc, sync, updates, orthoCalls, outerCalls, demCalls, hillshadeCalls, treesCalls, zonesCalls, floorCalls, gkdCalls, metaCalls, gkd };
+    return { host, svc, sync, updates, orthoCalls, outerCalls, demCalls, unityTerrainCalls, hillshadeCalls, treesCalls, zonesCalls, floorCalls, gkdCalls, metaCalls, gkd };
 }
 
 /** The dialog opens for a course and the board's first read lands. */
@@ -476,6 +486,8 @@ test('a row\'s "…" opens its own files and settings', async () => {
 
     // Each other row's own files are under its own toggle.
     expect(panel('terrain').querySelector('.gspro-export__run-inner-dem')).not.toBeNull();
+    expect(panel('terrain').querySelector('[data-testid=gspro-inner-unity]')).not.toBeNull();
+    expect(panel('terrain').querySelector('[data-testid=gspro-outer-unity]')).not.toBeNull();
     expect(panel('terrain').querySelector('[data-testid=gspro-inner-sculpt]')).not.toBeNull();
     expect(panel('shapes').querySelector('[data-testid=gspro-run-svg]')).not.toBeNull();
     expect(panel('trees').querySelector('.gspro-export__run-inner-trees')).not.toBeNull();
@@ -619,6 +631,26 @@ test('the DEM buttons export the inner and the outer terrain', async () => {
     await new Promise(r => setTimeout(r, 0)); await new Promise(r => setTimeout(r, 0));
     expect(demCalls).toEqual(['inner', 'outer']);
     expect(host.textContent).toContain('vreta-outer-dem-2010m.tif');
+});
+
+test('the → Unity buttons put one terrain\'s heightmap onto its Unity terrain', async () => {
+    const { host, svc, unityTerrainCalls } = await mount();
+    await svc.openFor('course-1', 'Vreta');
+
+    const inner = host.querySelector('[data-testid=gspro-inner-unity]') as HTMLButtonElement;
+    const outer = host.querySelector('[data-testid=gspro-outer-unity]') as HTMLButtonElement;
+    expect(inner.title).toBe('Inner heightmap → Unity');
+    expect(outer.title).toBe('Outer heightmap → Unity');
+    expect(inner.textContent).toBe('→ Unity');
+    expect(inner.disabled).toBe(false);
+
+    inner.click();
+    await new Promise(r => setTimeout(r, 0)); await new Promise(r => setTimeout(r, 0));
+    outer.click();
+    await new Promise(r => setTimeout(r, 0)); await new Promise(r => setTimeout(r, 0));
+    // The one-terrain step the Terrain row's Update does for both.
+    expect(unityTerrainCalls).toEqual(['inner', 'outer']);
+    expect(host.textContent).toContain('heights from vreta-outer-dem.tif.json');
 });
 
 test('the hillshade buttons render the inner and the outer terrain', async () => {

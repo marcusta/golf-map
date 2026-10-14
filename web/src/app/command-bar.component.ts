@@ -25,7 +25,7 @@ import { VEGETATION_TOOL_ID } from '../zones/vegetation-tool';
 import { PlantVegetationService, arboristOutcome } from '../zones/plant-vegetation.service';
 import { ShapingService, type ShapingJob } from '../terrain-edit/shaping.service';
 import { TerrainEditToolService, TERRAIN_EDIT_TOOL_ID } from '../terrain-edit/terrain-edit-tool.service';
-import { CLEAN_TOOL_ID } from '../clean/clean-tool.service';
+import { CleanToolService, CLEAN_TOOL_ID } from '../clean/clean-tool.service';
 import { FURNITURE_TOOL_ID } from '../furniture/furniture.service';
 import { MESH_FEATURE_TYPES, gsproTarget, type GsproTargetId } from '../../../shared/gspro-targets';
 import { MapBuildClientService, formatBytes } from '../map-build/map-build.service';
@@ -141,14 +141,53 @@ const gsproTpl = template(`
     <button bind="boardBtn" type="button" class="cmdbar__gspro-btn" data-testid="gspro-board-btn"></button>
 `);
 
+/** A job phase, as much of it as the Unity question needs. */
+export interface UnityPhase { id: string; status: string }
+
 /**
- * True when a result dialog still has to ask for the Unity scene to be saved.
- * A chain that pushed into Unity with `save: true` reports a `Saved …` line of
- * its own (unity/README.md, "Saving what a command changed"), and a report
- * that never mentions Unity changed nothing there.
+ * A push's own report line: `Unity (vreta_v4): …` from a bridge command,
+ * `Unity inner: …` from a heightmap push, either behind a chain's `inner: `
+ * prefix. The lines that say nothing was pushed ("Not in Unity: …", "Still
+ * manual in Unity: …", "there is no Unity push for the outer terrain") start
+ * elsewhere, so they never match.
  */
-export function needsSceneSave(report: readonly string[]): boolean {
-    return report.some(l => l.includes('Unity')) && !report.some(l => l.includes('Saved '));
+const UNITY_PUSH_LINE = /^(?:[a-z][\w ]*: )?Unity (?:\(|inner\b|outer\b)/;
+
+/**
+ * True when this job pushed something into the open Unity editor. The phases
+ * decide when the job has one (`unity`, `terrain:unity`, `meshes:unity`, …:
+ * `done` is a push, `skipped` is not); only a chain without a Unity phase of
+ * its own (shapes, vegetation, the course file) is read from the report, and
+ * then from the push's own line, never from the words "Unity" or "Not in
+ * Unity" anywhere in it.
+ */
+export function pushedIntoUnity(report: readonly string[], phases: readonly UnityPhase[] | null = null): boolean {
+    const unity = phases?.filter(p => /(?:^|:)unity$/.test(p.id)) ?? [];
+    if (unity.length > 0) return unity.some(p => p.status === 'done');
+    return report.some(l => UNITY_PUSH_LINE.test(l) && !/\bskipped\b/.test(l));
+}
+
+/**
+ * True when a result dialog still has to ask for the Unity scene to be saved:
+ * something went into Unity and no `Saved …` line says the chain saved it
+ * itself (unity/README.md, "Saving what a command changed").
+ */
+export function needsSceneSave(report: readonly string[], phases: readonly UnityPhase[] | null = null): boolean {
+    return pushedIntoUnity(report, phases) && !report.some(l => l.includes('Saved '));
+}
+
+/**
+ * Why a `vegetation-update` job says the quick path cannot do these zones (the
+ * server's `needsPlanting` + `reason` on the result), as one sentence, or
+ * null when it did them. Read off the result by name: the field is newer than
+ * the generated type.
+ */
+export function needsPlanting(result: unknown): string | null {
+    const r = result as { needsPlanting?: unknown; reason?: unknown } | null | undefined;
+    if (!r || r.needsPlanting !== true) return null;
+    const reason = typeof r.reason === 'string' ? r.reason.trim() : '';
+    if (!reason) return 'These zones cannot be updated on their own.';
+    return /[.!?]$/.test(reason) ? reason : `${reason}.`;
 }
 
 /** `Course shapes` → `course shapes`, for "Could not update …". */
@@ -741,6 +780,11 @@ export class CommandBarComponent extends Component<{ mode: CommandBarMode }> {
     private get terrain(): TerrainEditToolService {
         return (this.terrainTool ??= this.inject(TerrainEditToolService));
     }
+    /** The Clean tool's pixel-save queue ("Update photo" waits for it); built on first read. */
+    private cleanTool?: CleanToolService;
+    private get clean(): CleanToolService {
+        return (this.cleanTool ??= this.inject(CleanToolService));
+    }
     /** Which GSPro action this bar started ('' = none), so its button shows the step. */
     private readonly action = new Signal<string>('');
     private helpModal = this.inject(HelpModalService);
@@ -1085,12 +1129,16 @@ export class CommandBarComponent extends Component<{ mode: CommandBarMode }> {
             // bunker, pond or creek selected in Draw mode.
             meshesFeatureBtn: {
                 'data-off': () => String(this.meshFeatureIds().length === 0),
+                // It runs a ShapingService job, so its face shows that job's phase.
                 innerHTML: () => this.updateLabel('meshes-feature',
-                    this.meshFeatureIds().length > 1 ? `Update meshes (${this.meshFeatureIds().length} features)` : 'Update meshes (this feature)'),
+                    this.meshFeatureIds().length > 1 ? `Update meshes (${this.meshFeatureIds().length} features)` : 'Update meshes (this feature)',
+                    () => this.shapingStep('Updating meshes')),
                 title: () => (this.meshFeatureIds().length > 1
                     ? "Re-shape these features' meshes in Blender with their saved recipe and refresh them in the course's open Unity project"
                     : "Re-shape this feature's meshes in Blender with its saved recipe (a rock slab: cut it out of them) and refresh them in the course's open Unity project"),
-                ...this.updateButton('meshes-feature', (courseId) => this.updateMeshesForFeatures(courseId, this.meshFeatureIds())),
+                // A recipe save still in flight would be shaped from its old value.
+                ...this.updateButton('meshes-feature', (courseId) => this.updateMeshesForFeatures(courseId, this.meshFeatureIds()),
+                    () => this.subMode() === TERRAIN_EDIT_TOOL_ID && this.terrain.saving.get()),
             },
             meshesBtn: {
                 'data-off': () => String(this.subMode() !== TERRAIN_EDIT_TOOL_ID || this.meshFeatureIds().length > 0),
@@ -1101,7 +1149,7 @@ export class CommandBarComponent extends Component<{ mode: CommandBarMode }> {
             // Draw mode with a road or path selected: its surface through Blender into Unity.
             pathsBtn: {
                 'data-off': () => String(this.subMode() !== DRAW_TOOL_ID || this.selectedPathCount() === 0),
-                innerHTML: () => `${icon('upload', 16)}<span>${this.action.get() === 'paths' ? this.pathsStep() : 'Update paths'}</span>`,
+                innerHTML: () => this.updateLabel('paths', 'Update paths', () => this.pathsStep()),
                 title: "Update paths: take the paths' surfaces as set now (Path surface) through to the course's open Unity project. Rewrites the surfaces file of the exported SVG, lets Blender cut the roads of mixed surfaces apart (only what changed is re-shaped, with any other shaping not yet applied), re-imports those meshes and gives every path mesh its surface's material. For a changed surface only: a path that was moved or redrawn needs the SVG export and the OPCD build",
                 ...this.updateButton('paths', (courseId) => this.updatePathsInUnity(courseId)),
             },
@@ -1132,7 +1180,7 @@ export class CommandBarComponent extends Component<{ mode: CommandBarMode }> {
                 'data-off': () => String(this.subMode() !== CLEAN_TOOL_ID),
                 innerHTML: () => this.updateLabel('photo', 'Update photo'),
                 title: () => gsproTarget('photo').description,
-                ...this.updateButton('photo', (courseId) => this.runSyncUpdate(courseId, 'photo')),
+                ...this.updateButton('photo', (courseId) => this.updatePhoto(courseId)),
             },
             courseFileBtn: {
                 'data-off': () => String(this.subMode() !== FURNITURE_TOOL_ID),
@@ -1168,24 +1216,32 @@ export class CommandBarComponent extends Component<{ mode: CommandBarMode }> {
         }));
     }
 
-    /** The shared parts of an Update button: busy while its own run goes, off while any GSPro job runs. */
-    private updateButton(action: string, run: (courseId: string) => Promise<void>): {
+    /**
+     * The shared parts of an Update button: busy while its own run goes, off
+     * while any GSPro job runs — and while `alsoBusy` says this one's own
+     * groundwork is not finished (an unsaved recipe).
+     */
+    private updateButton(action: string, run: (courseId: string) => Promise<void>, alsoBusy?: () => boolean): {
         disabled: () => boolean; 'aria-busy': () => string; onclick: () => void;
     } {
         return {
-            disabled: () => this.gsproBusy(),
+            disabled: () => this.gsproBusy() || alsoBusy?.() === true,
             'aria-busy': () => String(this.action.get() === action),
             onclick: () => {
                 const course = this.svc.course.peek();
-                if (!course || this.gsproBusyNow()) return;
+                if (!course || this.gsproBusyNow() || alsoBusy?.() === true) return;
                 void this.runAction(action, () => run(course.id));
             },
         };
     }
 
-    /** An Update button's face: the running job's step while it is this button's run. */
-    private updateLabel(action: string, label: string): string {
-        return `${icon('upload', 16)}<span>${this.action.get() === action ? this.syncStep() : label}</span>`;
+    /**
+     * An Update button's face: the running job's step while it is this
+     * button's run. `step` is whose job that is — the status board's by
+     * default, the shaping job's for the buttons that run one themselves.
+     */
+    private updateLabel(action: string, label: string, step: () => string = () => this.syncStep()): string {
+        return `${icon('upload', 16)}<span>${this.action.get() === action ? step() : label}</span>`;
     }
 
     /** The running board job's step ("Exporting the heightmaps…"). */
@@ -1974,9 +2030,13 @@ export class CommandBarComponent extends Component<{ mode: CommandBarMode }> {
      */
     private async runSyncUpdate(courseId: string, id: GsproTargetId): Promise<void> {
         const target = gsproTarget(id);
+        const before = this.gsproSync.job.peek()?.id ?? null;
         const ok = await this.gsproSync.update(courseId, id);
         const job = this.gsproSync.job.peek();
-        const results = job?.results ?? [];
+        // A refused update (blocked, or another run holds the board) leaves the
+        // job of that other run in hand: its results are not this dialog's.
+        const mine = job !== null && (ok || job.id !== before);
+        const results = mine ? job!.results : [];
         const report = results.flatMap(r => [
             ...(results.length > 1 ? [`${r.label}:`] : []),
             ...r.report,
@@ -1985,9 +2045,9 @@ export class CommandBarComponent extends Component<{ mode: CommandBarMode }> {
         const body = ok
             ? [
                 target.manual ? `Then: ${target.manual}.` : '',
-                needsSceneSave(report) ? 'Save the scene in Unity to keep it.' : '',
+                needsSceneSave(report, job?.phases ?? null) ? 'Save the scene in Unity to keep it.' : '',
             ].filter(Boolean).join(' ') || `${target.label} is up to date in GSPro.`
-            : this.gsproSync.error.peek() || job?.error || 'The update failed.';
+            : this.gsproSync.error.peek() || (mine ? job!.error : null) || 'The update failed.';
         await this.confirm.confirm({
             title: ok ? `${target.label} updated` : `Could not update the ${lower(target.label)}`,
             body,
@@ -1996,6 +2056,26 @@ export class CommandBarComponent extends Component<{ mode: CommandBarMode }> {
             tone: ok ? 'primary' : 'warning',
             layout: report.length > 3 ? 'review' : 'default',
         });
+    }
+
+    /**
+     * The photo, once the Clean tool's painting has reached the photo file:
+     * the chain renders the cleaned photo from the file, so a stroke still in
+     * the save queue would not be in it. A failed save stops the update — the
+     * save has to be retried first (clean-tool.service.ts, `settled`).
+     */
+    private async updatePhoto(courseId: string): Promise<void> {
+        await this.clean.settled();
+        if (this.clean.saveState.peek() === 'error') {
+            await this.confirm.confirm({
+                title: 'Could not update the photo',
+                body: 'Some changes are not saved yet: retry the save in the Clean panel first.',
+                detail: this.clean.saveError.peek() ?? undefined,
+                confirmLabel: 'OK', cancelLabel: 'Close', tone: 'warning',
+            });
+            return;
+        }
+        await this.runSyncUpdate(courseId, 'photo');
     }
 
     /**
@@ -2029,7 +2109,7 @@ export class CommandBarComponent extends Component<{ mode: CommandBarMode }> {
             title: nothing ? 'Nothing to re-shape' : 'Meshes updated',
             body: nothing
                 ? 'The meshes already match this feature\'s recipe and outline.'
-                : [r.unityError ? `Unity: ${r.unityError}` : '', needsSceneSave(report) ? 'Save the scene in Unity to keep it.' : '']
+                : [r.unityError ? `Unity: ${r.unityError}` : '', needsSceneSave(report, job.phases) ? 'Save the scene in Unity to keep it.' : '']
                     .filter(Boolean).join(' ') || 'Done.',
             detail: report.join('\n'),
             confirmLabel: 'Done', cancelLabel: 'Close',
@@ -2044,11 +2124,16 @@ export class CommandBarComponent extends Component<{ mode: CommandBarMode }> {
         return this.features.selectedFeatures.get().filter(f => f.type === 'path').length;
     }
 
-    /** The running paths job's phase for the button ("Blender sync…"). */
-    private pathsStep(): string {
+    /** The running shaping job's phase, for the buttons that run one ("Blender sync…"). */
+    private shapingStep(fallback: string): string {
         const job = this.shaping.job.get();
         const phase = job?.phases.find(p => p.id === job.phase);
-        return `${phase?.label ?? 'Updating paths'}…`;
+        return `${phase?.label ?? fallback}…`;
+    }
+
+    /** The running paths job's phase for the button ("Blender sync…"). */
+    private pathsStep(): string {
+        return this.shapingStep('Updating paths');
     }
 
     /**
@@ -2081,7 +2166,7 @@ export class CommandBarComponent extends Component<{ mode: CommandBarMode }> {
         ];
         // What a surfaces-only update cannot carry: a moved outline, a grass track made a hard path (or back), a new road.
         const needsBuild = r.pathSurfaces.some(l => l.startsWith('warning:'));
-        const save = needsSceneSave(report) ? ' Save the scene in Unity to keep it.' : '';
+        const save = needsSceneSave(report, job.phases) ? ' Save the scene in Unity to keep it.' : '';
         await this.confirm.confirm({
             title: !intoUnity ? 'Paths not in Unity yet' : needsBuild ? 'Paths updated, but some changes need a new build' : 'Paths updated in Unity',
             body: !intoUnity ? (r.unityError ?? 'Unity did not take them - see below.')
@@ -2115,7 +2200,23 @@ export class CommandBarComponent extends Component<{ mode: CommandBarMode }> {
         }
         const report = job.result?.report ?? [];
         const ok = job.status === 'succeeded';
-        const intoUnity = report.some(l => l.startsWith('Unity ('));
+        // The quick path cannot do these zones (a new zone type, a generated
+        // zone gone): the server says so instead of running the whole planting
+        // behind the operator's back.
+        const needs = ok ? needsPlanting(job.result) : null;
+        if (needs) {
+            const go = await this.confirm.confirm({
+                title: 'These zones need Update vegetation',
+                body: `${needs} This needs Update vegetation: the generated zones are replaced (the zones you drew are kept), `
+                    + 'every generator runs again and the whole masks and Arborist file are written.',
+                detail: report.length > 0 ? report.join('\n') : undefined,
+                confirmLabel: 'Update vegetation', cancelLabel: 'Cancel', tone: 'primary',
+            });
+            if (go) await this.runPlantVegetation(courseId);
+            else await this.gsproSync.refresh(courseId);
+            return;
+        }
+        const intoUnity = pushedIntoUnity(report);
         const save = needsSceneSave(report) ? ', save the scene to keep it' : '';
         await this.confirm.confirm({
             title: ok ? (intoUnity ? 'Zones updated' : 'Nothing to update') : 'Could not update the zones',
@@ -2146,6 +2247,14 @@ export class CommandBarComponent extends Component<{ mode: CommandBarMode }> {
             tone: 'primary',
         });
         if (!ok) return;
+        await this.runPlantVegetation(courseId);
+    }
+
+    /**
+     * The planting itself, without the question: also what "Update N zones"
+     * falls back to when the quick path cannot do those zones.
+     */
+    private async runPlantVegetation(courseId: string): Promise<void> {
         let job: Awaited<ReturnType<PlantVegetationService['plant']>>;
         try {
             job = await this.plant.plant(courseId);
@@ -2159,7 +2268,7 @@ export class CommandBarComponent extends Component<{ mode: CommandBarMode }> {
         }
         await this.features.reloadOrLoad(courseId);
         const report = job.result?.report ?? [];
-        const intoUnity = report.some(l => l.startsWith('Unity ('));
+        const intoUnity = pushedIntoUnity(report);
         const save = needsSceneSave(report) ? ', save the scene to keep it' : '';
         await this.confirm.confirm({
             title: job.status === 'succeeded' ? 'Vegetation updated' : 'Could not update the vegetation',

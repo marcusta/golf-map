@@ -429,10 +429,30 @@ export function usageText(): string {
         '<course>          course id, slug or a unique name substring',
         '--lower|--trees   only that half of the file (default: both, as --all)',
         '--no-reload       write the file only, no Arborist',
-        '--screenshot      after the reload, at the viewpoints of docs/gspro/<slug>/perf-views.json',
+        '--screenshot      after the reload, at the viewpoints of docs/gspro/<slug>/perf-views.json;',
+        '                  the view names after it up to the next --flag, none = every one.',
+        '                  The course is never one of them: name it first',
         '--close-others    close Unity and GreenKeeper first (Arborist needs 11-12 GB)',
         "--out <folder>    a trial: write the file there, leave the course folder's alone",
     ].join('\n');
+}
+
+/** The flags that take one value, so the token after one is not the course. */
+const VALUE_FLAGS = new Set(['--wait', '--settle', '--frames', '--out', '--size']);
+
+/**
+ * Where the course is: the first token that is neither a flag nor a flag's
+ * one value. `--screenshot`'s view names are not scanned, so
+ * `--screenshot vreta` names the course and takes every view — the course is
+ * never swallowed by it.
+ */
+function courseIndex(argv: readonly string[]): number {
+    for (let i = 0; i < argv.length; i++) {
+        const a = argv[i]!;
+        if (!a.startsWith('--')) return i;
+        if (VALUE_FLAGS.has(a)) i++;
+    }
+    return -1;
 }
 
 /** The command line, or an error to print with the usage. `out` is the trial folder of --out. */
@@ -441,16 +461,17 @@ export function parseArgs(argv: string[]): { course: string; opts: LoopOptions; 
     let course: string | null = null;
     let out: string | null = null;
     const parts = new Set<'lower' | 'trees'>();
+    const courseAt = courseIndex(argv);
     for (let i = 0; i < argv.length; i++) {
         const a = argv[i]!;
         const value = () => {
             const v = argv[i + 1];
-            if (v === undefined || v.startsWith('--')) return null;
+            if (v === undefined || v.startsWith('--') || i + 1 === courseAt) return null;
             i++;
             return v;
         };
         if (!a.startsWith('--')) {
-            if (course) return { error: `name one course, not '${course}' and '${a}'` };
+            if (i !== courseAt) return { error: `name one course, not '${course ?? argv[courseAt] ?? '?'}' and '${a}'` };
             course = a;
         } else if (a === '--all') { parts.add('lower'); parts.add('trees'); }
         else if (a === '--lower') parts.add('lower');

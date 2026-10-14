@@ -16,7 +16,9 @@
 //
 // Updates QUEUE per course on the server, so a job comes back `queued` rather
 // than refused; the poll follows it through queued → running → succeeded. The
-// 409s that remain (a blocked target asked for by name) land in `error`.
+// 409s that remain (a blocked target asked for by name) land in `error`. A
+// poll that fails is retried (the job runs in the server either way) and only
+// a job the server has forgotten (404, it restarted) ends the follow.
 //
 // The board is re-fetched every 30 s while the dialog is open: edits are made
 // in the other modes (Draw, Terrain editor, Vegetation), so what is stale
@@ -26,8 +28,8 @@
 // reads `staleCount` for its menu row. Testable headlessly — the constructor
 // takes the API client.
 
-import { Signal } from '@basics/core/client/core';
-import { api } from '../api';
+import { Computed, Signal } from '@basics/core/client/core';
+import { api, ApiError } from '../api';
 import type {
     GsproSyncApi, GsproSyncStatus, GsproSyncJob, GsproTargetStatus, ChangeCount,
 } from '../../../shared/api/gspro-sync.gen';
@@ -39,6 +41,16 @@ export const DEFAULT_POLL_MS = 1500;
 /** How often the board re-reads the status while the dialog is open (ms). */
 export const DEFAULT_REFRESH_MS = 30_000;
 
+/** Failed polls in a row before the board says it lost contact. */
+const LOST_AFTER = 3;
+
+/** How a poll that found no job explains itself (the server keeps jobs in memory). */
+const FORGOTTEN = 'the server no longer knows this job (the server may have restarted). '
+    + 'What it had already written is in the export folder: re-read the board and update again if a row is still stale.';
+
+/** The "still trying" line, so a successful poll can tell it from a real failure. */
+const lostLine = (why: string) => `Lost contact with the server (${why}) — still trying…`;
+
 export class GsproSyncService {
     /** Course the board is open for; null = closed. */
     readonly courseId = new Signal<string | null>(null);
@@ -46,8 +58,16 @@ export class GsproSyncService {
     readonly status = new Signal<GsproSyncStatus | null>(null);
     /** The update job being followed (running, queued, or the one that just finished). */
     readonly job = new Signal<GsproSyncJob | null>(null);
-    /** An update is on its way, waiting in the queue or running. */
-    readonly running = new Signal<boolean>(false);
+    /** True between the update request and the job's end, before the first poll answers. */
+    private readonly starting = new Signal(false);
+    /**
+     * An update is on its way, waiting in the queue or running — derived, so a
+     * poll that never answers cannot leave the board busy for the session.
+     */
+    readonly running = new Computed<boolean>(() => {
+        const status = this.job.get()?.status;
+        return this.starting.get() || status === 'queued' || status === 'running';
+    });
     /** Targets that are stale and runnable — what "Update all stale" would take. */
     readonly staleCount = new Signal<number>(0);
     /** The last failure: a refused update (409), a failed job or a dead connection. */
@@ -57,9 +77,11 @@ export class GsproSyncService {
     /** Bumped on every poll so elapsed-time text re-renders. */
     readonly tick = new Signal<number>(0);
 
-    /** True between the update request and the job's end, before the first poll answers. */
-    private starting = false;
     private refreshTimer: ReturnType<typeof setInterval> | null = null;
+    /** Bumped per `refresh`; only the newest read's answer is applied. */
+    private refreshSeq = 0;
+    /** A job we gave up on (404); a later status read must not put it back as running. */
+    private forgotten: string | null = null;
 
     constructor(
         private readonly client: GsproSyncApi = api.gsproSync,
@@ -83,7 +105,6 @@ export class GsproSyncService {
             this.status.set(null);
             this.job.set(null);
             this.staleCount.set(0);
-            this.recompute();
         }
         this.startRefreshing(courseId);
         await this.refresh(courseId);
@@ -115,22 +136,31 @@ export class GsproSyncService {
      * Read the board. Keeps the job we are following (the server's `job` is
      * the same one while it runs, and its last one after), and leaves `error`
      * alone so a failed job's reason survives the refresh that follows it.
+     *
+     * Two reads can be in flight at once (a course switch, or the run's own
+     * re-read against the 30 s tick), so each takes a sequence number and
+     * only the newest one's answer is applied: an older one landing last
+     * would show another course's rows or put back the stale count the run
+     * just cleared.
      */
     async refresh(courseId: string): Promise<void> {
+        const seq = ++this.refreshSeq;
+        const newest = () => seq === this.refreshSeq;
         this.loading.set(true);
         try {
             const status = await this.client.status({ courseId });
+            if (!newest()) return;
             // The board moved to another course (or closed) while this was in flight.
             const open = this.courseId.peek();
             if (open !== null && open !== courseId) return;
             this.status.set(status);
             this.staleCount.set(status.targets.filter(t => t.stale && t.blocked === null).length);
-            if (!this.starting && status.job) this.job.set(status.job);
-            this.recompute();
+            if (!this.starting.peek() && status.job && status.job.id !== this.forgotten) this.job.set(status.job);
         } catch (e) {
-            this.error.set(messageOf(e));
+            if (newest()) this.error.set(messageOf(e));
         } finally {
-            this.loading.set(false);
+            // A newer read is still working: it owns `loading` now.
+            if (newest()) this.loading.set(false);
         }
     }
 
@@ -140,42 +170,73 @@ export class GsproSyncService {
      * board. False when the update was refused or the job failed.
      */
     async update(courseId: string, target: GsproTargetId | 'stale'): Promise<boolean> {
-        if (this.running.peek()) return false;
+        if (this.running.peek()) {
+            // Say which run holds the board: the caller's dialog has nothing else to show.
+            const step = this.job.peek()?.step?.trim();
+            this.error.set(`A GSPro update is already running${step ? `: ${step}` : ''}`);
+            return false;
+        }
         this.error.set('');
-        this.starting = true;
-        this.recompute();
+        this.starting.set(true);
+        this.forgotten = null;
         let job: GsproSyncJob;
         try {
             job = await this.client.update({ courseId, target });
         } catch (e) {
             // A blocked target asked for by name comes back 409 with its reason.
             this.error.set(messageOf(e));
-            this.starting = false;
-            this.recompute();
+            this.starting.set(false);
             return false;
         }
         const ok = await this.follow(job);
-        this.starting = false;
-        this.recompute();
+        this.starting.set(false);
         await this.refresh(courseId);
         return ok;
     }
 
-    /** Poll a job through queued → running to its end. True when it succeeded. */
+    /**
+     * Poll a job through queued → running to its end. True when it succeeded.
+     *
+     * A poll that fails is retried — the job goes on in the server either way
+     * — and after a few in a row `error` says contact was lost (cleared again
+     * by the next poll that answers). A job the server no longer knows (404:
+     * it restarted, jobs live in its memory) ends as failed with that
+     * explanation instead of being polled forever. The same hardening as
+     * `ShapingService.poll`; it is mirrored rather than shared because the
+     * two loops differ in nearly everything around the retry (job states,
+     * where the lost-contact line goes, what they resolve with) and
+     * shaping.service.ts is outside this change's files.
+     */
     private async follow(job: GsproSyncJob): Promise<boolean> {
-        this.job.set(job);
-        this.recompute();
-        try {
-            while (job.status === 'queued' || job.status === 'running') {
-                await new Promise(r => setTimeout(r, this.pollMs));
-                job = await this.client.job({ jobId: job.id });
-                this.job.set(job);
-                this.recompute();
-                this.tick.set(this.tick.peek() + 1);
+        this.show(job);
+        let failures = 0;
+        let lost = false;
+        while (job.status === 'queued' || job.status === 'running') {
+            await new Promise(r => setTimeout(r, this.pollMs));
+            let next: GsproSyncJob;
+            try {
+                next = await this.client.job({ jobId: job.id });
+            } catch (e) {
+                if (e instanceof ApiError && e.status === 404) {
+                    this.forgotten = job.id;
+                    job = { ...job, status: 'failed', finishedAt: new Date().toISOString(), error: FORGOTTEN };
+                    this.show(job);
+                    break;
+                }
+                if (++failures >= LOST_AFTER) {
+                    lost = true;
+                    this.error.set(lostLine(messageOf(e)));
+                }
+                continue;
             }
-        } catch (e) {
-            this.error.set(messageOf(e));
-            return false;
+            failures = 0;
+            if (lost) {
+                lost = false;
+                if (this.error.peek().startsWith('Lost contact with the server')) this.error.set('');
+            }
+            job = next;
+            this.show(job);
+            this.tick.set(this.tick.peek() + 1);
         }
         if (job.status !== 'succeeded') {
             this.error.set(job.error || 'The GSPro update failed');
@@ -189,9 +250,17 @@ export class GsproSyncService {
         return true;
     }
 
-    private recompute(): void {
-        const job = this.job.peek();
-        this.running.set(this.starting || job?.status === 'queued' || job?.status === 'running');
+    /**
+     * The job to the board. A view that throws while updating is logged, not
+     * taken for a failed poll: it must not stop the follow, or the board would
+     * stay busy for the rest of the session.
+     */
+    private show(job: GsproSyncJob): void {
+        try {
+            this.job.set(job);
+        } catch (e) {
+            console.error('GSPro board: showing the job failed', e);
+        }
     }
 
     /** One target's row, or null before the first refresh. */

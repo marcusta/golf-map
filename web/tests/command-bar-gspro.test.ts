@@ -1,13 +1,15 @@
 import { test, expect, afterEach } from 'bun:test';
 import { Router, di } from '@basics/core/client/core';
 import { _reset } from '@basics/core/client/error-report';
-import { CommandBarComponent, needsSceneSave } from '../src/app/command-bar.component';
+import { CommandBarComponent, needsSceneSave, pushedIntoUnity } from '../src/app/command-bar.component';
 import { ServerModeService } from '../src/app/server-mode.service';
 import { ConfirmService } from '../src/app/confirm-dialog.component';
 import { CourseDetailService } from '../src/course-detail/course-detail.service';
 import { EditorModeService } from '../src/editor/editor-mode.service';
 import { FeaturesService } from '../src/draw/features.service';
 import { GsproSyncService } from '../src/export/gspro-sync.service';
+import { PlantVegetationService } from '../src/zones/plant-vegetation.service';
+import { CleanToolService } from '../src/clean/clean-tool.service';
 import { ShapingService } from '../src/terrain-edit/shaping.service';
 import { TerrainEditToolService } from '../src/terrain-edit/terrain-edit-tool.service';
 import { DRAW_TOOL_ID } from '../src/draw/draw-tool.service';
@@ -16,10 +18,11 @@ import { CLEAN_TOOL_ID } from '../src/clean/clean-tool.service';
 import { FURNITURE_TOOL_ID } from '../src/furniture/furniture.service';
 import { TERRAIN_EDIT_TOOL_ID } from '../src/terrain-edit/terrain-edit-tool.service';
 import { GSPRO_TARGETS } from '../../shared/gspro-targets';
-import type { CourseFeature } from '../../shared/api/course-features.gen';
+import type { CourseFeature, CourseFeaturesApi } from '../../shared/api/course-features.gen';
 import type {
     GsproSyncApi, GsproSyncJob, GsproSyncStatus, GsproTargetStatus,
 } from '../../shared/api/gspro-sync.gen';
+import type { GsproExportApi, GsproExportJob } from '../../shared/api/gspro-export.gen';
 import { doneJob, fakeShapingApi, shapingJob } from './shaping-fakes';
 
 // The command bar's GSPro group (docs/web-features.md, "The GSPro dialog is a
@@ -61,7 +64,7 @@ function syncJob(patch: Partial<GsproSyncJob> = {}): GsproSyncJob {
 }
 
 /** The board server: `status` answers the rows the test set, `update` the jobs in order. */
-function fakeSync(opts: { stale?: GsproTargetStatus['id'][]; jobs?: GsproSyncJob[] } = {}) {
+function fakeSync(opts: SetupOpts = {}) {
     const calls = { status: 0, update: [] as string[] };
     const jobs = opts.jobs ?? [syncJob()];
     let at = -1;
@@ -82,6 +85,7 @@ function fakeSync(opts: { stale?: GsproTargetStatus['id'][]; jobs?: GsproSyncJob
         },
         async update({ target }) {
             calls.update.push(target);
+            if (opts.updateFails) throw opts.updateFails;
             at = 0;
             return jobs[0];
         },
@@ -93,6 +97,30 @@ function fakeSync(opts: { stale?: GsproTargetStatus['id'][]; jobs?: GsproSyncJob
             return { editors: [], matched: null, exportDir: 'D:\\out' };
         },
     };
+    return { api, calls };
+}
+
+/** A finished vegetation export job, whose result may carry the server's `needsPlanting`. */
+function plantJob(kind: 'vegetation' | 'vegetation-update', result: Record<string, unknown>): GsproExportJob {
+    return {
+        id: `${kind}-1`, courseId: COURSE_ID, kind, label: kind, status: 'succeeded',
+        startedAt: '2026-10-14T12:00:00.000Z', finishedAt: '2026-10-14T12:00:20.000Z',
+        result: result as unknown as GsproExportJob['result'], error: null,
+    };
+}
+
+/** The vegetation half of the export server: one finished job per `start`, in order. */
+function fakePlant(jobs: GsproExportJob[]) {
+    const calls = { start: [] as string[] };
+    let at = 0;
+    const api = {
+        async start(input: { kind: string }) {
+            calls.start.push(input.kind);
+            return jobs[Math.min(at++, jobs.length - 1)];
+        },
+        async job() { return jobs[Math.min(at - 1, jobs.length - 1)]; },
+        async current() { return null; },
+    } as unknown as GsproExportApi;
     return { api, calls };
 }
 
@@ -113,7 +141,16 @@ class RecordingConfirm extends ConfirmService {
     }
 }
 
-function setup(opts: { stale?: GsproTargetStatus['id'][]; jobs?: GsproSyncJob[] } = {}) {
+interface SetupOpts {
+    stale?: GsproTargetStatus['id'][];
+    jobs?: GsproSyncJob[];
+    /** The board refuses the update (a 409 by name, or another run holding it). */
+    updateFails?: Error;
+    /** The vegetation export jobs "Update vegetation" / "Update N zones" get, in order. */
+    plantJobs?: GsproExportJob[];
+}
+
+function setup(opts: SetupOpts = {}) {
     const serverMode = new ServerModeService();
     serverMode.mode.set('builder');
     di.set(ServerModeService, serverMode);
@@ -136,6 +173,16 @@ function setup(opts: { stale?: GsproTargetStatus['id'][]; jobs?: GsproSyncJob[] 
     di.set(ShapingService, shaping);
     di.set(TerrainEditToolService, new TerrainEditToolService({} as never, {} as never, 0, {} as never, shaping));
 
+    const plant = fakePlant(opts.plantJobs ?? [plantJob('vegetation', { path: '', report: [] })]);
+    di.set(PlantVegetationService, new PlantVegetationService(plant.api, 0));
+
+    const clean = new CleanToolService();
+    di.set(CleanToolService, clean);
+
+    // The features the bar selects from, with a reload that touches no server.
+    const features = new FeaturesService({ async list() { return []; } } as unknown as CourseFeaturesApi);
+    di.set(FeaturesService, features);
+
     const confirm = new RecordingConfirm();
     di.set(ConfirmService, confirm);
 
@@ -151,7 +198,7 @@ function setup(opts: { stale?: GsproTargetStatus['id'][]; jobs?: GsproSyncJob[] 
         .filter(b => b.dataset.off !== 'true')
         .map(b => b.textContent!.trim());
     const subMode = (toolId: string) => di.get(EditorModeService).activeToolId.set(toolId);
-    return { host, q, shown, subMode, sync, shaping, shapingApi, confirm, calls, svc, features: di.get(FeaturesService) };
+    return { host, q, shown, subMode, sync, shaping, shapingApi, confirm, calls, svc, features, clean, plant: plant.calls };
 }
 
 const tick = (ms = 0): Promise<void> => new Promise(resolve => setTimeout(resolve, ms));
@@ -304,4 +351,155 @@ test('needsSceneSave: only a report that touched Unity without saving still asks
     expect(needsSceneSave(['Unity (vreta_v4): 2 objects refreshed', 'Saved Vreta.unity (3 s)'])).toBe(false);
     expect(needsSceneSave(['SVG: 142 shapes'])).toBe(false);
     expect(needsSceneSave([])).toBe(false);
+});
+
+test('a chain that pushed nothing into Unity never asks for the scene to be saved', () => {
+    // The lines the chains write when there was no push: they all say "Unity".
+    const nothing = [
+        'Not in Unity: no open Unity editor imports from D:\\out (none is open)',
+        'Still manual in Unity: Terrain › Export To OBJ for Blender, and the terrain conform once the meshes are rebuilt.',
+        'The outer texture is written only: there is no Unity push for the outer terrain — set it on the terrain by hand once.',
+        'Next in Unity: Run GolfMap › Buildings › Plant from assignments.',
+    ];
+    expect(pushedIntoUnity(nothing)).toBe(false);
+    expect(needsSceneSave(nothing)).toBe(false);
+
+    // A push writes its own line, behind a chain's per-terrain prefix or not.
+    expect(pushedIntoUnity(['Unity (vreta_v4): golfmap.trees.plant — 4 120 stems'])).toBe(true);
+    expect(pushedIntoUnity(['inner: Unity inner (vreta_v4): heights from vreta-inner-dem.json'])).toBe(true);
+    expect(pushedIntoUnity(['inner: Unity (vreta_v4): imported vreta-inner-zones.json'])).toBe(true);
+    expect(pushedIntoUnity(['Unity inner: skipped (nothing sculpted)'])).toBe(false);
+
+    // With phases, they decide: `done` is a push, `skipped` is not — whatever the lines say.
+    expect(pushedIntoUnity(nothing, [{ id: 'terrain:unity', status: 'done' }])).toBe(true);
+    expect(pushedIntoUnity(['Unity (vreta_v4): golfmap.creeks.import — done'], [{ id: 'creeks:unity', status: 'skipped' }])).toBe(false);
+    expect(pushedIntoUnity([], [{ id: 'meshes:unity', status: 'done' }])).toBe(true);
+    expect(needsSceneSave([], [{ id: 'unity', status: 'done' }])).toBe(true);
+    expect(needsSceneSave(['Saved Vreta.unity (3 s)'], [{ id: 'unity', status: 'done' }])).toBe(false);
+    // A chain with no Unity phase at all falls back to its report.
+    expect(pushedIntoUnity(nothing, [{ id: 'shapes:svg', status: 'done' }])).toBe(false);
+});
+
+test('Update terrain that reached no Unity editor does not ask for a scene save', async () => {
+    const noUnity = syncJob({
+        phases: [{ id: 'terrain:unity', label: 'Unity', status: 'skipped', detail: null, seconds: null }],
+        results: [{
+            target: 'terrain', label: 'Terrain', seconds: 12,
+            report: [
+                'Not in Unity: no open Unity editor imports from D:\\out (none is open)',
+                'Still manual in Unity: Terrain › Export To OBJ for Blender, and the terrain conform once the meshes are rebuilt.',
+            ],
+            error: null,
+        }],
+    });
+    const { q, subMode, confirm } = setup({ jobs: [noUnity] });
+    await tick();
+    subMode(TERRAIN_EDIT_TOOL_ID);
+
+    q('gspro-update-terrain-btn').click();
+    await tick(10);
+
+    expect(confirm.shown[0].title).toBe('Terrain updated');
+    expect(confirm.shown[0].body).not.toContain('Save the scene');
+});
+
+test('a refused update says why and shows no other job\'s results', async () => {
+    const { q, subMode, confirm, sync } = setup({ updateFails: new Error('A GSPro update is already running: inner trees') });
+    await tick();
+    // The board still holds the last run's job, with its report.
+    sync.job.set(syncJob({ id: 'job-other' }));
+    subMode(CLEAN_TOOL_ID);
+
+    q('gspro-update-photo-btn').click();
+    await tick(10);
+
+    expect(confirm.shown[0].title).toBe('Could not update the photo');
+    expect(confirm.shown[0].body).toBe('A GSPro update is already running: inner trees');
+    // Not the other job's "Unity (vreta_v4): terrain updated".
+    expect(confirm.shown[0].detail).toBeUndefined();
+});
+
+test('Update meshes (this feature) shows the shaping job\'s step, not the board job\'s', async () => {
+    const { q, subMode, shapingApi, sync } = setup();
+    shapingApi.polls = [shapingJob(), doneJob(['Spline_hole_3_1c_Bunker_-_Mesh'])];
+    await tick();
+    // A finished board job is in hand: its step must not be what the button says.
+    sync.job.set(syncJob({ step: 'Done' }));
+    subMode(TERRAIN_EDIT_TOOL_ID);
+    di.get(TerrainEditToolService).selectedFeatureIds.set(['b1']);
+
+    const btn = q('gspro-update-meshes-feature-btn');
+    btn.click();
+    await tick();
+
+    expect(btn.textContent).toContain('Blender sync…');
+    expect(btn.textContent).not.toContain('Done…');
+    await tick(20);
+    expect(btn.textContent).toContain('Update meshes (this feature)');
+});
+
+test('Update meshes (this feature) is off while the recipe save is still in flight', async () => {
+    const { q, subMode } = setup();
+    await tick();
+    subMode(TERRAIN_EDIT_TOOL_ID);
+    const tool = di.get(TerrainEditToolService);
+    tool.selectedFeatureIds.set(['b1']);
+    const btn = q('gspro-update-meshes-feature-btn');
+    expect(btn.disabled).toBe(false);
+
+    tool.saving.set(true);
+    expect(btn.disabled).toBe(true);
+    btn.click();
+    await tick(10);
+    expect(di.get(ShapingService).job.peek()).toBeNull();  // nothing started
+
+    tool.saving.set(false);
+    expect(btn.disabled).toBe(false);
+});
+
+test('Update photo waits for the Clean tool\'s saves and stops when one failed', async () => {
+    const { q, subMode, calls, confirm, clean } = setup();
+    await tick();
+    subMode(CLEAN_TOOL_ID);
+    clean.saveState.set('error');
+    clean.saveError.set('the photo could not be written');
+
+    q('gspro-update-photo-btn').click();
+    await tick(10);
+
+    expect(calls.update).toEqual([]);
+    expect(confirm.shown[0].title).toBe('Could not update the photo');
+    expect(confirm.shown[0].body).toContain('not saved yet');
+
+    // Saved: the chain runs.
+    clean.saveState.set('saved');
+    q('gspro-update-photo-btn').click();
+    await tick(10);
+    expect(calls.update).toEqual(['photo']);
+});
+
+test('Update zones the server cannot do on their own offers Update vegetation instead', async () => {
+    const { q, subMode, features, confirm, plant } = setup({
+        plantJobs: [
+            plantJob('vegetation-update', {
+                path: '', report: ['masks: nothing patched'],
+                needsPlanting: true, reason: 'the zone type "oak scrub" is new here',
+            }),
+            plantJob('vegetation', { path: '', report: ['Unity (vreta_v4): imported vreta-inner-zones.json', 'Arborist lower vegetation written'] }),
+        ],
+    });
+    await tick();
+    subMode(VEGETATION_TOOL_ID);
+    features.store.set([feature('z1', 'vegetation_zone')]);
+    features.select('z1');
+
+    q('update-zones-btn').click();
+    await tick(20);
+
+    expect(confirm.shown[0].title).toBe('These zones need Update vegetation');
+    expect(confirm.shown[0].body).toContain('the zone type "oak scrub" is new here.');
+    expect(confirm.shown[0].body).toContain('This needs Update vegetation');
+    // Answered with OK (RecordingConfirm), so the whole planting ran.
+    expect(plant.start).toEqual(['vegetation-update', 'vegetation']);
+    expect(confirm.shown[1].title).toBe('Vegetation updated');
 });

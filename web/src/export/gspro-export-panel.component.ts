@@ -126,6 +126,11 @@ const TIP = {
         + 'open Unity editor whose GolfMap course imports from this folder. The old texture is backed up in the project\'s '
         + 'GolfMapSpelunk/ortho-backups first. Bake pending Clean edits before this: unbaked ones are not in the photo. Unity '
         + 'must be open with the course active; save the project to keep it.',
+    unityTerrain: 'Exports that heightmap, then puts it onto the terrain in the open Unity editor whose GolfMap course imports '
+        + 'from this folder: heights, size and (outer) position, on the same Terrain objects and data, so vegetation and '
+        + 'references stay. Each terrain is backed up in the course\'s Backups folder first. One terrain on its own — the row\'s '
+        + 'Update does both and re-exports what reads the heightmap. Unity must be open with the course active; save the scene '
+        + 'to keep it.',
     unitySculpt: 'Captures what you sculpted on that terrain in Unity since golf-map\'s heightmap went in (the terrain conform '
         + 'left out) and keeps it as the terrain\'s one "Unity sculpt" edit: heights added on top of every other edit, so the '
         + 'map, the analysis and every later export carry it. A new capture replaces the layer with the whole sculpt; nothing '
@@ -197,6 +202,7 @@ const DETAILS: Record<GsproTargetId, string> = {
         ${filesHead}
         ${matrix(`
             ${matrixRow('Heightmap (RAW + GeoTIFF)', TIP.dem, runBtn('runInnerDem', 'inner-dem'), runBtn('runOuterDem', 'outer-dem'))}
+            ${matrixRow('Heightmap → Unity', TIP.unityTerrain, runBtn('runInnerUnity', 'inner-unity', 'gspro-inner-unity'), runBtn('runOuterUnity', 'outer-unity', 'gspro-outer-unity'))}
             ${matrixRow('Pull sculpt from Unity', TIP.unitySculpt, runBtn('runInnerSculpt', 'inner-sculpt', 'gspro-inner-sculpt'), runBtn('runOuterSculpt', 'outer-sculpt', 'gspro-outer-sculpt'))}
             ${matrixRow('Hillshade JPEG', TIP.hillshade, runBtn('runInnerHillshade', 'inner-hillshade'), runBtn('runOuterHillshade', 'outer-hillshade'))}`)}`,
 
@@ -1492,6 +1498,18 @@ export class GsproExportPanelComponent extends Component {
                 title: 'Export inner heightmap (RAW + GeoTIFF)',
                 disabled: () => busy() || noTerrain(),
                 onclick: () => { void this.svc.runDem('inner'); },
+            },
+            runInnerUnity: {
+                textContent: '→ Unity',
+                title: 'Inner heightmap → Unity',
+                disabled: () => busy() || noTerrain(),
+                onclick: () => { void this.svc.runUnityTerrain('inner'); },
+            },
+            runOuterUnity: {
+                textContent: '→ Unity',
+                title: 'Outer heightmap → Unity',
+                disabled: () => busy() || noTerrain(),
+                onclick: () => { void this.svc.runUnityTerrain('outer'); },
             },
             runInnerSculpt: {
                 textContent: 'Pull from Unity',

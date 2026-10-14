@@ -405,6 +405,18 @@ describe('the command line', () => {
         });
     });
 
+    test('--screenshot never swallows the course, wherever the course stands', () => {
+        // The first positional is the course, so this is "every view of vreta".
+        expect(parseArgs(['--screenshot', 'vreta'])).toMatchObject({ course: 'vreta', opts: { screenshot: [] } });
+        expect(parseArgs(['--close-others', '--screenshot', 'vreta'])).toMatchObject({ course: 'vreta', opts: { screenshot: [], closeOthers: true } });
+        // A flag's own value is not the course either.
+        expect(parseArgs(['--wait', '90', '--screenshot', 'vreta'])).toMatchObject({
+            course: 'vreta', opts: { screenshot: [], waitSec: 90 },
+        });
+        // With the course first, the names after --screenshot are still its views.
+        expect(parsed('vreta --screenshot --no-reload').opts).toMatchObject({ screenshot: [], reload: false });
+    });
+
     test('--wait, --settle, --size and --frames', () => {
         expect(parsed('vreta --wait 120 --settle 25 --size 1920x1440 --frames 40').opts)
             .toMatchObject({ waitSec: 120, settleSec: 25, width: 1920, height: 1440, frames: 40 });
