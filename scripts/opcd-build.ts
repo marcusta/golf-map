@@ -444,15 +444,28 @@ export async function launchBrowser(opts: LaunchOptions): Promise<BrowserContext
     await mkdir(opts.profileDir, { recursive: true });
     await mkdir(opts.downloadsTo, { recursive: true });
     try {
-        return await chromium.launchPersistentContext(opts.profileDir, {
+        const context = await chromium.launchPersistentContext(opts.profileDir, {
             headless: opts.headless,
             acceptDownloads: true,
             downloadsPath: opts.downloadsTo,
             viewport: { width: 1600, height: 1000 },
             timeout: opts.timeoutMs ?? LAUNCH_TIMEOUT_MS,
         });
+        // Playwright's actions wait for an element to be stable and to receive pointer
+        // events with NO time limit by default: a click under a ZK overlay would hang the
+        // run forever. With a limit the error says what intercepted the click.
+        context.setDefaultTimeout(STEP_TIMEOUT_MS);
+        context.setDefaultNavigationTimeout(STEP_TIMEOUT_MS * 2);
+        return context;
     } catch (e) {
-        throw new Error(`${(e as Error).message.split('\n')[0]}\n${browserDiagnosis()}`);
+        const first = (e as Error).message.split('\n')[0] ?? '';
+        // A second Chromium on a profile another one holds hands itself over to that one and
+        // quits, which Playwright reports as the browser having closed: not a runtime problem.
+        if (/has been closed/i.test(first)) {
+            throw new Error(`${first}\nThe profile ${opts.profileDir} is in use: a Chromium from an earlier run is still open `
+                + '(the headed window of a --setup or --headed run). Close it and run again.');
+        }
+        throw new Error(`${first}\n${browserDiagnosis()}`);
     }
 }
 
@@ -592,14 +605,14 @@ export async function finishLogin(page: Page, deps: BuildDeps): Promise<'app' | 
         if (await isAppReady(page)) return 'app';
         if (await isDiscordLoginForm(page)) return 'needs-human';
         const authorize = page.getByRole('button', { name: AUTHORIZE_BUTTON }).first();
-        if (await authorize.isVisible({ timeout: 1_000 }).catch(() => false)) {
+        if (await visible(authorize, 1_000)) {
             deps.log('Discord asks whether OPCD Golf may use the account: Auktorisera');
             await authorize.click().catch(() => undefined);
             await page.waitForLoadState('domcontentloaded').catch(() => undefined);
             continue;
         }
         const ok = page.getByRole('button', { name: SELECT_ROLE_OK }).first();
-        if (await ok.isVisible({ timeout: 1_000 }).catch(() => false)) {
+        if (await visible(ok, 1_000)) {
             deps.log('OPCD asks for the role (Tenant opcd, RegisteredUser): OK');
             await ok.click().catch(() => undefined);
             continue;
@@ -612,7 +625,7 @@ export async function finishLogin(page: Page, deps: BuildDeps): Promise<'app' | 
 /** A Discord login form — an e-mail and a password to type, which is the human's part. */
 export async function isDiscordLoginForm(page: Page): Promise<boolean> {
     if (!/discord\.com/i.test(page.url())) return false;
-    return page.locator('input[type=password]').first().isVisible({ timeout: 1_000 }).catch(() => false);
+    return visible(page.locator('input[type=password]').first(), 1_000);
 }
 
 /**
@@ -622,11 +635,22 @@ export async function isDiscordLoginForm(page: Page): Promise<boolean> {
  */
 export async function isAppReady(page: Page): Promise<boolean> {
     if (/discord\.com/i.test(page.url())) return false;
-    return menuItem(page).isVisible({ timeout: 5_000 }).catch(() => false);
+    return visible(menuItem(page), 5_000);
 }
 
-/** The left Menu panel's "Course Workflow" — exact, since its siblings read "OPCD Course …". */
-export const menuItem = (page: Page) => page.getByText(MENU_ITEM, { exact: true }).first();
+/**
+ * `locator.isVisible()` answers at once and ignores its `timeout` (Playwright documents it
+ * as deprecated there): right after a click the next page has not rendered yet and it says
+ * "not visible". This waits, like every other check in this file must.
+ */
+export async function visible(locator: Locator, timeoutMs: number): Promise<boolean> {
+    return locator.waitFor({ state: 'visible', timeout: timeoutMs }).then(() => true, () => false);
+}
+
+/** ZK keeps hidden copies of the menu words (the Alt+G search list), so only a VISIBLE match counts. */
+export const visibleText = (page: Page, text: string | RegExp, exact = true) =>
+    page.getByText(text, { exact }).filter({ visible: true }).first();
+export const menuItem = (page: Page) => visibleText(page, MENU_ITEM);
 
 /**
  * Steps 1-3 — from wherever we are to the course's SVG Jobs tab: Menu →
@@ -636,20 +660,20 @@ export const menuItem = (page: Page) => page.getByText(MENU_ITEM, { exact: true 
  */
 export async function openSvgJobsTab(page: Page, opcdName: string, deps: BuildDeps): Promise<void> {
     const menu = menuItem(page);
-    if (!await menu.isVisible({ timeout: STEP_TIMEOUT_MS }).catch(() => false)) {
+    if (!await visible(menu, STEP_TIMEOUT_MS)) {
         throw new PageChanged('menu', `the Menu panel has no item that reads exactly '${MENU_ITEM}'`);
     }
     await menu.click();
     const row = await courseRow(page, opcdName);
-    await row.getByRole('button', { name: /open dashboard/i }).first().click();
-    const tab = page.getByText(SVG_JOBS_TAB, { exact: true }).first();
-    if (!await tab.isVisible({ timeout: STEP_TIMEOUT_MS }).catch(() => false)) {
+    await row.getByText(OPEN_DASHBOARD).first().click();
+    const tab = visibleText(page, SVG_JOBS_TAB);
+    if (!await visible(tab, STEP_TIMEOUT_MS)) {
         throw new PageChanged('dashboard', `the course dashboard has no '${SVG_JOBS_TAB}' tab `
             + `(is '${opcdName}' the right course? its dashboard should read "Course: ${opcdName}")`);
     }
     await tab.click();
     // The submit box is what says the tab is really open, not just clicked.
-    await page.getByText(/submit new svg job/i).first().waitFor({ timeout: STEP_TIMEOUT_MS }).catch(() => undefined);
+    await visibleText(page, /submit new svg job/i, false).waitFor({ timeout: STEP_TIMEOUT_MS }).catch(() => undefined);
     deps.log(`SVG Jobs tab of '${opcdName}'`);
 }
 
@@ -661,14 +685,22 @@ export async function openSvgJobsTab(page: Page, opcdName: string, deps: BuildDe
  * offer — the OPCD name is rarely ours (`Vreta Kloster golfklubb`).
  */
 export async function courseRow(page: Page, opcdName: string): Promise<Locator> {
+    // ZK's "button" may be a <button>, an <a> or a styled div: match the words, not the role.
     for (const rows of [page.locator('tr'), page.getByRole('row')]) {
-        const row = rows.filter({ hasText: opcdName }).filter({ has: page.getByRole('button', { name: /open dashboard/i }) }).first();
-        if (await row.isVisible({ timeout: STEP_TIMEOUT_MS / 2 }).catch(() => false)) return row;
+        const row = rows.filter({ hasText: opcdName }).filter({ has: page.getByText(OPEN_DASHBOARD) }).first();
+        if (await visible(row, STEP_TIMEOUT_MS / 2)) return row;
     }
+    const sample = await page.locator('tr').filter({ hasText: opcdName }).first().evaluate((el) => el.outerHTML.slice(0, 1500)).catch(() => '(no tr holds the name)');
     throw new PageChanged('course list', `no row of the '${MENU_ITEM}' list has Course Name '${opcdName}' `
         + `and an Open Dashboard button. The names it offers: ${(await courseNames(page)).join(' | ') || '(none read)'}. `
-        + 'Set the right one with --opcd-name <name> (and keep it: courses.opcd_course_name)');
+        + 'Set the right one with --opcd-name <name> (and keep it: courses.opcd_course_name). '
+        + `The first row holding the name reads: ${sample}`);
 }
+
+/** The words on the course row's button; matched as text since ZK may not render a <button>. */
+export const OPEN_DASHBOARD = /open dashboard/i;
+/** The job table's action words (Download, Re-submit), matched as text for the same reason. */
+export const ACTION_WORDS = /^ *(download|re-submit) *$/i;
 
 /** The Course Names the workflow list shows, for the error above. First cell of each row. */
 export async function courseNames(page: Page): Promise<string[]> {
@@ -704,14 +736,14 @@ export async function uploadSvg(page: Page, svgPath: string, deps: BuildDeps): P
         await input.setInputFiles(svgPath);
     } else {
         const choose = page.getByRole('button', { name: /choose svg file/i }).first();
-        if (!await choose.isVisible({ timeout: STEP_TIMEOUT_MS }).catch(() => false)) {
+        if (!await visible(choose, STEP_TIMEOUT_MS)) {
             throw new PageChanged('upload', 'the SVG Jobs tab has no file input and no "Choose SVG File..." button');
         }
         const [chooser] = await Promise.all([page.waitForEvent('filechooser'), choose.click()]);
         await chooser.setFiles(svgPath);
     }
     // The upload is done when the box names the file instead of "No file selected".
-    await page.getByText(name, { exact: false }).first()
+    await visibleText(page, name, false)
         .waitFor({ state: 'visible', timeout: DOWNLOAD_TIMEOUT_MS })
         .catch(() => { throw new PageChanged('upload', `the page never showed '${name}' after the upload — it may still read "No file selected"`); });
     deps.log(`uploaded ${name}`);
@@ -726,7 +758,7 @@ export async function uploadSvg(page: Page, svgPath: string, deps: BuildDeps): P
 export async function startBuild(page: Page, description: string, deps: BuildDeps): Promise<SvgJob[]> {
     const before = await readJobs(page);
     const field = page.getByLabel(/description/i).first();
-    if (await field.isVisible({ timeout: STEP_TIMEOUT_MS / 2 }).catch(() => false)) {
+    if (await visible(field, STEP_TIMEOUT_MS / 2)) {
         await field.fill(description);
     } else {
         // ZK's label may not be tied to the input: the one text box in the submit box.
@@ -735,7 +767,7 @@ export async function startBuild(page: Page, description: string, deps: BuildDep
         else deps.log('  (no Description field found — submitting without one)');
     }
     const submit = page.getByRole('button', { name: /submit svg job/i }).first();
-    if (!await submit.isVisible({ timeout: STEP_TIMEOUT_MS }).catch(() => false)) {
+    if (!await visible(submit, STEP_TIMEOUT_MS)) {
         throw new PageChanged('submit', 'no button reads "Submit SVG Job"');
     }
     await submit.click();
@@ -794,7 +826,9 @@ export async function readJobs(page: Page): Promise<SvgJob[]> {
     const jobs: SvgJob[] = [];
     for (const row of candidates) {
         const cells = await rowCells(row);
-        const buttons = await row.getByRole('button').allTextContents().catch(() => [] as string[]);
+        const byRole = await row.getByRole('button').allTextContents().catch(() => [] as string[]);
+        // ZK's job-table buttons are not <button>s: read the words in the Actions cell instead.
+        const buttons = byRole.length ? byRole : await row.getByText(ACTION_WORDS).allTextContents().catch(() => [] as string[]);
         const job = jobFromCells(jobs.length, cells, buttons);
         if (job) jobs.push(job);
     }
@@ -882,7 +916,7 @@ export async function downloadBlend(
     await mkdir(opts.outDir, { recursive: true });
     const t0 = deps.now();
     const button = page.locator('tr').filter({ hasText: job.created }).first()
-        .getByRole('button', { name: /^download$/i }).first();
+        .getByText(/^ *download *$/i).first();
     const [download] = await Promise.all([
         page.waitForEvent('download', { timeout: DOWNLOAD_TIMEOUT_MS }),
         button.click(),
