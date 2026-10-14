@@ -7,6 +7,7 @@ export interface GsproExportSettings {
     gkdFile: null | string;
     meta: null | { courseName: string; city: string; state: string; country: string; designer: string; homage: string; description: string; difficulty: number; keywords: ('BeginnerFriendly' | 'Coastal' | 'Desert' | 'Fantasy' | 'Heathland' | 'Historic' | 'Links' | 'LowPoly' | 'MajorVenue' | 'Mountain' | 'Parkland' | 'TourStop' | 'Training' | 'Tropical')[] };
     gkdMeta: null | { courseName: string; city: string; state: string; country: string; designer: string; homage: string; description: string; difficulty: number; keywords: ('BeginnerFriendly' | 'Coastal' | 'Desert' | 'Fantasy' | 'Heathland' | 'Historic' | 'Links' | 'LowPoly' | 'MajorVenue' | 'Mountain' | 'Parkland' | 'TourStop' | 'Training' | 'Tropical')[] };
+    opcdCourseName: null | string;
     gkdRatings: string[];
     isDefault: boolean;
     defaultDir: string;
@@ -68,6 +69,7 @@ export interface GsproExportApi {
     settings(input: { courseId: string }): Promise<GsproExportSettings>;
     setDir(input: { courseId: string; dir: null | string }): Promise<GsproExportSettings>;
     setCourseDir(input: { courseId: string; dir: null | string }): Promise<GsproExportSettings>;
+    setOpcdCourseName(input: { courseId: string; name: null | string }): Promise<GsproExportSettings>;
     setMeta(input: { courseId: string; meta: null | { description: string; courseName: string; city: string; state: string; country: string; designer: string; homage: string; difficulty: number; keywords: ('BeginnerFriendly' | 'Coastal' | 'Desert' | 'Fantasy' | 'Heathland' | 'Historic' | 'Links' | 'LowPoly' | 'MajorVenue' | 'Mountain' | 'Parkland' | 'TourStop' | 'Training' | 'Tropical')[] } }): Promise<GsproExportSettings>;
     readGkdMeta(input: { courseId: string }): Promise<GsproExportSettings>;
     readGkdRatings(input: { courseId: string }): Promise<GsproExportSettings>;
@@ -92,6 +94,9 @@ export function createGsproExportClient(baseUrl: string): GsproExportApi {
         },
         async setCourseDir(input) {
             return apiFetch({ method: 'POST', url: `${baseUrl}/gspro-export/course-dir`, body: input });
+        },
+        async setOpcdCourseName(input) {
+            return apiFetch({ method: 'POST', url: `${baseUrl}/gspro-export/opcd-course-name`, body: input });
         },
         async setMeta(input) {
             return apiFetch({ method: 'POST', url: `${baseUrl}/gspro-export/meta`, body: input });

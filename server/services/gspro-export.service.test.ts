@@ -1189,6 +1189,27 @@ test('the GSPro course folder is unset until chosen, must exist, and names the G
     await expect(svc.setCourseDir('nope', null)).rejects.toThrow(NotFoundError);
 });
 
+test("the course's name in OPCD's cloud builder is kept with the course", async () => {
+    // What the course is called in OPCD's "Course Workflow" list is not our course name
+    // (Vreta is "Vreta Kloster golfklubb" there), and `bun run opcd:build` has no other
+    // handle on it: the builder is a ZK UI with no per-course address.
+    const { svc } = await setup(recordingRunner().runner);
+    expect((await svc.settings(TEST_COURSE_ID)).opcdCourseName).toBeNull();
+
+    const set = await svc.setOpcdCourseName(TEST_COURSE_ID, '  Vreta Kloster golfklubb  ');
+    expect(set.opcdCourseName).toBe('Vreta Kloster golfklubb');
+    expect((await svc.settings(TEST_COURSE_ID)).opcdCourseName).toBe('Vreta Kloster golfklubb');
+
+    // Blank clears it; nothing else about the course's export settings moves.
+    const cleared = await svc.setOpcdCourseName(TEST_COURSE_ID, '   ');
+    expect(cleared.opcdCourseName).toBeNull();
+    expect(cleared.isDefault).toBe(true);
+    expect((await svc.setOpcdCourseName(TEST_COURSE_ID, null)).opcdCourseName).toBeNull();
+
+    await expect(svc.setOpcdCourseName(TEST_COURSE_ID, 'x'.repeat(201))).rejects.toThrow(ConflictError);
+    await expect(svc.setOpcdCourseName('nope', 'Vreta')).rejects.toThrow(NotFoundError);
+});
+
 test('course details are kept with the course, and read back from a .GKD edited in GreenKeeper', async () => {
     const t = await setup(recordingRunner().runner);
     const { svc } = t;

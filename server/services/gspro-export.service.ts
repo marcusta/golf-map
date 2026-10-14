@@ -119,6 +119,13 @@ export interface GsproExportSettings {
     /** The same details as the `.GKD` in `courseDir` has them now (null without a readable one). */
     gkdMeta: GsproCourseMeta | null;
     /**
+     * What the course is called in OPCD's cloud course builder — the
+     * `Course Name` of its row in the builder's "Course Workflow" list, which
+     * `scripts/opcd-build.ts` opens the dashboard from. Not our course name
+     * (`Vreta` here is `Vreta Kloster golfklubb` there); null until set.
+     */
+    opcdCourseName: string | null;
+    /**
      * Tee sets whose rating in that `.GKD` is not the one the course keeps
      * for them (`Yellow 71.5/135`, as the file has it): edited in
      * GreenKeeper, and what `readGkdMeta` takes over. Empty when they agree.
@@ -564,7 +571,7 @@ export class GsproExportService {
     /** Where this course exports to, and what the default is. */
     async settings(courseId: string): Promise<GsproExportSettings> {
         const row = await this.db
-            .selectFrom('courses').select(['gspro_export_dir', 'gspro_course_dir', 'gspro_meta_json'])
+            .selectFrom('courses').select(['gspro_export_dir', 'gspro_course_dir', 'gspro_meta_json', 'opcd_course_name'])
             .where('id', '=', courseId).executeTakeFirst();
         if (!row) throw new NotFoundError(`Course ${courseId} not found`);
         const defaultDir = defaultExportDir();
@@ -577,6 +584,7 @@ export class GsproExportService {
             meta: row.gspro_meta_json ? JSON.parse(row.gspro_meta_json) as GsproCourseMeta : null,
             gkdMeta: gkd ? metaFromGkd(gkd) : null,
             gkdRatings: gkd ? (await this.gkdRatingEdits(courseId, gkd)).map(e => `${e.name} ${e.text}`) : [],
+            opcdCourseName: row.opcd_course_name,
             isDefault: row.gspro_export_dir === null,
             defaultDir,
         };
@@ -612,6 +620,26 @@ export class GsproExportService {
         await this.settings(courseId);  // 404s for an unknown course
         await this.db
             .updateTable('courses').set({ gspro_meta_json: meta ? JSON.stringify(cleanMeta(meta)) : null })
+            .where('id', '=', courseId).execute();
+        return this.settings(courseId);
+    }
+
+    /**
+     * Set (or clear, with null/empty) what the course is called in OPCD's
+     * cloud course builder — the `Course Name` `scripts/opcd-build.ts` looks
+     * for in the builder's "Course Workflow" list. Nothing is checked against
+     * OPCD here: reaching it needs the operator's logged-in browser profile,
+     * and the script itself prints the names the list offers when the one
+     * stored matches no row.
+     */
+    async setOpcdCourseName(courseId: string, name: string | null): Promise<GsproExportSettings> {
+        const trimmed = name?.trim() ?? '';
+        if (trimmed.length > 200) {
+            throw new ConflictError('the OPCD course name is at most 200 characters — copy it from the Course Workflow list');
+        }
+        await this.settings(courseId);  // 404s for an unknown course
+        await this.db
+            .updateTable('courses').set({ opcd_course_name: trimmed || null })
             .where('id', '=', courseId).execute();
         return this.settings(courseId);
     }

@@ -583,7 +583,7 @@ order. The chains:
 | `photo` | `inner` (`exportOrtho` of the newest `.cleaned.tif`, else the newest plain, with the panel's defaults: the surface tint, the forest floor, the roofs filled) → `unity` (`pushUnityOrtho` of that `-meshes.jpg`) → `outer` (`exportOuterOrtho` of the newest collection; the file is written and reported — there is no Unity push for the outer terrain). |
 | `shapes` | `svg` (the full SVG, kept as an export snapshot), then Blender by hand. |
 | `meshes` | `ShapingService.apply(courseId, {})` — layers → worker → Unity refresh → the grass round a changed rock slab — with its job's five phases mirrored into this one's while it runs. |
-| `vegetation` | `plantVegetation` inner, and outer when the outer already has a zones export. |
+| `vegetation` | `plantVegetation` inner; for the outer, when it already has a zones export, that file only — the outer's vegetation is Arborist's, so no generators and nothing into Unity ([arborist.md](arborist.md) "Who writes the file"). |
 | `trees` | `files` (`exportTrees` inner + outer) → `unity` (`golfmap.trees.plant` per terrain). |
 | `buildings` | `files` (`exportBuildings` inner + outer) → `unity` **skipped**: no `[BridgeCommand]` plants buildings, so the report names `GolfMap › Buildings › Plant from assignments`. |
 | `props` | `spec` (each `docs/gspro/<slug>/*-props.gen.py` under the pipeline venv's Python from the repo root → its `*-props.json`) → `models` (`<blender> -b --factory-startup --python blender/tools/build_props.py -- --spec <that json> --out <course folder>/Props`, 10 min cap, per spec file) → `unity` (`golfmap.props.record` first when the folder has no `placed.json`, then `golfmap.props.place {save: true}`). The last two need the editor — the out folder is inside the Unity project — so without one they are **skipped** and only the spec is written. |
@@ -728,7 +728,79 @@ first"; `exportDem('outer')` exports the inner first, for the outer terrain's Un
 of leaving a note asking for it; and `updateZones`, when there is no zones export to patch at all or
 every terrain's item bindings moved, writes nothing and answers `needsPlanting: true` + `reason` (the
 web then offers Update vegetation; `plantIfNeeded: true` on the request, `bun run zones -- update --plant`,
-runs the whole `plantVegetation` — inner, plus outer when it has a zones export — with a report line
+runs the whole `plantVegetation` — inner, plus the outer's zones file when it has one — with a report line
 saying why the fast path was not taken). The 409s
 that remain are the ones the server cannot do anything about: no DEM at all, no map area, no building
 survey, no tree stems, no GSPro course folder.
+
+### OPCD cloud build: `scripts/opcd-build.ts`
+
+The board's `shapes` row ends in the one manual step of the whole chain — "Build the SVG in Blender
+(OPCD), then Update meshes" — and the build itself is not Blender here but OPCD's **cloud course
+builder**, `https://app.opcdgolf.com/webui/index.zul`: the SVG goes up, the server builds for some
+minutes, a flat `.blend` comes back. `bun run opcd:build -- <course>` does that run.
+
+```
+bun run opcd:build -- <course> [--svg <file>] [--out <folder>] [--opcd-name <name>]
+                               [--dry-run] [--timeout <min>] [--headed]
+bun run opcd:build -- --setup [<course>]
+```
+
+**The walk**, all of it by the words a human reads (see below): the start page's left **Menu** →
+`Course Workflow` → in the "Course Workflow v1.1.7" list the row whose **Course Name** is the
+course's OPCD name → `Open Dashboard` → the `SVG Jobs` tab → "Submit New SVG Job"
+(`Choose SVG File...`, a Description, `Use Unstable (may have bugs)` left unchecked, the green
+`Submit SVG Job`) → the "SVG Jobs for this Course" table (Name | Status | Created | Actions, newest
+first) → the finished row's `Download`. The file lands in the course's export folder as
+`<prefix>_svg_<n>.blend` next to the SVG it came from — OPCD's own build number when the download
+carries one, else the highest in the folder plus one (`vreta_svg_1990.blend` → `…_1991`;
+`.conformed.blend`, `shape_prepare.py`'s own output, never counts).
+
+**The course has a different name there.** Vreta is `Vreta Kloster golfklubb` in the builder, and
+there is no address to store instead: the UI is **ZK** (iDempiere), it navigates in JavaScript, and
+its component ids (`zk_comp_42`) are generated per session. So the one setting is the name —
+`courses.opcd_course_name` (migration 031), `GsproExportService.setOpcdCourseName` /
+`POST /api/gspro-export/opcd-course-name`, `--opcd-name <name>` for one run. When no row matches, the
+error lists the Course Names the list does offer. Nothing is ever selected by id: every locator is
+`getByRole('button', {name})`, `getByText(exact)` or a row filtered by its text.
+
+**The wait.** The job table does not refresh itself, so every look walks the menu again
+(`svgJobsLook`). No build has ever finished inside 2 min and 5-6 is normal, so the first look waits
+2 min, then one every 45 s, up to `--timeout` (8 min). A build that broke shows nothing in the tool
+at all — OPCD DMs it in Discord 15-20 min later — so the failure names the job and its `Created`
+time to look for, and a row still reading `Draft` is said to have never completed.
+
+**The login.** The browser runs on a persistent profile, `data/opcd-profile/` (gitignored with the
+rest of `data/`), so the Discord OAuth session survives between runs. When it has lapsed the run
+handles what it can itself, headless: Discord's consent page ("OPCD Golf vill ha åtkomst till ditt
+Discord-konto", `Avbryt` | `Auktorisera`) → `Auktorisera`, then iDempiere's prefilled **Select Role**
+dialog (Tenant `opcd`, Role `RegisteredUser`) → `OK`. Only a Discord **login form** needs a human:
+the run reopens the browser with a window, opens discord.com in a second tab, prints what to do
+(log in to Discord there first, then "Login with Discord" in OPCD — with a web session it is one
+click instead of a push to the phone) and waits up to 5 min.
+
+**`--dry-run`** walks to the SVG Jobs tab and prints the job table, submitting nothing: the way to
+see that the words still match the page before spending a build.
+
+**`--setup`** is the debugging aid for when they do not. It opens a headed browser on the same
+profile, lets you do a build by hand and records it into `data/opcd-recording/<timestamp>/`: a
+Playwright trace (`trace.zip`, screenshots + snapshots), `log.txt` with every URL change, every POST
+to the site, every download and every dialog — each line timestamped — a DOM snapshot
+(`snapshot-NN.html`) plus a full-page screenshot every time you press Enter in the terminal (`q` +
+Enter finishes), any file the site downloaded, and `index.json` tying the steps and files together.
+
+**Bun resolves, Node drives.** Playwright cannot drive a browser under Bun on this box at all: it
+speaks to Chromium over `--remote-debugging-pipe` (stdio fds 3/4) or a CDP WebSocket, and Bun on
+Windows carries the bytes of neither (its `node:http` never emits `upgrade` for the 101 handshake —
+Bun's own `WebSocket` talks to the same port fine). The Chromium is installed and starts; the client
+is the problem, and it is the same one behind "Playwright e2e can't launch Chrome here". So the
+script splits itself: Bun does the one thing only Bun can — read `data/app.sqlite` through
+`bun:sqlite` — and then runs **itself** under a Node with the resolved course in `OPCD_RESOLVED`
+(`relaunchUnderNode`, `OPCD_NO_RELAUNCH` on the child). There is no `node` on PATH here, but every
+installed Electron app is one with `ELECTRON_RUN_AS_NODE=1`, and VS Code's is Node 24
+(`electronCandidates`: VS Code, Cursor, Unity Hub) — which also runs this `.ts` file as it stands,
+by type stripping. That is why the script holds no `enum`, no constructor parameter properties, and
+no `Bun.*` outside `resolveCourse`, and why the server imports are inside that function. `--svg
+--out --opcd-name` together make a run need no database at all. `browserDiagnosis()` is printed only
+when no runtime is found anywhere; `winget install OpenJS.NodeJS.LTS` is then the fix, not another
+`playwright install`.

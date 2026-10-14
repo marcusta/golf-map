@@ -25,6 +25,7 @@
         "grass:zones": "bun scripts/grass-zones.ts",
         "shaping": "bun scripts/shaping-apply.ts",
         "arborist": "bun scripts/arborist.ts",
+        "opcd:build": "bun scripts/opcd-build.ts",
         "e2e": "playwright test --config e2e/playwright.config.ts",
         "e2e:headed": "playwright test --config e2e/playwright.config.ts --headed",
         "e2e:ui": "playwright test --config e2e/playwright.config.ts --ui",

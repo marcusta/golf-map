@@ -15,6 +15,13 @@ const SetDirInput = Type.Object({
     dir: Type.Union([Type.String(), Type.Null()]),
 });
 
+/** What the course is called in OPCD's cloud course builder; null/empty clears it. */
+const SetOpcdCourseNameInput = Type.Object({
+    courseId: Type.String(),
+    /** The `Course Name` of the course's row in OPCD's "Course Workflow" list (`Vreta Kloster golfklubb`); null/empty clears it. */
+    name: Type.Union([Type.String({ maxLength: 200 }), Type.Null()]),
+});
+
 /** The course details the .GKD export writes (`GsproCourseMeta`); null clears them. */
 const SetMetaInput = Type.Object({
     courseId: Type.String(),
@@ -112,6 +119,17 @@ export function createGsproExportApi(svc: GsproExportService) {
             path: '/gspro-export/course-dir',
             fn: (input: Static<typeof SetDirInput>) => svc.setCourseDir(input.courseId, input.dir),
             schema: SetDirInput,
+            middleware: mw,
+        },
+        /**
+         * What the course is called in OPCD's cloud course builder — the row
+         * `bun run opcd:build -- <course>` opens the dashboard from.
+         */
+        setOpcdCourseName: {
+            method: 'POST' as const,
+            path: '/gspro-export/opcd-course-name',
+            fn: (input: Static<typeof SetOpcdCourseNameInput>) => svc.setOpcdCourseName(input.courseId, input.name),
+            schema: SetOpcdCourseNameInput,
             middleware: mw,
         },
         /** Keep the course details (name, location, designer, description, keywords) the .GKD export writes. */

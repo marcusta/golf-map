@@ -69,6 +69,7 @@ export interface CoursesTable {
     gspro_export_dir: string | null; // GSPro SVG export folder; null = the server default (Downloads)
     gspro_course_dir: string | null; // GSPro course (scene) folder the GreenKeeper .GKD export writes into; null = not set
     gspro_meta_json: string | null; // GSPro course details (GsproCourseMeta) the .GKD export writes; null = leave the file's own
+    opcd_course_name: string | null; // what the course is called in OPCD's cloud builder (its Course Workflow row); null = not set
     next_feature_no: Generated<number>; // the next course_features.feature_no (migration 026 triggers keep it)
     version: number;
     created_at: Generated<string>;
