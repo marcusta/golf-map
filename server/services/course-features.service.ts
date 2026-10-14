@@ -1275,9 +1275,15 @@ export class CourseFeaturesService {
                 const batch = byType.get(type)!;
                 const groupStack = await this.byGroup(courseId, null, null, trx).execute();
                 const pos = insertionPosition(groupStack, type);
+                // Room for the batch, WITHOUT touching `updated_at`: a generator run is not an
+                // edit of the hand-drawn features it slides under. Bumping it marked every SVG
+                // type stale on the GSPro board and invalidated every export fingerprint that
+                // hashes the feature high-water mark (feature-history.service.ts `latestStamp`)
+                // on each Update vegetation. The migration-025 `restack` trigger still records
+                // the move, and the counting there ignores a sort-order-only row.
                 await trx
                     .updateTable('course_features')
-                    .set({ sort_order: sql`sort_order + ${batch.length}`, updated_at: sql`(datetime('now'))` })
+                    .set({ sort_order: sql`sort_order + ${batch.length}` })
                     .where('course_id', '=', courseId)
                     .where('hole_id', 'is', null)
                     .where('layer', 'is', null)

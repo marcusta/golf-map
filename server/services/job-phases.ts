@@ -80,6 +80,25 @@ export class JobPhases<Id extends string = string> {
         if (t0 !== undefined) p.seconds = secs(Date.now() - t0);
     }
 
+    /**
+     * One phase's state taken from somewhere else, verbatim — what a job that
+     * MIRRORS another job's phases does (`GsproSyncService`'s `meshes` chain
+     * over a `ShapingJob`): the status, the detail and the seconds are the
+     * source's, so a done phase keeps the time it really took and a running
+     * one is not restarted on every poll. Idempotent: calling it again with
+     * the same state changes nothing.
+     */
+    set(id: Id, state: { status: JobPhaseStatus; detail?: string | null; seconds?: number | null }): void {
+        const p = this.phase(id);
+        p.status = state.status;
+        p.detail = state.detail ?? null;
+        p.seconds = state.seconds ?? null;
+        // The seconds come from the source, so `snapshot()` must not count its own clock here.
+        this.startedAt.delete(id);
+        if (state.status === 'running' || state.status === 'failed') this.current = id;
+        else if (this.current === id) this.current = null;
+    }
+
     skip(id: Id, why: string): void {
         const p = this.phase(id);
         p.status = 'skipped';

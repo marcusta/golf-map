@@ -12,7 +12,7 @@ import { ConflictError, NotFoundError } from '@basics/core/server/auth';
 import { createTestDb } from '../testing/db';
 import { seedCourse, TEST_COURSE_ID } from '../db/seeds/course';
 import { startFakeShapingWorker, type FakeShapingWorker } from '../testing/fake-shaping-worker';
-import { ShapingService, objectName, isRockSlab, LATEST_LOG, LOG_KEEP_DAYS } from './shaping.service';
+import { ShapingService, objectName, isRockSlab, LATEST_LOG, LOG_KEEP_DAYS, type ShapingTimeouts } from './shaping.service';
 import { defaultUnityBridge } from './unity-bridge';
 import { GsproExportService, type ExportRunner } from './gspro-export.service';
 
@@ -119,7 +119,7 @@ function fakeEditor(exportFolder: string, opts: { rejectOnly?: boolean; refreshM
 async function setup(opts: {
     worker?: FakeShapingWorker; workerUrl?: string; workerLauncher?: string[]; unity?: 'ours' | 'none' | 'reject-only';
     library?: unknown; runner?: ExportRunner; editor?: { refreshMs?: number; steps?: object[]; failSurfaces?: boolean };
-    plantFails?: boolean; token?: string;
+    plantFails?: boolean; token?: string; timeouts?: Partial<ShapingTimeouts>;
 } = {}) {
     const ctx = await createTestDb(seedCourse);
     const exportDir = await tmp('shaping-export-');
@@ -151,7 +151,7 @@ async function setup(opts: {
         pipelineDir: '/pipeline', runner: opts.runner ?? layers.runner, unityBridge: defaultUnityBridge(discovery),
         workerUrl: opts.worker?.url ?? opts.workerUrl ?? 'http://127.0.0.1:9', workerLauncher: opts.workerLauncher,
         token: opts.token, layersRoot, recipeLibrary, dbPath: '/data/app.sqlite',
-        timeouts: { pollMs: 25, startMs: 20_000, loadMs: 20_000, syncMs: 20_000, unitySec: 30 },
+        timeouts: { pollMs: 25, startMs: 20_000, loadMs: 20_000, syncMs: 20_000, unitySec: 30, ...opts.timeouts },
     });
     cleanup.push(() => svc.stopWorker());
     return { ctx, svc, exportDir, project, layersRoot, recipeLibrary, layers, editor, dataDir, events };
@@ -784,6 +784,33 @@ test('save: the Unity refresh of a job started with save saves the scene, and th
     t.layers.layers.features = [recipe('11'), SLAB];
     await run(t.svc);
     expect(t.editor!.calls.every(c => c.args.save === undefined)).toBe(true);
+});
+
+test('a /status blip while the worker syncs is ridden out; past the grace the job says it stopped answering', async () => {
+    // The worker's /status drops out for the first polls of the sync — what bpy holding the GIL
+    // (the 5 s timeout), or a blip to a worker on another machine, looks like. The sync goes on.
+    const worker = startFakeShapingWorker({ syncMs: 400, statusOutages: 4 });
+    cleanup.push(() => worker.stop());
+    const t = await setup({ worker });
+    await blends(t.exportDir);
+
+    const job = await run(t.svc);
+    expect(job.error).toBeNull();
+    expect(job.status).toBe('succeeded');
+    expect(job.result!.changedObjects).toEqual(['Spline_recipe-10', 'Spline_recipe-11', 'Spline_tees']);
+    // The polls that were dropped really did happen during the sync.
+    expect(worker.calls.filter(c => c.route === '/status').length).toBeGreaterThan(4);
+    expect(job.phases.map(p => [p.id, p.status])).toEqual([['layers', 'done'], ['worker', 'done'], ['blender', 'done'], ['unity', 'done'], ['vegetation', 'skipped']]);
+
+    // With no grace at all the first blip ends the wait, and the message says what it was.
+    const flaky = startFakeShapingWorker({ syncMs: 400, statusOutages: 1 });
+    cleanup.push(() => flaky.stop());
+    const strict = await setup({ worker: flaky, timeouts: { unreachableMs: 0 } });
+    await blends(strict.exportDir);
+    const failed = await run(strict.svc);
+    expect(failed.status).toBe('failed');
+    expect(failed.error).toMatch(/^The shaping worker stopped answering during the sync \(0 s with no answer about job \d+\): HTTP 503$/);
+    expect(failed.phase).toBe('blender');
 });
 
 test('status with nothing on the worker URL: unreachable, no job', async () => {

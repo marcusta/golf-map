@@ -224,6 +224,51 @@ test('latestStamp moves on a create, an edit and a delete — inside the same se
     expect(await t.history.latestStamp(TEST_COURSE_ID)).toBe(before);
 });
 
+test('a generator run that shifts the hand-drawn features above its zones is no edit of theirs', async () => {
+    // A planting (`replaceGenerated`) inserts its zones at the bottom of the course-level stack,
+    // which pushes every hand-drawn feature there up one. That shift used to move their
+    // `updated_at`, so an Update vegetation marked Shapes, Trees, Creeks and Meshes stale on the
+    // GSPro board and invalidated every export fingerprint that hashes `latestStamp`.
+    const ctx = await createTestDb(seedCourse);
+    const features = new CourseFeaturesService(ctx.db);
+    const t = { db: ctx.db, history: new FeatureHistoryService(ctx.db) };
+    const bunker = await features.create({ courseId: TEST_COURSE_ID, type: 'bunker', geometry: square(100, 0) });
+    const water = await features.create({ courseId: TEST_COURSE_ID, type: 'water', geometry: square(140, 0) });
+    // Drawn long ago (with the history the creates' own stacking shifts wrote), so only what
+    // follows can count as a change since.
+    await ctx.db.updateTable('course_features').set({ created_at: '2000-01-01 00:00:00', updated_at: '2000-01-01 00:00:00' })
+        .where('course_id', '=', TEST_COURSE_ID).execute();
+    await ctx.db.updateTable('course_feature_history').set({ changed_at: '2000-01-01 00:00:00.000' }).execute();
+    const since = '2000-06-01T00:00:00.000Z';
+    const types = ['bunker', 'water'];
+    const stackOf = async () => new Map((await features.listByCourse(TEST_COURSE_ID)).map(f => [f.id, f.sortOrder]));
+    const before = await stackOf();
+    const stamp = await t.history.latestStamp(TEST_COURSE_ID);
+    expect(await t.history.countChangesSince(TEST_COURSE_ID, since, types)).toEqual({ count: 0, kinds: [] });
+
+    const zone = (x: number) => ({
+        type: 'Feature' as const,
+        geometry: { type: 'Polygon' as const, coordinates: [[[x, 0], [x + 10, 0], [x + 10, 10], [x, 0]]] },
+        properties: { type: 'vegetation_zone', source: 'tall-grass', zoneType: 'rough_tall', weight: 1, feather: 1, noise: 0 },
+    });
+    await features.replaceGenerated(TEST_COURSE_ID, 'tall-grass', {
+        type: 'FeatureCollection', features: [zone(0), zone(20)],
+    } as never);
+
+    // The stack really did move (the zones went in under them) — and nothing counts as changed.
+    const after = await stackOf();
+    expect(after.get(bunker.id)).toBe(before.get(bunker.id)! + 2);
+    expect(after.get(water.id)).toBe(before.get(water.id)! + 2);
+    expect(await t.history.countChangesSince(TEST_COURSE_ID, since, types)).toEqual({ count: 0, kinds: [] });
+    expect(await t.history.countChangesSince(TEST_COURSE_ID, since)).toEqual({ count: 0, kinds: [] });
+    expect(await t.history.latestStamp(TEST_COURSE_ID)).toBe(stamp);
+
+    // An edit somebody made still counts, and still moves the stamp.
+    await features.update(bunker.id, bunker.version, { geometry: square(100, 0, 9) });
+    expect(await t.history.countChangesSince(TEST_COURSE_ID, since, types)).toEqual({ count: 1, kinds: ['bunker'] });
+    expect(await t.history.latestStamp(TEST_COURSE_ID)).not.toBe(stamp);
+});
+
 test('the newest export snapshot is found without parsing every one of them', async () => {
     const t = await editedCourse();
     const dir = await mkdtemp(path.join(os.tmpdir(), 'gspro-snap-'));

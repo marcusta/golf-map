@@ -102,9 +102,12 @@ export async function editorForExportDir(bridge: UnityBridge, exportDir: string)
  * EVERY open editor probed, in discovery order — the status board shows them
  * all, matching or not, so the operator can see which project is in front of
  * them. `editorForExportDir` is the same probe, stopping at the match.
+ *
+ * The probes run side by side: each costs a round trip to its editor, capped
+ * at 30 s, and an editor busy compiling holds its answer that long — a board
+ * poll with three editors open must not take three times as long as one.
  */
 export async function unityEditorsFor(bridge: UnityBridge, exportDir: string): Promise<UnityEditorInfo[]> {
-    const out: UnityEditorInfo[] = [];
-    for (const editor of bridge.editors()) out.push((await probeEditor(editor, exportDir)).info);
-    return out;
+    const probes = bridge.editors().map(editor => probeEditor(editor, exportDir));
+    return (await Promise.all(probes)).map(p => p.info);
 }

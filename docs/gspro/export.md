@@ -634,7 +634,7 @@ as the last export, since `updated_at` has whole seconds only).
 `force` bypasses it: `POST /api/gspro-sync/update {courseId, target, force: true}`,
 `POST /api/gspro-export/start {… force: true}`, `bun run gspro:update -- <course> <target> --force`,
 `bun run gspro:export -- <course> <kind> --force`. `updateZones`' fall back to the whole planting
-passes it itself (the masks are out of step with the bindings there, which is the reason to render).
+(with `plantIfNeeded`) passes it itself (the masks are out of step with the bindings there, which is the reason to render).
 Left out: `runGenerators` — its output is rows in the database, not a file a sidecar can sit next to,
 and whether those rows are still there cannot be told from the inputs, so every planting still runs
 the generators (and the masks after them are skipped when the generators reproduced the same zones);
@@ -681,8 +681,10 @@ is the same probe stopping at the first match (30 s cap per editor either way).
 `exportBuildings`, `exportCreeks` and `exportGkd` export the heightmap whose sidecar they read
 (`ensureDemSidecar`; the inner one for creeks and the GKD) instead of 409ing "Export the … heightmap
 first"; `exportDem('outer')` exports the inner first, for the outer terrain's Unity position, instead
-of leaving a note asking for it; and `updateZones` runs the whole `plantVegetation` (inner, plus
-outer when it has a zones export) when there is no zones export to patch at all, or when every
-terrain's item bindings moved — with a report line saying why the fast path was not taken. The 409s
+of leaving a note asking for it; and `updateZones`, when there is no zones export to patch at all or
+every terrain's item bindings moved, writes nothing and answers `needsPlanting: true` + `reason` (the
+web then offers Update vegetation; `plantIfNeeded: true` on the request, `bun run zones -- update --plant`,
+runs the whole `plantVegetation` — inner, plus outer when it has a zones export — with a report line
+saying why the fast path was not taken). The 409s
 that remain are the ones the server cannot do anything about: no DEM at all, no map area, no building
 survey, no tree stems, no GSPro course folder.

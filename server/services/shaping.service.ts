@@ -237,10 +237,19 @@ export interface ShapingTimeouts {
     unitySec: number;
     /** `/status` polling interval. */
     pollMs: number;
+    /**
+     * How long `/status` may go on telling us nothing about the run we are
+     * waiting for — unreachable, or an error answer with no job — before the
+     * wait gives up. Blender holds the GIL in long ops, so the 5 s `/status`
+     * timeout is hit now and then (and a worker on another machine has a
+     * network under it): a blip must not end a sync that is still going.
+     */
+    unreachableMs: number;
 }
 
 export const DEFAULT_SHAPING_TIMEOUTS: ShapingTimeouts = {
     startMs: 120_000, loadMs: 60 * 60_000, syncMs: 30 * 60_000, unitySec: 1800, pollMs: 1000,
+    unreachableMs: 60_000,
 };
 
 export interface ShapingDeps {
@@ -388,6 +397,22 @@ export class ShapingService {
         const rec = this.jobs.get(jobId);
         if (!rec) throw new NotFoundError(`No shaping job ${jobId} (the server may have restarted)`);
         return snapshot(rec);
+    }
+
+    /**
+     * The apply running on this machine, whatever course it belongs to, else
+     * null. One worker per machine means one apply at a time across courses
+     * (`apply` 409s for the rest), so a caller that has to QUEUE behind it —
+     * the GSPro status board's `meshes` chain — needs to see another course's
+     * run, not only its own.
+     */
+    runningAnywhere(): ShapingJob | null {
+        return this.running ? snapshot(this.running.rec) : null;
+    }
+
+    /** The timeouts this service runs with: what a caller bounds its own wait for an apply by. */
+    get waits(): ShapingTimeouts {
+        return { ...this.timeouts };
     }
 
     /** The course's running or last job, else null. */
@@ -637,7 +662,9 @@ export class ShapingService {
         const base = { url: this.workerUrl, spawnedPid, log: this.worker?.log ?? null };
         try {
             const res = await fetch(`${this.workerUrl}/status`, { headers: this.headers(), signal: AbortSignal.timeout(5000) });
-            const body = await res.json().catch(() => ({})) as Record<string, unknown>;
+            // An error answer often has no body at all (a bare 503 while it is loaded down):
+            // that is an answer, so still `reachable` — `HTTP <code>` is what it said.
+            const body = (await res.json().catch(() => null) as Record<string, unknown> | null) ?? {};
             const str = (v: unknown) => typeof v === 'string' && v ? v : null;
             return {
                 ...base,
@@ -787,6 +814,13 @@ export class ShapingService {
      * moved on to another job). A worker that answers with the run itself
      * (`?wait=1`, or one that predates the job protocol) is taken as it is, and
      * a connection that drops under it falls back to the worker's `lastRun`.
+     *
+     * A poll that says nothing about our job — unreachable, or an error answer
+     * carrying no job — is TOLERATED for `unreachableMs` (Blender holds the GIL
+     * in a long op, so the 5 s `/status` timeout is hit now and then) and only
+     * then gives up: the run itself goes on either way, and ending the wait on
+     * the first blip left it reported as failed while the worker was still
+     * shaping.
      */
     private async sync(dryRun: boolean, rec: JobRecord): Promise<SyncAnswer> {
         const follow = (w: ShapingWorkerStatus) =>
@@ -804,10 +838,22 @@ export class ShapingService {
         }
         const id = jobIdOf(started);
         if (id === null) return started as SyncAnswer;   // the run itself: an older worker, or `?wait=1`
+        /** Since when `/status` has told us nothing about job `id`; null while it does. */
+        let lostAt: number | null = null;
         const done = await this.waitFor(
-            s => !s.reachable || s.job === null || s.job.id !== id || s.job.state !== 'running',
+            (s) => {
+                if (lost(s)) {
+                    lostAt ??= Date.now();
+                    return Date.now() - lostAt >= this.timeouts.unreachableMs;
+                }
+                lostAt = null;
+                return s.job === null || s.job.id !== id || s.job.state !== 'running';
+            },
             this.timeouts.syncMs, 'the shaping worker to finish the sync', follow);
-        if (!done.reachable) throw new ConflictError(`The shaping worker stopped answering during the sync: ${done.error ?? 'unreachable'}`);
+        if (lostAt !== null) {
+            throw new ConflictError(`The shaping worker stopped answering during the sync`
+                + ` (${Math.round((Date.now() - lostAt) / 1000)} s with no answer about job ${id}): ${done.error ?? 'unreachable'}`);
+        }
         // Its status has moved on to another job (another course took the worker over): ask for ours by id.
         const job = done.job?.id === id ? done.job : await this.jobById(id);
         if (!job) throw new ConflictError(`The shaping worker forgot the sync job ${id} (${describeRun(done.lastRun) ?? `state ${done.state}`})`);
@@ -932,6 +978,14 @@ function unitySteps(report: unknown): ShapingUnityStep[] {
         return [{ id: step.id, status: typeof step.status === 'string' ? step.status : 'unknown', seconds: typeof step.seconds === 'number' ? step.seconds : null }];
     });
 }
+
+/**
+ * A poll that says nothing about the run we are waiting for: nothing answered
+ * (not started, a dropped connection, the 5 s timeout while Blender holds the
+ * GIL), or an error answer with no job in it (a 503 under load, a token gone
+ * wrong). Not the same as failure — the worker may well still be shaping.
+ */
+const lost = (s: ShapingWorkerStatus) => !s.reachable || (s.job === null && s.error !== null);
 
 /** Reachable, not loading or syncing, and with no job of its own still running. */
 const idle = (s: ShapingWorkerStatus) =>

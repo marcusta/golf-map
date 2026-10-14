@@ -77,6 +77,13 @@ export function sqlStamp(iso: string): string {
 
 const CONTENT = ['type', 'hole_id', 'layer', 'geometry_json', 'attributes_json', 'generated', 'source', 'source_ref', 'license'];
 
+/**
+ * The migration-025 history `op` of a move in the stack and nothing else
+ * (`row_json` holds only `sort_order`, `version`, `updated_at`). Not an edit of
+ * the feature: every insert into a group shifts what sits above it.
+ */
+const RESTACK_OP = 'restack';
+
 export class FeatureHistoryService {
     constructor(private readonly db: Kysely<Database>) {}
 
@@ -122,8 +129,12 @@ export class FeatureHistoryService {
      * of both — they are pipeline output that the next run replaces wholesale
      * (vegetation zones are rewritten by the planting itself), not edits a
      * person made, so counting them would leave every row permanently stale.
-     * History rows without a `type` in their `row_json` are restacks, whose
-     * feature's own `updated_at` moved too, so the first source has them.
+     *
+     * `restack` history rows are left out as well: a sort-order-only move is
+     * not a change to what a feature IS (nothing the GSPro files read), and a
+     * generator run slides every hand-drawn feature above its zones up. A
+     * reorder somebody made moves those rows' own `updated_at`, so the first
+     * source still counts it.
      */
     async countChangesSince(courseId: string, since: string | null, types?: readonly string[]): Promise<ChangeCount> {
         if (since === null) return { count: 0, kinds: [] };
@@ -142,6 +153,7 @@ export class FeatureHistoryService {
                 sql<number | null>`json_extract(row_json, '$.generated')`.as('generated'),
             ])
             .where('course_id', '=', courseId).where('changed_at', '>', at)
+            .where('op', '!=', RESTACK_OP)
             .execute();
         for (const row of history) {
             if (row.type === null || row.generated) continue;
@@ -166,7 +178,9 @@ export class FeatureHistoryService {
      * alone would miss it). `generated = 1` rows are left out, as there — they
      * are pipeline output the next run replaces wholesale, so counting them
      * would move the stamp on every generator run and nothing could ever be
-     * unchanged.
+     * unchanged. So are `restack` rows, for the same reason: the shift a
+     * generator run gives the hand-drawn features above its zones is no edit
+     * of theirs, and a reorder somebody made moves their own `updated_at`.
      */
     async latestStamp(courseId: string): Promise<string> {
         const touched = await this.db.selectFrom('course_features')
@@ -175,6 +189,7 @@ export class FeatureHistoryService {
         const history = await this.db.selectFrom('course_feature_history')
             .select(({ fn }) => fn.max<number | null>('history_id').as('id'))
             .where('course_id', '=', courseId)
+            .where('op', '!=', RESTACK_OP)
             .where(sql<boolean>`coalesce(json_extract(row_json, '$.generated'), 0) = 0`)
             .executeTakeFirst();
         return `${Number(touched?.n ?? 0)}:${touched?.at ?? 'none'}:${history?.id ?? 0}`;

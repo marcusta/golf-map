@@ -135,6 +135,15 @@ export interface GsproExportResult {
     path: string;
     /** Human-readable lines from the exporter (counts, warnings). */
     report: string[];
+    /**
+     * `vegetation-update` only: nothing was written, because the only way on
+     * is the WHOLE planting (minutes: every generator runs again and the
+     * Arborist file is rewritten) and nobody has agreed to that. `reason` says
+     * why; `plantIfNeeded` on the request runs it.
+     */
+    needsPlanting?: boolean;
+    /** Set exactly with `needsPlanting`: what a person has to decide about. */
+    reason?: string;
 }
 
 /** What an export job produces. */
@@ -169,6 +178,13 @@ export interface GsproExportRequest {
     variant?: string;
     /** `vegetation-update`: the vegetation_zone features to update in Unity. */
     zoneIds?: string[];
+    /**
+     * `vegetation-update`: run the whole planting when the zones cannot be
+     * patched (no zones export yet, or the zone types' items have moved since
+     * it). Default false — the job then succeeds with `needsPlanting` and
+     * writes nothing, so the caller can ask first.
+     */
+    plantIfNeeded?: boolean;
     /**
      * Render even when the output's inputs are unchanged
      * (export-fingerprint.ts): `dem`, `ortho`, `outer-ortho`, `unity-terrain`,
@@ -1443,9 +1459,16 @@ export class GsproExportService {
      * terrain's export (and the zones reach that terrain), its channels may
      * have moved and only a full export can follow: that terrain is skipped
      * with a line in the report (the outer, which Update vegetation does not
-     * refresh, often is), and when every terrain is, the whole planting runs
-     * instead. The pipeline refuses before writing anything, so a skipped
-     * terrain is left as it was.
+     * refresh, often is). The pipeline refuses before writing anything, so a
+     * skipped terrain is left as it was.
+     *
+     * When there is nothing to patch at all — no zones export, or every
+     * terrain's channels may have moved — the only way on is the WHOLE
+     * planting: every generator again, the masks, Unity and the Arborist file,
+     * minutes of work. That is not done behind the operator's back: the result
+     * comes back `needsPlanting` with the `reason`, having written nothing, so
+     * the panel can offer Update vegetation. `plantIfNeeded` runs it here
+     * instead (what the board's own vegetation chain passes).
      *
      * A hand-drawn creek_bank zone near water is a creek section: it picks the
      * palette the creek-bank generator plants on those banks, and plants
@@ -1453,7 +1476,7 @@ export class GsproExportService {
      * (only it: it is the last in the stack), and the patch finds the zones
      * it changed by content (the rest come back under new ids, unchanged).
      */
-    async updateZones(courseId: string, zoneIds: string[]): Promise<GsproExportResult> {
+    async updateZones(courseId: string, zoneIds: string[], opts: { plantIfNeeded?: boolean } = {}): Promise<GsproExportResult> {
         if (zoneIds.length === 0) throw new ConflictError('Select the vegetation zones to update');
         const course = await this.courses.get(courseId);
         const dir = await this.exportDir(courseId);
@@ -1462,8 +1485,8 @@ export class GsproExportService {
             if (await statOrNull(path.join(dir, zonesExportFileName(course.name, kind)))) kinds.push(kind);
         }
         if (kinds.length === 0) {
-            // Nothing to patch into: the full planting is what makes the masks, so run it.
-            return this.plantInsteadOfPatch(courseId, kinds, `No vegetation zones export in ${dir} yet, so the whole planting ran instead of a patch`);
+            // Nothing to patch into: only the full planting makes the masks.
+            return this.plantOrAsk(courseId, kinds, `There is no vegetation zones export in ${dir} yet to patch`, opts);
         }
         const { editor, seen } = await editorForExportDir(this.unityBridge, dir);
         if (!editor) {
@@ -1514,10 +1537,10 @@ export class GsproExportService {
             if (patched.changed) patches.push({ kind, record });
         }
         if (stale.length === kinds.length) {
-            // Every terrain's channels may have moved, and only a full export can follow one: run it.
-            return this.plantInsteadOfPatch(courseId, kinds,
-                `The zone types' item bindings changed since the last planting, so the ${stale.join(' and ')} masks' channels may have moved: `
-                + 'the whole planting ran instead of a patch');
+            // Every terrain's channels may have moved, and only a full export can follow one.
+            return this.plantOrAsk(courseId, kinds,
+                `The zone types' item bindings changed since the last planting, so the ${stale.join(' and ')} masks' channels may have moved`,
+                opts, report);
         }
         if (patches.length === 0) {
             report.push('Nothing changed in the masks, so nothing to take into Unity or the Arborist file');
@@ -1543,14 +1566,32 @@ export class GsproExportService {
     }
 
     /**
-     * What a zones patch falls back to when it cannot patch: the whole
-     * planting (`plantVegetation`) for the inner terrain, and for the outer
-     * too when it already has a zones export — the generators, the masks, the
-     * Unity import and the Arborist file. `why` leads the report, so the panel
-     * says why the fast path was not taken.
+     * A patch that cannot be patched: either the whole planting runs
+     * (`plantIfNeeded`) or the result says it is needed and WHY, having
+     * written nothing — the panel then offers Update vegetation, which is the
+     * same work with somebody behind it.
      */
-    private async plantInsteadOfPatch(courseId: string, kinds: TerrainKind[], why: string): Promise<GsproExportResult> {
-        const report = [why];
+    private async plantOrAsk(
+        courseId: string, kinds: TerrainKind[], why: string,
+        opts: { plantIfNeeded?: boolean }, sofar: string[] = [],
+    ): Promise<GsproExportResult> {
+        if (opts.plantIfNeeded !== true) {
+            const reason = `${why}, so only the whole planting can follow: nothing was updated. `
+                + 'Run Update vegetation — it plants every generator again and rewrites the Arborist file (minutes).';
+            return { path: await this.exportDir(courseId), report: [...sofar, reason], needsPlanting: true, reason };
+        }
+        return this.plantInsteadOfPatch(courseId, kinds, `${why}: the whole planting ran instead of a patch`, sofar);
+    }
+
+    /**
+     * What a zones patch falls back to when it cannot patch and the caller
+     * asked for it: the whole planting (`plantVegetation`) for the inner
+     * terrain, and for the outer too when it already has a zones export — the
+     * generators, the masks, the Unity import and the Arborist file. `why`
+     * leads the report, so the panel says why the fast path was not taken.
+     */
+    private async plantInsteadOfPatch(courseId: string, kinds: TerrainKind[], why: string, sofar: string[] = []): Promise<GsproExportResult> {
+        const report = [...sofar, why];
         // `force`: the masks are here because they are out of step with the zone types' bindings
         // (or not there at all), which is a reason to rasterize them however the fingerprint reads.
         let last = await this.plantVegetation(courseId, 'inner', { force: true });
@@ -1707,7 +1748,7 @@ export class GsproExportService {
             case 'buildings': return this.exportBuildings(courseId, r.terrain!, force);
             case 'zones': return this.exportZones(courseId, r.terrain!, force);
             case 'vegetation': return this.plantVegetation(courseId, r.terrain!, force);
-            case 'vegetation-update': return this.updateZones(courseId, r.zoneIds!);
+            case 'vegetation-update': return this.updateZones(courseId, r.zoneIds!, { plantIfNeeded: r.plantIfNeeded === true });
             case 'arborist': return this.exportArborist(courseId);
             case 'creeks': return this.exportCreeks(courseId, force);
             case 'gkd': return this.exportGkd(courseId);

@@ -16,9 +16,13 @@
 //                        [--blend replace|mix] [--also 'type[/variant][=weight], ...'|''] [--edge-blend m|default]
 //                        [--height min-max|none]
 //   bun run zones -- remove <course> <zoneId|prefix>
-//   bun run zones -- update <course> <zoneId|prefix>...  re-rasterize just those zones' area into the exported masks
+//   bun run zones -- update <course> <zoneId|prefix>... [--plant]
+//                                                        re-rasterize just those zones' area into the exported masks
 //                                                        and respawn it in the open Unity project (the web's
-//                                                        "Update N zones"; GsproExportService.updateZones)
+//                                                        "Update N zones"; GsproExportService.updateZones).
+//                                                        Zones that cannot be patched (no masks yet, or the zone
+//                                                        types' items moved since them) need the whole planting:
+//                                                        it says so and writes nothing — `--plant` runs it.
 //   bun run zones -- bind <course> <zoneType> [--variant key] --palette <grass-palette.json>   bindings = that palette's items
 //   bun run zones -- bind <course> <zoneType> [--variant key] <item>[=maxDensity] ...        bindings given directly
 //                                                        (`--name <label>` names the variant, e.g. for the creek panel)
@@ -269,8 +273,11 @@ try {
             terrainEdits: new TerrainEditsService(db), pipelineDir: process.env.MAP_PIPELINE_DIR ?? path.join(ROOT, 'pipeline'),
         });
         const started = Date.now();
-        const result = await exporter.updateZones(c.id, zones);
+        // Zones that cannot be patched need the WHOLE planting (minutes): it says so and writes
+        // nothing unless --plant is given.
+        const result = await exporter.updateZones(c.id, zones, { plantIfNeeded: 'plant' in flags });
         for (const line of result.report) console.log(line);
+        if (result.needsPlanting) console.log('Nothing was updated. Re-run with --plant to plant the whole course, or use the web\'s Update vegetation.');
         console.log(`(${((Date.now() - started) / 1000).toFixed(1)} s)`);
     } else if (command === 'remove') {
         if (!arg) usage('remove needs a zone id');

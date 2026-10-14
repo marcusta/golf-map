@@ -29,6 +29,14 @@ export interface FakeShapingWorkerOptions {
     fbxFolder?: string;
     /** How long a load takes (the state is `starting`/`busy` meanwhile). */
     loadMs?: number;
+    /** How long a sync takes, so a test can look at (or disturb) the worker while one runs. */
+    syncMs?: number;
+    /**
+     * The first N `GET /status` calls made while a SYNC job runs answer 503
+     * with no body — the real worker's blips while bpy holds the GIL. The sync
+     * itself goes on; the service is expected to keep waiting.
+     */
+    statusOutages?: number;
     /** When set, every request must carry it as `X-Golfmap-Token` (401 otherwise). */
     token?: string;
     /** The command line it was started with (reported in /status). */
@@ -77,6 +85,8 @@ export function startFakeShapingWorker(opts: FakeShapingWorkerOptions = {}): Fak
     let lastRun: unknown = null;
     let seq = 0;
     let current: FakeJob | null = null;
+    /** `/status` answers left to drop while a sync runs. */
+    let outages = opts.statusOutages ?? 0;
     const byId = new Map<string, FakeJob>();
 
     const readOps = (): Map<string, string> => {
@@ -107,6 +117,7 @@ export function startFakeShapingWorker(opts: FakeShapingWorkerOptions = {}): Fak
         state = 'busy';
         phase = 'sync';
         try {
+            if (opts.syncMs) await Bun.sleep(opts.syncMs);
             const now = readOps();
             const ids = new Set([...now.keys(), ...exportedOps.keys()]);
             const changedIds = [...ids].filter(id => now.get(id) !== exportedOps.get(id)).sort();
@@ -187,7 +198,13 @@ export function startFakeShapingWorker(opts: FakeShapingWorkerOptions = {}): Fak
             if (opts.token && req.headers.get(TOKEN_HEADER) !== opts.token) {
                 return Response.json({ error: `${TOKEN_HEADER} is missing or wrong` }, { status: 401 });
             }
-            if (route === '/status') return Response.json(status());
+            if (route === '/status') {
+                if (outages > 0 && current?.kind === 'sync' && current.state === 'running') {
+                    outages--;
+                    return new Response('', { status: 503 });
+                }
+                return Response.json(status());
+            }
             if (route.startsWith('/job/')) {
                 const job = byId.get(route.slice('/job/'.length));
                 return job ? Response.json(publicJob(job)) : Response.json({ error: `no job ${route.slice(5)}` }, { status: 404 });

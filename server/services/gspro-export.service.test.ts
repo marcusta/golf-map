@@ -16,6 +16,7 @@ import {
     ZONES_LAYOUT_CHANGED_EXIT,
 } from './gspro-export.service';
 import { TerrainEditsService } from './terrain-edits.service';
+import { digest } from './export-fingerprint';
 import { innerSquareFrom3006, outerSquareFor, squareArg, terrainManifestField, toSquareBox, OUTER_TERRAIN_SIDE_M } from './terrain-square';
 import { defaultUnityBridge, type UnityBridge } from './unity-bridge';
 import { NotFoundError, ConflictError } from '@basics/core/server/auth';
@@ -1785,7 +1786,7 @@ test('vegetation-update with nothing changed leaves Unity alone', async () => {
     }
 });
 
-test('vegetation-update plants the whole course when there is nothing to patch, or every terrain\'s bindings moved', async () => {
+test('vegetation-update asks before it plants the whole course; plantIfNeeded is the yes', async () => {
     const discovery = await mkdtemp(path.join(os.tmpdir(), 'bridges-'));
     const exportDir = await mkdtemp(path.join(os.tmpdir(), 'gspro-out-'));
     // One runner for both halves: the generators and `gspro.py zones` of a planting, and a
@@ -1800,9 +1801,25 @@ test('vegetation-update plants the whole course when there is nothing to patch, 
     // The generators that need a surface map from Unity are reported, not run: the tall rough and the zones export are.
     const planting = ['grass_zones.py', 'gspro.py'];
 
-    // No zones export to patch: the planting that makes the masks runs instead of a 409, Unity open or not.
-    const planted = await t.svc.updateZones(TEST_COURSE_ID, ['z1']);
-    expect(planted.report[0]).toMatch(/^No vegetation zones export in .* yet, so the whole planting ran instead of a patch$/);
+    // No zones export to patch: the only way on is the whole planting (minutes), so it asks — and writes nothing.
+    const asked = await t.svc.updateZones(TEST_COURSE_ID, ['z1']);
+    expect(asked.needsPlanting).toBe(true);
+    expect(asked.reason).toMatch(/^There is no vegetation zones export in .* yet to patch, so only the whole planting can follow: nothing was updated\. Run Update vegetation — it plants every generator again and rewrites the Arborist file \(minutes\)\.$/);
+    expect(asked.report).toEqual([asked.reason!]);
+    expect(veg.runs).toHaveLength(0);
+    expect(moved.runs).toHaveLength(0);
+    expect(existsSync(path.join(exportDir, 'linkan-inner-zones.json'))).toBe(false);
+    // The same through a job, which is what the panel polls.
+    const job = await t.svc.start(TEST_COURSE_ID, { kind: 'vegetation-update', zoneIds: ['z1'] });
+    await t.svc.whenIdle(TEST_COURSE_ID);
+    expect(t.svc.job(job.id)).toMatchObject({ status: 'succeeded', error: null });
+    expect(t.svc.job(job.id).result!.needsPlanting).toBe(true);
+    expect(veg.runs).toHaveLength(0);
+
+    // With the yes, the planting that makes the masks runs, Unity open or not.
+    const planted = await t.svc.updateZones(TEST_COURSE_ID, ['z1'], { plantIfNeeded: true });
+    expect(planted.needsPlanting).toBeUndefined();
+    expect(planted.report[0]).toMatch(/^There is no vegetation zones export in .* yet to patch: the whole planting ran instead of a patch$/);
     expect(veg.runs.map(a => path.basename(a[0]!))).toEqual(planting);
     expect(moved.runs).toHaveLength(0);
     expect(existsSync(path.join(exportDir, 'linkan-inner-zones.json'))).toBe(true);
@@ -1815,9 +1832,20 @@ test('vegetation-update plants the whole course when there is nothing to patch, 
 
     const { calls, server } = fakeUnity(exportDir, discovery);
     try {
-        const again = await t.svc.updateZones(TEST_COURSE_ID, ['z1']);
+        // Every terrain's channels may have moved: again it asks, with the terrain's own line kept.
+        const stale = await t.svc.updateZones(TEST_COURSE_ID, ['z1']);
         expect(moved.runs).toHaveLength(1);
-        expect(again.report[0]).toBe("The zone types' item bindings changed since the last planting, so the inner masks' channels may have moved: "
+        expect(stale.needsPlanting).toBe(true);
+        expect(stale.reason).toBe("The zone types' item bindings changed since the last planting, so the inner masks' channels may have moved, "
+            + 'so only the whole planting can follow: nothing was updated. '
+            + 'Run Update vegetation — it plants every generator again and rewrites the Arborist file (minutes).');
+        expect(stale.report[0]).toMatch(/^inner: skipped - /);
+        expect(veg.runs).toHaveLength(0);
+        expect(calls.map(c => c.command)).not.toContain('golfmap.zones.import');
+
+        const again = await t.svc.updateZones(TEST_COURSE_ID, ['z1'], { plantIfNeeded: true });
+        expect(moved.runs).toHaveLength(2);
+        expect(again.report[1]).toBe("The zone types' item bindings changed since the last planting, so the inner masks' channels may have moved: "
             + 'the whole planting ran instead of a patch');
         expect(veg.runs.map(a => path.basename(a[0]!))).toEqual(planting);
         // The patch itself never reached Unity; the planting's import did.
@@ -2168,6 +2196,18 @@ test('the photo, the masks, the trees and the creeks are skipped when their inpu
     await t.svc.exportOrtho(TEST_COURSE_ID, 'ortho-orto-l2-2025.tif', 0.6, {});
     expect(w.commands()).toEqual(['ortho', 'ortho']);
     expect(path.basename(photo.path)).toBe('linkan-orto-l2-2025-8192.jpg');
+});
+
+test('the input digest is order-independent and unchanged: the sidecars already on disk stay valid', async () => {
+    // Pinned from before the separator was written as the escape `'\0'` (a raw NUL byte in the
+    // source makes git treat export-fingerprint.ts as binary): the same bytes are hashed, so an
+    // export whose sidecar holds one of these hashes must still read as unchanged.
+    expect(digest(['a', 'b', 'c'])).toBe('13e228567e8249fc');
+    expect(digest(['c', 'a', 'b'])).toBe('13e228567e8249fc');
+    expect(digest([])).toBe('e3b0c44298fc1c14');
+    expect(digest(['zone-1', 'zone-2'])).toBe('f2c5a36110daf821');
+    // The separator keeps two different splits of the same text apart.
+    expect(digest(['ab', 'c'])).not.toBe(digest(['a', 'bc']));
 });
 
 test('a skipped heightmap render still goes into Unity: the push reads the files in the folder, and save keeps them', async () => {

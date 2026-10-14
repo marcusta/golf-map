@@ -1138,6 +1138,28 @@ describe('CourseFeaturesService.replaceGenerated', () => {
         expect(Math.max(...trees)).toBeLessThan(order(bunker.id));
     });
 
+    test('making room for the batch moves sort_order only — never the updated_at of the features above it', async () => {
+        const { db } = await createTestDb(seedCourse);
+        const svc = new CourseFeaturesService(db);
+        const bunker = await svc.create({ courseId: TEST_COURSE_ID, holeId: null, type: 'bunker', geometry: squareGeometry(10, 10) });
+        await db.updateTable('course_features').set({ updated_at: '2000-01-01 00:00:00' })
+            .where('course_id', '=', TEST_COURSE_ID).execute();
+
+        await svc.replaceGenerated(TEST_COURSE_ID, 'lidar-canopy', collection([treeFeature(100, 100), treeFeature(120, 120)]));
+
+        // The bunker was pushed up by the two inserted rows, but it was not EDITED: a generator run
+        // that bumped its `updated_at` marked every GSPro target stale and invalidated the export
+        // fingerprints that hash the feature high-water mark (feature-history.service.ts).
+        const row = await db.selectFrom('course_features').select(['sort_order', 'updated_at'])
+            .where('id', '=', bunker.id).executeTakeFirstOrThrow();
+        expect(row.sort_order).toBe(bunker.sortOrder + 2);
+        expect(row.updated_at).toBe('2000-01-01 00:00:00');
+        // The move is still on the record, as the migration-025 `restack` the counting skips.
+        const history = await db.selectFrom('course_feature_history').select('op')
+            .where('feature_id', '=', bunker.id).execute();
+        expect(history.map(h => h.op)).toEqual(['restack']);
+    });
+
     test('a second call with an empty collection removes the previous generation', async () => {
         const { db } = await createTestDb(seedCourse);
         const svc = new CourseFeaturesService(db);

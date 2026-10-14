@@ -7,8 +7,9 @@
 import { test, expect, afterEach } from 'bun:test';
 import * as path from 'node:path';
 import * as os from 'node:os';
-import { mkdir, mkdtemp, readFile, stat, utimes, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, readdir, readFile, stat, utimes, writeFile } from 'node:fs/promises';
 import { writeFileSync } from 'node:fs';
+import { NotFoundError } from '@basics/core/server/auth';
 import { sql } from 'kysely';
 import { createTestDb } from '../testing/db';
 import { seedCourse, TEST_COURSE_ID, TEST_GREEN_1_ID } from '../db/seeds/course';
@@ -21,8 +22,11 @@ import { FeatureHistoryService } from './feature-history.service';
 import { MapBuildService, type PipelineRunner } from './map-build.service';
 import { GsproExportService, type ExportRunner } from './gspro-export.service';
 import { ShapingService } from './shaping.service';
-import { GsproSyncService, SYNC_RECORD_FILE, SYNC_RECORD_FORMAT, type GsproSyncRecord, type GsproSyncStatus } from './gspro-sync.service';
-import { defaultUnityBridge } from './unity-bridge';
+import {
+    GsproSyncService, SYNC_RECORD_FILE, SYNC_RECORD_FORMAT,
+    type GsproSyncDeps, type GsproSyncRecord, type GsproSyncStatus,
+} from './gspro-sync.service';
+import { defaultUnityBridge, unityEditorsFor } from './unity-bridge';
 import { innerSquareFrom3006, terrainManifestField } from './terrain-square';
 import { GSPRO_TARGET_IDS, type GsproTargetId } from '../../shared/gspro-targets';
 
@@ -124,7 +128,7 @@ function mapBuildRunner() {
  * `saved: {scenes, seconds}` the real bridge puts in its result
  * (unity/README.md, "Saving what a command changed").
  */
-function fakeEditor(exportFolder: string, projectName = 'linkan_v4') {
+function fakeEditor(exportFolder: string, projectName = 'linkan_v4', delayMs = 0) {
     const calls: Array<{ command: string; args: any }> = [];
     const server = Bun.serve({
         port: 0,
@@ -133,6 +137,8 @@ function fakeEditor(exportFolder: string, projectName = 'linkan_v4') {
             const command = decodeURIComponent(new URL(req.url).pathname.replace('/cmd/', ''));
             const args = await req.json();
             calls.push({ command, args });
+            // An editor busy compiling takes its time to answer the course probe.
+            if (delayMs) await Bun.sleep(delayMs);
             const saved = args?.save === true ? { saved: { scenes: ['Assets/Scenes/Linkan.unity'], seconds: 0.4 } } : {};
             if (command === 'golfmap.course') return Response.json({ ok: true, result: { active: { name: 'Linkan', exportFolder } } });
             if (command === 'golfmap.terrain.update') {
@@ -157,6 +163,30 @@ interface SetupOptions {
     holdFor?: string;
     /** Leave the course without a georeference (no map area at all). */
     georeference?: boolean;
+    /** How long the `meshes` chain follows its shaping job (ms). */
+    meshesTimeoutMs?: number;
+    /** The real shaping service as the sync service sees it, with a method replaced. */
+    shapingOver?: Partial<GsproSyncDeps['shaping']>;
+}
+
+/**
+ * The real `ShapingService` behind the `shaping` dependency, with one or two of
+ * its methods replaced — how a test puts the service in front of a shaping job
+ * that has gone (a server restart, another apply of the course) without
+ * standing in for the rest of it.
+ */
+function shapingView(s: ShapingService, over: Partial<GsproSyncDeps['shaping']>): GsproSyncDeps['shaping'] {
+    return {
+        apply: (courseId, opts) => s.apply(courseId, opts),
+        job: id => s.job(id),
+        status: courseId => s.status(courseId),
+        layersDir: courseId => s.layersDir(courseId),
+        whenIdle: () => s.whenIdle(),
+        current: courseId => s.current(courseId),
+        runningAnywhere: () => s.runningAnywhere(),
+        waits: s.waits,
+        ...over,
+    };
 }
 
 async function setup(opts: SetupOptions = {}) {
@@ -199,7 +229,9 @@ async function setup(opts: SetupOptions = {}) {
     const map = mapBuildRunner();
     const mapBuild = new MapBuildService({ db: ctx.db, assets, dataDir, pipelineDir: '/pipeline', runner: map.runner, terrainEdits });
     const svc = new GsproSyncService({
-        db: ctx.db, courses, exports, shaping, mapBuild, dataDir, terrainEdits, unityBridge: bridge, pollMs: 5,
+        db: ctx.db, courses, exports, mapBuild, dataDir, terrainEdits, unityBridge: bridge, pollMs: 5,
+        shaping: opts.shapingOver ? shapingView(shaping, opts.shapingOver) : shaping,
+        meshesTimeoutMs: opts.meshesTimeoutMs,
     });
     return { ctx, db: ctx.db, svc, exports, shaping, dataDir, exportDir, layersRoot, pipeline, map, editor, assets };
 }
@@ -652,6 +684,155 @@ test('a second update of the same target renders nothing again, and --force does
     expect(t.pipeline.commands()).toEqual(['dem', 'dem', 'dem', 'dem']);
 });
 
+// --- The photo chain's vintage ---
+
+test('the photo chain renders the ACTIVE vintage, its cleaned copy when there is one, never another vintage', async () => {
+    const t = await setup({ unity: true });
+    // The map shows orto-l2-2025 (buildSite's manifest); the cleaned file left over is 2023's.
+    const sources = await buildSite(t, [
+        'dem.tif', 'ortho-orto-l2-2025.tif', 'ortho-orto-l2-2023.tif', 'ortho-orto-l2-2023.cleaned.tif',
+    ]);
+
+    const first = await t.svc.update(TEST_COURSE_ID, 'photo');
+    await t.svc.whenIdle(TEST_COURSE_ID);
+    const plain = t.svc.job(first.id);
+    expect(plain.error).toBeNull();
+    expect(plain.results[0]!.report[0]).toBe('photo: orto-l2-2025, no cleaned photo yet: the photo as built');
+    expect(await Bun.file(path.join(t.exportDir, 'linkan-orto-l2-2025-clean-8192.jpg')).exists()).toBe(true);
+    // The 2023 cleaned leftover is not rendered, and the outer square is the same vintage.
+    const written = await readdir(t.exportDir);
+    expect(written.filter(n => n.includes('orto-l2-2023'))).toEqual([]);
+    expect(written).toContain('linkan-outer-orto-l2-2025-clean-8192.jpg');
+
+    // Clean the active vintage: now that is what goes in, and the report says so.
+    await writeFile(path.join(sources, 'ortho-orto-l2-2025.cleaned.tif'), '');
+    const second = await t.svc.update(TEST_COURSE_ID, 'photo');
+    await t.svc.whenIdle(TEST_COURSE_ID);
+    const cleaned = t.svc.job(second.id);
+    expect(cleaned.error).toBeNull();
+    expect(cleaned.results[0]!.report[0]).toBe('photo: orto-l2-2025, cleaned');
+    expect(await Bun.file(path.join(t.exportDir, 'linkan-orto-l2-2025-cleaned-clean-8192.jpg')).exists()).toBe(true);
+    expect(cleaned.phases.find(p => p.id === 'photo:inner')!.detail)
+        .toBe('linkan-orto-l2-2025-cleaned-clean-8192.jpg (+ its -terrain and -meshes twins)');
+});
+
+// --- The meshes chain (the shaping job it mirrors) ---
+
+/** A .blend in the export folder, so the Meshes row is not blocked. */
+const blendFile = (t: Setup) => writeFile(path.join(t.exportDir, 'linkan_svg_1.blend'), '');
+
+test("the meshes chain mirrors the shaping job's own phase statuses and seconds, not the poll interval", async () => {
+    const hold = gate();
+    const t = await setup({ hold: hold.promise, holdFor: 'shaping-global' });
+    await blendFile(t);
+
+    const started = await t.svc.update(TEST_COURSE_ID, 'meshes');
+    expect(started.phases.map(p => p.id)).toEqual(['meshes:layers', 'meshes:worker', 'meshes:blender', 'meshes:unity', 'meshes:vegetation']);
+    // The shaping job sits in its layers phase while the pipeline is held: ours counts ITS seconds,
+    // not the time since the last poll (which `begin()` on every poll would show, ~5 ms).
+    await Bun.sleep(300);
+    const during = t.svc.job(started.id);
+    const layersNow = during.phases.find(p => p.id === 'meshes:layers')!;
+    expect(layersNow.status).toBe('running');
+    expect(layersNow.seconds).toBeGreaterThanOrEqual(0.25);
+    expect(during.phase).toBe('meshes:layers');
+
+    hold.open();
+    await t.svc.whenIdle(TEST_COURSE_ID);
+    const job = t.svc.job(started.id);
+    // The shaping run itself failed (no worker can start in a test), which is beside the point here:
+    // every phase it reported is in ours with the status, detail and seconds IT measured.
+    const shaped = t.shaping.current(TEST_COURSE_ID)!;
+    const theirs = (id: string) => shaped.phases.find(p => p.id === id)!;
+    const mine = (id: string) => job.phases.find(p => p.id === `meshes:${id}`)!;
+    expect(mine('layers')).toMatchObject({ status: 'done', detail: theirs('layers').detail, seconds: theirs('layers').seconds });
+    expect(mine('layers').seconds).toBeGreaterThanOrEqual(0.25);
+    expect(mine('worker')).toMatchObject({ status: 'failed', detail: theirs('worker').detail, seconds: theirs('worker').seconds });
+    // The phases the shaping job never reached are cut short by this job, as any failed chain's are.
+    expect(mine('unity')).toMatchObject({ status: 'skipped', detail: 'Meshes failed' });
+    expect(job.step).toMatch(/^failed \(starting the shaping worker\): Meshes: /);
+    await t.shaping.whenIdle();
+});
+
+test('the meshes chain gives up on a shaping run that does not settle, and on one it can no longer follow', async () => {
+    const hold = gate();
+    const t = await setup({ hold: hold.promise, holdFor: 'shaping-global', meshesTimeoutMs: 120 });
+    await blendFile(t);
+
+    const started = await t.svc.update(TEST_COURSE_ID, 'meshes');
+    await t.svc.whenIdle(TEST_COURSE_ID);
+    const job = t.svc.job(started.id);
+    expect(job.status).toBe('failed');
+    expect(job.error).toMatch(/^Meshes: The shaping run \(job .*\) has not finished after 0\.1 s — it is on "Generating layers/);
+    expect(job.error).toMatch(/run Update meshes again once the worker is free$/);
+    // The phase it was mirroring is the one that failed, so the board points at it.
+    expect(job.phases.find(p => p.id === 'meshes:layers')!.status).toBe('failed');
+    hold.open();
+    await t.shaping.whenIdle();
+
+    // A shaping job this process no longer has (a restart, or another apply of the course forgot it).
+    const gone = await setup({
+        shapingOver: {
+            job: (id: string) => { throw new NotFoundError(`No shaping job ${id} (the server may have restarted)`); },
+        },
+    });
+    await blendFile(gone);
+    const orphan = await gone.svc.update(TEST_COURSE_ID, 'meshes');
+    await gone.svc.whenIdle(TEST_COURSE_ID);
+    expect(gone.svc.job(orphan.id).error)
+        .toMatch(/^Meshes: The shaping run \(job .*\) can no longer be followed: No shaping job /);
+    await gone.shaping.whenIdle();
+});
+
+// --- Waiting for what is really in the way ---
+
+test("a meshes update queues behind ANOTHER course's shaping run instead of failing on the one worker", async () => {
+    const hold = gate();
+    const t = await setup({ hold: hold.promise, holdFor: 'shaping-global' });
+    await t.db.insertInto('courses')
+        .values({ id: 'course-2', name: 'Vreta', status: 'draft', revision: 1, crs: 'EPSG:3006', version: 1 })
+        .execute();
+    await blendFile(t);
+
+    // Vreta's apply takes the machine's one Blender worker (held in its layers phase).
+    const other = await t.shaping.apply('course-2');
+    expect(other.status).toBe('running');
+
+    const started = await t.svc.update(TEST_COURSE_ID, 'meshes');
+    expect(started.phases[0]).toMatchObject({ id: 'wait', label: 'Waiting for the shaping run for Vreta' });
+    await Bun.sleep(20);
+    expect(t.svc.job(started.id)).toMatchObject({ status: 'running', phase: 'wait' });
+    expect(t.svc.job(started.id).phases[0]!.detail).toBe('the shaping run for Vreta');
+    // Nothing of ours has started: no apply of this course was refused in the meantime.
+    expect(t.shaping.current(TEST_COURSE_ID)).toBeNull();
+
+    hold.open();
+    await t.svc.whenIdle(TEST_COURSE_ID);
+    const job = t.svc.job(started.id);
+    expect(job.phases[0]).toMatchObject({ status: 'done', detail: 'waited for the shaping run for Vreta' });
+    // It then ran its own apply (which fails for want of a worker here) — never a 409 from the queue.
+    expect(t.shaping.current(TEST_COURSE_ID)).not.toBeNull();
+    expect(job.error ?? '').not.toMatch(/already going/);
+    await t.shaping.whenIdle();
+});
+
+test('a queued job whose blocker has finished says the way was clear instead of waiting for itself', async () => {
+    const hold = gate();
+    const t = await setup({ hold: hold.promise, holdFor: 'svg' });
+
+    const first = await t.svc.update(TEST_COURSE_ID, 'shapes');
+    const second = await t.svc.update(TEST_COURSE_ID, 'shapes');
+    expect(second.phases[0]!.label).toBe('Waiting for the GSPro update already running for this course');
+
+    hold.open();
+    await t.svc.whenIdle(TEST_COURSE_ID);
+    expect(t.svc.job(first.id).status).toBe('succeeded');
+    const done = t.svc.job(second.id);
+    expect(done.status).toBe('succeeded');
+    // By its turn the first job was over: the phase is skipped, not a wait for the job itself.
+    expect(done.phases[0]).toMatchObject({ id: 'wait', status: 'skipped', detail: 'nothing else was running' });
+});
+
 test('the Unity chip lists every open editor and which one works on the course', async () => {
     const t = await setup({ unity: true });
     const unity = await t.svc.unity(TEST_COURSE_ID);
@@ -659,4 +840,26 @@ test('the Unity chip lists every open editor and which one works on the course',
     expect(unity.editors).toHaveLength(1);
     expect(unity.editors[0]).toMatchObject({ projectName: 'linkan_v4', activeCourse: 'Linkan', matches: true, error: null });
     expect(unity.editors[0]!.exportFolder).toBe(t.exportDir);
+});
+
+test('every open Unity editor is probed side by side, so the chip does not cost one round trip after another', async () => {
+    const discovery = await tmp('bridges-');
+    const dir = await tmp('gspro-sync-out-');
+    const slow = 300;
+    // Two editors, each taking its time over the course probe (the real one is capped at 30 s each).
+    for (const [n, name] of [[1, 'alpha_v1'], [2, 'beta_v2']] as const) {
+        const editor = fakeEditor(path.relative(path.join(await tmp('unity-proj-'), 'Assets'), dir), name, slow);
+        writeFileSync(path.join(discovery, `bridge-${n}.json`), JSON.stringify({
+            pid: process.pid, port: editor.server.port, token: 'tok', projectPath: await tmp('unity-proj-'),
+            projectName: name, unityVersion: '2018.2.8f1', started: '',
+        }));
+    }
+
+    const t0 = Date.now();
+    const editors = await unityEditorsFor(defaultUnityBridge(discovery), dir);
+    const elapsed = Date.now() - t0;
+
+    expect(editors.map(e => e.projectName)).toEqual(['alpha_v1', 'beta_v2']);   // discovery order (by project name)
+    expect(editors.every(e => e.activeCourse === 'Linkan')).toBe(true);
+    expect(elapsed).toBeLessThan(2 * slow);
 });

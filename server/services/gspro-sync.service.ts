@@ -25,8 +25,12 @@
 //
 // Jobs QUEUE per course (FIFO) instead of 409ing: a second Update while one
 // runs comes back `queued`, and the board shows it in `queue`. A sync job also
-// waits for a legacy `GsproExportService` job or a `ShapingService` apply of
-// the course — they touch the same files and the same one Blender worker.
+// waits for a legacy `GsproExportService` job or a `ShapingService` apply —
+// they touch the same files, and the shaping run the same one Blender worker,
+// whichever course it belongs to (so a `meshes` update of one course queues
+// behind another's run instead of being refused). The `wait` phase names what
+// it is waiting for, and is skipped when that is over by the time its turn
+// comes.
 //
 // Every Unity push a chain makes runs with `save: true` (unity/README.md,
 // "Saving what a command changed"), so what it changed is on disk when the job
@@ -67,7 +71,7 @@ import {
 import { BUILDINGS_SURVEY } from './terrain-generators.service';
 import { FeatureHistoryService, sqlStamp, type ChangeCount } from './feature-history.service';
 import { TerrainEditsService } from './terrain-edits.service';
-import { SHAPING_PHASES, type ShapingJob, type ShapingWorkerStatus, type ShapingService } from './shaping.service';
+import { SHAPING_PHASES, type ShapingJob, type ShapingTimeouts, type ShapingWorkerStatus, type ShapingService } from './shaping.service';
 import { JobPhases, secs, type JobPhase } from './job-phases';
 import { defaultUnityBridge, editorForExportDir, unityEditorsFor, type UnityBridge, type UnityEditor, type UnityEditorInfo } from './unity-bridge';
 import type { CourseTerrain } from './terrain-square';
@@ -170,7 +174,7 @@ export interface GsproSyncDeps {
     /** Every file and every Unity push the chains run. */
     exports: GsproExportService;
     /** The `meshes` chain: `apply` already does layers → worker → Unity refresh. */
-    shaping: Pick<ShapingService, 'apply' | 'job' | 'status' | 'layersDir' | 'whenIdle' | 'current'>;
+    shaping: Pick<ShapingService, 'apply' | 'job' | 'status' | 'layersDir' | 'whenIdle' | 'current' | 'runningAnywhere' | 'waits'>;
     /** The `terrain` chain's bake: the terrain tool's "Apply to terrain". */
     mapBuild: Pick<MapBuildService, 'reTerrain' | 'waitForJob' | 'get'>;
     /** Root of `sources/<siteId>/` — where the cleaned photo lives. */
@@ -180,6 +184,13 @@ export interface GsproSyncDeps {
     unityBridge?: UnityBridge;
     /** How often a mirrored shaping job is polled (ms; default 500). */
     pollMs?: number;
+    /**
+     * How long the `meshes` chain follows its shaping job before it gives up on
+     * it (ms). Default: the shaping service's own budget for a run (load +
+     * sync + the Unity refresh) — past that the job is not going to settle,
+     * and a sync job that polls for ever is one nothing can ever follow.
+     */
+    meshesTimeoutMs?: number;
 }
 
 /** `gspro.py shaping-global`'s first layer file — the `meshes` target's "last updated" fallback. */
@@ -204,6 +215,7 @@ export class GsproSyncService {
     private readonly terrainEdits: TerrainEditsService;
     private readonly unityBridge: UnityBridge;
     private readonly pollMs: number;
+    private readonly meshesTimeoutMs: number | undefined;
     /** Every job this process started, by id. */
     private readonly jobs = new Map<string, JobRecord>();
     /** Per course: the tail of the FIFO chain, so the next `update` starts after it. */
@@ -220,6 +232,7 @@ export class GsproSyncService {
         this.terrainEdits = deps.terrainEdits ?? new TerrainEditsService(deps.db);
         this.unityBridge = deps.unityBridge ?? defaultUnityBridge();
         this.pollMs = deps.pollMs ?? 500;
+        this.meshesTimeoutMs = deps.meshesTimeoutMs;
     }
 
     // --- Status ---
@@ -246,13 +259,21 @@ export class GsproSyncService {
         return { editors, matched: editors.find(e => e.matches)?.projectName ?? null, exportDir: dir };
     }
 
+    /**
+     * All nine rows, side by side — the board asks for them on every poll and
+     * each row stats files, reads the history and (for `meshes`) lists the
+     * export folder. `Promise.all` keeps the board's own order while the file
+     * work overlaps; Kysely on bun:sqlite serialises the queries anyway.
+     */
     private async targetStatuses(ctx: SyncContext): Promise<GsproTargetStatus[]> {
-        const out: GsproTargetStatus[] = [];
-        for (const target of GSPRO_TARGETS) {
+        return Promise.all(GSPRO_TARGETS.map(async (target): Promise<GsproTargetStatus> => {
             const entry = ctx.record.targets[target.id];
             const lastRun = entry?.lastRun ?? await this.fallbackLastRun(ctx, target.id);
-            const changedSince = await this.changedSince(ctx, target.id, lastRun);
-            out.push({
+            const [changedSince, blocked] = await Promise.all([
+                this.changedSince(ctx, target.id, lastRun),
+                this.blocked(ctx, target.id),
+            ]);
+            return {
                 id: target.id,
                 label: target.label,
                 lastRun,
@@ -260,10 +281,9 @@ export class GsproSyncService {
                 changedSince,
                 stale: changedSince.count > 0 || lastRun === null,
                 manual: target.manual,
-                blocked: await this.blocked(ctx, target.id),
-            });
-        }
-        return out;
+                blocked,
+            };
+        }));
     }
 
     /**
@@ -470,7 +490,7 @@ export class GsproSyncService {
         }
 
         const phases = new JobPhases();
-        const waitFor = await this.busyWith(courseId);
+        const waitFor = await this.busyWith(courseId, { targets });
         if (waitFor) phases.add('wait', `Waiting for ${waitFor}`);
         for (const target of targets) addPhases(phases, target, targets.length > 1);
 
@@ -528,14 +548,41 @@ export class GsproSyncService {
         await this.chain.get(courseId);
     }
 
-    /** What a new job would have to wait for, in words; null when it can start at once. */
-    private async busyWith(courseId: string): Promise<string | null> {
-        if (this.chain.has(courseId)) return 'the GSPro update already running for this course';
+    /**
+     * What a job of this course would have to wait for, in words; null when it
+     * can start at once. `exceptJob` is the job asking — its own record is not
+     * something to wait for, which is what makes the `wait` phase, re-asked
+     * when its turn comes, able to say that the way is clear.
+     *
+     * A shaping run of ANOTHER course counts when the job updates the meshes:
+     * there is one Blender worker per machine, so `ShapingService.apply` 409s
+     * while any course's run is going. The other targets write their own files
+     * and do not care.
+     */
+    private async busyWith(courseId: string, opts: { targets?: readonly GsproTargetId[]; exceptJob?: string } = {}): Promise<string | null> {
+        const other = [...this.jobs.values()].find(r =>
+            r.job.courseId === courseId && r.job.id !== opts.exceptJob && r.job.status === 'running');
+        if (other) return 'the GSPro update already running for this course';
         const exporting = this.exports.current(courseId);
         if (exporting?.status === 'running') return `the ${exporting.label} export`;
-        const shaping = this.shaping.current(courseId);
-        if (shaping?.status === 'running') return 'the Blender shaping run';
+        const shaping = this.shaping.runningAnywhere();
+        if (shaping) {
+            if (shaping.courseId === courseId) return 'the Blender shaping run';
+            // Only the meshes go through the worker; `targets` unset (a plain "is anything going?") counts it.
+            if (!opts.targets || opts.targets.includes('meshes')) {
+                return `the shaping run for ${await this.courseLabel(shaping.courseId)}`;
+            }
+        }
         return null;
+    }
+
+    /** A course's name for a message about it; its id when it is not there any more. */
+    private async courseLabel(courseId: string): Promise<string> {
+        try {
+            return (await this.courses.get(courseId)).name;
+        } catch {
+            return courseId;
+        }
     }
 
     // --- The job ---
@@ -588,9 +635,15 @@ export class GsproSyncService {
         }
     }
 
-    /** The `wait` phase: the course's other jobs out of the way before anything is written. */
+    /**
+     * The `wait` phase: whatever was in the way out of the way before anything
+     * is written. Asked again here — what the job queued behind may well be
+     * over by the time its turn comes, and then the phase is SKIPPED rather
+     * than waiting for nothing. This job's own record is left out of the
+     * question (it is running by now).
+     */
     private async waitTurn(rec: JobRecord): Promise<void> {
-        const waiting = await this.busyWith(rec.job.courseId);
+        const waiting = await this.busyWith(rec.job.courseId, { targets: rec.job.targets, exceptJob: rec.job.id });
         if (!waiting) {
             rec.phases.skip('wait', 'nothing else was running');
             return;
@@ -709,18 +762,29 @@ export class GsproSyncService {
     }
 
     /**
-     * Photo: the inner orthophoto — the cleaned vintage when the site has one
-     * — rendered with the export panel's defaults (forest floor, buildings
+     * Photo: the ACTIVE vintage's inner orthophoto — its cleaned copy when the
+     * Clean tool has made one, else the photo as the map was built with —
+     * rendered with the export panel's defaults (forest floor, buildings
      * removed, the grass surfaces tinted) and put onto the Unity course
-     * meshes, plus the outer terrain's texture for the newest vintage.
+     * meshes, plus the outer terrain's texture of the same vintage.
+     *
+     * Never another vintage: a cleaned file left over from an older collection
+     * used to win over the vintage the map shows, which put a photo of another
+     * year on the course.
      */
     private async updatePhoto(rec: JobRecord, ctx: SyncContext, unity: UnityTarget, id: (s: string) => string): Promise<string[]> {
         const sources = await this.orthoSources(ctx);
-        const picked = sources.find(s => s.cleaned) ?? sources[0];
-        if (!picked) throw new ConflictError('No orthophoto is persisted for this course — build its map first');
-        const report: string[] = [];
+        if (sources.length === 0) throw new ConflictError('No orthophoto is persisted for this course — build its map first');
+        // No active vintage recorded (a map built before that was kept): the newest collection stands in.
+        const collection = (sources.find(s => s.active) ?? sources[0]!).collection;
+        const vintage = sources.filter(s => s.collection === collection);
+        const picked = vintage.find(s => s.cleaned) ?? vintage[0]!;
+        const which = picked.cleaned
+            ? `photo: ${collection}, cleaned`
+            : `photo: ${collection}, no cleaned photo yet: the photo as built`;
+        const report: string[] = [which];
 
-        rec.phases.begin(id('inner'), `rendering ${picked.source}`);
+        rec.phases.begin(id('inner'), `rendering ${picked.source} (${which})`);
         // The panel's defaults: the tint (the `-meshes` file Unity takes), the forest floor and the roofs filled.
         const exported = await this.exports.exportOrtho(ctx.courseId, picked.source, undefined, {}, {}, true, { force: ctx.force });
         const meshes = meshTextureFileName(path.basename(exported.path));
@@ -736,8 +800,8 @@ export class GsproSyncService {
             rec.phases.end(id('unity'), 'done', `${meshes} onto the course meshes in ${unity.editor.projectName}`);
         }
 
-        rec.phases.begin(id('outer'), `the outer square from ${sources[0]!.collection}`);
-        const outer = await this.exports.exportOuterOrtho(ctx.courseId, sources[0]!.collection, undefined, {}, {}, true, { force: ctx.force });
+        rec.phases.begin(id('outer'), `the outer square from ${collection}`);
+        const outer = await this.exports.exportOuterOrtho(ctx.courseId, collection, undefined, {}, {}, true, { force: ctx.force });
         report.push(...prefixed('outer photo', outer.report));
         report.push('The outer texture is written only: there is no Unity push for the outer terrain — set it on the terrain by hand once.');
         rec.phases.end(id('outer'), 'done', path.basename(outer.path));
@@ -760,12 +824,24 @@ export class GsproSyncService {
      */
     private async updateMeshes(rec: JobRecord, ctx: SyncContext, id: (s: string) => string): Promise<string[]> {
         const started = await this.shaping.apply(ctx.courseId, { save: true });
+        const limitMs = this.meshesTimeoutMs ?? shapingBudget(this.shaping.waits);
+        const until = Date.now() + limitMs;
         let job: ShapingJob = started;
         for (;;) {
             this.mirror(rec, job, id);
             if (job.status !== 'running') break;
+            if (Date.now() >= until) {
+                throw new ConflictError(`The shaping run (job ${started.id}) has not finished after ${secs(limitMs)} s`
+                    + ` — it is on "${job.step}" and goes on in the background: watch the Meshes row, and run Update meshes again once the worker is free`);
+            }
             await Bun.sleep(this.pollMs);
-            job = this.shaping.job(started.id);
+            try {
+                job = this.shaping.job(started.id);
+            } catch (e) {
+                // Another apply of this course forgot it, or the server restarted under us: it is not ours to follow any more.
+                throw new ConflictError(`The shaping run (job ${started.id}) can no longer be followed: `
+                    + `${firstLine(e instanceof Error ? e.message : String(e))}`);
+            }
         }
         if (job.status !== 'succeeded') throw new ConflictError(job.error ?? 'the shaping run failed');
         const result = job.result!;
@@ -780,13 +856,18 @@ export class GsproSyncService {
         ];
     }
 
-    /** The shaping job's phases copied into this job's, one for one. */
+    /**
+     * The shaping job's phases copied into this job's, one for one — status,
+     * detail and SECONDS as the shaping job itself reports them. Its own
+     * clocks are the truth: timing the mirror instead would restart the
+     * running phase on every poll (≈ one poll interval, for ever) and give a
+     * phase that went pending → done between two polls no time at all.
+     * Pending phases are left alone, so they read pending here too.
+     */
     private mirror(rec: JobRecord, job: ShapingJob, id: (s: string) => string): void {
         for (const phase of job.phases) {
-            const mine = id(phase.id);
-            if (phase.status === 'running') rec.phases.begin(mine, phase.detail ?? 'running');
-            else if (phase.status === 'skipped') rec.phases.skip(mine, phase.detail ?? 'skipped');
-            else if (phase.status === 'done' || phase.status === 'failed') rec.phases.end(mine, phase.status, phase.detail);
+            if (phase.status === 'pending') continue;
+            rec.phases.set(id(phase.id), { status: phase.status, detail: phase.detail, seconds: phase.seconds });
         }
     }
 
@@ -918,9 +999,14 @@ export class GsproSyncService {
         };
     }
 
-    /** Memoized per call chain: `orthoSources` reads the site's sources folder. */
-    private async orthoSources(ctx: SyncContext): Promise<GsproOrthoSource[]> {
-        ctx.orthos ??= await this.exports.orthoSources(ctx.courseId);
+    /**
+     * Memoized per call chain: `orthoSources` reads the site's sources folder.
+     * The PROMISE is kept, not its answer, so the rows that ask for it at the
+     * same time (the Photo row's "blocked" and its "changed since") share one
+     * read.
+     */
+    private orthoSources(ctx: SyncContext): Promise<GsproOrthoSource[]> {
+        ctx.orthos ??= this.exports.orthoSources(ctx.courseId);
         return ctx.orthos;
     }
 
@@ -979,7 +1065,8 @@ interface SyncContext {
     record: GsproSyncRecord;
     /** This job's `--force`: render every file again, whatever its inputs say (false while only reading the board). */
     force: boolean;
-    orthos?: GsproOrthoSource[];
+    /** The one `orthoSources` read of this call chain (see `GsproSyncService.orthoSources`). */
+    orthos?: Promise<GsproOrthoSource[]>;
     file(name: string): string;
     /** Only safe with `terrain` non-null. */
     demSidecar(kind: TerrainKind): string;
@@ -1055,6 +1142,15 @@ function merge(parts: ChangeCount[]): ChangeCount {
 }
 
 const prefixed = (what: string, lines: string[]) => lines.map(l => `${what}: ${l}`);
+
+/**
+ * How long a shaping apply may take at the outside, from the shaping service's
+ * own timeouts: the worker's load, the `/sync` and the Unity refresh, one after
+ * the other. What the `meshes` chain follows its job for.
+ */
+function shapingBudget(waits: ShapingTimeouts): number {
+    return waits.loadMs + waits.syncMs + waits.unitySec * 1000;
+}
 
 function firstLine(text: string): string {
     return text.split('\n')[0] ?? text;
