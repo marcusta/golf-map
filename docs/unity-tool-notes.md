@@ -162,6 +162,12 @@ hatchback / sedan / golf cart, every one a shadow caster): the spec points at me
 - How many: the generator places one car per entry of `docs/gspro/<course>/clubhouse-cars.json` (every stall the
   ortho shows a car in); `"parked": false` leaves a stall empty. Vreta keeps 30 of 89. Model (hatchback/sedan) and
   the odd reversed car are hashed from the stall position, so flipping the flag changes nothing else.
+- Stall lines: the same generator derives the stall grid from the rows of `clubhouse-cars.json` (2.5 m pitch, 5 m
+  deep, double rows by their two stall lines) and paints it as `stall_lines_<row><n>` props (`props_kit` `markings`:
+  flat strips draped on the DEM, 3 cm up, no skirt), 4 stalls a piece: each piece is grounded at its own origin, and
+  Vreta's car park surface is the DEM tilted ~1 cm in 10 m, so a row-long mesh would sink at one end. Cars are
+  placed at their stall's centre, nose in (`NOSE` for the single rows); a car moved to another stall by hand goes
+  into `HAND_STALL`. Rebuild with `build_props.py --only <the stall_lines ids>` and place lines and cars together.
 - After a change, place only the vehicles (`golfmap.props.place only=<vehicle asset ids> materials=false`) and
   check with `golfmap.props.stats group=Vehicles transforms=true`. `build_props.py --only <a prefab asset>` rewrites
   `props.json` without re-exporting any model (it does regenerate `Textures/`).

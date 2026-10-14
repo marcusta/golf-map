@@ -592,6 +592,7 @@ MATERIALS = {
     "net": ("netting:30,32,30", (1.0, 1.0), None, 0.1, 0.0),
     "paint_red": (None, (1, 1), (190, 30, 30), 0.5, 0.2),
     "paint_white": (None, (1, 1), (176, 177, 178), 0.25, 0.0),
+    "line_paint": (None, (1, 1), (187, 187, 187), 0.2, 0.0),  # road marking paint (#bbb)
     "paint_black": (None, (1, 1), (18, 19, 21), 0.85, 0.4),
     "paint_grey": (None, (1, 1), (98, 102, 106), 0.8, 0.5),
     "paint_silver": (None, (1, 1), (160, 164, 168), 0.8, 0.6),
@@ -1741,16 +1742,9 @@ def _clip_convex(poly, clip):
     return out
 
 
-def drape(g, s):
-    """Paving laid on the real ground: `grid` = heights (asset-local metres, from the DEM) on a regular
-    grid {x0, y0, cell, cols, rows, z: row-major}; cells clipped to the convex polygon `poly`.
-    A skirt goes 0.6 m down round the edge so a slightly different mesh surface never shows a gap.
-    `floor`: the paving never drops below this height (a level terrace built up where the ground falls
-    away; the skirt then shows as its kerb)."""
-    G = s["grid"]
+def _grid_ground(G):
+    """Bilinear height at asset-local (x, y) from a `grid` {x0, y0, cell, cols, rows, z: row-major}."""
     x0, y0, c, nc, nr, Z = G["x0"], G["y0"], G["cell"], G["cols"], G["rows"], G["z"]
-    lift = s.get("lift", 0.04)
-    floor = s.get("floor", -1e9)
 
     def ground(x, y):
         fx = min(max((x - x0) / c, 0), nc - 1.001)
@@ -1759,6 +1753,20 @@ def drape(g, s):
         u, v = fx - i, fy - j
         z00, z10, z01, z11 = Z[j * nc + i], Z[j * nc + i + 1], Z[(j + 1) * nc + i], Z[(j + 1) * nc + i + 1]
         return (z00 * (1 - u) + z10 * u) * (1 - v) + (z01 * (1 - u) + z11 * u) * v
+    return ground
+
+
+def drape(g, s):
+    """Paving laid on the real ground: `grid` = heights (asset-local metres, from the DEM) on a regular
+    grid {x0, y0, cell, cols, rows, z: row-major}; cells clipped to the convex polygon `poly`.
+    A skirt goes 0.6 m down round the edge so a slightly different mesh surface never shows a gap.
+    `floor`: the paving never drops below this height (a level terrace built up where the ground falls
+    away; the skirt then shows as its kerb)."""
+    G = s["grid"]
+    x0, y0, c, nc, nr = G["x0"], G["y0"], G["cell"], G["cols"], G["rows"]
+    lift = s.get("lift", 0.04)
+    floor = s.get("floor", -1e9)
+    ground = _grid_ground(G)
 
     def zat(x, y):
         return max(floor, ground(x, y) + lift)
@@ -1782,6 +1790,26 @@ def drape(g, s):
             p = (a[0] + (b[0] - a[0]) * i / m, a[1] + (b[1] - a[1]) * i / m)
             q = (a[0] + (b[0] - a[0]) * (i + 1) / m, a[1] + (b[1] - a[1]) * (i + 1) / m)
             g.poly([(p[0], p[1], zfoot(*p)), (q[0], q[1], zfoot(*q)), (q[0], q[1], zat(*q)), (p[0], p[1], zat(*p))], s.get("edge", "concrete"))
+
+
+def markings(g, s):
+    """Paint on the ground (car park stall lines): flat strips `width` wide along `lines`
+    [[x0, y0, x1, y1], ...], `lift` over the heights `grid` (as drape), cut every grid cell so they
+    follow the ground. No skirt: a strip has no thickness to show."""
+    ground = _grid_ground(s["grid"])
+    c = s["grid"]["cell"]
+    w = s.get("width", 0.12) / 2
+    lift = s.get("lift", 0.03)
+    mat = s.get("mat", "line_paint")
+    for x0, y0, x1, y1 in s["lines"]:
+        L = math.hypot(x1 - x0, y1 - y0)
+        nx, ny = -(y1 - y0) / L * w, (x1 - x0) / L * w  # left of the line, half the width
+        m = max(1, math.ceil(L / c))
+        for i in range(m):
+            p = (x0 + (x1 - x0) * i / m, y0 + (y1 - y0) * i / m)
+            q = (x0 + (x1 - x0) * (i + 1) / m, y0 + (y1 - y0) * (i + 1) / m)
+            quad = [(p[0] - nx, p[1] - ny), (q[0] - nx, q[1] - ny), (q[0] + nx, q[1] + ny), (p[0] + nx, p[1] + ny)]
+            g.poly([(x, y, ground(x, y) + lift) for x, y in quad], mat)
 
 
 def _stone(g, c, r, rnd, mat):
@@ -2281,7 +2309,7 @@ BUILDERS = {
     "building": building, "veranda": veranda, "steps": steps, "shelter": shelter, "gazebo": gazebo,
     "flagpole": flagpole, "bench": bench, "picnic_table": picnic_table, "bollard_light": bollard_light,
     "signpost": signpost, "hole_sign": hole_sign, "tee_sign": tee_sign, "bin": bin_, "hedge": hedge, "rock_pile": rock_pile,
-    "rock": rock, "boulder": boulder, "stones": stones, "drape": drape, "range_mat": range_mat, "net_poles": net_poles, "target_flag": target_flag,
+    "rock": rock, "boulder": boulder, "stones": stones, "drape": drape, "markings": markings, "range_mat": range_mat, "net_poles": net_poles, "target_flag": target_flag,
     "distance_board": distance_board, "banner": banner, "power_pole": power_pole, "car": car,
     "golf_cart": golf_cart, "car2": car2, "bridge_wood": bridge_wood, "bridge_brick": bridge_brick,
     "bridge_rope": bridge_rope, "jetty": jetty, "marker_post": marker_post, "trolley_rack": trolley_rack,

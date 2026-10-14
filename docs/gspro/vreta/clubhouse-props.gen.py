@@ -664,17 +664,110 @@ for col in ("white", "silver", "grey", "black", "blue", "red"):
     assets["car_hatch_" + col] = hatch(col)
     assets["car_sedan_" + col] = sedan(col)
 cars = json.load(open(os.path.join(HERE, "clubhouse-cars.json"), encoding="utf-8"))
+
+# Stall lines (2025 ortho: white paint on the asphalt; a centre line down each double row with a divider
+# between the stalls either side of it, dividers only in the single rows along the hedge (A) and the E edge (D)).
+# The stalls are clubhouse-cars.json's rows on their 2.5 m pitch, 5 m deep; each row's lines span its first to
+# its last stall. Every car stands centred in its stall, nose in: towards the centre line in a double row,
+# towards the edge in a single one (NOSE), the odd one reversed in.
+PITCH, DEPTH, LINE_W = 2.5, 5.0, 0.12
+NOSE = {"A": 1, "D": -1}  # single rows: 1 = nose along the row's yawDeg (A: into the hedge), -1 = against it (D: E edge)
+# Set by hand in Unity: stall entry (e, n) -> stalls along the row (+ = SSE).
+HAND_STALL = {(530224.17, 6487620.25): -1}  # car_sedan_white#207 (placed.json, 2026-10-14)
+OPEN_ENDS = {"D"}  # rows with no divider at either end (D's N one stood alone by the entrance; Marcus, 2026-10-14)
+# Stalls per line mesh. Unity grounds a prop at its origin and the course surface there is the DEM tilted
+# ~1 cm in 10 m, so a row-long mesh (60 m) would sink at one end: each 10 m piece is grounded on its own.
+CHUNK = 4
+
+
+def row_axes(yaw):
+    """A row's unit vectors in (e, n): along the row (bearing yaw - 90) and the car's forward (bearing yaw)."""
+    a, f = math.radians(yaw - 90), math.radians(yaw)
+    return (math.sin(a), math.cos(a)), (math.sin(f), math.cos(f))
+
+
+rows = {}
 for c in cars:
-    if c.get("parked") is False:
-        continue  # stall left empty (delete the flag in clubhouse-cars.json to bring the car back)
-    h = int(hashlib.md5(("%.2f%.2f" % (c["e"], c["n"])).encode()).hexdigest(), 16)
-    kind = "hatch" if h % 10 < 5 else "sedan"
-    yaw = c["yawDeg"]
-    if c["row"] in ("Bw", "Cw"):
-        yaw += 180  # nose in towards the island
-    if (h >> 8) % 10 == 0:
-        yaw += 180  # the odd one reversed in
-    instances.append({"asset": "car_%s_%s" % (kind, c["col"]), "e": c["e"], "n": c["n"], "yawDeg": round(yaw % 360, 1), "ground": "centre"})
+    rows.setdefault(c["row"], []).append(c)
+for r in sorted(rows):
+    cs = rows[r]
+    yaw = cs[0]["yawDeg"]
+    A, F = row_axes(yaw)
+
+    def en(u, v):
+        return (u * A[0] + v * F[0], u * A[1] + v * F[1])
+
+    for c in cs:
+        e, n = c["e"] - E0, c["n"] - N0
+        c["_u"], c["_v"] = e * A[0] + n * A[1], e * F[0] + n * F[1]
+    uref = min(c["_u"] for c in cs)
+    vs = sorted(c["_v"] for c in cs)
+    sides = [[vs[0]]]  # stalls by v: one side in a single row, two back to back in a double row
+    for v in vs[1:]:
+        if v - sides[-1][-1] > 1.0:
+            sides.append([v])
+        else:
+            sides[-1].append(v)
+    assert len(sides) in (1, 2), "row %s: %d stall lines" % (r, len(sides))
+    double = len(sides) == 2
+    vmid = (sum(sides[0]) / len(sides[0]) + sum(sides[1]) / len(sides[1])) / 2 if double else sum(vs) / len(vs)
+    taken = {}  # side -> stall numbers
+    for c in cs:
+        k = round((c["_u"] - uref) / PITCH)
+        assert abs(c["_u"] - uref - k * PITCH) < 0.1, "row %s: stall off the 2.5 m pitch at %s" % (r, (c["e"], c["n"]))
+        c["_k"] = k + HAND_STALL.get((c["e"], c["n"]), 0)
+        c["_s"] = 1 if double and c["_v"] > vmid else 0
+        taken.setdefault(c["_s"], set()).update((k, c["_k"]))
+
+    # the cars
+    for c in cs:
+        if c.get("parked") is False:
+            continue  # stall left empty (delete the flag in clubhouse-cars.json to bring the car back)
+        h = int(hashlib.md5(("%.2f%.2f" % (c["e"], c["n"])).encode()).hexdigest(), 16)
+        kind = "hatch" if h % 10 < 5 else "sedan"
+        if double:
+            v, nose = vmid + (DEPTH / 2 if c["_s"] else -DEPTH / 2), (-1 if c["_s"] else 1)
+        else:
+            v, nose = vmid, NOSE[r]
+        if (h >> 8) % 10 == 0:
+            nose = -nose  # the odd one reversed in
+        e, n = en(uref + c["_k"] * PITCH, v)
+        instances.append({"asset": "car_%s_%s" % (kind, c["col"]), "e": round(E0 + e, 2), "n": round(N0 + n, 2),
+                          "yawDeg": round((yaw + (0 if nose > 0 else 180)) % 360, 1), "ground": "centre"})
+
+    # the lines, in pieces of CHUNK stalls; boundary j lies between stall j - 1 and stall j
+    k0 = min(min(t) for t in taken.values())
+    k1 = max(max(t) for t in taken.values())
+    if double:
+        span = {s: (vmid, vmid + DEPTH) if s else (vmid - DEPTH, vmid) for s in taken}
+    else:  # 0.5 m short at the edge the noses point to: the asphalt ends just past the cars there (D)
+        span = {0: tuple(sorted((vmid - NOSE[r] * DEPTH / 2, vmid + NOSE[r] * (DEPTH / 2 - 0.5))))}
+    pieces = range(0, k1 - k0 + 1, CHUNK)
+    for p, j0 in enumerate(pieces):
+        j1 = min(j0 + CHUNK, k1 - k0 + 1)  # this piece's boundaries: k0 + j0 .. k0 + j1 (the last piece takes its end one)
+        ua, ub = uref + (k0 + j0 - 0.5) * PITCH, uref + (k0 + j1 - 0.5) * PITCH
+        segs = []
+        if double:
+            segs.append((ua - LINE_W / 2, vmid, ub + LINE_W / 2, vmid))
+        for j in range(k0 + j0, k0 + j1 + (1 if j1 == k1 - k0 + 1 else 0)):
+            u = uref + (j - 0.5) * PITCH
+            for s, (va, vb) in span.items():
+                lo, hi = min(taken[s]), max(taken[s]) + 1
+                if lo <= j <= hi and not (r in OPEN_ENDS and j in (lo, hi)):
+                    segs.append((u, va, u, vb))
+        ce, cn = en((ua + ub) / 2, vmid)
+        ayaw = yaw - 90  # local +x along the row
+        lines = []
+        for ua_, va_, ub_, vb_ in segs:
+            lines.append([*local(*en(ua_, va_), ce, cn, ayaw), *local(*en(ub_, vb_), ce, cn, ayaw)])
+        xs = [q for l in lines for q in (l[0], l[2])]
+        ys = [q for l in lines for q in (l[1], l[3])]
+        box = [(min(xs) - 0.3, min(ys) - 0.3), (max(xs) + 0.3, min(ys) - 0.3), (max(xs) + 0.3, max(ys) + 0.3), (min(xs) - 0.3, max(ys) + 0.3)]
+        aid = "stall_lines_%s%d" % (r, p)
+        assets[aid] = {"category": "marking", "collider": "none", "parts": [
+            {"kind": "markings", "lines": lines, "width": LINE_W, "lift": 0.03, "mat": "line_paint",
+             "grid": height_grid(box, ce, cn, ayaw, cell=0.5)}]}
+        place(aid, ce, cn, ayaw, ground="centre")
 
 
 spec = {
