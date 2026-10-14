@@ -23,7 +23,7 @@ depth (per object), timings, Terrain bounds.
         [--limit N]   # smoke test: conform only the first N Spline meshes (Selection = Selected)
         [--no-conform-cache] [--conform-cache-dir <folder>]
 
-**The grid path** (`--conform grid`, `GOLFMAP_PREPARE_GRID_CONFORM=1`; the operator path is still the
+**The grid path** (the default since 2026-10-14; `--conform afrod` / `GOLFMAP_PREPARE_GRID_CONFORM=0` for the operator path, which was the
 default). The conform is not slow because of the Shrinkwrap: 93 % of it is the two whole-scene depsgraph
 updates the `bpy.ops` wrapper runs around *every* operator call, 33 ms each in a scene holding a
 4.2 M-vertex Terrain, and `project_mesh` and `object.convert` are two such calls per mesh. The projection
@@ -661,7 +661,8 @@ def run(terrain_path, out_path, conform_op="afrod", limit=None, seed=0, cache=Tr
     # `path` left open means the environment decides, so the worker (`shape_worker.ensure_conformed`, which
     # calls this directly) can be asked for the grid path without a flag of its own.
     if path is None:
-        path = "grid" if os.environ.get(GRID_ENV) else "operator"
+        # Grid is the default since 2026-10-14 (138 s -> 1 s, within 38 um of the operator); GOLFMAP_PREPARE_GRID_CONFORM=0 or "operator" asks for the Shrinkwrap path.
+        path = "operator" if os.environ.get(GRID_ENV, "1").lower() in ("0", "operator", "no", "false") else "grid"
     source = bpy.path.abspath(bpy.data.filepath)
     if not source:
         raise RuntimeError("open the course .blend first (blender -b course.blend --python ...)")
@@ -874,10 +875,10 @@ def main(argv):
     parser.add_argument("--terrain", help="terrain OBJ (default: terrain.obj next to the .blend)")
     parser.add_argument("--out", help="derived .blend (default: <name>.conformed.blend next to the source)")
     parser.add_argument("--json", help="also write the report here")
-    parser.add_argument("--conform", choices=("afrod", "opcd", "grid"), default="afrod",
-                        help="which Conform to Terrain: the Afrod Mod v4 button (with the failed-projection "
-                             "retry, default), OPCD Base, or `grid` - the Afrod button's outcome computed on "
-                             "the terrain's own grid instead of a Shrinkwrap (also GOLFMAP_PREPARE_GRID_CONFORM=1)")
+    parser.add_argument("--conform", choices=("afrod", "opcd", "grid"), default="grid",
+                        help="which Conform to Terrain: `grid` (default) - the Afrod button's outcome computed on the terrain's own grid; `afrod` - the Afrod Mod v4 button (with the failed-projection "
+                             "retry), or `opcd` - OPCD Base. The default is the grid; the Shrinkwrap paths are "
+                             "there to compare against (GOLFMAP_PREPARE_GRID_CONFORM=0 asks the worker for them)")
     parser.add_argument("--limit", type=int, help="smoke test: conform only the first N Spline meshes (by name)")
     parser.add_argument("--seed", type=int, default=0, help="seed for Afrod's random nudges (default %(default)s)")
     parser.add_argument("--no-conform-cache", action="store_true",

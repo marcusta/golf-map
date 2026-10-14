@@ -275,7 +275,7 @@ the grid, the spacing, the origin, the negated x and `unity.position` are not re
   comes from `searchsorted` over the Terrain's own node coordinates, not from dividing by the spacing.
 
 `--conform grid`, or `GOLFMAP_PREPARE_GRID_CONFORM=1` (which `shape_prepare.run` reads, so the shaping
-worker can be asked for it without a flag of its own). **The operator path is still the default.** Meshes
+worker can be asked for it without a flag of its own). **The grid path is the default since 2026-10-14** (`--conform afrod` or `GOLFMAP_PREPARE_GRID_CONFORM=0` for the operator path). Meshes
 that project onto `Outer`, carry shape keys, share their mesh datablock or sit under a non-identity
 transform keep it per mesh (`grid_blocked`, counted in the report as `cache.operatorWhy`), and a scene with
 pot bunkers keeps it entirely — only the operator's loop does its rename pass. Vreta needs none of those:
