@@ -19,9 +19,29 @@ cost no undo pushes. The result is saved as a copy, `<name>.conformed.blend` nex
 depth (per object), timings, Terrain bounds.
 
     blender -b course.blend --python blender/tools/shape_prepare.py -- \
-        [--terrain <terrain.obj>] [--out <file.blend>] [--json <report.json>] [--conform afrod|opcd]
+        [--terrain <terrain.obj>] [--out <file.blend>] [--json <report.json>] [--conform afrod|opcd|grid]
         [--limit N]   # smoke test: conform only the first N Spline meshes (Selection = Selected)
         [--no-conform-cache] [--conform-cache-dir <folder>]
+
+**The grid path** (`--conform grid`, `GOLFMAP_PREPARE_GRID_CONFORM=1`; the operator path is still the
+default). The conform is not slow because of the Shrinkwrap: 93 % of it is the two whole-scene depsgraph
+updates the `bpy.ops` wrapper runs around *every* operator call, 33 ms each in a scene holding a
+4.2 M-vertex Terrain, and `project_mesh` and `object.convert` are two such calls per mesh. The projection
+itself needs no operator and no BVH at all: the terrain is our own regular grid (`terrain_obj.py`), so a
+vertex's height is a cell lookup - `searchsorted` for the cell, the fractional position for which of its
+two triangles, that triangle's plane - which numpy does for a whole mesh in one pass. So `--conform grid`
+runs the same per-object body with the projection computed instead of cast (`conform_one_grid`): on Vreta
+**137.8 s of conform compute becomes 1.1 s**, and the whole cold prepare 163.6 s becomes 22.7 s.
+
+It is not bit-identical and cannot be: the operator's rays start at the flatten depth, 100 m below, and
+are cast in float32, where one step at 100 m is 7.6 um. Over all 4.11 M Vreta vertices the two paths agree
+to **max |dz| = 38 um** (|dx| = |dy| = 0 exactly, 88.3 % of vertices within 10 um, 100 % within 1 mm, 8 %
+bit-identical) and **every other array and every state-hash component is identical** on all 996 meshes.
+The grid path is the more exact of the two - it evaluates the same triangle's plane in float64 and rounds
+once - but the difference is the operator's noise either way, so which path produced a cached result is
+part of the cache's env key (`cache_env_key`) and of each mesh's key (`grid_blocked`). Meshes that project
+onto `Outer`, carry shape keys, share their mesh or sit under a non-identity transform keep the operator
+path, as does a scene with pot bunkers.
 
 **Conform cache.** A regenerated course `.blend` is mostly the same flat meshes under new names, but
 the conform used to run again for all of them (2.5 minutes on Vreta). So instead of pressing Conform
@@ -53,8 +73,10 @@ not the mtime, and re-prepares only when the terrain really changed.
 """
 
 import argparse
+import glob
 import hashlib
 import json
+import math
 import os
 import random
 import sys
@@ -67,6 +89,7 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 if HERE not in sys.path:
     sys.path.insert(0, HERE)
 import shape_apply as sa  # noqa: E402  (capture_state / apply_state / state_hash / OpCache)
+import terrain_obj as to  # noqa: E402  (the terrain grid: frame_from_sidecar / grid_axes / plane_height)
 
 FORMAT = "golfmap-shape-prepare-v1"
 CACHE_FORMAT = "golfmap-conform-cache-v1"
@@ -244,13 +267,18 @@ def read_terrain_sidecar(blend_path):
     return doc if isinstance(doc, dict) and doc.get("format") == TERRAIN_SIDECAR_FORMAT else {}
 
 
-def cache_env_key(conform_op, terrain_sha, terrain_smooth, seed, targets=None):
+def cache_env_key(conform_op, terrain_sha, terrain_smooth, seed, targets=None, path="operator"):
     """Everything besides the mesh itself that decides what the conform makes of it: the engine, Blender,
-    the add-on sources, the conform button, Terrain Smooth, the seed, the terrain OBJ's content hash - and
-    `targets`, the state of every object a mesh can be projected onto (`target_fingerprints`)."""
+    the add-on sources, the conform button, Terrain Smooth, the seed, the terrain OBJ's content hash,
+    `targets` - the state of every object a mesh can be projected onto (`target_fingerprints`) - and which
+    code computed the result (`path`: the operator's Shrinkwrap or the terrain grid, whose maths lives in
+    `terrain_obj.py`). The two agree to about 40 um but not bit for bit, so flipping the default must not
+    serve one path's results for the other's."""
     parts = [CACHE_FORMAT, sa.ENGINE_VERSION, bpy.app.version_string, conform_op,
-             "smooth=%.6f" % terrain_smooth, "terrain=" + terrain_sha, "seed=%d" % seed,
+             "smooth=%.6f" % terrain_smooth, "terrain=" + terrain_sha, "seed=%d" % seed, "path=" + path,
              "prepare:" + str(sa._file_sha(os.path.abspath(__file__)))]
+    if path == "grid":
+        parts.append("terrain_obj:" + str(sa._file_sha(os.path.join(HERE, "terrain_obj.py"))))
     for name in (AFROD_MODULE, OPCD_UTILS_MODULE):
         mod = sys.modules.get(name)
         parts.append(name + ":" + str(sa._file_sha(getattr(mod, "__file__", "") or "") if mod else None))
@@ -303,6 +331,178 @@ def _conform_one(obj, funcs):
         fix_failed(obj, "Terrain")
 
 
+# ---------------------------------------------------------------- the grid conform path
+
+GRID_ENV = "GOLFMAP_PREPARE_GRID_CONFORM"
+IDENTITY = [[1.0, 0.0, 0.0, 0.0], [0.0, 1.0, 0.0, 0.0], [0.0, 0.0, 1.0, 0.0], [0.0, 0.0, 0.0, 1.0]]
+GRID_ROW_TOL = 1e-4     # how far a column's x / a row's y may wander from the first one's (metres;
+                        # Vreta's is 2e-7, float32 noise from the import's transform_apply)
+GRID_AXIS_TOL = 0.01    # how far the Terrain's own axes may sit from the sidecar frame's (metres)
+GRID_RAW_WARN = 0.05    # above this, the Terrain is not the heightmap the sidecar names (report only)
+
+
+def sidecar_for(terrain_path):
+    """The inner DEM sidecar `terrain_obj.py` wrote this `terrain.obj` from, next to it (None when there is
+    none, and when the folder holds more than one - then there is nothing to be sure of)."""
+    folder = os.path.dirname(os.path.abspath(terrain_path))
+    found = sorted(glob.glob(os.path.join(folder, "*-inner-dem-*.tif.json")))
+    return found[0] if len(found) == 1 else None
+
+
+class TerrainGrid:
+    """The conform target read as the regular grid `terrain_obj.py` wrote `terrain.obj` from, so a vertex's
+    height is a cell lookup instead of a Shrinkwrap ray.
+
+    The **heights come from the object in the `.blend`, not from the `.raw`**: OPCD's Import Terrain OBJ
+    applies a Smooth modifier to the imported terrain (Terrain Smooth 1.5, `terrain_obj.smooth_grid`), so the
+    `.raw` is up to 1.14 m away from the surface the Shrinkwrap's rays actually meet on Vreta. The sidecar's
+    frame (`terrain_obj.frame_from_sidecar` / `grid_axes` - the same code that wrote the OBJ: grid, spacing,
+    origin, negated x, `unity.position`) is what says the object *is* that grid, and `smooth_grid` over the
+    `.raw` is checked against it."""
+
+    def __init__(self, name, u, v, g, checks):
+        self.name = name
+        self.u, self.v, self.g = u, v, g      # ascending axes in grid-index order, heights g[iz, ix]
+        self.checks = checks
+
+    def height(self, x, y):
+        """`(z, hit)` for world x/y in the `.blend` frame. Both axes run *down* as the grid index runs up
+        (`terrain_obj.grid_axes`), hence `-x`/`-y`; a vertex is hit only where the flattened mesh's ray -
+        which starts at the flatten depth and only goes up (`use_positive_direction`) - can reach the
+        surface at all."""
+        z, inside = to.plane_height(self.u, self.v, self.g, -np.asarray(x), -np.asarray(y))
+        return z, inside & (z >= -FLATTEN_DEPTH)
+
+
+def terrain_grid(name="Terrain", frame=None, smooth=None, raw_path=None):
+    """`(TerrainGrid or None, checks)`: the `name` object sampled into its grid, and what was checked.
+
+    The OBJ writes one x per column and one z per row, row-major, so the object's vertices reshape straight
+    into `[iz, ix]` - and that reshape only holds if every column really has one x and every row one y,
+    which is checked here (a scrambled order or a non-grid target fails it and keeps the operator path)."""
+    checks = {"object": name}
+    obj = bpy.data.objects.get(name)
+    if obj is None or obj.type != "MESH":
+        return None, dict(checks, why="no %s mesh object in the scene" % name)
+    n = len(obj.data.vertices)
+    side = int(round(math.sqrt(n)))
+    checks.update(vertices=n, side=side)
+    if side < 2 or side * side != n:
+        return None, dict(checks, why="%s has %d vertices: not a square grid" % (name, n))
+    co = np.empty(n * 3, np.float64)
+    obj.data.vertices.foreach_get("co", co)
+    m = np.array(obj.matrix_world, np.float64)
+    co = (co.reshape(-1, 3) @ m[:3, :3].T + m[:3, 3]).reshape(side, side, 3)
+    u, v = -co[0, :, 0].copy(), -co[:, 0, 1].copy()
+    checks["columnXSpreadM"] = round(float(np.abs(co[:, :, 0] + u[None, :]).max()), 9)
+    checks["rowYSpreadM"] = round(float(np.abs(co[:, :, 1] + v[:, None]).max()), 9)
+    if max(checks["columnXSpreadM"], checks["rowYSpreadM"]) > GRID_ROW_TOL:
+        return None, dict(checks, why="%s is not row-major grid order (x/y wander within a row)" % name)
+    if not (np.all(np.diff(u) > 0) and np.all(np.diff(v) > 0)):
+        return None, dict(checks, why="%s's node coordinates are not monotone along both axes" % name)
+    g = np.ascontiguousarray(co[:, :, 2], np.float64)
+    checks["zM"] = [round(float(g.min()), 4), round(float(g.max()), 4)]
+
+    if frame:
+        checks.update(frameGrid=frame["grid"], spacingM=frame["spacingM"],
+                      position=[frame["px"], frame["py"], frame["pz"]])
+        if frame["grid"] != side:
+            return None, dict(checks, why="the sidecar says %d nodes a side, %s has %d"
+                                          % (frame["grid"], name, side))
+        fu, fv = to.grid_axes(frame)
+        checks["axisUDevM"] = round(float(np.abs(fu - u).max()), 9)
+        checks["axisVDevM"] = round(float(np.abs(fv - v).max()), 9)
+        if max(checks["axisUDevM"], checks["axisVDevM"]) > GRID_AXIS_TOL:
+            return None, dict(checks, why="%s's nodes are not where the sidecar's frame puts them (%.4f m)"
+                                          % (name, max(checks["axisUDevM"], checks["axisVDevM"])))
+        if raw_path and smooth is not None and os.path.isfile(raw_path):
+            try:
+                h = to.height_grid(to.read_raw(raw_path, frame["res"]), frame) + frame["py"]
+                dev = float(np.abs(to.smooth_grid(h, smooth) - g).max())
+            except (OSError, ValueError) as e:
+                checks["rawCheck"] = "failed: %s" % e
+            else:
+                checks["rawDevM"] = round(dev, 6)
+                if dev > GRID_RAW_WARN:
+                    checks["rawWarning"] = ("%s is %.3f m from the sidecar's heightmap smoothed by %.3f: "
+                                            "the heights used are the object's" % (name, dev, smooth))
+    return TerrainGrid(name, u, v, g, checks), checks
+
+
+def grid_blocked(obj, grid):
+    """Why this mesh cannot take the grid path (None when it can). The operator's own body does a few things
+    to the object besides moving its vertices, and these are the cases where that matters."""
+    if grid is None:
+        return "no terrain grid"
+    if _conform_target(obj) != grid.name:
+        return "projects onto " + _conform_target(obj)
+    if obj.data.users > 1:
+        return "its mesh has %d users (the operator's convert would un-share it)" % obj.data.users
+    if obj.data.shape_keys is not None:
+        return "shape keys"
+    if [[float(c) for c in row] for row in obj.matrix_world] != IDENTITY:
+        return "non-identity transform"
+    return None
+
+
+def shade_smooth(me):
+    """What `project_mesh`'s `bpy.ops.object.shade_smooth()` leaves on the mesh - without the operator
+    wrapper's two whole-scene depsgraph updates, which is where the operator conform spends its time."""
+    if not hasattr(me, "shade_smooth"):   # 4.1+. Guessing at it is not a shim; the operator path is.
+        raise RuntimeError("Mesh.shade_smooth() is missing in Blender %s: use the operator conform path"
+                           % bpy.app.version_string)
+    me.shade_smooth()
+
+
+def conform_one_grid(obj, grid):
+    """The operator's per-object body (`_conform_one`) computed on the terrain grid. Returns how many
+    vertices the projection missed - what Afrod's `fix_failed_projections` would have found and nudged.
+
+    Same steps, same outcome: modifiers cleared, every vertex flattened to the flatten depth and then put at
+    the terrain's height straight above it, smooth shading, and for the vertices the projection missed
+    Afrod's retry - a 1 cm random nudge in x and then y, drawn from the same seeded `random`, in vertex-index
+    order, then projected again; whatever still misses keeps the nudge and stays at the flatten depth."""
+    if obj.modifiers:
+        obj.modifiers.clear()
+    me = obj.data
+    n = len(me.vertices)
+    if not n:
+        shade_smooth(me)
+        return 0
+    co = np.empty(n * 3, np.float64)
+    me.vertices.foreach_get("co", co)
+    co = co.reshape(-1, 3)
+    z, hit = grid.height(co[:, 0], co[:, 1])
+    co[:, 2] = np.where(hit, z, -FLATTEN_DEPTH)
+    miss = np.flatnonzero(~hit)
+    if len(miss):
+        for i in miss.tolist():
+            # Afrod writes the nudge into the float32 `vert.co`, so it is rounded there before the retry
+            # projects again: round here too and the retried vertices come out bit-identical.
+            co[i, 0] = np.float32(co[i, 0] + random.uniform(-0.01, 0.01))
+            co[i, 1] = np.float32(co[i, 1] + random.uniform(-0.01, 0.01))
+        z2, hit2 = grid.height(co[miss, 0], co[miss, 1])
+        co[miss, 2] = np.where(hit2, z2, -FLATTEN_DEPTH)
+    me.vertices.foreach_set("co", co.astype(np.float32).ravel())
+    shade_smooth(me)
+    me.update()
+    return len(miss)
+
+
+class NoCache:
+    """`--no-conform-cache` with the grid path: the per-mesh loop is the grid path, so it runs without a
+    store rather than pressing a button that cannot do it."""
+
+    def load(self, key):
+        return None
+
+    def store(self, key, meta, arrays):
+        pass
+
+    def path(self, key):
+        return ""
+
+
 def conform_reach(conform_op, limit_targets=None):
     """The objects the chosen Conform All button iterates. OPCD Base filters on the name; Afrod Mod's
     filter is `'Spline' or 'Outerplot' in o.name and ...`, which is always true, so it walks every
@@ -316,15 +516,17 @@ def conform_reach(conform_op, limit_targets=None):
             and "WaterPlane" not in o.name and "Potwall" not in o.name]
 
 
-def conform_cached(reach, conform_op, override, seed, cache, env, verify_full=False, fixed=None):
+def conform_cached(reach, conform_op, override, seed, cache, env, verify_full=False, fixed=None, grid=None):
     """Conform every mesh in `reach` through the cache. Returns the cache stats.
 
     `fixed` is the dict `_count_fix_failed` fills on a miss; a hit adds the count stored with the cached
-    result back into it, so the report of a warm run says exactly what a cold run's does."""
+    result back into it, so the report of a warm run says exactly what a cold run's does. With a `grid`
+    (`TerrainGrid`) a miss is computed on the terrain grid instead of through the add-on's Shrinkwrap,
+    except for the meshes `grid_blocked` keeps on the operator path."""
     funcs = _conform_funcs(conform_op)
     stats = {"meshes": 0, "hits": 0, "misses": 0, "converted": 0, "renamedHits": 0, "mismatches": [],
-             "fixedHits": 0, "modifiersCleared": 0,
-             "hashS": 0.0, "replayS": 0.0, "computeS": 0.0, "storeS": 0.0, "storedBytes": 0}
+             "fixedHits": 0, "modifiersCleared": 0, "gridMeshes": 0, "operatorMeshes": 0, "operatorWhy": {},
+             "hashS": 0.0, "replayS": 0.0, "computeS": 0.0, "gridS": 0.0, "storeS": 0.0, "storedBytes": 0}
     order = sorted(reach, key=lambda o: o.name)
     with bpy.context.temp_override(**override):
         if bpy.context.mode != "OBJECT":
@@ -351,7 +553,13 @@ def conform_cached(reach, conform_op, override, seed, cache, env, verify_full=Fa
             # capture_state does not see modifiers and the conform clears them before flattening, so two
             # inputs that differ only in their stack are different inputs: the stack goes in the key.
             mods = ",".join("%s:%s" % (m.name, m.type) for m in obj.modifiers)
-            key = hashlib.sha1("|".join((env, _conform_target(obj), sha_in, "mods=" + mods)).encode()).hexdigest()
+            # Which code will compute it: with a grid, a mesh `grid_blocked` turns away gets the operator's
+            # result, and the two differ by ~40 um. Two of the reasons it turns a mesh away - a shared mesh,
+            # shape keys - are invisible to `capture_state`, so the reason belongs in the key.
+            blocked = grid_blocked(obj, grid) if grid is not None else None
+            key = hashlib.sha1("|".join((env, _conform_target(obj), sha_in, "mods=" + mods)
+                                        + (("grid=" + (blocked or "yes"),) if grid is not None else ())
+                                        ).encode()).hexdigest()
             entry = cache.load(key)
             if entry is not None:
                 t0 = time.time()
@@ -378,14 +586,24 @@ def conform_cached(reach, conform_op, override, seed, cache, env, verify_full=Fa
             t0 = time.time()
             random.seed(sha_in + ":%d" % seed)  # per mesh: no mesh depends on the ones before it
             was_fixed = (fixed or {}).get(obj.name, 0)
-            _conform_one(obj, funcs)
+            if grid is not None and blocked is None:
+                n_grid = conform_one_grid(obj, grid)
+                if n_grid and fixed is not None:
+                    fixed[obj.name] = fixed.get(obj.name, 0) + n_grid
+                stats["gridMeshes"] += 1
+                stats["gridS"] += time.time() - t0
+            else:
+                _conform_one(obj, funcs)
+                stats["operatorMeshes"] += 1
+                if grid is not None:
+                    stats["operatorWhy"][blocked] = stats["operatorWhy"].get(blocked, 0) + 1
             n_fixed = (fixed or {}).get(obj.name, 0) - was_fixed
             stats["misses"] += 1
             stats["computeS"] += time.time() - t0
             t0 = time.time()
             stats["storedBytes"] += _store(cache, key, obj, meta_in, arr_in, sha_in, n_fixed)
             stats["storeS"] += time.time() - t0
-    for k in ("hashS", "replayS", "computeS", "storeS"):
+    for k in ("hashS", "replayS", "computeS", "gridS", "storeS"):
         stats[k] = round(stats[k], 1)
     return stats
 
@@ -437,8 +655,13 @@ def _bounds(obj):
     return [round(float(v), 3) for v in (*w.min(0), *w.max(0))]
 
 
-def run(terrain_path, out_path, conform_op="afrod", limit=None, seed=0, cache=True, cache_dir=None):
+def run(terrain_path, out_path, conform_op="afrod", limit=None, seed=0, cache=True, cache_dir=None,
+        path=None):
     t_start = time.time()
+    # `path` left open means the environment decides, so the worker (`shape_worker.ensure_conformed`, which
+    # calls this directly) can be asked for the grid path without a flag of its own.
+    if path is None:
+        path = "grid" if os.environ.get(GRID_ENV) else "operator"
     source = bpy.path.abspath(bpy.data.filepath)
     if not source:
         raise RuntimeError("open the course .blend first (blender -b course.blend --python ...)")
@@ -470,10 +693,33 @@ def run(terrain_path, out_path, conform_op="afrod", limit=None, seed=0, cache=Tr
         cache = False
     cache_report = {"used": False}
     pot = sorted(o.name for o in bpy.context.visible_objects if "Pot" in o.name and "Potwall" not in o.name)
-    if cache and pot:
+    if pot:
+        # only the operator's own loop renames pot bunkers, so such a scene gets the whole-scene button
         cache_report["skipped"] = f"{len(pot)} pot bunkers in the scene: only the operator renames those"
-        cache = False
+        cache, path = False, "operator"
     cache_dir = cache_dir or cache_dir_for(source)
+
+    grid, grid_checks = (None, {})
+    if path == "grid":
+        sidecar_path = sidecar_for(terrain_path)
+        frame = None
+        if sidecar_path:
+            try:
+                frame = to.frame_from_sidecar(to.load_sidecar(sidecar_path), "half")
+            except (OSError, ValueError, KeyError) as e:
+                grid_checks["frame"] = "%s: %s" % (os.path.basename(sidecar_path), e)
+        raw = os.path.join(os.path.dirname(os.path.abspath(sidecar_path)), frame["rawFile"] or "") \
+            if (sidecar_path and frame and frame.get("rawFile")) else None
+        t0 = time.time()
+        grid, checks = terrain_grid("Terrain", frame, float(_tool_props(conform_op).terrainsmooth), raw)
+        grid_checks = dict(grid_checks, sidecar=sidecar_path, gridS=round(time.time() - t0, 1), **checks)
+        if grid is None:
+            path = "operator"
+            print("[shape_prepare] no terrain grid (%s): the operator path" % checks.get("why"))
+        else:
+            print("[shape_prepare] terrain grid %dx%d from %s (%s)"
+                  % (grid.checks["side"], grid.checks["side"], grid.name,
+                     "sidecar " + os.path.basename(sidecar_path) if sidecar_path else "no sidecar"))
 
     # Always: the sidecar next to the conformed .blend records which terrain.obj it holds, so the worker
     # can tell a regenerated terrain from a rewritten one without a cache (`shape_worker.conformed_stale`).
@@ -482,19 +728,23 @@ def run(terrain_path, out_path, conform_op="afrod", limit=None, seed=0, cache=Tr
 
     t0 = time.time()
     fixed, restore = _count_fix_failed() if conform_op == "afrod" else (None, lambda: None)
+    # The per-mesh loop is what the grid path runs in, so `--no-conform-cache` with it means "do not store",
+    # not "press the whole-scene button" (which can only be the operator's Shrinkwrap).
+    store = sa.OpCache(cache_dir) if cache else (NoCache() if path == "grid" else None)
     try:
-        if cache:
+        if store is not None:
             conform_targets, targets_hash_s = target_fingerprints()
             env = cache_env_key(conform_op, terrain_sha, float(_tool_props(conform_op).terrainsmooth), seed,
-                                conform_targets)
+                                conform_targets, path)
             reach = conform_reach(conform_op, targets if limit else None)
-            print(f"[shape_prepare] conform cache {cache_dir} (env {env[:12]}, {len(reach)} objects)")
-            stats = conform_cached(reach, conform_op, override, seed, sa.OpCache(cache_dir), env,
+            print("[shape_prepare] %s conform, %s (env %s, %d objects)"
+                  % (path, cache_dir if cache else "no cache", env[:12], len(reach)))
+            stats = conform_cached(reach, conform_op, override, seed, store, env,
                                    verify_full=bool(os.environ.get("GOLFMAP_PREPARE_VERIFY_CACHE")),
-                                   fixed=fixed)
-            cache_report = dict(stats, used=True, dir=cache_dir, env=env, terrainSha=terrain_sha,
-                                terrainHashS=round(terrain_hash_s, 1), targets=conform_targets,
-                                targetHashS=round(targets_hash_s, 1))
+                                   fixed=fixed, grid=grid)
+            cache_report = dict(stats, used=cache, dir=cache_dir if cache else None, env=env,
+                                terrainSha=terrain_sha, terrainHashS=round(terrain_hash_s, 1),
+                                targets=conform_targets, targetHashS=round(targets_hash_s, 1))
             _tool_props(conform_op).conform_selection_type = "Selected"  # as the operator leaves it
         else:
             conform(targets, conform_op, all_meshes=not limit, override=override, seed=seed)
@@ -536,7 +786,10 @@ def run(terrain_path, out_path, conform_op="afrod", limit=None, seed=0, cache=Tr
         "terrainSidecar": sidecar,
         "conformTargets": conform_targets,
         "conformOp": ("wm.projectmesh (Afrod Mod v4)" if conform_op == "afrod" else "opcd.projectmesh (OPCD Base)")
-                     + (", per mesh through the conform cache" if cache_report["used"] else ""),
+                     + (", on the terrain grid" if path == "grid" else "")
+                     + (", per mesh through the conform cache" if cache_report.get("used") else ""),
+        "conformPath": path,
+        "terrainGrid": grid_checks or None,
         "cache": cache_report,
         "terrainSmooth": (bpy.context.scene.opcdtools if conform_op == "afrod" else bpy.context.scene.opcd_tools).terrainsmooth,
         "seed": seed,
@@ -568,7 +821,22 @@ def summary(report):
         f"Terrain: {report['terrain']['vertices']} vertices, x {b[0]}..{b[3]}, y {b[1]}..{b[4]}, z {b[2]}..{b[5]}",
         f"Time: import {t['importS']} s, conform {t['conformS']} s, save {t['saveS']} s, total {t['totalS']} s",
     ]
+    g = report.get("terrainGrid") or {}
+    if report.get("conformPath") == "grid":
+        lines.append("Terrain grid: {side}x{side} nodes, spacing {spacingM}, read in {gridS} s; "
+                     "axes within {axisUDevM} / {axisVDevM} m of the sidecar's frame, heights within "
+                     "{rawDevM} m of its .raw smoothed by Terrain Smooth".format(
+                         **dict({"spacingM": "?", "axisUDevM": "?", "axisVDevM": "?", "rawDevM": "?"}, **g)))
+        if g.get("rawWarning"):
+            lines.append("  !! " + g["rawWarning"])
+    elif g.get("why"):
+        lines.append("Terrain grid unusable, the operator path: " + g["why"])
     c = report.get("cache") or {}
+    if c.get("gridMeshes") or c.get("operatorWhy"):
+        lines.append("Computed on the grid: {gridMeshes} meshes in {gridS} s; through the operator: "
+                     "{operatorMeshes}{why}".format(**dict(c, why=(
+                         " (" + ", ".join("%d %s" % (v, k) for k, v in sorted(c["operatorWhy"].items())) + ")")
+                         if c["operatorWhy"] else "")))
     if c.get("used"):
         lines.append("Conform cache: {hits} hits ({renamedHits} of them stored under another name), {misses} misses "
                      "of {meshes} meshes ({converted} only converted); "
@@ -583,6 +851,9 @@ def summary(report):
                          f"{c['mismatches'][:5]}")
     elif c.get("skipped"):
         lines.append("Conform cache off: " + c["skipped"])
+    elif c.get("meshes"):
+        lines.append("Conform cache off (--no-conform-cache): {meshes} meshes conformed, nothing stored; "
+                     "hash {hashS} s, compute {computeS} s".format(**c))
     if report.get("terrainSha"):
         lines.append(f"terrain.obj sha {report['terrainSha'][:12]}"
                      + (f" -> {report['terrainSidecar']}" if report.get("terrainSidecar") else ""))
@@ -603,8 +874,10 @@ def main(argv):
     parser.add_argument("--terrain", help="terrain OBJ (default: terrain.obj next to the .blend)")
     parser.add_argument("--out", help="derived .blend (default: <name>.conformed.blend next to the source)")
     parser.add_argument("--json", help="also write the report here")
-    parser.add_argument("--conform", choices=("afrod", "opcd"), default="afrod",
-                        help="which Conform to Terrain button: Afrod Mod v4 (with the failed-projection retry, default) or OPCD Base")
+    parser.add_argument("--conform", choices=("afrod", "opcd", "grid"), default="afrod",
+                        help="which Conform to Terrain: the Afrod Mod v4 button (with the failed-projection "
+                             "retry, default), OPCD Base, or `grid` - the Afrod button's outcome computed on "
+                             "the terrain's own grid instead of a Shrinkwrap (also GOLFMAP_PREPARE_GRID_CONFORM=1)")
     parser.add_argument("--limit", type=int, help="smoke test: conform only the first N Spline meshes (by name)")
     parser.add_argument("--seed", type=int, default=0, help="seed for Afrod's random nudges (default %(default)s)")
     parser.add_argument("--no-conform-cache", action="store_true",
@@ -615,8 +888,15 @@ def main(argv):
     folder, name = os.path.split(source)
     terrain = args.terrain or os.path.join(folder, "terrain.obj")
     out = args.out or os.path.join(folder, os.path.splitext(name)[0] + ".conformed.blend")
-    report = run(terrain, out, conform_op=args.conform, limit=args.limit, seed=args.seed,
-                 cache=not args.no_conform_cache, cache_dir=args.conform_cache_dir)
+    # `--conform grid` is the Afrod button's outcome computed on the grid; `GOLFMAP_PREPARE_GRID_CONFORM=1`
+    # asks for the same without changing the command (`run` reads it), but `--conform opcd` still wins.
+    conform_op, path = args.conform, None
+    if conform_op == "grid":
+        conform_op, path = "afrod", "grid"
+    elif conform_op == "opcd":
+        path = "operator"
+    report = run(terrain, out, conform_op=conform_op, limit=args.limit, seed=args.seed,
+                 cache=not args.no_conform_cache, cache_dir=args.conform_cache_dir, path=path)
     print("[shape_prepare]\n" + summary(report))
     if args.json:
         with open(args.json, "w", encoding="utf-8") as f:

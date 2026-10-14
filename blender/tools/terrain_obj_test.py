@@ -155,6 +155,96 @@ def test_g7_formatting():
     print("ok G7 number formatting matches Unity's")
 
 
+def test_grid_axes():
+    """The axes `plane_height` wants: ascending with the grid index, which in the `.blend` is -x and -y."""
+    frame = T.frame_from_sidecar(sidecar(res=9, side=4.0, pos=(3.0, 0.0, -7.0)), "half")
+    u, v = T.grid_axes(frame)
+    assert frame["grid"] == 5 and frame["spacingM"] == 1.0, frame
+    assert np.allclose(u, [3.0, 4.0, 5.0, 6.0, 7.0]), u          # u = -x, x = -(px + ix*spacing)
+    assert np.allclose(v, [-7.0, -6.0, -5.0, -4.0, -3.0]), v     # v = -y, y = -(pz + iz*spacing)
+    print("ok grid axes ascend with the index (both of the .blend's axes run the other way)")
+
+
+def test_plane_height_triangles():
+    """Both of a cell's triangles, the diagonal between them, the cell edges and the grid's corners.
+
+    A 3x3 grid, spacing 1, with heights that make the two triangles of cell (0,0) different planes:
+
+        iz=2  0  0  0
+        iz=1  0  0  0          g[iz, ix], ix east
+        iz=0  0  1  4
+    """
+    u = v = np.array([0.0, 1.0, 2.0])
+    g = np.array([[0.0, 1.0, 4.0], [0.0, 0.0, 0.0], [0.0, 0.0, 0.0]])
+    # cell (0,0): h00=0 h01=1 h10=0 h11=0.
+    #   first triangle  (fx+fz <= 1): h = fx
+    #   second triangle (fx+fz >= 1): h = 0 + (1-fz)*1 = 1-fz
+    def h(qu, qv):
+        z, inside = T.plane_height(u, v, g, np.array([qu], float), np.array([qv], float))
+        return float(z[0]), bool(inside[0])
+
+    assert h(0.25, 0.25) == (0.25, True), h(0.25, 0.25)      # inside the first triangle
+    assert h(0.75, 0.75) == (0.25, True), h(0.75, 0.75)      # inside the second: 1 - 0.75
+    assert h(0.5, 0.5) == (0.5, True)                        # on the diagonal: both give 0.5
+    assert h(0.25, 0.75) == (0.25, True)                     # the diagonal fx+fz=1 again
+    assert h(0.9, 0.1) == (0.9, True) and h(0.1, 0.9) == (0.1, True)
+    assert h(0.0, 0.0) == (0.0, True) and h(1.0, 0.0) == (1.0, True)   # cell corners = the nodes
+    assert h(0.0, 1.0) == (0.0, True) and h(1.0, 1.0) == (0.0, True)
+    assert h(0.5, 0.0) == (0.5, True)                        # a cell edge: linear between two nodes
+    assert h(1.5, 0.0) == (2.5, True)                        # the next cell east: between 1 and 4
+    assert h(2.0, 0.0) == (4.0, True)                        # the grid's far corner, not the clamp's
+    assert h(2.0, 2.0) == (0.0, True) and h(0.0, 2.0) == (0.0, True)
+    for off in ((-1e-9, 0.5), (2.0 + 1e-9, 0.5), (0.5, -1e-9), (0.5, 2.0 + 1e-9), (-5, -5), (9, 9)):
+        assert h(*off)[1] is False, off                      # off the grid: what the ray misses
+    # the two planes agree on the diagonal wherever the heights are, so the tie never shows
+    rng = np.random.default_rng(7)
+    gg = rng.standard_normal((3, 3)) * 10.0
+    t = np.linspace(0.0, 1.0, 101)
+    a, _ = T.plane_height(u, v, gg, t, 1.0 - t)
+    b = (1.0 - t) * gg[1, 0] + t * gg[0, 1]
+    assert np.abs(a - b).max() < 1e-12, np.abs(a - b).max()
+    print("ok the cell lookup: both triangles, the diagonal, cell edges, corners, off the grid")
+
+
+def test_plane_height_uneven_axes():
+    """The OBJ's coordinates carry 7 significant digits, so the cells are not evenly spaced: the lookup
+    must use the node coordinates, not a division by the nominal spacing."""
+    u = np.array([0.0, 1.0, 2.0005, 3.0])
+    v = np.array([0.0, 1.0, 2.0])
+    g = np.tile(np.array([0.0, 10.0, 20.005, 30.0]), (3, 1))   # height = 10 * u
+    z, inside = T.plane_height(u, v, g, np.array([1.5, 2.5]), np.array([0.0, 0.0]))
+    assert inside.all()
+    assert abs(z[0] - 15.0) < 1e-9 and abs(z[1] - 25.0) < 1e-9, z
+    assert T.plane_height(u, v, g, np.array([3.0]), np.array([2.0]))[0][0] == 30.0
+    try:
+        T.plane_height(u, v, g[:2], np.array([0.5]), np.array([0.5]))
+    except ValueError as e:
+        assert "expected" in str(e), e
+    else:
+        raise AssertionError("a grid that does not match the axes must be refused")
+    print("ok unevenly spaced nodes (the OBJ's G7 quantisation) and the shape guard")
+
+
+def test_smooth_grid():
+    """Blender's Smooth modifier on this grid: neighbours weighted factor/2 (it accumulates edge
+    midpoints), the six edges the OBJ's triangles make, and fewer of them on the border."""
+    g = np.zeros((3, 3))
+    g[1, 1] = 1.0
+    s = T.smooth_grid(g, 1.5)
+    assert abs(s[1, 1] - 0.25) < 1e-12, s[1, 1]              # (1 - 1.5/2) * 1
+    assert abs(s[1, 0] - 0.75 / 4.0) < 1e-12, s[1, 0]        # a border node: 4 neighbours, one of them 1
+    # (0,0) and (2,2) have only two edges each - the anti-diagonal of their cell joins the other two
+    # corners - and neither of those two neighbours is the raised node
+    assert s[0, 0] == 0.0 and s[2, 2] == 0.0, (s[0, 0], s[2, 2])
+    assert abs(s[0, 2] - 0.75 / 3.0) < 1e-12, s[0, 2]        # the anti-diagonal reaches (0,2) and (2,0)
+    assert abs(s[2, 0] - 0.75 / 3.0) < 1e-12, s[2, 0]
+    big = np.add.outer(np.arange(6.0) * 3.0, np.arange(6.0) * 2.0)   # a plane
+    inner = (slice(1, -1), slice(1, -1))
+    assert np.abs(T.smooth_grid(big, 1.5)[inner] - big[inner]).max() < 1e-12
+    assert np.abs(T.smooth_grid(big, 0.0) - big).max() == 0.0
+    print("ok the Smooth modifier's weights, its six edges and its border")
+
+
 def test_raw_size_guard():
     with tempfile.TemporaryDirectory() as d:
         np.zeros(4, np.uint16).tofile(os.path.join(d, "h.raw"))
@@ -172,5 +262,9 @@ if __name__ == "__main__":
     test_small_grid()
     test_winding_and_corners()
     test_sample_step_and_position()
+    test_grid_axes()
+    test_plane_height_triangles()
+    test_plane_height_uneven_axes()
+    test_smooth_grid()
     test_raw_size_guard()
     print("terrain_obj tests ok")

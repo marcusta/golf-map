@@ -105,18 +105,22 @@ conversion toolset installed; if it ever is, the blockers to expect are `ImportH
 Step 2 of [SHAPING-PLAN.md](SHAPING-PLAN.md). `tools/shape_prepare.py` takes a fresh OPCD `.blend` (Spline
 meshes flat, no Terrain), presses OPCD's **Import Terrain OBJ** (`opcd.convertterrain`, Terrain Smooth from the
 scene, default 1.5) and **Conform to Terrain** with Selection = All (Afrod Mod v4's `wm.projectmesh`: project
-onto Terrain, then retry vertices the projection missed; `--conform opcd` = the OPCD Base button, no retry),
-and saves a copy `<name>.conformed.blend` next to the source. The source is never saved.
+onto Terrain, then retry vertices the projection missed; `--conform opcd` = the OPCD Base button, no retry;
+`--conform grid` = the same outcome computed on the terrain's own grid, 7× faster cold), and saves a copy
+`<name>.conformed.blend` next to the source. The source is never saved.
 
 ```bash
 "C:/Program Files/Blender Foundation/Blender 4.5/blender.exe" -b "D:/gspro_courses/vreta-opcd/vreta_svg_1985.blend" --python blender/tools/shape_prepare.py -- --json "D:/gspro_courses/vreta-opcd/vreta_svg_1985.conformed.json"
 ```
 
 Flags: `--terrain` (default `terrain.obj` next to the `.blend`), `--out`, `--json`, `--seed` (Afrod's retry
-nudges), `--limit N` (smoke test: first N meshes only), `--no-conform-cache`, `--conform-cache-dir`. The report
+nudges), `--limit N` (smoke test: first N meshes only), `--conform afrod|opcd|grid` (the third computes the
+projection instead of casting it — "The grid conform path" below), `--no-conform-cache`,
+`--conform-cache-dir`. The report
 lists vertices left at the flatten depth
-(-100 m) per object, timings and the Terrain's bounds. Vreta (776 meshes, 4.0 M vertices, 644 MB OBJ): import
-5 s, conform 83 s, no failures, 370 MB out. Positions in EPSG:3006 map into the `.blend` with
+(-100 m) per object, timings and the Terrain's bounds. Vreta (996 meshes, 4.11 M vertices, 644 MB OBJ):
+import 5 s, a cold conform 155 s through the operator or 20 s on the grid, no failures, 370 MB out.
+Positions in EPSG:3006 map into the `.blend` with
 `tools/shape_coords.py` (SHAPING-PLAN.md, "Coordinates").
 
 ### The per-mesh conform cache
@@ -210,11 +214,134 @@ other and to the existing `vreta_svg_1988.conformed.blend` (built by the Conform
 
 Vreta cannot exercise any of this (nothing fails to project, no mesh arrives with a modifier, no
 `Outer`), so there is a synthetic headless test — a tilted `Terrain`, a flat `Outer`, a Spline mesh
-hanging off the terrain, an `Outerplot` mesh — over one cache:
+hanging off the terrain, an `Outerplot` mesh — over one cache (it also covers the grid path below):
 
 ```powershell
 & 'C:/Program Files/Blender Foundation/Blender 4.5/blender.exe' -b --python-exit-code 1 --python blender/tools/shape_prepare_cache_test.py
 ```
+
+### The grid conform path
+
+The cache only helps the meshes that did not change. A cold conform — a first export, a new terrain, half a
+course redrawn — still cost 0.13 s a mesh, and that is what `--conform grid` is for.
+
+**Where those 0.13 s went.** Not into the Shrinkwrap. cProfile around the operator's own per-object body
+(`_conform_one`) over 20 Spline meshes spanning the size range, cold: 4.21 s for 37 826 vertices (scratch
+`profile_conform.py`, `conform-20.prof`):
+
+| | s of 4.21 | share |
+|---|---|---|
+| `bpy.ops`'s own `view_layer.update()` — 119 calls, 33 ms each | 3.925 | **93.3 %** |
+| the operators' C code (`_bpy.ops.call`), 60 calls — the Shrinkwrap evaluation among them | 0.126 | 3.0 % |
+| the per-object select / active bookkeeping | 0.068 | 1.6 % |
+| Afrod's `flatten_mesh` (a bmesh round trip) | 0.049 | 1.2 % |
+| `capture_state` + `state_hash` (the cache key) | 0.042 | 1.0 % |
+| `fix_failed_projections`' scan for missed vertices | 0.032 | 0.8 % |
+
+Blender's `bpy.ops` wrapper calls `view_layer.update()` before **and** after every operator, and in this
+scene — 1016 objects and a 4.2 M-vertex Terrain — each one costs 33 ms. The per-object body makes two
+operator calls (`bpy.ops.object.shade_smooth()`, inside Afrod's `project_mesh`, and `object.convert`), so
+four updates, 0.13 s: the whole per-mesh cost, to the millisecond. The projection is free by comparison and
+does not scale with the mesh — `object.convert` costs the same 0.055–0.075 s for a 77-vertex blend as for a
+15 329-vertex mesh. The **target's BVH is not rebuilt per object**: the first mesh costs 1.41 s instead of
+0.147 s (the depsgraph's first evaluation of the new Shrinkwrap, which builds the tree over the Terrain's
+8.4 M triangles) and every mesh after it the same flat 0.147 s.
+
+**So the grid path computes the projection instead of casting it.** The terrain is our own regular grid
+(`terrain_obj.py`), the flattened mesh's rays go straight up, and the Terrain is single-valued, so a
+vertex's height is a cell lookup: `searchsorted` for the cell on each axis, the fractional position in it
+for which of the cell's two triangles, that triangle's plane for the height. numpy does a whole mesh in one
+pass, and `shape_prepare.conform_one_grid` does the rest of the operator's per-object body without an
+operator at all — modifiers cleared, `Mesh.shade_smooth()` instead of the `shade_smooth` *operator*, no
+`object.convert` (there is no modifier left to apply), and Afrod's retry reproduced for the vertices the
+projection misses (the same 1 cm nudge in x then y out of the same seeded `random`, in vertex-index order,
+then a second lookup; whatever still misses keeps the nudge and stays at the flatten depth).
+
+The lookup maths lives in `terrain_obj.py` (`grid_axes`, `plane_height`) — the file that wrote the OBJ, so
+the grid, the spacing, the origin, the negated x and `unity.position` are not restated. Two details:
+
+- **Not the `.raw`.** OPCD's Import Terrain OBJ applies a **Smooth** modifier to the imported terrain
+  (`use_y` only, factor = Terrain Smooth, default 1.5), so the Terrain in the `.blend` is up to **1.14 m**
+  from the heightmap it came from (mean 15 mm on Vreta). The heights therefore come from the Terrain object
+  itself — which is by definition the surface the Shrinkwrap's rays meet. The sidecar is still what proves
+  the object *is* that grid: `terrain_grid` checks the node count, that one x runs down every column and one
+  y across every row (Vreta: 2e-7 m), that the axes are where `grid_axes` puts them (0.49 mm — the OBJ's 7
+  significant digits), and that the heights are the `.raw` put through `terrain_obj.smooth_grid` (0.78 mm).
+  `smooth_grid` is that modifier: Blender accumulates each incident **edge's midpoint**, so the neighbours
+  weigh `factor/2`, not `factor`, and the neighbours are the six the OBJ's two triangles a cell make — east,
+  west, north, south and the **anti-diagonal** — fewer on the border.
+- **The axes are not evenly spaced.** The OBJ's coordinates carry 7 significant digits, so a 2050 m side is
+  quantised to 0.5 mm, and those quantised nodes are the triangle corners the rays actually meet. The cell
+  comes from `searchsorted` over the Terrain's own node coordinates, not from dividing by the spacing.
+
+`--conform grid`, or `GOLFMAP_PREPARE_GRID_CONFORM=1` (which `shape_prepare.run` reads, so the shaping
+worker can be asked for it without a flag of its own). **The operator path is still the default.** Meshes
+that project onto `Outer`, carry shape keys, share their mesh datablock or sit under a non-identity
+transform keep it per mesh (`grid_blocked`, counted in the report as `cache.operatorWhy`), and a scene with
+pot bunkers keeps it entirely — only the operator's loop does its rename pass. Vreta needs none of those:
+all 996 meshes take the grid path.
+
+**Equivalence.** Not bit-identical, and it cannot be: the operator's rays start at the flatten depth, 100 m
+below, and are cast in float32, where one step at 100 m is 7.6 µm. The grid path evaluates the same
+triangle's plane in float64 and rounds once, so it is the *more* exact of the two and the gap is the
+operator's own noise. Measured against that float64 plane on three meshes, the worst ones included (scratch
+`exact_check.py`): the grid path lands on the **nearest float32 to the exact height at every vertex**
+(within 0.5–1.9 µm, half a float32 step), the operator's rays on 18–28 float32 steps away (up to 36 µm).
+
+Both paths run on every one of Vreta's 996 Spline meshes from the same input state in
+one session (scratch `compare_paths.py`, 4 109 059 vertices):
+
+| | |
+|---|---|
+| arrays that differ | **only `position`** — every other attribute, and every `capture_state` meta (counts, materials, vertex groups, custom props, matrix, active/render colour), identical on all 996 |
+| max \|dx\|, \|dy\| | **0, exactly** |
+| max \|dz\| | **3.81e-05 m** (38 µm, up to 28 float32 steps at the terrain's heights) |
+| vertices bit-identical | 327 513 (8.0 %) |
+| within 1e-5 m | 3 628 427 (**88.30 %**) |
+| within 1e-3 m | 4 109 059 (**100 %**) |
+| vertices on a cell diagonal | 243 — and the tie is moot: the two triangles' planes **agree exactly** on `fx + fz == 1` (both reduce to `(1-fx)·h10 + fx·h01`), so the lookup takes the first and Blender's watertight ray test takes whichever it likes, for the same height |
+| `fix_failed_projections` | 0 both ways on every mesh (nothing on Vreta misses). On the synthetic test's mesh that does hang off the grid, the retry's nudged x and y are **bit-identical** — the same seeded `random` in vertex-index order, rounded to float32 where Afrod's `vert.co.x +=` rounds it |
+
+And at the whole-file level (`dump_blend.py` / `diff_dumps.py` over the saved `.conformed.blend`s, 1039 mesh
+objects each): the operator run of this refactored code has **identical state hashes for all 1039 objects**
+to the existing `vreta_svg_1988.conformed.blend` the Conform All button built, so nothing about the operator
+path moved; the grid run matches it on 43 (the 20 objects the Afrod loop only converts, the 22 hidden OPCD
+template objects, the Terrain) and differs on the 996 Spline meshes in `position` alone — max |dx| = |dy| =
+0, max |dz| = 3.8147e-05 — with no object differing in vertex/face/loop count, attribute set, materials,
+vertex groups or custom props.
+
+Which path produced a result is therefore part of the cache's env key (`cache_env_key`'s `path=`, plus
+`terrain_obj.py`'s sha for the grid path) and of each mesh's key (`grid_blocked`'s answer, because two of
+its reasons — a shared mesh, shape keys — are invisible to `capture_state`). Flipping the default can never
+serve one path's results for the other's.
+
+**Vreta, `vreta_svg_1988.blend`** (996 meshes, 4.11 M vertices, 644 MB OBJ, 51 MB of cache):
+
+| run | import | conform | total | conform cache |
+|---|---|---|---|---|
+| operator, cold | 5.3 s | 155.0 s | **163.6 s** | 0 hits, 996 misses (hash 5.2, targets 3.5, **compute 137.8**, store 7.0) |
+| operator, warm | 5.3 s | 12.5 s | **19.4 s** | 996 hits (hash 4.6, targets 3.4, replay 3.1) |
+| **grid, cold** | 4.7 s | **15.9 s** | **22.7 s** | 0 hits, 996 misses (hash 4.8, targets 3.2, grid read 0.4, **compute 1.1**, store 5.4) |
+| grid, warm | 4.7 s | 11.6 s | **18.3 s** | 996 hits (hash 4.4, targets 3.0, replay 3.0) |
+| grid, `GOLFMAP_PREPARE_GRID_CONFORM=1` | 4.7 s | 11.6 s | **18.3 s** | the same key as `--conform grid`: 996 hits |
+| grid, `--no-conform-cache` | 4.7 s | 13.7 s | **20.4 s** | off: 996 computed in 1.0 s, nothing stored |
+
+The conform **compute goes from 137.8 s to 1.1 s** (125×) and a cold prepare from 163.6 s to 22.7 s. What
+is left of a cold conform is the cache's own bookkeeping, not the conform: 4.8 s hashing the 996 inputs
+(that *is* the key), 3.2 s hashing the conform targets, 5.4 s writing 51 MB of results — which is why
+`--no-conform-cache` is now barely slower than a cold cached run, and a warm run (11.6 s, all of it hashing
+and replay) barely faster. With the grid path the conform cache no longer pays for itself: skipping the two
+hashes when there is nothing to store would take a cold grid conform to ~2 s. Not done here — the input
+hash also seeds Afrod's retry per mesh — but it is the next thing to take.
+
+**Flipping the default** costs one full refresh, once: the conformed meshes move by up to 38 µm, so every
+mesh's state hash changes, and with it the shaping op cache (which keys on its input meshes) and the FBX
+sync fingerprints — one whole shaping replay and one whole FBX/Unity re-import. Nothing is *wrong* after it
+(the grid positions are the more exact ones), and nothing silently mixes: the path is in the conform cache's
+key, so the first grid run recomputes the whole course and the file is wholly one path's. The path is
+deliberately **not** in `shape_worker.conformed_stale`, so flipping does not throw away a
+`.conformed.blend` that is otherwise still valid — the switch happens the next time prepare runs anyway.
+So: flip it together with a full course refresh, not in the middle of a shaping session.
 
 ### terrain.obj without Unity
 

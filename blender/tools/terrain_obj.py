@@ -48,6 +48,56 @@ def load_sidecar(path):
         return json.load(f)
 
 
+def grid_axes(frame):
+    """The grid's two axes in OBJ index order: `u[ix]` and `v[iz]`, both ascending by `spacingM`.
+
+    The OBJ writes `v -(px + ix*spacing) (py + h) (pz + iz*spacing)`, and Blender's import maps obj
+    `x,y,z` to blend `x,-z,y`, so in the `.blend` **both** x and y run *down* as the index runs up:
+    blend x = -(px + ix*spacing), blend y = -(pz + iz*spacing). `u = -x` and `v = -y` are therefore the
+    ascending axes `plane_height` wants - flipping the arrays instead would reverse the index order and
+    with it the cells' diagonal (`plane_height`)."""
+    grid, sp = frame["grid"], frame["spacingM"]
+    ix = np.arange(grid, dtype=np.float64)
+    return frame["px"] + ix * sp, frame["pz"] + ix * sp
+
+
+def plane_height(u, v, g, qu, qv):
+    """Height on the terrain grid at the query points `(qu, qv)`, and whether they are on it.
+
+    `u` (len `grid`, strictly ascending) is the axis of the column index `ix`, `v` that of the row index
+    `iz` (both as `grid_axes` gives them - in the `.blend` that means `qu = -x`, `qv = -y`); `g[iz, ix]`
+    is the node height. Neither axis has to be evenly spaced: the OBJ's coordinates are written with 7
+    significant digits, so a 2050 m side is quantised to 0.5 mm, and the cell edges the Shrinkwrap's rays
+    actually meet are those quantised ones. The cell is found with `searchsorted`, not by dividing by the
+    spacing, so this is the same cell Blender finds.
+
+    Two triangles a cell, exactly the OBJ's (`obj_chunks`):
+    `(iz,ix) (iz+1,ix) (iz,ix+1)` and `(iz,ix+1) (iz+1,ix) (iz+1,ix+1)`. With `fx`, `fz` the fractional
+    position in the cell, the first holds `fx + fz <= 1`. **The two planes agree exactly on the diagonal**
+    `fx + fz == 1` (both reduce to `(1-fx)*h10 + fx*h01`), so a point on it gets one height whichever
+    triangle claims it - which is how the tie is broken on both sides: Blender's watertight ray test hands
+    such a ray to exactly one of the two triangles, and the height is the same one.
+
+    Returns `(height, inside)`, both the shape of the query. `height` is meaningless where `inside` is
+    False (the point is off the grid, which is what the Shrinkwrap's ray misses)."""
+    u, v, g = np.asarray(u, np.float64), np.asarray(v, np.float64), np.asarray(g, np.float64)
+    if u.ndim != 1 or v.ndim != 1 or g.shape != (v.size, u.size):
+        raise ValueError(f"grid is {g.shape}, expected {(v.size, u.size)} for the given axes")
+    if u.size < 2 or v.size < 2:
+        raise ValueError("the grid needs at least 2 nodes a side")
+    qu, qv = np.asarray(qu, np.float64), np.asarray(qv, np.float64)
+    inside = (qu >= u[0]) & (qu <= u[-1]) & (qv >= v[0]) & (qv <= v[-1])
+    ix = np.clip(np.searchsorted(u, qu, side="right") - 1, 0, u.size - 2)
+    iz = np.clip(np.searchsorted(v, qv, side="right") - 1, 0, v.size - 2)
+    fx = (qu - u[ix]) / (u[ix + 1] - u[ix])
+    fz = (qv - v[iz]) / (v[iz + 1] - v[iz])
+    h00, h01 = g[iz, ix], g[iz, ix + 1]
+    h10, h11 = g[iz + 1, ix], g[iz + 1, ix + 1]
+    return np.where(fx + fz <= 1.0,
+                    h00 + fx * (h01 - h00) + fz * (h10 - h00),
+                    h11 + (1.0 - fx) * (h10 - h11) + (1.0 - fz) * (h01 - h11)), inside
+
+
 def frame_from_sidecar(sidecar, sample="half"):
     """Grid and placement the OBJ needs: raw file, resolution, step, grid, spacing, height range, position."""
     raw = sidecar.get("raw") or {}
@@ -83,6 +133,36 @@ def height_grid(raw, frame):
     the `.raw`'s row 0 is north, so the sampled rows are flipped."""
     sub = raw[::frame["step"], ::frame["step"]]
     return sub[::-1, :].astype(np.float64) * (frame["heightRangeM"] / 65535.0)
+
+
+def smooth_grid(g, factor):
+    """What OPCD's Import Terrain OBJ does to the heights after the import: one pass of Blender's **Smooth**
+    modifier (`use_y` only - the OBJ's y is the height - factor = the scene's Terrain Smooth, default 1.5),
+    applied.
+
+    Blender's modifier accumulates, per incident edge, the edge's *midpoint*, so the mean it blends toward is
+    `0.5*h + 0.5*mean(neighbours)` and the result is `(1 - f/2)*h + (f/2)*mean(neighbours)`: Terrain Smooth
+    1.5 weights the neighbours 0.75, not 1.5. The neighbours are the grid's edges, which the OBJ's two
+    triangles a cell make: east, west, north, south and the **anti-diagonal** `(iz+1,ix)-(iz,ix+1)` - six for
+    an interior node, fewer on the border, where the modifier divides by the count it found.
+
+    So the Terrain object in the `.blend` is not the `.raw`: on Vreta it differs from it by up to 1.14 m
+    (mean 15 mm). This reproduces it to 0.8 mm (the OBJ's 7-significant-digit heights and float32
+    accumulation), which is why the grid conform reads the Terrain object itself and only uses this as a
+    check that the object really is the grid the sidecar describes."""
+    g = np.asarray(g, np.float64)
+    acc = np.zeros(g.shape, np.float64)
+    cnt = np.zeros(g.shape, np.int32)
+    for dst, src in (((slice(None), slice(0, -1)), (slice(None), slice(1, None))),       # east
+                     ((slice(None), slice(1, None)), (slice(None), slice(0, -1))),       # west
+                     ((slice(0, -1), slice(None)), (slice(1, None), slice(None))),       # north
+                     ((slice(1, None), slice(None)), (slice(0, -1), slice(None))),       # south
+                     ((slice(1, None), slice(0, -1)), (slice(0, -1), slice(1, None))),   # anti-diagonal
+                     ((slice(0, -1), slice(1, None)), (slice(1, None), slice(0, -1)))):
+        acc[dst] += g[src]
+        cnt[dst] += 1
+    half = 0.5 * float(factor)
+    return (1.0 - half) * g + half * (acc / np.maximum(cnt, 1))
 
 
 def g7(x):

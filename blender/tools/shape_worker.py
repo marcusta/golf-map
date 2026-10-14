@@ -308,8 +308,9 @@ class Worker:
         cache = rep.get("cache") or {}
         return source, conformed, dict(
             {k: rep[k] for k in ("out", "conformed", "failedObjects", "timings")},
-            stale=why, terrainSha=rep.get("terrainSha"),
-            conformCache={k: cache.get(k) for k in ("used", "hits", "misses", "skipped")})
+            stale=why, terrainSha=rep.get("terrainSha"), conformPath=rep.get("conformPath"),
+            conformCache={k: cache.get(k) for k in ("used", "hits", "misses", "skipped",
+                                                    "gridMeshes", "operatorMeshes")})
 
     def op_list(self, layers_dir):
         try:
