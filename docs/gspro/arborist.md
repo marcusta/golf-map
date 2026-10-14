@@ -31,9 +31,9 @@ billboard-only copies. Not yet seen in GSPro: whether the two draw together.
 | Inputs (git-ignored, `data/arborist/`) | `GolfMap library.biome` (species library), `catalog-sizes.json` (`arb.catalog` with `sizes`), `<course>-planted-trees.json` (Unity `golfmap.trees.dump file=<abs path>`), `lineup-items.txt` (the tree species in calibration order) |
 | File key | `data/arborist-wrapper.key` (git-ignored; never into the repo) |
 
-### Who writes the file: Plant for GSPro
+### Who writes the file: Update vegetation
 
-The web Vegetation mode's **Plant for GSPro** writes `arboristdata.dat` after it has planted into
+The command bar's **Update vegetation** (Vegetation mode) writes `arboristdata.dat` after it has planted into
 Unity, so the Arborist vegetation follows the zones without a shell (`ArboristService`,
 `server/services/arborist.service.ts`, run by `GsproExportService.plantVegetation`):
 
@@ -43,7 +43,7 @@ Unity, so the Arborist vegetation follows the zones without a shell (`ArboristSe
 | `arborist.py lower` (about 10 s on Vreta) | the zones export, the palette, the species file | fails the job with the reason |
 | `golfmap.trees.dump` in Unity, then `arborist.py trees` (far rule and ring with the surface map and the `.GKD`'s boundary; about 5 s plus the dump) | Unity open: the trees' positions and ground heights are its scene's | skipped, reported; the file keeps the trees as last generated |
 
-- **Update for GSPro** (selected zones) patches the masks, respawns them in Unity and runs `lower`
+- **Update N zones** (selected zones) patches the masks, respawns them in Unity and runs `lower`
   again. It leaves the trees.
 - The file alone, e.g. after an edit to `arborist-species.json`: `bun run gspro:export -- <course> arborist`
   (`lower`, then the trees when Unity is open). `--arborist-out <folder>` writes there instead of into
@@ -90,7 +90,7 @@ bun run arborist -- vreta --close-others --screenshot      # Unity and GreenKeep
 ```
 
 - One status line per step with its elapsed seconds; the first failure stops the rest and exits 1
-  naming the step. The file is written by the same `ArboristService` as **Plant for GSPro**, so the
+  naming the step. The file is written by the same `ArboristService` as **Update vegetation**, so the
   inputs, arguments and report lines are the panel's.
 - `--trees` takes the trees out of the open Unity editor's scene when it is open
   (`golfmap.trees.dump`, read-only there) and otherwise keeps the dump the last run wrote, which is

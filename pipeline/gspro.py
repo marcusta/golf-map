@@ -4897,7 +4897,7 @@ def _prepare_zones(db_path: Path, course_ident: str) -> tuple[sqlite3.Row, list[
     if sections:
         zones = [z for z in zones if z.id not in sections]
         print(f"  {len(sections)} creek section(s) (hand-drawn {CREEK_SECTION_ZONE_TYPE} zones near a creek or water) "
-              f"not rasterized: they pick the palette of those banks, which Plant for GSPro plants: "
+              f"not rasterized: they pick the palette of those banks, which Update vegetation plants: "
               f"{', '.join(sorted(i[:8] for i in sections))}")
     if not types:
         raise SystemExit(f"error: course {course['name']} ({course['id']}) has no zone types "
@@ -5092,7 +5092,7 @@ def cmd_zones(bbox, db_path: Path, course_ident: str, sidecar_path: Path, out: P
 
 # --- Command: zones-patch ---------------------------------------------------
 # Re-rasterize only the part of a terrain's zone masks that some zones cover
-# (the web's "Update for GSPro" on selected zones), instead of the whole
+# (the web's "Update N zones" on selected zones), instead of the whole
 # square: the window around the zones as they are now and as the last export
 # drew them (their rows in the zones JSON), plus zones that export had and
 # the course no longer has. The window renders exactly what a full export

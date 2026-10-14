@@ -125,7 +125,7 @@ tracks, clearings, windthrow. `clean-ortho --woodland` repaints the stand with w
 noise in the palette floor colour mixed half and half with that sample (`--floor-mix`),
 outside the playable corridor and outside `--keep` polygons (roads).
 Revised 2026-09-23: in the app, "Regenerate trees" makes the stands (the `canopy` step's
-`--woodland-out`, imported as generated `lidar-woodland` zones), and the Export to GSPro panel
+`--woodland-out`, imported as generated `lidar-woodland` zones), and the GSPro board
 paints the floor during the orthophoto export (`gspro.py ortho --floor-course`, keeping the
 drawn playable surfaces, bunkers, paths and water) and exports the zone masks for Unity.
 `clean-ortho --woodland` stays for GeoTIFF work outside the app. Buildings are painted
@@ -173,7 +173,7 @@ not rasterized), whatever their blend; their extra palettes are ignored with the
 **D-VZ13. Update selected zones without planting everything.** Added 2026-09-27. Planting runs
 the generators, rasterizes every zone into all the 4096 masks, and has Unity reimport all of them
 and respawn the whole terrain. For an edit to a few drawn zones only their area needs any of that.
-"Update N zones" (until 2026-10-13 "Update in Unity", until 2026-10-14 "Update for GSPro") on the selected zones re-rasterizes the window they cover, now and in the last
+"Update N zones" (until 2026-10-14 "Update for GSPro") on the selected zones re-rasterizes the window they cover, now and in the last
 export (the rows of the zones JSON, so a moved zone's old spot clears), plus zones that export has
 and the course no longer has. The window is exact: each zone's weight still comes from its own
 crop, clipped only to the window plus its `feather / 2 + noise`, beyond which a pixel's weight does
@@ -645,9 +645,9 @@ eyes. Why: drawn zones add up with each other (D-VZ14), and an old hand-drawn
 tall-rough zone under a new wispy one was invisible among the generated bands
 (Vreta, 2026-10-10).
 
-The command bar's **Update vegetation** (Vegetation mode only; "Plant
-vegetation" until 2026-10-13, "Plant for GSPro" until 2026-10-14) runs the
-server's `vegetation` export job through `zones/plant-vegetation.service.ts`
+The command bar's **Update vegetation** (Vegetation mode only; "Plant for
+GSPro" until 2026-10-14) runs the server's `vegetation` export job through
+`zones/plant-vegetation.service.ts`
 (start, or follow the planting already running; poll to the end): every
 vegetation generator, the zones export, the import into the open Unity
 project, and the Arborist file in the GSPro course folder (its lower

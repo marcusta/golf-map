@@ -30,7 +30,7 @@
 //                            so pair it with --no-reload
 //
 // The file itself is written by the server's own ArboristService — the service
-// the web Vegetation mode's "Plant for GSPro" runs after it has planted
+// the web command bar's "Update vegetation" runs after it has planted
 // (server/services/arborist.service.ts): same inputs, same arguments, same
 // report lines. The trees normally come out of the open Unity editor's scene
 // (`golfmap.trees.dump`); with Unity closed (or --close-others) the dump the
@@ -251,7 +251,7 @@ export function dumpOnDisk(): UnityEditor & { read: { file: string; trees: numbe
             const stat = await statOrNull(file);
             if (!stat) {
                 throw new Error(`the planted-trees dump ${file} is not there yet. Open the course's Unity project and plant once `
-                    + '(web Vegetation mode "Plant for GSPro", or bun run gspro:export -- <course> arborist), which writes it');
+                    + '(web command bar "Update vegetation", or bun run gspro:export -- <course> arborist), which writes it');
             }
             const doc = JSON.parse(await readFile(file, 'utf8')) as { items?: { instances?: unknown[] }[] };
             const trees = (doc.items ?? []).reduce((n, i) => n + (i.instances?.length ?? 0), 0);

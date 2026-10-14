@@ -556,7 +556,7 @@ namespace GolfMap.Editor
             return new List<Vector3>();
         }
 
-        [BridgeCommand("golfmap.vegpalette.rebuild", "Save, then build the lower-vegetation palette into VSP (golfmap.grass.apply) - for changes a live push cannot show: texture white point, a bush's first material overrides, new items. Runs the zones import and applies again when apply replaced or added items (what Plant for GSPro does in Unity).")]
+        [BridgeCommand("golfmap.vegpalette.rebuild", "Save, then build the lower-vegetation palette into VSP (golfmap.grass.apply) - for changes a live push cannot show: texture white point, a bush's first material overrides, new items. Runs the zones import and applies again when apply replaced or added items (what Update vegetation does in Unity).")]
         static object RebuildCommand() { return Rebuild(); }
 
         public static string Rebuild()

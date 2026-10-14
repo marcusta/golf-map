@@ -140,7 +140,7 @@ export function paramsSummary(edit: TerrainEdit): string {
             : `banks ${edit.params.bankSlopeDeg}°`);
     }
     if (edit.op === 'delta') {
-        // A Unity sculpt layer ("Unity sculpt → golf-map"): heights changed in Unity, added on top of everything.
+        // A Unity sculpt layer ("Pull from Unity"): heights changed in Unity, added on top of everything.
         parts.push(`Unity sculpt, ${((edit.params.changedM2 ?? 0) / 10000).toFixed(2)} ha, +${edit.params.maxRaiseM ?? 0} / ${edit.params.maxLowerM ?? 0} m`);
     }
     if (edit.op !== 'dig' && edit.op !== 'delta') parts.push(`feather ${edit.params.featherM} m`);

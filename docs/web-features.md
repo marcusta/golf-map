@@ -40,7 +40,7 @@ In the Clean panel (`clean/clean-panel.component.ts`), the rest of `CleanToolSer
 
 - **Download photo (PNG)** is a plain link (`exportUrl()`, `GET /api/cleaned-photo/:courseId/export.png`): no state, no request before the click.
 - **Import a photo** (`importPhoto(file)`) goes through `PhotoImportClient` (`clean/clean-external.ts`), because `PUT /api/cleaned-photo/:courseId/import` is a raw route with no generated client and the upload needs progress (`XMLHttpRequest` behind the `UploadLike` seam, so tests need no network). It holds the tool's `applying` phase (`externalBusy` is `import`) and, on a change, loads the pixels again. `importSummaryText` (pure) makes the one-line result; a refusal (another pixel size, a stalled upload) shows the server's own message.
-- **The push into Unity is not in this panel.** The command bar's **Update photo** runs the Photo target's whole chain (`GsproSyncService`, below); the panel keeps one hint line (`unity-apply-hint`) pointing at it. `CleanToolService.applyInUnity()` is still there — the narrow single step: wait for the saves, start the GSPro export job `unity-ortho` on the built vintage's `.cleaned.tif` (`api.gsproExport`, behind the `UnityOrthoApi` seam), poll it, outcome in `unityMessage` — kept for its test and for a caller that wants only the `-meshes` variant with server defaults; the export panel's Photo row has the one with options ([gspro/export.md](gspro/export.md)).
+- **The push into Unity is not in this panel.** The command bar's **Update photo** runs the Photo target's whole chain (`GsproSyncService`, below); the panel keeps one hint line (`unity-apply-hint`) pointing at it. `CleanToolService` has no push of its own any more (its `applyInUnity()` and the `UnityOrthoApi` seam went with the button on 2026-10-14): the single file with options is the GSPro board's Photo row → **→ Unity meshes** ([gspro/export.md](gspro/export.md)).
 
 ## The GSPro dialog is a status board
 
@@ -68,10 +68,12 @@ The board is one of **two** places a push into GSPro starts from; the other is t
 | Draw | a path | **Update paths** | `ShapingService.apply(…, { paths: true })` (unchanged flow, new label) |
 | Draw | a rock slab / bunker / pond / creek | **Update meshes (this feature)** | the same feature-scoped shaping run |
 | Draw | anything else | **Update shapes** | `update('shapes')`; its report ends with the manual Blender step |
-| Vegetation | — | **Update vegetation** | `PlantVegetationService.plant` behind its confirm (was "Plant for GSPro") |
-| Vegetation | zones | **Update zone** / **Update N zones** | `PlantVegetationService.update` (was "Update N zones for GSPro") |
-| Clean photo | — | **Update photo** | `update('photo')` (was the Clean panel's "Apply in Unity") |
+| Vegetation | — | **Update vegetation** | `PlantVegetationService.plant` behind its confirm |
+| Vegetation | zones | **Update zone** / **Update N zones** | `PlantVegetationService.update` |
+| Clean photo | — | **Update photo** | `update('photo')` |
 | Furniture | — | **Update course file** | `update('course-file')` |
+
+Until 2026-10-14 these three were "Plant for GSPro", "Update N zones for GSPro" and the Clean panel's "Apply in Unity".
 
 - The outcome is the result dialog the bar already used for planting: the job's `results[].report` as the detail, the target's `manual` step and — only when the report touched Unity and has no `Saved …` line of its own (`needsSceneSave`, exported for its test) — "Save the scene in Unity to keep it.". While a run goes, the button's label is the job's `step`.
 - The Terrain editor's panel still **shows** a shaping run: the selection's phases under the Shape section (`terrain-shape-job`) and a course-wide run's under the edit list (`terrain-edit-meshes-job`, which also picks up a run started elsewhere through `ShapingService.resume`). Only the buttons moved.

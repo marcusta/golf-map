@@ -174,7 +174,7 @@ describe('the Arborist loop, step by step', () => {
         expect(result.failed).toBeNull();
         expect(ids(result)).toEqual(['lower', 'trees', 'bridge', 'reload']);
         expect(f.runs.map((r) => r.command)).toEqual(['lower', 'trees']);
-        // The same file as Plant for GSPro: arborist.py out of the pipeline folder, into the course folder.
+        // The same file as Update vegetation: arborist.py out of the pipeline folder, into the course folder.
         expect(f.runs[0]!.args[0]).toBe(path.join(pipelineDir, 'arborist.py'));
         expect(f.runs[0]!.args).toContain(course.courseDir!);
         expect(f.runs[0]!.args).toContain(path.join(courseDocsRoot, 'vreta', 'grass-palette.json'));

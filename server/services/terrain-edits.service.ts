@@ -41,7 +41,7 @@ export function isDemEdit(edit: { op: string }): boolean {
 
 /**
  * Unity sculpt layers (`delta`): heights changed in Unity, captured and
- * carried back ("Unity sculpt → golf-map"). One per terrain, each its own
+ * carried back ("Pull from Unity"). One per terrain, each its own
  * origin so a new capture replaces only that terrain's layer; the GeoTIFF is
  * `sources/<siteId>/terrain-sculpt/<raster>`.
  */

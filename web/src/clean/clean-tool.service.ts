@@ -40,14 +40,14 @@
 // server to keep the photo from before, so the panel's "Undo last change"
 // steps back a whole editing session (or an import).
 //
-// ## Areas, image editor, Unity
+// ## Areas and the image editor round trip
 //
 // `areas` mode draws the cleanup boundaries (cleanup-areas.controller.ts)
 // and changes no pixels. `exportUrl()` downloads the photo as a PNG and
-// `importPhoto()` uploads any image of its size to become the photo;
-// `applyInUnity()` waits for the saves, then runs the server's `unity-ortho`
-// export job (docs/gspro/export.md). An import or a server-side undo reloads
-// the pixels.
+// `importPhoto()` uploads any image of its size to become the photo. An
+// import or a server-side undo reloads the pixels. The push into Unity is
+// not here: the command bar's **Update photo** runs the Photo target's whole
+// chain (docs/gspro/export.md).
 //
 // All I/O sits behind constructor seams (the engine, the pixel save, the
 // photo API, the map views, the frame clock) so the whole state machine runs
@@ -62,7 +62,6 @@ import { FEATURE_TYPES } from '../draw/feature-palette';
 import type { MapPointerEvent } from '../map/map.service';
 import { deriveTileVersion } from '../map/tileset.service';
 import type { CleanedPhotoApi, CleanedPhotoResult } from '../../../shared/api/cleaned-photo.gen';
-import type { GsproExportApi, GsproExportJob } from '../../../shared/api/gspro-export.gen';
 import { CLEANED_IMPORT_MAX_BYTES, CLEANED_PHOTO_SIZE } from '../../../shared/cleaned-photo';
 import { api, API_BASE } from '../api';
 import { lngLatToSweref99tm, sweref99tmToLngLat } from '../geo/transform';
@@ -91,7 +90,7 @@ export const BRUSH_SIZE_MAX_M = 30;
 /** The retouching tools, and `areas` (the cleanup boundaries). */
 export type CleanMode = 'clone' | 'heal' | 'spot' | 'remove' | 'areas';
 export type RetouchTool = Exclude<CleanMode, 'areas'>;
-/** `applying`: a server-side undo, an import or Apply in Unity is running. */
+/** `applying`: a server-side undo or an import is running. */
 export type CleanPhase = 'idle' | 'applying';
 /** Where the photo's pixels are: not asked for, on their way, in the engine, or failed. */
 export type PhotoLoad = 'none' | 'loading' | 'ready' | 'error';
@@ -123,9 +122,6 @@ export const browserFrames: FrameScheduler = {
         else clearTimeout(handle);
     },
 };
-
-/** What applyInUnity needs of the GSPro export API. */
-export type UnityOrthoApi = Pick<GsproExportApi, 'orthoSources' | 'start' | 'job'>;
 
 /** Map-side seams: the block views (canvas sources) and the frame clock. */
 export interface CleanLiveSeams {
@@ -237,11 +233,9 @@ export class CleanToolService {
      * deactivate. */
     readonly showCleaned = new Signal(true);
 
-    // Import / Apply in Unity state.
+    // Import / undo state.
     /** Which long operation holds the 'applying' phase, if any. */
-    readonly externalBusy = new Signal<'import' | 'unity' | 'undo' | null>(null);
-    /** Outcome of the last Apply in Unity: the error, or what Unity took. */
-    readonly unityMessage = new Signal<{ kind: 'error' | 'info'; text: string } | null>(null);
+    readonly externalBusy = new Signal<'import' | 'undo' | null>(null);
     /** Upload progress 0..1 while importing; 1 means "sent, server working". */
     readonly uploadProgress = new Signal<number | null>(null);
     /** What the last import did, in one line. */
@@ -299,8 +293,6 @@ export class CleanToolService {
         private savePixels: PixelSaver = fetchPixelSaver,
         live: CleanLiveSeams = {},
         private importClient: PhotoImportClient = new PhotoImportClient(),
-        private unityApi: UnityOrthoApi = api.gsproExport,
-        private unityPollMs = 1500,
     ) {
         this.views = live.views ?? canvasStampView;
         this.frames = live.frames ?? browserFrames;
@@ -366,7 +358,6 @@ export class CleanToolService {
         this.uploadProgress.set(null);
         this.importSummary.set(null);
         this.externalMessage.set(null);
-        this.unityMessage.set(null);
         // Always hand the map back showing the PRISTINE photo.
         const pristine = ctx?.tileset.tileVersion.peek();
         if (ctx && pristine) ctx.map.setOrthoPhotoState('ortho', pristine);
@@ -1061,61 +1052,6 @@ export class CleanToolService {
         } finally {
             this.externalBusy.set(null);
             this.phase.set('idle');
-        }
-    }
-
-    // ── Apply in Unity ──────────────────────────────────────────────────────
-
-    /**
-     * Put the cleaned photo onto the course meshes in the open Unity editor.
-     * The panel has no button for it any more — the command bar's **Update
-     * photo** runs the Photo target's whole chain through `GsproSyncService`
-     * (both the meshes texture and the outer terrain's). This is the narrow
-     * one-call version, kept for the CLI-less single step and its test.
-     * Waits for the saves first. The server job renders the cleaned photo of
-     * the vintage the map was built from and hands Unity its -meshes variant,
-     * the darkened one with the green surface tint, which is what the meshes
-     * sample. Returns true when Unity took it; the outcome is in
-     * `unityMessage`.
-     */
-    async applyInUnity(): Promise<boolean> {
-        const ctx = this.ctx;
-        if (!ctx || this.phase.peek() !== 'idle' || this.stroke) return false;
-        this.unityMessage.set(null);
-        this.phase.set('applying');
-        this.externalBusy.set('unity');
-        try {
-            await this.settled();
-            if (this.saveState.peek() === 'error') {
-                this.unityMessage.set({ kind: 'error', text: 'Some changes are not saved yet: retry the save first.' });
-                return false;
-            }
-            const sources = await this.unityApi.orthoSources({ courseId: ctx.courseId });
-            const source = sources.find(s => s.cleaned && s.active);
-            if (!source) {
-                this.unityMessage.set({ kind: 'error', text: 'There is no cleaned photo yet: paint a stroke or import a photo first.' });
-                return false;
-            }
-            let job: GsproExportJob = await this.unityApi.start({
-                courseId: ctx.courseId, kind: 'unity-ortho', source: source.source, tint: true,
-            });
-            while (job.status === 'running') {
-                await new Promise(r => setTimeout(r, this.unityPollMs));
-                job = await this.unityApi.job({ jobId: job.id });
-            }
-            if (job.status !== 'succeeded' || !job.result) {
-                this.unityMessage.set({ kind: 'error', text: job.error || 'Apply in Unity failed' });
-                return false;
-            }
-            const line = job.result.report.find(l => l.startsWith('Unity (')) ?? 'Unity took the cleaned photo.';
-            this.unityMessage.set({ kind: 'info', text: `${line} Save the Unity project to keep it.` });
-            return true;
-        } catch (err) {
-            this.unityMessage.set({ kind: 'error', text: err instanceof Error ? err.message : String(err) });
-            return false;
-        } finally {
-            this.externalBusy.set(null);
-            if (this.phase.peek() === 'applying') this.phase.set('idle');
         }
     }
 

@@ -92,7 +92,7 @@ Hole navigator`) puts the view 5 m over that point looking along the direction o
 Reads `<export folder>/<prefix>-holes.json`; after tees, aim points or greens move in golf-map, write it again:
 `bun run py gspro.py holes --course <course> --out <export folder>/<prefix>-holes.json`.
 
-Terrains after the first import: `golfmap.terrain.update` (GolfMap > Terrain > Update heights from export) puts a new heightmap export onto the existing terrains in place (backup, VSP refresh, outer sink kept); golf-map's "Heightmap → Unity" calls it.
+Terrains after the first import: `golfmap.terrain.update` (GolfMap > Terrain > Update heights from export) puts a new heightmap export onto the existing terrains in place (backup, VSP refresh, outer sink kept); golf-map's **Update terrain** calls it.
 
 Creeks: `GolfMap > Creeks` (`GolfMapCreeks.cs`, bridge `golfmap.creeks.import`) builds one R.A.M. `RamSpline` per creek
 from `<prefix>-inner-creeks.json`: the export's line, fitted to the course meshes in the scene (water just above the bed,

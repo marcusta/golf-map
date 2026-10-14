@@ -50,7 +50,7 @@ const ParamsSchema = Type.Object({
     rimM: Type.Optional(Type.Number()),
     variation: Type.Optional(Type.Number()),
     seed: Type.Optional(Type.Number()),
-    // delta (a Unity sculpt layer, "Unity sculpt → golf-map"): its GeoTIFF's name and what it holds.
+    // delta (a Unity sculpt layer, "Pull from Unity"): its GeoTIFF's name and what it holds.
     raster: Type.Optional(Type.String()),
     changedM2: Type.Optional(Type.Number()),
     maxRaiseM: Type.Optional(Type.Number()),

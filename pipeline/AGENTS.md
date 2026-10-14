@@ -58,7 +58,7 @@ Everything renders over one square EPSG:3006 extent (`--square-3006` verbatim fr
 
 ## `arborist.py` — Arborist course file
 
-Writes `arboristdata.dat` (GSPro-native vegetation): `trees`, `lower`, `lineup`, `post`, `decode`/`encode`. The server runs `lower` and `trees` at the end of the web's Plant for GSPro (`server/services/arborist.service.ts` finds every argument from the course; its test runs both for real on fixtures): keep their arguments and the first line each prints (`N item(s), M mask texture(s)`, `N trees of M Arborist species`) in step with it. Format, the working loop and the per-course species file: [docs/gspro/arborist.md](../docs/gspro/arborist.md).
+Writes `arboristdata.dat` (GSPro-native vegetation): `trees`, `lower`, `lineup`, `post`, `decode`/`encode`. The server runs `lower` and `trees` at the end of the web's Update vegetation (`server/services/arborist.service.ts` finds every argument from the course; its test runs both for real on fixtures): keep their arguments and the first line each prints (`N item(s), M mask texture(s)`, `N trees of M Arborist species`) in step with it. Format, the working loop and the per-course species file: [docs/gspro/arborist.md](../docs/gspro/arborist.md).
 
 ## Notes
 

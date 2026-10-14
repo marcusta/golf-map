@@ -157,7 +157,7 @@ export class ShapingService {
      * is the feature it was started for, where the panel shows the outcome
      * (null = the course-wide button). A job already running for the course
      * (409) is followed instead. Resolves with the finished job, or null when
-     * it could not start. `paths` (the Draw mode's "Update paths in Unity")
+     * it could not start. `paths` (the Draw mode's "Update paths")
      * also takes the paths' surfaces through: the surfaces file before
      * Blender, the path materials in Unity after.
      */

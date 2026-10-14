@@ -35,7 +35,7 @@
 //                            sets it, like the panel does); needs the inner dem exported first
 //   arborist                 the Arborist file (arboristdata.dat in the course's GSPro folder): the lower vegetation
 //                            from the inner zones export, then the trees out of the open Unity editor's scene
-//                            (golfmap.trees.dump; skipped when it is not open). What the web's Plant for GSPro
+//                            (golfmap.trees.dump; skipped when it is not open). What the web's Update vegetation
 //                            runs after the planting. --arborist-out <folder> writes there instead (a trial run)
 //
 // Exports run one after another, in the order given; the first failure stops

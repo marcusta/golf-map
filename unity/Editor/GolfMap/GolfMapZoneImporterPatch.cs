@@ -1,4 +1,4 @@
-// Patching an imported zones export in place (golf-map's "Update for GSPro" on
+// Patching an imported zones export in place (golf-map's "Update N zones" on
 // selected zones): `gspro.py zones-patch` re-rasterizes the window the zones
 // cover and rewrites only the mask PNGs that changed, and writes a
 // unity-zones-patch-v1 record next to them. This takes those PNGs into the
@@ -69,7 +69,7 @@ namespace GolfMap.Editor
             var problems = ImportedLayoutProblems(package, folder);
             if (problems.Count > 0)
                 throw new BridgeError("The scene does not hold this zones export's import (" + string.Join("; ", problems.Take(3).ToArray())
-                    + (problems.Count > 3 ? "; ..." : "") + "). Plant for GSPro (a full import) instead.");
+                    + (problems.Count > 3 ? "; ..." : "") + "). Update vegetation (a full import) instead.");
 
             var reimported = new List<object>();
             var textures = patch.textures ?? new List<string>();

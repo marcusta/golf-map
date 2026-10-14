@@ -7,7 +7,7 @@
 // planted again (the `vegetation` phase), so the tall grass leaves the rock.
 //
 //   bun run shaping -- <course> [--dry-run] [--paths]
-// --paths runs the Draw panel's Update paths in Unity workflow, including
+// --paths runs the Draw mode's Update paths workflow, including
 // re-exporting the current path surface and transition settings first.
 //
 // <course> is a course id, slug or name (a unique name substring works too).

@@ -202,7 +202,7 @@ namespace GolfMap.Editor
             var refJson = Full(folder + "/" + kind + "-reference.json");
             var refData = AssetDatabase.LoadAssetAtPath<TerrainData>(folder + "/" + kind + "-heights.asset");
             if (!File.Exists(refJson) || refData == null)
-                throw new BridgeError("No reference for the " + kind + " terrain: put its heightmap into Unity with golf-map's 'Heightmap → Unity' (golfmap.terrain.update) first, then sculpt.");
+                throw new BridgeError("No reference for the " + kind + " terrain: put its heightmap into Unity with golf-map's 'Update terrain' (golfmap.terrain.update) first, then sculpt.");
             var reference = JsonUtility.FromJson<GolfMapTerrainReference>(File.ReadAllText(refJson));
 
             var scene = EditorSceneManager.GetActiveScene();

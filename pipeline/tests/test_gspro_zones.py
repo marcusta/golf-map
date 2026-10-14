@@ -1160,7 +1160,7 @@ def test_a_slot_that_binds_no_items_is_bare_ground_to_the_blend(monkeypatch):
 
 
 def test_a_window_beside_a_slot_that_only_grows_in_its_halo_renders_like_the_frame():
-    """Update for GSPro on a zone whose window stops short of a neighbouring mix: the blend
+    """Update N zones on a zone whose window stops short of a neighbouring mix: the blend
     reads that mix in the halo around the window (KeyError on Vreta, 2026-10-11)."""
     zones = [_zone("rough_tall", [_rect(20, 40, 100, 160)], variant="dry", edge_blend=20.0, order=0)[0],
              _zone("rough_tall", [_rect(100, 40, 180, 160)], variant="lush", edge_blend=20.0, order=1)[0]]

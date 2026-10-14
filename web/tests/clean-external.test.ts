@@ -2,8 +2,7 @@ import { afterEach, describe, expect, test } from 'bun:test';
 import { _reset } from '@basics/core/client/error-report';
 import { di, Signal } from '@basics/core/client/core';
 import type { ToolContext } from '../src/editor/tool';
-import { CleanToolService, type UnityOrthoApi } from '../src/clean/clean-tool.service';
-import type { GsproExportJob, GsproOrthoSource } from '../../shared/api/gspro-export.gen';
+import { CleanToolService } from '../src/clean/clean-tool.service';
 import { CleanPanelComponent } from '../src/clean/clean-panel.component';
 import {
     PhotoImportClient,
@@ -18,9 +17,10 @@ import type { CleanedPhotoApi, CleanedPhotoInfo } from '../../shared/api/cleaned
 import type { RetouchEngine } from '../src/clean/retouch-engine';
 
 // Clean tool beyond the brushes: the cleaned photo out to an image editor and
-// back (a plain download, an import of any image of the size), undo, and
-// Apply in Unity. Server calls sit behind the generated-client fake and the
-// upload seam, so no network is involved; the panel renders through happy-dom.
+// back (a plain download, an import of any image of the size) and undo. The
+// push into Unity is the command bar's Update photo, not this tool. Server
+// calls sit behind the generated-client fake and the upload seam, so no
+// network is involved; the panel renders through happy-dom.
 
 let cleanups: Array<() => void> = [];
 
@@ -48,9 +48,6 @@ interface Opts {
     infoPatchesGeneratedAt?: string | null;
     /** Mutated by the test between calls: what cleanedPhotoInfo returns. */
     state?: { undoDepth: number; generatedAt: string | null };
-    /** Apply in Unity: the ortho sources, and how the job ends (default: succeeds). */
-    sources?: GsproOrthoSource[];
-    unityError?: string;
 }
 
 async function harness(opts: Opts = {}) {
@@ -70,23 +67,6 @@ async function harness(opts: Opts = {}) {
         uploads.push(req);
         return (opts.upload ?? (async () => ({ status: 200, body: JSON.stringify(imported()) })))(req);
     };
-    const unityStarts: Array<Record<string, unknown>> = [];
-    let unityPolls = 0;
-    const unityJob = (status: GsproExportJob['status']): GsproExportJob => ({
-        id: 'job-1', courseId: 'course-1', kind: 'unity-ortho', label: 'x', status,
-        startedAt: '', finishedAt: status === 'running' ? null : '',
-        result: status === 'succeeded' ? { path: 'D:/out/x.jpg', report: ['wrote x.jpg', 'Unity (vreta_v4): x-meshes.jpg put onto Assets/y.jpg (761 renderers sample it; backup b.jpg)', 'Save the Unity project to keep it.'] } : null,
-        error: status === 'failed' ? opts.unityError ?? null : null,
-    });
-    const unityApi: UnityOrthoApi = {
-        orthoSources: async () => opts.sources ?? [
-            { source: 'ortho-orto-l2-2025.tif', collection: 'orto-l2-2025', cleaned: false, active: true },
-            { source: 'ortho-orto-l2-2025.cleaned.tif', collection: 'orto-l2-2025', cleaned: true, active: true },
-            { source: 'ortho-orto-l2-2023.cleaned.tif', collection: 'orto-l2-2023', cleaned: true, active: false },
-        ],
-        start: async input => { unityStarts.push(input); return unityJob('running'); },
-        job: async () => { unityPolls++; return unityJob(opts.unityError ? 'failed' : 'succeeded'); },
-    };
     // The pixel engine is not what these tests are about: it loads and idles.
     const engine = {
         load: async () => ({ size: 8192 }),
@@ -94,7 +74,7 @@ async function harness(opts: Opts = {}) {
     } as unknown as RetouchEngine;
     const svc = new CleanToolService(
         () => engine, photoApi, async () => { throw new Error('unused'); }, {},
-        new PhotoImportClient('/api-test', upload), unityApi, 0,
+        new PhotoImportClient('/api-test', upload),
     );
     const ctx: ToolContext = {
         map: {
@@ -132,42 +112,11 @@ async function harness(opts: Opts = {}) {
     await tick();
     await tick();
     photoStates.length = 0;
-    return { svc, state, uploads, refreshes, photoStates, unityStarts, unityPolls: () => unityPolls };
+    return { svc, state, uploads, refreshes, photoStates };
 }
 
 /** A file of the given size without allocating it. */
 const fakeFile = (size: number, name = 'edit.png') => ({ size, name } as unknown as File);
-
-// ─── apply in Unity ─────────────────────────────────────────────────────────
-
-describe('applyInUnity', () => {
-    test('starts the unity-ortho job on the cleaned photo of the built vintage with the tint on, follows it and reports what Unity took', async () => {
-        const h = await harness();
-        expect(await h.svc.applyInUnity()).toBe(true);
-        expect(h.unityStarts).toEqual([{ courseId: 'course-1', kind: 'unity-ortho', source: 'ortho-orto-l2-2025.cleaned.tif', tint: true }]);
-        expect(h.unityPolls()).toBe(1);
-        expect(h.svc.unityMessage.get()).toEqual({
-            kind: 'info',
-            text: 'Unity (vreta_v4): x-meshes.jpg put onto Assets/y.jpg (761 renderers sample it; backup b.jpg) Save the Unity project to keep it.',
-        });
-        expect(h.svc.phase.get()).toBe('idle');
-        expect(h.svc.externalBusy.get()).toBeNull();
-    });
-
-    test('a failed job shows the reason the server gave', async () => {
-        const h = await harness({ unityError: 'No open Unity editor imports from D:/out — none is open' });
-        expect(await h.svc.applyInUnity()).toBe(false);
-        expect(h.svc.unityMessage.get()).toEqual({ kind: 'error', text: 'No open Unity editor imports from D:/out — none is open' });
-        expect(h.svc.phase.get()).toBe('idle');
-    });
-
-    test('without a cleaned photo no job starts', async () => {
-        const h = await harness({ sources: [{ source: 'ortho-orto-l2-2025.tif', collection: 'orto-l2-2025', cleaned: false, active: true }] });
-        expect(await h.svc.applyInUnity()).toBe(false);
-        expect(h.unityStarts).toEqual([]);
-        expect(h.svc.unityMessage.get()?.text).toMatch(/no cleaned photo yet/);
-    });
-});
 
 // ─── export ─────────────────────────────────────────────────────────────────
 

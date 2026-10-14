@@ -1000,7 +1000,7 @@ export class GsproExportService {
         await this.terrainEdits.replaceByOrigin(siteId, origin, [edit]);
         report.push(`Unity ${captured.terrain} (${editor.projectName}): ${(captured.areaM2 / 10000).toFixed(2)} ha sculpted (up to +${captured.maxRaiseM} m / ${captured.maxLowerM} m)`
             + (captured.conformCellsLeftOut ? `; ${captured.conformCellsLeftOut} conform-raised cell(s) left out` : ''));
-        report.push(`Stored as the ${kind} Unity sculpt layer (one additive terrain edit, after all others). Next: Apply to terrain in the terrain tool, then the heightmap → Unity again.`);
+        report.push(`Stored as the ${kind} Unity sculpt layer (one additive terrain edit, after all others). Next: Apply to terrain in the terrain tool, then Update terrain again.`);
         return { path: tif, report };
     }
 
@@ -1099,7 +1099,7 @@ export class GsproExportService {
         const through = result?.outerShowsThrough as { areaM2: number; worstM: number; worstAt: number[] } | null | undefined;
         if (through && through.areaM2 > 0) {
             report.push(`warning: the outer plot is at or above the inner ground on ${through.areaM2} m² (up to ${through.worstM} m, at x ${through.worstAt[0]}, z ${through.worstAt[1]}): `
-                + 'it will show through the rebuilt meshes there — put the other terrain\'s heightmap into Unity too, or lower the outer plot');
+                + 'it will show through the rebuilt meshes there — run Update terrain for the other terrain too, or lower the outer plot');
         }
         const saved = savedLine(result);
         report.push('Next: Terrain › Export To OBJ in Unity for Blender; re-run the terrain conform once the course meshes are rebuilt.'
@@ -1289,7 +1289,7 @@ export class GsproExportService {
 
     /**
      * Plant the course's vegetation for GSPro, start to finish (the web's
-     * "Plant for GSPro"): run the vegetation generators
+     * "Update vegetation"): run the vegetation generators
      * (vegetation-generators.ts: tall rough, creek banks, ...) so their zones
      * follow the course as it is now, export the terrain's zones, and then
      * the two halves GSPro draws from:
@@ -1381,7 +1381,7 @@ export class GsproExportService {
 
     /**
      * The course's Arborist file on its own (`arborist.py lower`, then
-     * `trees` when the course's Unity project is open): what Plant for GSPro
+     * `trees` when the course's Unity project is open): what Update vegetation
      * does after the planting, for when only the species file or the looks
      * changed. 409 when the course has no species file or a step fails.
      */
@@ -1428,7 +1428,7 @@ export class GsproExportService {
 
     /**
      * Update some zones without planting everything (the Vegetation mode's
-     * "Update for GSPro" on the selected zones): for each terrain that
+     * "Update N zones" on the selected zones): for each terrain that
      * has a zones export, `gspro.py zones-patch` re-rasterizes only the window
      * those zones cover, now and in that export (and any zone the export has
      * that the course no longer has), into the exported masks, and the open
@@ -1442,7 +1442,7 @@ export class GsproExportService {
      * ask for it. When the zone types' item bindings changed since a
      * terrain's export (and the zones reach that terrain), its channels may
      * have moved and only a full export can follow: that terrain is skipped
-     * with a line in the report (the outer, which Plant for GSPro does not
+     * with a line in the report (the outer, which Update vegetation does not
      * refresh, often is), and when every terrain is, the whole planting runs
      * instead. The pipeline refuses before writing anything, so a skipped
      * terrain is left as it was.
@@ -1529,7 +1529,7 @@ export class GsproExportService {
                 report.push(`Unity (${editor.projectName}): ${firstLine(String(result?.status ?? `${p.kind} zones patched`))}`);
             } catch (e) {
                 throw new ConflictError(`The ${p.kind} masks are updated in ${dir}, but Unity (${editor.projectName}) could not take them: `
-                    + `${firstLine((e as Error).message)}. Plant for GSPro to bring Unity in step`);
+                    + `${firstLine((e as Error).message)}. Update vegetation to bring Unity in step`);
             }
         }
         // The Arborist file carries the inner masks themselves: the same zones, its lower vegetation again.

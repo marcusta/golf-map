@@ -19,7 +19,7 @@ const ApplyInput = Type.Object({
     dryRun: Type.Optional(Type.Boolean()),
     /** Stop after Blender (no Unity refresh). */
     skipUnity: Type.Optional(Type.Boolean()),
-    /** The Draw mode's "Update paths in Unity": the paths' surfaces too (surfaces file before, path materials after). */
+    /** The Draw mode's "Update paths": the paths' surfaces too (surfaces file before, path materials after). */
     paths: Type.Optional(Type.Boolean()),
 });
 

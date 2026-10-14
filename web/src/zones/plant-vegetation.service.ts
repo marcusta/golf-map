@@ -1,4 +1,4 @@
-// The Vegetation mode's "Plant for GSPro": one server job (GSPro export kind
+// The command bar's "Update vegetation": one server job (GSPro export kind
 // `vegetation`, GsproExportService.plantVegetation) that re-runs every
 // vegetation generator (tall rough, creek banks, ...) over the course as it is
 // drawn now, exports the zones, imports them into the course's open Unity
@@ -8,7 +8,7 @@
 // running) and follows it to the end; `job` drives the command bar button's
 // running state.
 //
-// "Update for GSPro" (`update`, kind `vegetation-update`,
+// "Update N zones" (`update`, kind `vegetation-update`,
 // GsproExportService.updateZones) is the quick path for the selected zones:
 // no generators, only the area those zones cover re-rasterized into the
 // exported masks and respawned in Unity, then the Arborist file's lower
@@ -42,12 +42,12 @@ export class PlantVegetationService {
         private readonly pollMs = DEFAULT_POLL_MS,
     ) {}
 
-    /** Plant the course's inner terrain for GSPro and wait for the outcome (the finished job; throws when it could not start). */
+    /** Update the course's inner-terrain vegetation and wait for the outcome (the finished job; throws when it could not start). */
     plant(courseId: string): Promise<GsproExportJob> {
         return this.follow(courseId, { kind: 'vegetation', terrain: 'inner' });
     }
 
-    /** Update the zones `zoneIds` for GSPro (every terrain with a zones export, and the Arborist file) and wait for the outcome. */
+    /** Update the zones `zoneIds` (every terrain with a zones export, and the Arborist file) and wait for the outcome. */
     update(courseId: string, zoneIds: string[]): Promise<GsproExportJob> {
         return this.follow(courseId, { kind: 'vegetation-update', zoneIds });
     }

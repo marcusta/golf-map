@@ -30,7 +30,7 @@
 // the surface map is exported in Unity (`golfmap.surfaces.export` inner, unless
 // the refresh's own `surfaces.export` step already did) and the lower
 // vegetation is planted again (GsproExportService.plantVegetation, what
-// `bun run grass:zones` and the web "Plant for GSPro" button run; the Arborist file's lower vegetation with it, its trees left), so the tall
+// `bun run grass:zones` and the web "Update vegetation" button run; the Arborist file's lower vegetation with it, its trees left), so the tall
 // grass leaves the rock. Skipped when no slab changed, on a dry run and when
 // Unity was not refreshed; a failure there fails the job. The CLI:
 // scripts/shaping-apply.ts (`bun run shaping`).

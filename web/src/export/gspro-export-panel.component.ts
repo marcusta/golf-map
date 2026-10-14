@@ -1495,13 +1495,13 @@ export class GsproExportPanelComponent extends Component {
             },
             runInnerSculpt: {
                 textContent: 'Pull from Unity',
-                title: 'Inner Unity sculpt → golf-map',
+                title: 'Pull the inner terrain\'s sculpt from Unity',
                 disabled: () => busy() || noTerrain(),
                 onclick: () => { void this.svc.runUnitySculpt('inner'); },
             },
             runOuterSculpt: {
                 textContent: 'Pull from Unity',
-                title: 'Outer Unity sculpt → golf-map',
+                title: 'Pull the outer terrain\'s sculpt from Unity',
                 disabled: () => busy() || noTerrain(),
                 onclick: () => { void this.svc.runUnitySculpt('outer'); },
             },

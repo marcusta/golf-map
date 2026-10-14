@@ -124,7 +124,7 @@ namespace GolfMap.Editor
             var course = GolfMapCourses.Require();
             file = string.IsNullOrEmpty(file) ? GolfMapCourses.ExportFile(course, "inner", "creeks") : file;
             if (string.IsNullOrEmpty(file) || !File.Exists(file))
-                throw new InvalidOperationException("No creeks export at " + (file ?? "(the course has no export folder)") + ": run \"Export creeks\" in golf-map's GSPro panel.");
+                throw new InvalidOperationException("No creeks export at " + (file ?? "(the course has no export folder)") + ": run \"Export creeks\" on the Creeks row of golf-map's GSPro board.");
             var creeks = Load(file);
             int exported = creeks.Count;
             if (fit.within != null)

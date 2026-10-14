@@ -1,7 +1,7 @@
 // Builds the two GSPro terrains from a golf-map export folder in one go.
 // Menu: GolfMap > Terrain Importer. See unity/README.md.
 //
-// Point it at the folder the app's "Export to GSPro" panel writes into. It
+// Point it at the course's GSPro export folder (the app's GSPro board names it). It
 // reads the `.tif.json` sidecars `gspro.py dem` leaves next to each heightmap
 // (course, terrain kind, square, height range, Unity settings) and does what
 // the OPCD "LIDAR to TERRAIN" manual has you do by hand in Unity:
@@ -133,7 +133,7 @@ namespace GolfMap.Editor
                 }
             }
             if (GUILayout.Button("Scan folder")) Scan();
-            EditorGUILayout.HelpBox("The folder the golf-map app's Export to GSPro panel writes into. It needs the inner heightmap export (<course>-inner-dem-<side>m.raw + .tif.json) and, for the outer plot, the outer one; overlays are the <course>-...-8192.jpg files.", MessageType.None);
+            EditorGUILayout.HelpBox("The course's GSPro export folder, the one the golf-map app writes into. It needs the inner heightmap export (<course>-inner-dem-<side>m.raw + .tif.json) and, for the outer plot, the outer one; overlays are the <course>-...-8192.jpg files.", MessageType.None);
 
             EditorGUILayout.Space();
             EditorGUILayout.LabelField("Found", EditorStyles.boldLabel);

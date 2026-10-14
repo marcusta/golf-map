@@ -1318,7 +1318,7 @@ test('the creeks export reads the raw DEM (not the dug one) and the inner sideca
 });
 
 
-// --- Heightmap into Unity (a stand-in editor on the bridge protocol) ---
+// --- Update terrain's push into Unity (a stand-in editor on the bridge protocol) ---
 
 /** An editor whose active course exports to `exportFolder` (the test publishes its discovery file). */
 function fakeEditor(name: string, exportFolder: string, update: Record<string, unknown>, replies: Record<string, unknown> = {}) {
@@ -1535,7 +1535,7 @@ test('unity-sculpt captures in Unity, makes the GeoTIFF and stores it as the ter
 });
 
 
-// --- Plant for GSPro (generators -> zones export -> Unity, the Arborist file) ---
+// --- Update vegetation (generators -> zones export -> Unity, the Arborist file) ---
 
 /** The test course has no Arborist species file under the docs root: the Arborist half says so in one line. */
 const NOT_ARBORIST = `Arborist: not used by this course (no ${path.join('/pipeline', '..', 'docs', 'gspro', 'linkan', 'arborist-species.json')})`;
@@ -1833,14 +1833,14 @@ test('vegetation-update: a Unity that cannot take the patch says how to catch up
     const discovery = await mkdtemp(path.join(os.tmpdir(), 'bridges-'));
     const exportDir = await mkdtemp(path.join(os.tmpdir(), 'gspro-out-'));
     const { server } = fakeUnity(exportDir, discovery, () =>
-        Response.json({ ok: false, error: "The scene does not hold this zones export's import (no mask group for 'Reed'). Plant for GSPro (a full import) instead." }));
+        Response.json({ ok: false, error: "The scene does not hold this zones export's import (no mask group for 'Reed'). Update vegetation (a full import) instead." }));
     const { runner } = patchRunner({ inner: true });
     try {
         const t = await setup(runner, { unityBridge: defaultUnityBridge(discovery) });
         await t.svc.setDir(TEST_COURSE_ID, exportDir);
         await writeFile(path.join(exportDir, 'linkan-inner-zones.json'), '{}');
         await expect(t.svc.updateZones(TEST_COURSE_ID, ['z1'])).rejects.toThrow(
-            /The inner masks are updated in .*, but Unity \(linkan_v4\) could not take them: .*no mask group for 'Reed'.*Plant for GSPro to bring Unity in step/);
+            /The inner masks are updated in .*, but Unity \(linkan_v4\) could not take them: .*no mask group for 'Reed'.*Update vegetation to bring Unity in step/);
     } finally {
         server.stop(true);
     }
@@ -1944,7 +1944,7 @@ test('vegetation-update on an Arborist course: after Unity took the patch the Ar
             `Arborist lower vegetation written: 38 items, 13 mask textures (${path.join(a.courseDir, 'arboristdata.dat')})`,
             'Save the scene in Unity to keep it.',
         ]);
-        // Only the lower vegetation (fast); the trees and their dump are Plant for GSPro's.
+        // Only the lower vegetation (fast); the trees and their dump are Update vegetation's.
         expect(runs).toHaveLength(1);
         expect(runs[0]!.args.slice(0, 2)).toEqual([path.join('/pipeline', 'arborist.py'), 'lower']);
         expect(flag(runs[0]!.args, '--course-dir')).toBe(a.courseDir);

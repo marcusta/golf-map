@@ -22,7 +22,8 @@ Every step is a CLI or a bridge command; the `unity` MCP server drives Unity
    ../data/sources/<site>/buildings.geojson --lidar ../data/sources/<site>/lidar/*.laz`) and
    `sources/<site>/roads-centerlines.geojson` (the app's road fetch / `fetch-roads
    --centerlines-out`). Golf-map `path` features count as roads too.
-3. **Zones by rule, into Unity and the Arborist file - one click**: web Vegetation mode, **Plant for GSPro** (command bar)
+3. **Zones by rule, into Unity and the Arborist file - one click**: web Vegetation mode, command bar
+   **Update vegetation** (or `bun run gspro:update -- <course> vegetation`). It
    runs every vegetation generator (`server/services/vegetation-generators.ts`: tall rough
    `pipeline/grass_zones.py` source `tall-grass`, then the woodland floor `pipeline/woodland_floor_zones.py`
    source `woodland-floor`, then creek/pond banks `pipeline/creek_bank_zones.py` source `creek-bank`), replaces each one's generated zones (hand-drawn zones are never touched),
@@ -46,11 +47,11 @@ Every step is a CLI or a bridge command; the `unity` MCP server drives Unity
    between samples too. Do NOT use OPCD's right-click "Conform Mesh To Terrain" for this: it moves the
    playing-surface meshes down instead and re-exports their FBX. VSP MeshTerrain (plant on the meshes)
    works in the editor but bakes 7M triangles and is untested in GSPro's forked VSP runtime.
-5. **Unity** (done by Plant for GSPro; by hand after the CLI): `unity_command golfmap.zones.import
+5. **Unity** (done by Update vegetation; by hand after the CLI): `unity_command golfmap.zones.import
    {terrain: "inner", package: "GolfMap lower vegetation", brief: true}` (`brief: true` keeps the result short: counts, not every group and rule) then `unity_command golfmap.grass.apply`.
    A **new item** (a species just added to a palette) needs one more round: import binds masks only to
    items that exist, apply creates the item but turns spawning on only once it has rules - so
-   import, apply ("added item ..."), import, apply. Plant for GSPro repeats the round by itself when
+   import, apply ("added item ..."), import, apply. Update vegetation repeats the round by itself when
    apply reports an added/replaced item. The item also needs a mask channel first: re-export the zones
    (`grass:zones`) after binding it.
 6. **Verify** (below), then ask the user to **save the scene** (package list, VSP settings).
@@ -438,7 +439,7 @@ from the 26 Sept reference photos): `blond` (closed straw sward on an olive foot
 and density, straw tints), `hummock` (low dull tussocks along the rim and the pale north band) and
 `weedy` (thistle heads, dark seed stems, dry umbels over an olive base).
 
-- **Re-planting keeps them**: Plant for GSPro / `grass:zones` replace generated zones only, and a drawn
+- **Re-planting keeps them**: Update vegetation / `grass:zones` replace generated zones only, and a drawn
   replace zone takes its ground from the generated tall rough under it. Checked by a real re-plant: same
   zone ids, standard tall rough 0.00 in the fields' mask.
 - **Soft borders are the default**: a drawn replace zone's mix fades into its neighbours (other
@@ -450,9 +451,9 @@ and density, straw tints), `hummock` (low dull tussocks along the rim and the pa
   History: 4 m with a straight linear ramp read as "still a rather hard line".
 - **Bush height per zone**: `bun run zones -- set <course> <zone> --height 2-3.5` (or "Bush height" in the
   selection panel; `none` clears it) scales the zone's bushes to that many metres, mostly near the min with
-  bumps up to the max; grass is not touched (D-VZ17). The first height on a palette needs Plant for GSPro
+  bumps up to the max; grass is not touched (D-VZ17). The first height on a palette needs Update vegetation
   (or `gspro:export zones:<terrain>`, `golfmap.zones.import`, `golfmap.grass.apply`): the importer makes
-  `<item> @height` twins. Later changes are an Update for GSPro. A height is size, not spacing: for a
+  `<item> @height` twins. Later changes go through **Update N zones**. A height is size, not spacing: for a
   closed screen use a dense palette (Vreta: `shrub/dense`, cottonwood canopy and grey willow at 2.4-3.4 m
   spacing with no density noise; hole 5's hedge by the green).
 - **Tile, never overlap**: drawn zones add up, so two overlapping patches plant double. Cut the field

@@ -32,7 +32,7 @@ materials, meshes), and puts `saved: { scenes: [<scene paths>], seconds }` in it
 
 ## Terrain Importer
 
-`GolfMap > Terrain Importer` turns the folder the app's **Export to GSPro** panel writes
+`GolfMap > Terrain Importer` turns the course's GSPro export folder, the one the app writes
 into the two GSPro terrains, doing the Unity half of the OPCD "LIDAR to TERRAIN" manual
 (stage 6) automatically. Works for any course: everything is read from the export's
 sidecars, nothing is named after a course.
@@ -69,7 +69,7 @@ Existing `Terrain (Inner)` / `Plot (Outer)` objects are replaced when the toggle
 Creation supports Undo. The importer does not touch other terrain settings (pixel error,
 base map distance …); set those as the base project prefers.
 
-### Updating the heights in place (golf-map's "Heightmap → Unity")
+### Updating the heights in place (golf-map's **Update terrain**)
 
 The Terrain Importer builds the terrains. After that, a new heightmap (terrain edits, pads, digs) goes
 onto the existing ones with `GolfMap > Terrain > Update heights from export`, or the bridge's
@@ -87,7 +87,7 @@ onto the existing ones with `GolfMap > Terrain > Update heights from export`, or
 - **Conform:** an update undoes a `golfmap.terrain.conform`. Re-run the conform once the course meshes
   are rebuilt from the new terrain.
 
-golf-map's GSPro panel drives this with **Inner/Outer heightmap → Unity** (export kind `unity-terrain`;
+golf-map drives this with **Update terrain** (export kind `unity-terrain`;
 CLI `bun run gspro:export -- <course> unity-terrain:inner`). The server exports the heightmap, finds the open
 editor whose active course's export folder is the course's (through the same bridge client as the MCP
 server), and runs the update. It refuses an inner heightmap older than the site's terrain edits (see
@@ -95,7 +95,7 @@ docs/gspro/export.md). Terrain › Export To OBJ for Blender stays manual.
 
 ### Sculpting in Unity, carried back to golf-map
 
-Sculpt a terrain in Unity, then press **Inner/Outer Unity sculpt → golf-map** in golf-map's GSPro panel
+Sculpt a terrain in Unity, then press **Pull from Unity** on the GSPro board's Terrain row
 (export kind `unity-sculpt`, bridge `golfmap.terrain.capture terrain=inner|outer [threshold=0.01] [dryRun]`,
 `GolfMapTerrainSculpt.cs`). A capture measures, per heightmap vertex:
 
@@ -103,7 +103,7 @@ Sculpt a terrain in Unity, then press **Inner/Outer Unity sculpt → golf-map** 
 
 | | |
 |---|---|
-| `reference` | the heights golf-map last put there. `golfmap.terrain.update` keeps a copy in `<course>/Reference/<terrain>-heights.asset` + `-reference.json`. A terrain imported before this existed needs one Heightmap → Unity first |
+| `reference` | the heights golf-map last put there. `golfmap.terrain.update` keeps a copy in `<course>/Reference/<terrain>-heights.asset` + `-reference.json`. A terrain imported before this existed needs one **Update terrain** first |
 | `sculptIn` | the sculpt layer that export already contained (`gspro.py dem --sculpt` writes `<stem>-sculpt-in.raw`, and the update keeps a copy). This makes every capture the whole layer, so replacing the stored layer never loses earlier strokes |
 | `conform` | what `golfmap.terrain.conform` raised under the meshes (`<terrain>-conform.bytes`, cleared by the next update). It is derived, not a sculpt |
 
@@ -111,7 +111,7 @@ Differences under 1 cm are heightmap quantisation. The outer's capture leaves ou
 capture goes to the export folder as `<prefix>-<terrain>-sculpt.raw` (float32 m, the heightmap's pixel grid,
 north-up, cropped) + `.json` (golfmap-sculpt-v1). golf-map makes it a GeoTIFF and stores it as that terrain's
 one `delta` terrain edit, replayed after every other edit. A capture with nothing sculpted removes the layer.
-Then Apply to terrain, and the heightmap → Unity again. The layer is additive: regrading or digging under it
+Then Apply to terrain, and Update terrain again. The layer is additive: regrading or digging under it
 later keeps the sculpt as an offset on top.
 
 Checked on Vreta by restoring an older terrain backup and capturing the difference. The extremes landed on
@@ -787,7 +787,7 @@ Links-style deep rough on part of a deep-rough mesh: a rough-height floor with t
 it, both Stix 3D grass coloured from the ortho. Where: hand-drawn vegetation zones of type `rough_wispy` ("Wispy
 rough", a default zone type; it binds no VSP items, so on top of the tall rough it only takes that grass away).
 `golfmap.wispy.build` (`GolfMapWispyRough.cs`) reads the outlines from the inner zones export, so update the zone
-in Unity first (web "Update for GSPro" / `bun run zones -- update <course> <zone>`).
+in Unity first (web "Update N zones" / `bun run zones -- update <course> <zone>`).
 
 - **Its own mesh.** `GrassRenderer` draws the `MeshFilter` beside it and needs no `MeshRenderer`, so each zone gets
   an object under `GolfMap Wispy Rough` whose mesh (`<course>/WispyRough/<zone id>.asset`) is the deep course
@@ -1172,7 +1172,7 @@ Bridge:
     export's width or end. It is counted as `open`, and the report's `check` list gives its plot x, z. Where the
     ground beside a creek is not below the water, dig the creek deeper in golf-map.
 - **Refit after a remodel**: the fit reads the scene, so rebuild the scene first, then run both steps again. The
-  order: edit the creeks → **Dig creeks** → Apply to terrain → **Inner heightmap → Unity** → Blender meshes +
+  order: edit the creeks → **Dig creeks** → **Update terrain** → Blender meshes +
   `golfmap.meshes.sync` → **Export creeks** (the lines, `bun run gspro:export -- <course> creeks`) →
   **Import creeks**. A stale export shows as `groundAboveExportSurfaceM` far from 0 (its heights were measured
   against another heightmap zero). Its lines are what matter, and the fit replaces its heights.

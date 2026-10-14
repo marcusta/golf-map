@@ -3,7 +3,7 @@ import { effect } from '@basics/core/client/core';
 import { PlantVegetationService, arboristOutcome } from '../src/zones/plant-vegetation.service';
 import type { GsproExportApi, GsproExportJob } from '../../shared/api/gspro-export.gen';
 
-// The Vegetation mode's Plant for GSPro job: started once, followed to the
+// The command bar's Update vegetation job: started once, followed to the
 // end; a planting already running is followed instead of refused.
 
 function job(status: GsproExportJob['status'], extra: Partial<GsproExportJob> = {}): GsproExportJob {

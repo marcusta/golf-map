@@ -1,5 +1,5 @@
 // Plant a course's lower vegetation from the command line: the same handler as
-// the web Vegetation mode's "Plant for GSPro" button
+// the web command bar's "Update vegetation" button
 // (GsproExportService.plantVegetation). It runs every vegetation generator
 // (server/services/vegetation-generators.ts: tall rough, then creek banks,
 // ...) and imports each one's zones as the course's generated zones of its
@@ -91,7 +91,7 @@ try {
     console.log(result.report.map((l) => `  ${l}`).join('\n'));
     if (!flags['dry-run'] && !flags['no-export']) {
         console.log(`next, in Unity: golfmap.zones.import {terrain: "${terrain}", package: "GolfMap lower vegetation"}, then golfmap.grass.apply`
-            + ' (or press Plant for GSPro in the web Vegetation mode, which does it all)');
+            + ' (or press Update vegetation in the web command bar, which does it all)');
     }
 } catch (e) {
     console.error(`error: ${(e as Error).message}`);

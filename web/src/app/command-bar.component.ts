@@ -2118,7 +2118,7 @@ export class CommandBarComponent extends Component<{ mode: CommandBarMode }> {
         const intoUnity = report.some(l => l.startsWith('Unity ('));
         const save = needsSceneSave(report) ? ', save the scene to keep it' : '';
         await this.confirm.confirm({
-            title: ok ? (intoUnity ? 'Zones updated for GSPro' : 'Nothing to update') : 'Could not update the zones',
+            title: ok ? (intoUnity ? 'Zones updated' : 'Nothing to update') : 'Could not update the zones',
             body: ok
                 ? (intoUnity ? `Unity: updated${save}. ${arboristOutcome(report)}` : 'The masks already match these zones.')
                 : job.error ?? 'The job failed.',

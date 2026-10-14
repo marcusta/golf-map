@@ -208,7 +208,7 @@ test.skipIf(!!MISSING)('lower vegetation, then the trees out of Unity: both pack
     expect(second.PersistentVegetationPackage.PersistentVegetationCellList.flatMap((c: any) => c.PersistentVegetationInfoList.flatMap((i: any) => i.VegetationItemList))).toHaveLength(3);
 }, 120_000);
 
-test.skipIf(!!MISSING)('Plant for GSPro with Unity closed: zones exported only, the Arborist lower vegetation written, its trees left', async () => {
+test.skipIf(!!MISSING)('Update vegetation with Unity closed: zones exported only, the Arborist lower vegetation written, its trees left', async () => {
     const f = await fixture();
     await writeBase(f);
     const runs: string[] = [];

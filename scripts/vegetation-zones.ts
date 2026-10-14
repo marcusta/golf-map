@@ -18,7 +18,7 @@
 //   bun run zones -- remove <course> <zoneId|prefix>
 //   bun run zones -- update <course> <zoneId|prefix>...  re-rasterize just those zones' area into the exported masks
 //                                                        and respawn it in the open Unity project (the web's
-//                                                        "Update for GSPro"; GsproExportService.updateZones)
+//                                                        "Update N zones"; GsproExportService.updateZones)
 //   bun run zones -- bind <course> <zoneType> [--variant key] --palette <grass-palette.json>   bindings = that palette's items
 //   bun run zones -- bind <course> <zoneType> [--variant key] <item>[=maxDensity] ...        bindings given directly
 //                                                        (`--name <label>` names the variant, e.g. for the creek panel)

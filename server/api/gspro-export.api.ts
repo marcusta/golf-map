@@ -65,7 +65,7 @@ const StartInput = Type.Object({
     excludeFeatureIds: Type.Optional(Type.Array(Type.String({ minLength: 1 }), { maxItems: 200000 })),
     /** `svg`: variant name; the file becomes `<course>-<variant>.svg` instead of overwriting `<course>.svg`. */
     variant: Type.Optional(Type.String({ maxLength: 60 })),
-    /** `vegetation-update`: the vegetation_zone feature ids to update for GSPro (re-rasterize their area, patch the masks, respawn there in Unity, rewrite the Arborist file's lower vegetation). */
+    /** `vegetation-update`: the vegetation_zone feature ids the command bar's "Update N zones" sends (re-rasterize their area, patch the masks, respawn there in Unity, rewrite the Arborist file's lower vegetation). */
     zoneIds: Type.Optional(Type.Array(Type.String({ minLength: 1 }), { maxItems: 5000 })),
     /** Render even when the output's input fingerprint says nothing it reads has changed (`dem`, `ortho`, `outer-ortho`, `unity-terrain`, `unity-ortho`, `trees`, `buildings`, `zones`, `creeks`, `vegetation`). */
     force: Type.Optional(Type.Boolean()),

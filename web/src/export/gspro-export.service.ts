@@ -627,16 +627,6 @@ export class GsproExportService {
     }
 
     /**
-     * Save the folder, export one terrain's heightmap and put it straight into
-     * the open Unity editor whose GolfMap course imports from the folder (its
-     * terrain updated in place, backed up first). Unity must be open.
-     */
-    async runUnityTerrain(terrain: TerrainKind): Promise<boolean> {
-        if (!this.courseId.peek()) return false;
-        return this.runExport({ kind: 'unity-terrain', terrain });
-    }
-
-    /**
      * Capture what was sculpted on one terrain in Unity since golf-map's
      * heights went in, and store it as that terrain's sculpt layer (one
      * additive terrain edit). Unity must be open; Apply to terrain after.
