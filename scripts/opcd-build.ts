@@ -1054,9 +1054,20 @@ export function findOnPath(binary: string): string | null {
     return null;
 }
 
+/**
+ * `bun run <script>` puts a `node.exe` of its own first on PATH (`%TEMP%/bun-node-<hash>/`),
+ * which is Bun again, not a Node: it must not count, or the relaunch lands back in Bun.
+ */
+export function isBunNodeShim(nodePath: string): boolean {
+    // A plain substring test: the folder is always named bun-node-<hash>, whatever the separators.
+    return nodePath.toLowerCase().includes("bun-node-");
+}
+
 /** The first runtime on this machine that can drive a browser. */
 export function findNodeRuntime(): NodeRuntime | null {
-    return nodeRuntime(findOnPath('node'), electronCandidates(process.env).find((c) => existsSync(c.path)) ?? null);
+    const onPath = findOnPath('node');
+    const real = onPath && !isBunNodeShim(onPath) ? onPath : null;
+    return nodeRuntime(real, electronCandidates(process.env).find((c) => existsSync(c.path)) ?? null);
 }
 
 /** Run this same script under `runtime`, with the course already resolved, and return its exit code. */

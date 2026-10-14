@@ -362,3 +362,10 @@ describe('the recording (--setup)', () => {
         }
     });
 });
+
+test("bun's own node shim on PATH is not a Node", async () => {
+    const { isBunNodeShim } = await import('./opcd-build');
+    expect(isBunNodeShim(String.raw`C:\Users\x\AppData\Local\Temp\bun-node-0d9b296af\node.exe`)).toBe(true);
+    expect(isBunNodeShim('/tmp/bun-node-abc/node')).toBe(true);
+    expect(isBunNodeShim(String.raw`C:\Program Files\nodejs\node.exe`)).toBe(false);
+});
