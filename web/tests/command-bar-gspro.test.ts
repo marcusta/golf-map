@@ -46,7 +46,7 @@ function targetRow(patch: Partial<GsproTargetStatus> & { id: GsproTargetStatus['
     return {
         label: GSPRO_TARGETS.find(t => t.id === patch.id)!.label,
         lastRun: null, seconds: null, changedSince: { count: 0, kinds: [] },
-        stale: false, manual: null, blocked: null,
+        stale: false, manual: null, blocked: null, note: null,
         ...patch,
     };
 }
@@ -245,7 +245,7 @@ test('each sub-mode offers its own Update buttons', async () => {
     expect(shown()).toEqual(['Update photo', 'GSPro']);
 
     subMode(FURNITURE_TOOL_ID);
-    expect(shown()).toEqual(['Update course file', 'GSPro']);
+    expect(shown()).toEqual(['Update course file', 'Update props', 'GSPro']);
 
     // A sub-mode that changes nothing GSPro reads keeps the board button alone.
     subMode('measure');
@@ -288,6 +288,41 @@ test('Update photo, Update course file and Update shapes ask for their own targe
     expect(calls.update).toEqual(['photo', 'course-file', 'shapes']);
     // The manual step after an SVG export is the Blender build, as the board says.
     expect(confirm.shown[2].body).toContain('Build the SVG in Blender (OPCD), then Update meshes');
+});
+
+test('Update props runs the props target and the dialog reads out what was kept', async () => {
+    const props = syncJob({
+        request: 'props', targets: ['props'],
+        results: [{
+            target: 'props', label: 'Props', seconds: 95, error: null,
+            report: [
+                'spec: wrote clubhouse-props.json',
+                'models: built clubhouse-props.json into D:\\unity\\Assets\\GolfMap\\Vreta\\Props',
+                'Unity (vreta_v4): golfmap.props.place — placed 48 prop(s), 2 kept where they were moved by hand',
+                'kept: shed#2 moved by hand 1.42 m / 12.5°',
+                'kept: bench_stone#4 moved by hand 0.31 m / 0°',
+                'Saved Assets/Scenes/Vreta.unity (0.6 s)',
+                'A hand move becomes permanent only in clubhouse-props.gen.py (docs/workflows.md section 4).',
+            ],
+        }],
+    });
+    const { q, subMode, calls, confirm } = setup({ jobs: [props], stale: ['props'] });
+    await tick();
+    subMode(FURNITURE_TOOL_ID);
+
+    const button = q('gspro-update-props-btn');
+    expect(button.textContent!.trim()).toBe('Update props');
+    expect(button.title).toContain('*-props.gen.py');
+    button.click();
+    await tick(10);
+
+    expect(calls.update).toEqual(['props']);
+    expect(confirm.shown).toHaveLength(1);
+    expect(confirm.shown[0].title).toBe('Props updated');
+    // The kept lines are what the operator reads; the scene was saved by the chain itself.
+    expect(confirm.shown[0].detail).toContain('kept: shed#2 moved by hand 1.42 m / 12.5°');
+    expect(confirm.shown[0].detail).toContain('kept: bench_stone#4 moved by hand 0.31 m / 0°');
+    expect(confirm.shown[0].body).not.toContain('Save the scene');
 });
 
 test('while a job runs every Update is off and the one that started it shows the step', async () => {

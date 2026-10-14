@@ -44,6 +44,13 @@ export interface UnityEditorInfo {
     activeCourse: string | null;
     /** That course's export folder, resolved absolute; null when it has none. */
     exportFolder: string | null;
+    /**
+     * The course's own folder in the Unity project, resolved absolute
+     * (`golfmap.course`'s `active.folder`, `Assets/GolfMap/Vreta/`): where its
+     * assets live — the `Props/` the props chain builds into, the palette, the
+     * reports. Null when the probe failed or the course is not a saved asset.
+     */
+    courseFolder: string | null;
     /** True when `exportFolder` is the folder asked about: this editor works on that course. */
     matches: boolean;
     /** The probe's own words when it said nothing useful (an error, no active course), else null. */
@@ -57,20 +64,23 @@ export interface UnityEditorInfo {
  */
 async function probeEditor(editor: UnityEditor, exportDir: string): Promise<{ info: UnityEditorInfo; note: string | null }> {
     const base = { projectName: editor.projectName, projectPath: editor.projectPath };
-    let active: { name?: string; exportFolder?: string } | null = null;
+    let active: { name?: string; exportFolder?: string; folder?: string } | null = null;
     try {
         active = (await editor.run('golfmap.course', {}, 30))?.active ?? null;
     } catch (e) {
         const error = (e as Error).message.split('\n')[0] ?? String(e);
         return {
-            info: { ...base, activeCourse: null, exportFolder: null, matches: false, error },
+            info: { ...base, activeCourse: null, exportFolder: null, courseFolder: null, matches: false, error },
             note: `${editor.projectName}: ${error}`,
         };
     }
+    // `folder` is an asset path from the project root (`Assets/GolfMap/Vreta/`); the
+    // course asset may not be saved, and then the editor reports none.
+    const courseFolder = active?.folder ? path.resolve(editor.projectPath, active.folder) : null;
     if (!active?.exportFolder) {
         const error = 'no active GolfMap course with an export folder';
         return {
-            info: { ...base, activeCourse: active?.name ?? null, exportFolder: null, matches: false, error },
+            info: { ...base, activeCourse: active?.name ?? null, exportFolder: null, courseFolder, matches: false, error },
             note: `${editor.projectName}: ${error}`,
         };
     }
@@ -78,7 +88,7 @@ async function probeEditor(editor: UnityEditor, exportDir: string): Promise<{ in
     const folder = path.resolve(editor.projectPath, 'Assets', active.exportFolder);
     const matches = norm(folder) === norm(exportDir);
     return {
-        info: { ...base, activeCourse: active.name ?? null, exportFolder: folder, matches, error: null },
+        info: { ...base, activeCourse: active.name ?? null, exportFolder: folder, courseFolder, matches, error: null },
         note: matches ? null : `${editor.projectName}: course ${active.name ?? '?'} exports to ${folder}`,
     };
 }
@@ -86,16 +96,20 @@ async function probeEditor(editor: UnityEditor, exportDir: string): Promise<{ in
 /**
  * The editor whose active GolfMap course's export folder is `exportDir`, or
  * why there is none (each open editor's answer, for the error message). Stops
- * at the first match: the probe costs a round trip per editor.
+ * at the first match: the probe costs a round trip per editor. `info` is that
+ * editor's probe — where its course folder is, for a chain that writes into
+ * the Unity project (the props models).
  */
-export async function editorForExportDir(bridge: UnityBridge, exportDir: string): Promise<{ editor: UnityEditor | null; seen: string[] }> {
+export async function editorForExportDir(
+    bridge: UnityBridge, exportDir: string,
+): Promise<{ editor: UnityEditor | null; info: UnityEditorInfo | null; seen: string[] }> {
     const seen: string[] = [];
     for (const editor of bridge.editors()) {
         const { info, note } = await probeEditor(editor, exportDir);
-        if (info.matches) return { editor, seen };
+        if (info.matches) return { editor, info, seen };
         if (note) seen.push(note);
     }
-    return { editor: null, seen };
+    return { editor: null, info: null, seen };
 }
 
 /**

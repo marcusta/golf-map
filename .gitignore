@@ -42,3 +42,8 @@ deploy-tmp/
 
 # Unity tree catalogue exports and parity runs (generated, hundreds of MB)
 tree-export/
+
+# Export input fingerprints (export-fingerprint.ts): what a generated file was
+# last built from on THIS machine. The props chain leaves one next to the spec
+# it writes under docs/gspro/<course>/ — a build stamp, not project source.
+docs/gspro/**/*.inputs.json

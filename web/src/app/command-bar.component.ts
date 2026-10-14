@@ -138,6 +138,7 @@ const gsproTpl = template(`
     <button bind="zonesBtn" type="button" class="cmdbar__gspro-btn" data-testid="update-zones-btn"></button>
     <button bind="photoBtn" type="button" class="cmdbar__gspro-btn" data-testid="gspro-update-photo-btn"></button>
     <button bind="courseFileBtn" type="button" class="cmdbar__gspro-btn" data-testid="gspro-update-course-file-btn"></button>
+    <button bind="propsBtn" type="button" class="cmdbar__gspro-btn" data-testid="gspro-update-props-btn"></button>
     <button bind="boardBtn" type="button" class="cmdbar__gspro-btn" data-testid="gspro-board-btn"></button>
 `);
 
@@ -1187,6 +1188,15 @@ export class CommandBarComponent extends Component<{ mode: CommandBarMode }> {
                 innerHTML: () => this.updateLabel('course-file', 'Update course file'),
                 title: () => gsproTarget('course-file').description,
                 ...this.updateButton('course-file', (courseId) => this.runSyncUpdate(courseId, 'course-file')),
+            },
+            // Furniture mode is where the props belong: the spec, the Blender
+            // models and the place in Unity, which keeps every prop moved by hand.
+            propsBtn: {
+                'data-off': () => String(this.subMode() !== FURNITURE_TOOL_ID),
+                innerHTML: () => this.updateLabel('props', 'Update props'),
+                title: () => `${gsproTarget('props').description}. Props moved by hand in Unity are kept;`
+                    + ' only the spec (docs/gspro/<course>/*-props.gen.py) makes a hand move permanent',
+                ...this.updateButton('props', (courseId) => this.runSyncUpdate(courseId, 'props')),
             },
             boardBtn: {
                 innerHTML: () => {

@@ -135,6 +135,12 @@ const TIP = {
         + 'left out) and keeps it as the terrain\'s one "Unity sculpt" edit: heights added on top of every other edit, so the '
         + 'map, the analysis and every later export carry it. A new capture replaces the layer with the whole sculpt; nothing '
         + 'sculpted removes it. Unity must be open with the course active. Then Apply to terrain, and Update this row.',
+    props: 'Buildings, cars, signs, benches and the rest: the course\'s props spec (hand-written Python under '
+        + 'docs/gspro/<course>/, one file per group) run into its JSON, built into FBX and a manifest by Blender, and placed '
+        + 'in the open Unity editor. A prop moved or rotated by hand there is KEPT by every update — Unity records what it '
+        + 'placed in <course>/Props/placed.json and compares — but only a place(...) call in the *-props.gen.py makes a hand '
+        + 'move permanent: another machine, or a rebuilt spec, reads the spec and not the record (docs/workflows.md, '
+        + 'workflow 4). The first update of a scene from before that record existed writes it before placing anything.',
     creeks: 'The creeks as NatureManufacture R.A.M. splines for GolfMap › Creeks in Unity: each creek\'s line (drawn, or found '
         + 'down its polygon) with control points at its water surface, which only falls downstream — the surface "Dig creeks" '
         + 'digs the bed below. Inner terrain. Export the inner heightmap first — the heights are measured from its zero.',
@@ -277,6 +283,12 @@ const DETAILS: Record<GsproTargetId, string> = {
         ${filesHead}
         ${matrix(matrixRow('Buildings', TIP.buildingsFile, runBtn('runInnerBuildings', 'inner-buildings'), runBtn('runOuterBuildings', 'outer-buildings')))}`,
 
+    props: `
+        <div class="gspro-export__group">
+            <div class="gspro-export__head">Props ${infoTip({ text: TIP.props })}</div>
+            <div bind="propsHint" class="hint"></div>
+        </div>`,
+
     creeks: `
         ${filesHead}
         ${matrix(matrixRow('Creeks', TIP.creeks, runBtn('runCreeks', 'creeks')))}`,
@@ -334,6 +346,7 @@ const boardRow = (id: GsproTargetId, label: string, description: string) => `
             <button bind="update_${id}" type="button" class="gspro-export__update gspro-export__primary"
                 data-testid="gspro-update-${id}">Update</button>
         </div>
+        <div bind="note_${id}" class="hint gspro-export__note" data-testid="gspro-note-${id}"></div>
         <div bind="manual_${id}" class="hint gspro-export__manual" data-testid="gspro-manual-${id}"></div>
         <div bind="blocked_${id}" class="hint gspro-export__blocked" data-testid="gspro-blocked-${id}"></div>
         <div bind="details_${id}" class="gspro-export__details hidden" data-testid="gspro-panel-${id}">${DETAILS[id]}</div>
@@ -609,7 +622,7 @@ export class GsproExportPanelComponent extends Component {
                 &[aria-expanded="true"] { color: ${t('color-text-primary')}; }
             }
             & .gspro-export__update { min-width: 6rem; }
-            & .gspro-export__manual, & .gspro-export__blocked { padding-left: calc(10px + ${s('sm')}); }
+            & .gspro-export__note, & .gspro-export__manual, & .gspro-export__blocked { padding-left: calc(10px + ${s('sm')}); }
             & .gspro-export__details {
                 display: flex;
                 flex-direction: column;
@@ -1083,7 +1096,7 @@ export class GsproExportPanelComponent extends Component {
         void this.sync.update(courseId, target);
     }
 
-    /** The per-row bindings: marker, status line, manual step, blocked reason, "…" and Update. */
+    /** The per-row bindings: marker, status line, note, manual step, blocked reason, "…" and Update. */
     private rowBindings(): Record<string, (() => unknown) | Record<string, unknown>> {
         const out: Record<string, (() => unknown) | Record<string, unknown>> = {};
         for (const target of GSPRO_TARGETS) {
@@ -1114,6 +1127,7 @@ export class GsproExportPanelComponent extends Component {
                     return r ? `Last updated: ${whenLabel(r.lastRun)}` : '';
                 },
             };
+            out[`note_${id}`] = () => row()?.note ?? '';
             out[`manual_${id}`] = () => (row()?.manual ? `then: ${row()!.manual}` : '');
             out[`blocked_${id}`] = () => row()?.blocked ?? '';
             out[`update_${id}`] = {
@@ -1275,6 +1289,9 @@ export class GsproExportPanelComponent extends Component {
             },
             meshesHint: () => `Layers under docs/gspro/${this.svc.courseName.get() || '<course>'}/shaping; `
                 + 'Update does layers, Blender and Unity.',
+            // The long version — what keeps a hand move — is the (i) tip above it (TIP.props).
+            propsHint: () => `Spec in docs/gspro/${(this.svc.courseName.get() || '<course>').toLowerCase()}/*-props.gen.py; `
+                + 'Update runs it, Blender and Unity.',
             jobSection: {
                 className: () => (this.svc.job.get()
                     ? 'gspro-export__section' : 'gspro-export__section hidden'),

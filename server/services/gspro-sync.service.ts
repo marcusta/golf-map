@@ -65,16 +65,25 @@ import type { CoursesService } from './courses.service';
 import type { MapBuildService } from './map-build.service';
 import {
     buildingsExportFileName, courseSlug, creeksExportFileName, demExportFileName, demSidecarName, ensureDir,
-    meshTextureFileName, savedLine, statOrNull, treesExportFileName, zonesExportFileName,
+    failure, meshTextureFileName, reportLines, savedLine, statOrNull, treesExportFileName, venvPython,
+    zonesExportFileName,
     type GsproExportService, type GsproOrthoSource, type TerrainKind,
 } from './gspro-export.service';
 import { BUILDINGS_SURVEY } from './terrain-generators.service';
+import { fingerprint, mtimeMs, recordInputs, unchangedLine } from './export-fingerprint';
+import {
+    PROPS_FOLDER, PROPS_MANIFEST, PROPS_PLACED, propsNote, propsSpecs, type PropsSpec,
+} from './gspro-props';
 import { FeatureHistoryService, sqlStamp, type ChangeCount } from './feature-history.service';
 import { TerrainEditsService } from './terrain-edits.service';
-import { SHAPING_PHASES, type ShapingJob, type ShapingTimeouts, type ShapingWorkerStatus, type ShapingService } from './shaping.service';
+import {
+    blenderExecutable, SHAPING_PHASES,
+    type ShapingJob, type ShapingTimeouts, type ShapingWorkerStatus, type ShapingService,
+} from './shaping.service';
 import { JobPhases, secs, type JobPhase } from './job-phases';
 import { defaultUnityBridge, editorForExportDir, unityEditorsFor, type UnityBridge, type UnityEditor, type UnityEditorInfo } from './unity-bridge';
 import type { CourseTerrain } from './terrain-square';
+import { DEFAULT_PIPELINE_DIR } from './pipeline-dir';
 
 // --- The record in the export folder ---
 
@@ -112,6 +121,13 @@ export interface GsproTargetStatus {
     manual: string | null;
     /** Why an update cannot run now (and so is left out of a `'stale'` run), else null. */
     blocked: string | null;
+    /**
+     * One line of extra state this row has and no other way to say — `props`:
+     * how many props an update keeps as they were moved by hand, read from
+     * Unity's `placed.json`. Null where the row has nothing to add (every
+     * other row today). The board shows it under the status line.
+     */
+    note: string | null;
 }
 
 export interface GsproSyncUnity {
@@ -182,6 +198,18 @@ export interface GsproSyncDeps {
     history?: FeatureHistoryService;
     terrainEdits?: TerrainEditsService;
     unityBridge?: UnityBridge;
+    /**
+     * The `props` chain's two commands (the spec's Python, then Blender over
+     * `build_props.py`), as `[executable, ...args]`. Default: `Bun.spawn` from
+     * the repo root. Tests record the invocations instead of running them.
+     */
+    commandRunner?: CommandRunner;
+    /** The interpreter the props generators run under (default the pipeline venv's). */
+    propsPython?: string;
+    /** Blender for the props models (default `blenderExecutable()`, as the shaping worker's). */
+    blender?: string;
+    /** How long a `build_props.py` run may take (ms; default 10 min). */
+    propsBuildMs?: number;
     /** How often a mirrored shaping job is polled (ms; default 500). */
     pollMs?: number;
     /**
@@ -193,8 +221,47 @@ export interface GsproSyncDeps {
     meshesTimeoutMs?: number;
 }
 
+/**
+ * A command the `props` chain runs: the whole argv, so one seam covers both
+ * the pipeline's Python and Blender. Same answer shape as `ExportRunner`.
+ */
+export type CommandRunner = (
+    command: string[], cwd: string, opts?: { timeoutMs?: number },
+) => Promise<{ code: number; stdout: string; stderr: string }>;
+
+/** `Bun.spawn` of the whole argv, with the pipeline's UTF-8 stdout. */
+export function defaultCommandRunner(): CommandRunner {
+    return async (command, cwd, opts) => {
+        const proc = Bun.spawn(command, {
+            cwd,
+            env: { ...process.env, PYTHONIOENCODING: 'utf-8' },
+            stdout: 'pipe',
+            stderr: 'pipe',
+        });
+        let timedOut = false;
+        const timer = opts?.timeoutMs ? setTimeout(() => { timedOut = true; proc.kill(); }, opts.timeoutMs) : null;
+        const [stdout, stderr, code] = await Promise.all([
+            new Response(proc.stdout).text(), new Response(proc.stderr).text(), proc.exited,
+        ]);
+        if (timer) clearTimeout(timer);
+        if (timedOut) {
+            return { code: code || 124, stdout, stderr: `${stderr}\ntimed out after ${Math.round(opts!.timeoutMs! / 1000)} s` };
+        }
+        return { code, stdout, stderr };
+    };
+}
+
 /** `gspro.py shaping-global`'s first layer file — the `meshes` target's "last updated" fallback. */
 const GLOBAL_LAYER_FILE = '00-global.gen.json';
+
+/** The repo root: where the props generators are run from (docs/workflows.md section 4). */
+const REPO_DIR = path.resolve(import.meta.dir, '..', '..');
+
+/** How long `build_props.py` may run before the phase gives up on it. */
+const PROPS_BUILD_MS = 10 * 60_000;
+
+/** How long a props bridge command may run (the place walks every instance onto the ground). */
+const PROPS_UNITY_SEC = 600;
 
 /** The generator whose terrain edits are building pads (`TerrainGeneratorKind`). */
 const BUILDING_PADS_ORIGIN = 'building-pads';
@@ -214,6 +281,10 @@ export class GsproSyncService {
     private readonly history: FeatureHistoryService;
     private readonly terrainEdits: TerrainEditsService;
     private readonly unityBridge: UnityBridge;
+    private readonly command: CommandRunner;
+    private readonly propsPython: string;
+    private readonly blender: string;
+    private readonly propsBuildMs: number;
     private readonly pollMs: number;
     private readonly meshesTimeoutMs: number | undefined;
     /** Every job this process started, by id. */
@@ -231,6 +302,11 @@ export class GsproSyncService {
         this.history = deps.history ?? new FeatureHistoryService(deps.db);
         this.terrainEdits = deps.terrainEdits ?? new TerrainEditsService(deps.db);
         this.unityBridge = deps.unityBridge ?? defaultUnityBridge();
+        this.command = deps.commandRunner ?? defaultCommandRunner();
+        this.propsPython = deps.propsPython ?? process.env.MAP_PIPELINE_PYTHON
+            ?? venvPython(process.env.MAP_PIPELINE_DIR ?? DEFAULT_PIPELINE_DIR);
+        this.blender = deps.blender ?? blenderExecutable();
+        this.propsBuildMs = deps.propsBuildMs ?? PROPS_BUILD_MS;
         this.pollMs = deps.pollMs ?? 500;
         this.meshesTimeoutMs = deps.meshesTimeoutMs;
     }
@@ -240,8 +316,11 @@ export class GsproSyncService {
     /** The whole board: Unity, the shaping worker, every target, the job and the queue. */
     async status(courseId: string): Promise<GsproSyncStatus> {
         const ctx = await this.context(courseId);
+        // The Props row reads the course folder out of the matched editor, so the
+        // board's one probe is the row's too (`SyncContext.unity`).
+        ctx.unity = this.unityStatus(ctx.dir);
         const [unity, worker, targets] = await Promise.all([
-            this.unityStatus(ctx.dir),
+            ctx.unity,
             this.shaping.status(courseId).then(s => s.worker),
             this.targetStatuses(ctx),
         ]);
@@ -260,7 +339,7 @@ export class GsproSyncService {
     }
 
     /**
-     * All nine rows, side by side — the board asks for them on every poll and
+     * All ten rows, side by side — the board asks for them on every poll and
      * each row stats files, reads the history and (for `meshes`) lists the
      * export folder. `Promise.all` keeps the board's own order while the file
      * work overlaps; Kysely on bun:sqlite serialises the queries anyway.
@@ -269,9 +348,10 @@ export class GsproSyncService {
         return Promise.all(GSPRO_TARGETS.map(async (target): Promise<GsproTargetStatus> => {
             const entry = ctx.record.targets[target.id];
             const lastRun = entry?.lastRun ?? await this.fallbackLastRun(ctx, target.id);
-            const [changedSince, blocked] = await Promise.all([
+            const [changedSince, blocked, note] = await Promise.all([
                 this.changedSince(ctx, target.id, lastRun),
                 this.blocked(ctx, target.id),
+                this.note(ctx, target.id),
             ]);
             return {
                 id: target.id,
@@ -282,8 +362,21 @@ export class GsproSyncService {
                 stale: changedSince.count > 0 || lastRun === null,
                 manual: target.manual,
                 blocked,
+                note,
             };
         }));
+    }
+
+    /**
+     * The row's one line of extra state. Only `props` has one today: what
+     * Unity's `placed.json` says about the props standing in the scene, which
+     * needs the editor — without one there is nothing to read, and the row
+     * says nothing rather than guessing.
+     */
+    private async note(ctx: SyncContext, target: GsproTargetId): Promise<string | null> {
+        if (target !== 'props') return null;
+        const dir = await this.propsDir(ctx);
+        return dir ? propsNote(dir) : null;
     }
 
     /**
@@ -307,6 +400,11 @@ export class GsproSyncService {
                 return mtimeIso(ctx.file(treesExportFileName(ctx.courseName, 'inner')));
             case 'buildings':
                 return mtimeIso(ctx.file(buildingsExportFileName(ctx.courseName, 'inner')));
+            case 'props': {
+                // The manifest `build_props.py` wrote into the Unity project; nothing to read without the editor.
+                const dir = await this.propsDir(ctx);
+                return dir ? mtimeIso(path.join(dir, PROPS_MANIFEST)) : null;
+            }
             case 'creeks':
                 return mtimeIso(ctx.file(creeksExportFileName(ctx.courseName)));
             case 'course-file':
@@ -365,6 +463,9 @@ export class GsproSyncService {
             case 'photo':
                 parts.push(await this.cleanedPhotoChange(ctx, since));
                 break;
+            case 'props':
+                parts.push(await this.propsSpecChanges(ctx, since));
+                break;
             case 'course-file':
                 parts.push(await this.courseFileChanges(ctx.courseId, since));
                 break;
@@ -388,6 +489,21 @@ export class GsproSyncService {
             .map(s => path.join(this.dataDir, 'sources', ctx.siteId!, s.source));
         const newest = await newestMtime(cleaned);
         return newest !== null && newest > since ? { count: 1, kinds: ['cleaned photo'] } : { count: 0, kinds: [] };
+    }
+
+    /**
+     * The props specs edited since the last update: one count per
+     * `*-props.gen.py` whose mtime has moved. The GENERATOR only — the
+     * `*-props.json` beside it is what the chain itself writes, so counting it
+     * would leave the row stale from the moment an update finished.
+     */
+    private async propsSpecChanges(ctx: SyncContext, since: string): Promise<ChangeCount> {
+        let count = 0;
+        for (const spec of await this.propsSpecs(ctx)) {
+            const at = await mtimeIso(spec.gen);
+            if (at !== null && at > since) count++;
+        }
+        return { count, kinds: count > 0 ? ['props spec'] : [] };
     }
 
     /**
@@ -454,6 +570,10 @@ export class GsproSyncService {
                 return await statOrNull(path.join(this.dataDir, 'sources', ctx.siteId, BUILDINGS_SURVEY))
                     ? null
                     : 'Run "Generate building pads" in the terrain tool first';
+            case 'props':
+                return (await this.propsSpecs(ctx)).length === 0
+                    ? `No props spec in ${await this.docsDirLabel(ctx)}`
+                    : null;
             case 'creeks':
                 return ctx.siteId ? null : noMap;
             case 'course-file':
@@ -601,11 +721,12 @@ export class GsproSyncService {
             if (rec.phases.has('wait')) await this.waitTurn(rec);
             const ctx = { ...await this.context(rec.job.courseId), force: rec.force };
             // One probe for the whole job: every Unity push in the chains uses this answer.
-            const { editor, seen } = await editorForExportDir(this.unityBridge, ctx.dir);
+            const { editor, info, seen } = await editorForExportDir(this.unityBridge, ctx.dir);
             const unity: UnityTarget = {
                 editor,
                 why: editor ? null : `Not in Unity: no open Unity editor imports from ${ctx.dir}`
                     + (seen.length ? ` (${seen.join('; ')})` : ' (none is open)'),
+                courseFolder: info?.courseFolder ?? null,
             };
             for (const target of rec.job.targets) {
                 const t0 = Date.now();
@@ -663,6 +784,7 @@ export class GsproSyncService {
             case 'vegetation': return this.updateVegetation(rec, ctx, id);
             case 'trees': return this.updateTrees(rec, ctx, unity, id);
             case 'buildings': return this.updateBuildings(rec, ctx, unity, id);
+            case 'props': return this.updateProps(rec, ctx, unity, id);
             case 'creeks': return this.updateCreeks(rec, ctx, unity, id);
             case 'course-file': return this.updateCourseFile(rec, ctx, id);
         }
@@ -919,6 +1041,172 @@ export class GsproSyncService {
         return report;
     }
 
+    /**
+     * Props: the course's spec through its own Python, the FBX + manifest
+     * through Blender into the Unity project, then placed in the scene —
+     * docs/workflows.md section 4's three commands as one job.
+     *
+     * The models and the place need the editor (the out folder is INSIDE the
+     * Unity project): without one the spec is still written and the two phases
+     * are skipped, so a spec edit made away from the machine running Unity is
+     * not lost.
+     *
+     * The place keeps every prop the user moved by hand — but only when Unity
+     * has a record of what it placed last time. On a scene from before that
+     * existed there is none, so `golfmap.props.record` seeds it first: without
+     * that one call the place would drop the hand moves one last time (three
+     * sessions were lost to exactly that).
+     */
+    private async updateProps(rec: JobRecord, ctx: SyncContext, unity: UnityTarget, id: (s: string) => string): Promise<string[]> {
+        const report: string[] = [];
+        const specs = await this.propsSpecs(ctx);
+        if (specs.length === 0) throw new ConflictError(`No props spec in ${await this.docsDirLabel(ctx)}`);
+
+        rec.phases.begin(id('spec'), `${specs[0]!.name}-props.gen.py`);
+        for (const spec of specs) {
+            rec.phases.note(path.basename(spec.gen));
+            report.push(...prefixed('spec', await this.runPropsSpec(ctx, spec)));
+        }
+        rec.phases.end(id('spec'), 'done', `${specs.map(s => path.basename(s.json)).join(', ')} written`);
+
+        const out = unity.courseFolder ? path.join(unity.courseFolder, PROPS_FOLDER) : null;
+        if (!out) {
+            const why = unity.why
+                ?? `Not in Unity: ${unity.editor!.projectName} has this course active but no saved course asset to build into`;
+            rec.phases.skip(id('models'), why);
+            rec.phases.skip(id('unity'), why);
+            report.push(`${why} — the spec is written; the models and the place wait for the editor`);
+            return report;
+        }
+
+        rec.phases.begin(id('models'), `build_props.py into ${out}`);
+        for (const spec of specs) {
+            rec.phases.note(`${path.basename(spec.json)} into ${out}`);
+            report.push(...prefixed('models', await this.buildPropModels(ctx, spec, out)));
+        }
+        rec.phases.end(id('models'), 'done', `${specs.length} spec(s) built into ${out}`);
+
+        await this.placeProps(rec, unity.editor!, out, specs, report, id('unity'));
+        return report;
+    }
+
+    /**
+     * One `*-props.gen.py` under the pipeline venv's Python, from the repo root
+     * (docs/workflows.md section 4), writing its `*-props.json`. Skipped while
+     * neither the generator nor the interpreter has changed since it last ran.
+     */
+    private async runPropsSpec(ctx: SyncContext, spec: PropsSpec): Promise<string[]> {
+        const fp = await fingerprint(spec.json, {
+            files: [spec.gen],
+            values: { python: this.propsPython, pythonMtime: await mtimeMs(this.propsPython) },
+            outputs: [spec.json],
+        });
+        if (!ctx.force) {
+            const unchanged = await unchangedLine(fp);
+            if (unchanged) return [unchanged];
+        }
+        const { code, stdout, stderr } = await this.command([this.propsPython, spec.gen], REPO_DIR);
+        if (code !== 0) throw failure(`The props spec (${path.basename(spec.gen)})`, code, stdout, stderr);
+        await recordInputs(fp);
+        return [`wrote ${path.basename(spec.json)}`, ...reportLines(stdout)];
+    }
+
+    /**
+     * `blender -b --factory-startup --python blender/tools/build_props.py` for
+     * one spec: the per-asset FBX, the textures and the `props.json` manifest
+     * into the Unity course folder's `Props/`. Skipped while the spec, the two
+     * Blender scripts and the manifest in the folder are all as they were —
+     * the manifest is among the outputs, so a hand-deleted one rebuilds.
+     *
+     * Blender says nothing on success worth a report line, and a lot on
+     * failure: the last of its output goes into the 409 (`failure`), which is
+     * what the phase's detail shows.
+     *
+     * Its EXIT CODE cannot be trusted. `blender -b --python` quits 0 after an
+     * unhandled Python exception — a spec naming a material `props_kit` has no
+     * texture for raises `KeyError` halfway through and still exits 0, with
+     * `props.json` never written and the FBX half old, half new. So the
+     * manifest having been (re)written is the test of success, not the code.
+     */
+    private async buildPropModels(ctx: SyncContext, spec: PropsSpec, out: string): Promise<string[]> {
+        const manifest = path.join(out, PROPS_MANIFEST);
+        const fp = await fingerprint(path.join(out, `${spec.name}-props.json`), {
+            files: [spec.json],
+            values: {
+                buildProps: await mtimeMs(path.join(REPO_DIR, 'blender', 'tools', 'build_props.py')),
+                propsKit: await mtimeMs(path.join(REPO_DIR, 'blender', 'tools', 'props_kit.py')),
+                out,
+            },
+            outputs: [manifest],
+        });
+        if (!ctx.force) {
+            const unchanged = await unchangedLine(fp);
+            if (unchanged) return [unchanged];
+        }
+        await ensureDir(out);
+        const startedAt = Date.now();
+        const { code, stdout, stderr } = await this.command([
+            this.blender, '-b', '--factory-startup', '--python', path.join(REPO_DIR, 'blender', 'tools', 'build_props.py'),
+            '--', '--spec', spec.json, '--out', out,
+        ], REPO_DIR, { timeoutMs: this.propsBuildMs });
+        const what = `Building the props (${path.basename(spec.json)})`;
+        if (code !== 0) throw failure(what, code, stdout, stderr);
+        const written = await statOrNull(manifest);
+        // 2 s of slack: a file system's mtime is coarser than this clock.
+        if (!written || written.mtimeMs < startedAt - 2000) {
+            throw failure(`${what} wrote no ${PROPS_MANIFEST} (Blender quit 0 — read the traceback)`, code, stdout, stderr);
+        }
+        await recordInputs(fp);
+        return [`built ${path.basename(spec.json)} into ${out}`, ...reportLines(stdout).slice(-4)];
+    }
+
+    /**
+     * The place in Unity: `golfmap.props.record` first when the folder has no
+     * `placed.json` (nothing is touched by it — it only writes down where the
+     * props stand, so the place that follows can tell a hand move from the
+     * spec), then `golfmap.props.place {save: true}`. The report is the
+     * interesting part: every instance the place KEPT where the user put it,
+     * with how far it had been moved, and a warning for each one the spec took
+     * back, each one added by hand, and each one dropped.
+     */
+    private async placeProps(
+        rec: JobRecord, editor: UnityEditor, out: string, specs: PropsSpec[], report: string[], phaseId: string,
+    ): Promise<void> {
+        rec.phases.begin(phaseId, `golfmap.props.place in ${editor.projectName}`);
+        if (!await statOrNull(path.join(out, PROPS_PLACED))) {
+            rec.phases.note(`golfmap.props.record in ${editor.projectName} (no ${PROPS_PLACED} yet)`);
+            const recorded = await editor.run('golfmap.props.record', {}, PROPS_UNITY_SEC) as PropsRecordResult | null;
+            const pairing = recorded?.pairing ?? {};
+            report.push(`Unity (${editor.projectName}): golfmap.props.record — ${num(pairing.pairedByPosition)} paired by position,`
+                + ` ${num(pairing.indexStillRight)} still at their index, ${count(recorded?.handPlaced)} hand-placed`
+                + ` (nothing in the scene was touched)`);
+            rec.phases.note(`golfmap.props.place in ${editor.projectName}`);
+        }
+        const placed = await editor.run('golfmap.props.place', { save: true }, PROPS_UNITY_SEC) as PropsPlaceResult | null;
+        const kept = num(placed?.kept);
+        report.push(`Unity (${editor.projectName}): golfmap.props.place — placed ${num(placed?.placed)} prop(s),`
+            + ` ${kept} kept where they were moved by hand`);
+        for (const row of rows(placed?.handPlaced)) {
+            report.push(`kept: ${row.name ?? row.asset ?? '?'} moved by hand ${num(row.movedByHand?.m)} m / ${num(row.movedByHand?.deg)}°`);
+        }
+        for (const row of rows(placed?.specWon)) {
+            report.push(`warning: the spec moved ${row.name ?? row.asset ?? '?'} since it was placed by hand: it is back on the spec`);
+        }
+        for (const row of rows(placed?.handAdded)) {
+            report.push(`warning: ${row.name ?? row.asset ?? '?'} was added by hand in Unity and is left standing`);
+        }
+        for (const row of rows(placed?.droppedHand)) {
+            report.push(`warning: dropped the hand-placed ${row.name ?? row.asset ?? '?'} (${row.why ?? 'the spec no longer has it'})`);
+        }
+        const saved = savedLine(placed);
+        report.push(saved ?? 'Save the scene in Unity to keep it.');
+        if (kept > 0) {
+            report.push(`A hand move becomes permanent only in ${specs.map(s => path.basename(s.gen)).join(' / ')}`
+                + ' (docs/workflows.md section 4).');
+        }
+        rec.phases.end(phaseId, 'done', `${num(placed?.placed)} prop(s) placed, ${kept} kept in ${editor.projectName}`);
+    }
+
     /** Creeks: the R.A.M. spline file, then the import in Unity. */
     private async updateCreeks(rec: JobRecord, ctx: SyncContext, unity: UnityTarget, id: (s: string) => string): Promise<string[]> {
         rec.phases.begin(id('file'), 'gspro.py creeks');
@@ -1010,6 +1298,45 @@ export class GsproSyncService {
         return ctx.orthos;
     }
 
+    /**
+     * The course's docs folder, `docs/gspro/<course slug>/` — where its props
+     * spec lives. The same resolution as the shaping layers (which are
+     * `<that>/shaping`), so a course that moved its layers root moves with it.
+     */
+    private async docsDir(ctx: SyncContext): Promise<string> {
+        return path.dirname(await this.shaping.layersDir(ctx.courseId));
+    }
+
+    /** That folder as a message names it: repo-relative (`docs/gspro/vreta/`) when it is in the repo. */
+    private async docsDirLabel(ctx: SyncContext): Promise<string> {
+        const dir = await this.docsDir(ctx);
+        const rel = path.relative(REPO_DIR, dir);
+        const shown = rel && !rel.startsWith('..') && !path.isAbsolute(rel) ? rel : dir;
+        return `${shown.replace(/\\/g, '/')}/`;
+    }
+
+    /**
+     * The course's props specs, memoized per call chain like `orthoSources`:
+     * the Props row asks for them three times over (blocked, changed since,
+     * and the chain itself), and each ask reads a directory.
+     */
+    private propsSpecs(ctx: SyncContext): Promise<PropsSpec[]> {
+        ctx.specs ??= this.docsDir(ctx).then(propsSpecs);
+        return ctx.specs;
+    }
+
+    /**
+     * `<Unity course folder>/Props` — where `build_props.py` writes and
+     * `golfmap.props.place` reads. Null when no open editor has this course
+     * active, or its course asset is not saved (then there is no folder to
+     * name): everything that needs it says "Not in Unity" instead.
+     */
+    private async propsDir(ctx: SyncContext): Promise<string | null> {
+        ctx.unity ??= this.unityStatus(ctx.dir);
+        const folder = (await ctx.unity).editors.find(e => e.matches)?.courseFolder ?? null;
+        return folder ? path.join(folder, PROPS_FOLDER) : null;
+    }
+
     private async blendFiles(ctx: SyncContext): Promise<string[]> {
         try {
             return (await readdir(ctx.dir)).filter(n => n.toLowerCase().endsWith('.blend'));
@@ -1049,6 +1376,8 @@ interface UnityTarget {
     editor: UnityEditor | null;
     /** Set exactly when `editor` is null: the line every skipped push uses. */
     why: string | null;
+    /** The matched course's folder in the project (`<project>/Assets/GolfMap/Vreta`); null with no editor. */
+    courseFolder: string | null;
 }
 
 interface SyncContext {
@@ -1067,6 +1396,10 @@ interface SyncContext {
     force: boolean;
     /** The one `orthoSources` read of this call chain (see `GsproSyncService.orthoSources`). */
     orthos?: Promise<GsproOrthoSource[]>;
+    /** The one props-spec listing of this call chain (`GsproSyncService.propsSpecs`). */
+    specs?: Promise<PropsSpec[]>;
+    /** The one Unity probe of this call chain — the Props row needs the matched editor's course folder. */
+    unity?: Promise<GsproSyncUnity>;
     file(name: string): string;
     /** Only safe with `terrain` non-null. */
     demSidecar(kind: TerrainKind): string;
@@ -1098,6 +1431,7 @@ export function targetPhases(target: GsproTargetId): ReadonlyArray<readonly [str
         case 'vegetation': return [['inner', 'Vegetation, inner'], ['outer', 'Vegetation, outer']];
         case 'trees': return [['files', 'Tree files'], ['unity', 'Trees into Unity']];
         case 'buildings': return [['files', 'Building files'], ['unity', 'Buildings into Unity']];
+        case 'props': return [['spec', 'Props spec'], ['models', 'Prop models (Blender)'], ['unity', 'Props into Unity']];
         case 'creeks': return [['file', 'Creeks file'], ['unity', 'Creeks into Unity']];
         case 'course-file': return [['gkd', 'GreenKeeper course file']];
     }
@@ -1142,6 +1476,38 @@ function merge(parts: ChangeCount[]): ChangeCount {
 }
 
 const prefixed = (what: string, lines: string[]) => lines.map(l => `${what}: ${l}`);
+
+// --- The props bridge answers, read leniently (the editor's own JSON) ---
+
+/** One row of a place report's hand-edit lists (`GolfMapProps.HandRow`). */
+interface PropsRow {
+    asset?: string;
+    name?: string;
+    why?: string;
+    movedByHand?: { m?: number; deg?: number };
+}
+
+interface PropsPlaceResult {
+    placed?: number;
+    kept?: number;
+    handPlaced?: unknown;
+    specWon?: unknown;
+    handAdded?: unknown;
+    droppedHand?: unknown;
+}
+
+interface PropsRecordResult {
+    pairing?: { pairedByPosition?: number; indexStillRight?: number };
+    handPlaced?: unknown;
+}
+
+/** A number the editor reported, or 0 — a report line must never read `undefined`. */
+const num = (value: unknown): number => (typeof value === 'number' && Number.isFinite(value) ? value : 0);
+
+const rows = (value: unknown): PropsRow[] =>
+    (Array.isArray(value) ? value : []).filter((r): r is PropsRow => !!r && typeof r === 'object');
+
+const count = (value: unknown): number => (Array.isArray(value) ? value.length : 0);
 
 /**
  * How long a shaping apply may take at the outside, from the shaping service's

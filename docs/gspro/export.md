@@ -564,10 +564,10 @@ trees, SVG before Blender, zones before the Arborist file). The board turns that
 Update*.
 
 **Targets** are `shared/gspro-targets.ts` (shared so the web uses the same ids and words):
-`terrain`, `photo`, `shapes`, `meshes`, `vegetation`, `trees`, `buildings`, `creeks`, `course-file`,
-each with `label`, a one-line `description`, `manual` (the step a human must still do: `shapes` →
-"Build the SVG in Blender (OPCD), then Update meshes"; `buildings` → the Unity planter menu; the
-rest null) and `featureTypes` (the `course_features.type`s whose edits make it stale).
+`terrain`, `photo`, `shapes`, `meshes`, `vegetation`, `trees`, `buildings`, `props`, `creeks`,
+`course-file`, each with `label`, a one-line `description`, `manual` (the step a human must still do:
+`shapes` → "Build the SVG in Blender (OPCD), then Update meshes"; `buildings` → the Unity planter
+menu; the rest null) and `featureTypes` (the `course_features.type`s whose edits make it stale).
 `SVG_FEATURE_TYPES` lives there too — the pipeline's `TYPE_SURFACE` plus `trees` — and
 `web/src/export/svg-exclusions.ts` re-exports it.
 
@@ -586,8 +586,48 @@ order. The chains:
 | `vegetation` | `plantVegetation` inner, and outer when the outer already has a zones export. |
 | `trees` | `files` (`exportTrees` inner + outer) → `unity` (`golfmap.trees.plant` per terrain). |
 | `buildings` | `files` (`exportBuildings` inner + outer) → `unity` **skipped**: no `[BridgeCommand]` plants buildings, so the report names `GolfMap › Buildings › Plant from assignments`. |
+| `props` | `spec` (each `docs/gspro/<slug>/*-props.gen.py` under the pipeline venv's Python from the repo root → its `*-props.json`) → `models` (`<blender> -b --factory-startup --python blender/tools/build_props.py -- --spec <that json> --out <course folder>/Props`, 10 min cap, per spec file) → `unity` (`golfmap.props.record` first when the folder has no `placed.json`, then `golfmap.props.place {save: true}`). The last two need the editor — the out folder is inside the Unity project — so without one they are **skipped** and only the spec is written. |
 | `creeks` | `file` (`exportCreeks`) → `unity` (`golfmap.creeks.import`). |
 | `course-file` | `gkd` (`exportGkd`). |
+
+**The props chain in full** (the board's tenth row; the manual commands behind it are
+docs/workflows.md section 4, which stays as the explanation). Props were the one scene input with no
+row: the spec is hand-written Python, the models land in the Unity project and `props.place` puts them
+in the scene, and nothing on the server knew about any of it.
+
+- **Source** = `docs/gspro/<course slug>/*-props.gen.py` and the `*-props.json` each writes (Vreta:
+  `clubhouse-props.gen.py` → `clubhouse-props.json`). The slug resolution is `ShapingService`'s —
+  the docs folder is the parent of its layers dir — so `GOLFMAP_SHAPING_LAYERS_ROOT` moves both.
+  `server/services/gspro-props.ts` holds the little that is read off disk (`propsSpecs`, `propsNote`).
+- **`lastRun`**: the record, else the mtime of `<course folder>/Props/props.json`, the manifest
+  `build_props.py` writes. The course folder comes from the matched editor's probe — `golfmap.course`'s
+  `active.folder` (`Assets/GolfMap/Vreta/`) resolved against the editor's project path, which
+  `unityEditorsFor`/`editorForExportDir` now keep as `UnityEditorInfo.courseFolder`. With no editor
+  there is nothing to stat and the row reads "never".
+- **`changedSince`**: the `*-props.gen.py` files whose mtime has moved since `lastRun` — one count per
+  spec, kind `props spec`. The GENERATOR only: the `*-props.json` beside it is the chain's own output,
+  and counting it would leave the row stale the moment an update finished.
+- **`blocked`**: `No props spec in docs/gspro/<slug>/`.
+- **`note`** (new optional field on `GsproTargetStatus`, one line of extra state a row has and no other
+  way to say; null on every other row today) comes from `<course folder>/Props/placed.json` when the
+  editor is open — `golfmap-props-placed-v1`, `instances[].hand`: `3 hand-placed props are kept on
+  update`, `no prop has been moved by hand: every one comes from the spec`, or `no placed.json yet: the
+  first update records the scene before placing`. The board shows it under the status line
+  (`gspro-note-<id>`), and `bun run gspro:status` prints it under the row.
+- **Fingerprints**: the spec phase on the `.gen.py` + the interpreter (path and mtime), output the
+  `*-props.json`; the models phase on the `*-props.json` + `build_props.py` and `props_kit.py` mtimes +
+  the out folder, output `<Props>/props.json` — so a hand-deleted manifest rebuilds. Both skip with
+  `unchanged: …` like the other exports, and `--force` builds anyway. The sidecars the spec phase
+  leaves under `docs/gspro/<course>/` are gitignored.
+- **The place keeps hand edits.** `golfmap.props.place` keeps every prop the user moved or rotated,
+  but only against Unity's own record of what it placed; a scene from before that record existed has
+  none, so the chain runs `golfmap.props.record` first (it touches nothing, only writes down where the
+  props stand) and reports its `pairing`. The place then reports `placed`/`kept`, a
+  `kept: <name> moved by hand <m> m / <deg>°` line per instance kept, and a warning each for `specWon`,
+  `handAdded` and `droppedHand`. A `kept` count adds the line that only the `.gen.py` makes a hand move
+  permanent.
+- `props` sits after `buildings` in the `'stale'` order, and is NOT part of the `meshes` chain:
+  `golfmap.course.refresh` still lists `props.place` as pending on purpose.
 
 **Jobs queue per course** (FIFO) instead of 409ing: a second Update while one runs comes back
 `status: 'queued'` and shows in `status().queue`; its first phase is `wait` ("Waiting for …"). A sync
@@ -650,7 +690,8 @@ snapshot per run.
   writes, so a course exported before the board existed does not read "never": the inner DEM sidecar
   (`terrain`), the newest inner `-meshes.jpg` (`photo`), the newest `export-history/` snapshot
   (`FeatureHistoryService.latestSnapshot`, `shapes`), `<layers dir>/00-global.gen.json` (`meshes`),
-  the inner zones / trees / buildings / creeks file, and the `.GKD` in the course's GSPro folder.
+  the inner zones / trees / buildings / creeks file, `<course folder>/Props/props.json` (`props`,
+  editor needed), and the `.GKD` in the course's GSPro folder.
 - **`changedSince`** = `{count, kinds}` since `lastRun` (empty when it is null — there is nothing to
   count from). `FeatureHistoryService.countChangesSince(courseId, since, types?)` and
   `TerrainEditsService.countChangesSince(siteId, since, {ops?, exceptOps?, origins?})` each take two
@@ -662,20 +703,23 @@ snapshot per run.
   leave rows permanently stale. Per target, on top of the feature types: `terrain` = terrain edits
   except `recipe`, plus `unapplied edits` when `GsproExportService.innerDemStale` says so; `meshes` =
   `recipe` edits; `buildings` = `building-pads` edits; `vegetation` = `course_zone_types.updated_at`;
-  `photo` = the cleaned photo's mtime; `course-file` = holes/tees/greens/pins/aim points/tee sets
+  `photo` = the cleaned photo's mtime; `props` = the `*-props.gen.py` files' mtimes;
+  `course-file` = holes/tees/greens/pins/aim points/tee sets
   (`courses.gspro_meta_json` has no time of its own, so a details-only edit does not show).
 - **`blocked`** is why an update cannot run now (and so is left out of a `'stale'` run): "Build the
   map first", "Set the GSPro course folder first", `No .blend in <folder> …`, `Run "Generate building
-  pads" …`, or the map-area 409's own words. Only the cheap, certain reasons — the chains still throw
-  their own 409s for the rest.
+  pads" …`, `No props spec in docs/gspro/<slug>/`, or the map-area 409's own words. Only the cheap,
+  certain reasons — the chains still throw their own 409s for the rest.
+- **`note`** is the row's one line of extra state (only `props` has one: see its chain above).
 
 **API** (builder only, `requireAuth()`): `GET /api/gspro-sync/status?courseId` →
 `{unity: {editors, matched, exportDir}, worker, targets, job, queue}`,
 `POST /api/gspro-sync/update {courseId, target, force?}` → the job, `GET /api/gspro-sync/job?jobId`,
 `GET /api/unity/editors?courseId` → the `unity` part alone (the command bar's chip).
 `unityEditorsFor` (`services/unity-bridge.ts`) probes EVERY open editor —
-`{projectName, projectPath, activeCourse, exportFolder, matches, error}` — and `editorForExportDir`
-is the same probe stopping at the first match (30 s cap per editor either way).
+`{projectName, projectPath, activeCourse, exportFolder, courseFolder, matches, error}` — and
+`editorForExportDir` is the same probe stopping at the first match (30 s cap per editor either way),
+returning that editor's `info` too so a chain can write into its course folder.
 
 **Exports do their own prerequisites** (the same change): `exportTrees`, `exportZones`,
 `exportBuildings`, `exportCreeks` and `exportGkd` export the heightmap whose sidecar they read

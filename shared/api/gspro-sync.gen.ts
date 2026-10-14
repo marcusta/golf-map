@@ -6,14 +6,14 @@ export interface GsproSyncStatus {
     worker: ShapingWorkerStatus;
     targets: GsproTargetStatus[];
     job: null | GsproSyncJob;
-    queue: ({ id: string; target: 'trees' | 'buildings' | 'vegetation' | 'creeks' | 'terrain' | 'photo' | 'shapes' | 'meshes' | 'course-file' | 'stale' })[];
+    queue: ({ id: string; target: 'trees' | 'buildings' | 'vegetation' | 'creeks' | 'terrain' | 'photo' | 'shapes' | 'meshes' | 'props' | 'course-file' | 'stale' })[];
 }
 
 export interface GsproSyncJob {
     id: string;
     courseId: string;
-    request: 'trees' | 'buildings' | 'vegetation' | 'creeks' | 'terrain' | 'photo' | 'shapes' | 'meshes' | 'course-file' | 'stale';
-    targets: ('trees' | 'buildings' | 'vegetation' | 'creeks' | 'terrain' | 'photo' | 'shapes' | 'meshes' | 'course-file')[];
+    request: 'trees' | 'buildings' | 'vegetation' | 'creeks' | 'terrain' | 'photo' | 'shapes' | 'meshes' | 'props' | 'course-file' | 'stale';
+    targets: ('trees' | 'buildings' | 'vegetation' | 'creeks' | 'terrain' | 'photo' | 'shapes' | 'meshes' | 'props' | 'course-file')[];
     status: 'running' | 'succeeded' | 'failed' | 'queued';
     phase: null | string;
     step: string;
@@ -49,7 +49,7 @@ export interface ShapingWorkerStatus {
 }
 
 export interface GsproTargetStatus {
-    id: 'trees' | 'buildings' | 'vegetation' | 'creeks' | 'terrain' | 'photo' | 'shapes' | 'meshes' | 'course-file';
+    id: 'trees' | 'buildings' | 'vegetation' | 'creeks' | 'terrain' | 'photo' | 'shapes' | 'meshes' | 'props' | 'course-file';
     label: string;
     lastRun: null | string;
     seconds: null | number;
@@ -57,6 +57,7 @@ export interface GsproTargetStatus {
     stale: boolean;
     manual: null | string;
     blocked: null | string;
+    note: null | string;
 }
 
 export interface JobPhase {
@@ -68,7 +69,7 @@ export interface JobPhase {
 }
 
 export interface GsproSyncTargetResult {
-    target: 'trees' | 'buildings' | 'vegetation' | 'creeks' | 'terrain' | 'photo' | 'shapes' | 'meshes' | 'course-file';
+    target: 'trees' | 'buildings' | 'vegetation' | 'creeks' | 'terrain' | 'photo' | 'shapes' | 'meshes' | 'props' | 'course-file';
     label: string;
     seconds: number;
     report: string[];
@@ -80,6 +81,7 @@ export interface UnityEditorInfo {
     projectPath: string;
     activeCourse: null | string;
     exportFolder: null | string;
+    courseFolder: null | string;
     matches: boolean;
     error: null | string;
 }
@@ -102,7 +104,7 @@ export interface ChangeCount {
 
 export interface GsproSyncApi {
     status(input: { courseId: string }): Promise<GsproSyncStatus>;
-    update(input: { force?: boolean; courseId: string; target: 'trees' | 'buildings' | 'vegetation' | 'creeks' | 'terrain' | 'photo' | 'shapes' | 'meshes' | 'course-file' | 'stale' }): Promise<GsproSyncJob>;
+    update(input: { force?: boolean; courseId: string; target: 'trees' | 'buildings' | 'vegetation' | 'creeks' | 'terrain' | 'photo' | 'shapes' | 'meshes' | 'props' | 'course-file' | 'stale' }): Promise<GsproSyncJob>;
     job(input: { jobId: string }): Promise<GsproSyncJob>;
     editors(input: { courseId: string }): Promise<GsproSyncUnity>;
 }

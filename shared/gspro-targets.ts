@@ -11,7 +11,7 @@
 // `changedSince`; the server owns the terrain-edit side).
 
 export const GSPRO_TARGET_IDS = [
-    'terrain', 'photo', 'shapes', 'meshes', 'vegetation', 'trees', 'buildings', 'creeks', 'course-file',
+    'terrain', 'photo', 'shapes', 'meshes', 'vegetation', 'trees', 'buildings', 'props', 'creeks', 'course-file',
 ] as const;
 
 export type GsproTargetId = (typeof GSPRO_TARGET_IDS)[number];
@@ -101,6 +101,13 @@ export const GSPRO_TARGETS: readonly GsproTarget[] = [
         label: 'Buildings',
         description: 'The building survey of both terrains as the building planter\'s files.',
         manual: 'Run GolfMap › Buildings › Plant from assignments in Unity',
+        featureTypes: [],
+    },
+    {
+        id: 'props',
+        label: 'Props',
+        description: 'Buildings, cars, signs and the rest placed from the course\'s props spec',
+        manual: null,
         featureTypes: [],
     },
     {

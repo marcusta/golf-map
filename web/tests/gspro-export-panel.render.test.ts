@@ -179,6 +179,7 @@ const row = (patch: Partial<GsproTargetStatus> & { id: GsproTargetId }): GsproTa
     stale: false,
     manual: GSPRO_TARGETS.find(t => t.id === patch.id)!.manual,
     blocked: null,
+    note: null,
     ...patch,
 });
 
@@ -197,6 +198,7 @@ const BOARD = (): GsproTargetStatus[] => [
     row({ id: 'vegetation' }),
     row({ id: 'trees', lastRun: null, stale: true }),
     row({ id: 'buildings' }),
+    row({ id: 'props', note: '3 hand-placed props are kept on update' }),
     row({ id: 'creeks' }),
     row({ id: 'course-file' }),
 ];
@@ -362,7 +364,7 @@ test('the dialog is the board: a row per target in order, with its time and what
     const rows = [...host.querySelectorAll('[data-testid^=gspro-row-]')];
     expect(rows.map(r => r.getAttribute('data-testid'))).toEqual(GSPRO_TARGETS.map(t => `gspro-row-${t.id}`));
     expect(rows.map(r => r.querySelector('.gspro-export__blabel')!.textContent!.trim().split(' ')[0]))
-        .toEqual(['Terrain', 'Photo', 'Course', 'Meshes', 'Vegetation', 'Trees', 'Buildings', 'Creeks', 'Course']);
+        .toEqual(['Terrain', 'Photo', 'Course', 'Meshes', 'Vegetation', 'Trees', 'Buildings', 'Props', 'Creeks', 'Course']);
 
     const status = (id: string) => host.querySelector(`[data-testid=gspro-status-${id}]`)!.textContent;
     expect(status('terrain')).toBe('2 h ago · up to date');
@@ -405,6 +407,23 @@ test('the manual step a row leaves behind shows under it', async () => {
     expect(host.querySelector('[data-testid=gspro-manual-buildings]')!.textContent)
         .toContain('then: Run GolfMap › Buildings › Plant from assignments');
     expect(host.querySelector('[data-testid=gspro-manual-terrain]')!.textContent).toBe('');
+});
+
+test("the Props row shows its note and its details name the spec as the only permanent place for a hand move", async () => {
+    const { host, svc } = await mount();
+    await open(svc);
+
+    expect(host.querySelector('[data-testid=gspro-note-props]')!.textContent)
+        .toBe('3 hand-placed props are kept on update');
+    // Only the row that has one: no other row carries a note line.
+    const notes = [...host.querySelectorAll('[data-testid^=gspro-note-]')].filter(n => n.textContent !== '');
+    expect(notes.map(n => n.getAttribute('data-testid'))).toEqual(['gspro-note-props']);
+
+    const panel = host.querySelector('[data-testid=gspro-panel-props]')!;
+    expect(panel.textContent).toContain('docs/gspro/vreta/*-props.gen.py');
+    // The long "what keeps a hand move" explanation sits behind the panel's (i) tip.
+    expect(panel.querySelector('.info-tip__text')!.textContent)
+        .toContain('only a place(...) call in the *-props.gen.py makes a hand move permanent');
 });
 
 test('Update runs one target and the header button runs every stale one', async () => {

@@ -7,7 +7,7 @@
 import { test, expect, afterEach } from 'bun:test';
 import * as path from 'node:path';
 import * as os from 'node:os';
-import { mkdir, mkdtemp, readdir, readFile, stat, utimes, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, readdir, readFile, rm, stat, utimes, writeFile } from 'node:fs/promises';
 import { writeFileSync } from 'node:fs';
 import { NotFoundError } from '@basics/core/server/auth';
 import { sql } from 'kysely';
@@ -24,8 +24,9 @@ import { GsproExportService, type ExportRunner } from './gspro-export.service';
 import { ShapingService } from './shaping.service';
 import {
     GsproSyncService, SYNC_RECORD_FILE, SYNC_RECORD_FORMAT,
-    type GsproSyncDeps, type GsproSyncRecord, type GsproSyncStatus,
+    type CommandRunner, type GsproSyncDeps, type GsproSyncRecord, type GsproSyncStatus,
 } from './gspro-sync.service';
+import { PROPS_PLACED, PROPS_PLACED_FORMAT } from './gspro-props';
 import { defaultUnityBridge, unityEditorsFor } from './unity-bridge';
 import { innerSquareFrom3006, terrainManifestField } from './terrain-square';
 import { GSPRO_TARGET_IDS, type GsproTargetId } from '../../shared/gspro-targets';
@@ -37,11 +38,16 @@ afterEach(async () => {
 
 const tmp = (prefix: string) => mkdtemp(path.join(os.tmpdir(), prefix));
 
+/** The repo root, as the props chain's commands are run from. */
+const REPO_DIR = path.resolve(import.meta.dir, '..', '..');
+
 /** A georeferenced course, as in the export tests: its inner square is 2050 m. */
 const GEOREF_BBOX: [number, number, number, number] = [529028, 6486667, 531082, 6488721];
 const GEOREF_INNER = innerSquareFrom3006(GEOREF_BBOX);
 const SITE_ID = 'site-sync';
 const INNER_SIDECAR = 'linkan-inner-dem-2050m.tif.json';
+/** What `golfmap.course` reports as the active course's folder (an asset path from the project root). */
+const COURSE_FOLDER = 'Assets/GolfMap/Linkan/';
 
 function flag(args: string[], name: string): string | undefined {
     const i = args.indexOf(name);
@@ -107,6 +113,44 @@ function pipelineRunner(opts: { hold?: Promise<void>; holdFor?: string } = {}) {
     return { calls, commands, runner };
 }
 
+/**
+ * The props chain's two commands (`CommandRunner`: the whole argv, so one seam
+ * covers both). Each is recorded and writes what the real one writes — the
+ * generator its `*-props.json`, `build_props.py` the `props.json` manifest in
+ * `--out` — which is what makes the chain's input fingerprints real.
+ */
+function propsRunner(fails?: 'the spec' | 'the models' | 'the models, quietly') {
+    const calls: string[][] = [];
+    const runner: CommandRunner = async (command) => {
+        calls.push(command);
+        const spec = flag(command, '--spec');
+        const out = flag(command, '--out');
+        if (spec && out) {
+            if (fails === 'the models') {
+                return { code: 1, stdout: 'Blender 4.5\nreading clubhouse-props.json\n', stderr: 'Error: asset shed has no parts\n' };
+            }
+            // `blender -b --python` quits 0 after an unhandled Python exception: nothing written, code 0.
+            if (fails === 'the models, quietly') {
+                return {
+                    code: 0, stdout: 'built shed 240 tris\nBlender quit\n',
+                    stderr: 'KeyError: material concrete_weathered has no textures\n',
+                };
+            }
+            await mkdir(out, { recursive: true });
+            await writeFile(path.join(out, 'props.json'), JSON.stringify({ format: 'golfmap-props-v1' }));
+            return { code: 0, stdout: 'wrote Models/shed.fbx\nwrote props.json\n', stderr: '' };
+        }
+        if (fails === 'the spec') {
+            return { code: 1, stdout: '', stderr: 'Traceback (most recent call last)\nModuleNotFoundError: no rasterio\n' };
+        }
+        await writeFile(command[1]!.replace(/-props\.gen\.py$/, '-props.json'), JSON.stringify({ format: 'golfmap-props-spec-v1' }));
+        return { code: 0, stdout: '7 assets, 48 instances\n', stderr: '' };
+    };
+    /** `python` / `blender` — which executable each recorded run used, in order. */
+    const which = () => calls.map(c => path.basename(c[0]!).replace(/\.exe$/, ''));
+    return { calls, runner, which };
+}
+
 /** The same shape for MapBuildService's runner: every `--out` written, exit 0. */
 function mapBuildRunner() {
     const steps: string[][] = [];
@@ -140,7 +184,26 @@ function fakeEditor(exportFolder: string, projectName = 'linkan_v4', delayMs = 0
             // An editor busy compiling takes its time to answer the course probe.
             if (delayMs) await Bun.sleep(delayMs);
             const saved = args?.save === true ? { saved: { scenes: ['Assets/Scenes/Linkan.unity'], seconds: 0.4 } } : {};
-            if (command === 'golfmap.course') return Response.json({ ok: true, result: { active: { name: 'Linkan', exportFolder } } });
+            if (command === 'golfmap.course') {
+                return Response.json({ ok: true, result: { active: { name: 'Linkan', exportFolder, folder: COURSE_FOLDER } } });
+            }
+            if (command === 'golfmap.props.record') {
+                return Response.json({ ok: true, result: {
+                    pairing: { pairedByPosition: 12, indexStillRight: 9, unpairedInstances: 0, notInScene: 0 },
+                    handPlaced: [{ asset: 'shed', name: 'shed#2' }, { asset: 'bench_stone', name: 'bench_stone#0' }],
+                    note: 'Nothing in the scene was touched.',
+                } });
+            }
+            if (command === 'golfmap.props.place') {
+                return Response.json({ ok: true, result: {
+                    placed: 48, kept: 1,
+                    handPlaced: [{ asset: 'shed', name: 'shed#2', movedByHand: { m: 1.42, deg: 12.5 } }],
+                    specWon: [{ asset: 'bench_stone', name: 'bench_stone#0' }],
+                    handAdded: [{ asset: 'flag', name: 'flag#3 (1)' }],
+                    droppedHand: [{ asset: 'shed', name: 'shed#7', why: 'hand-placed, but the spec no longer has this instance' }],
+                    ...saved,
+                } });
+            }
             if (command === 'golfmap.terrain.update') {
                 return Response.json({ ok: true, result: { terrains: [{ terrain: args.terrain, sidecar: INNER_SIDECAR, source: 'raw', movedM2: 0, maxMoveM: 0 }], ...saved } });
             }
@@ -167,6 +230,8 @@ interface SetupOptions {
     meshesTimeoutMs?: number;
     /** The real shaping service as the sync service sees it, with a method replaced. */
     shapingOver?: Partial<GsproSyncDeps['shaping']>;
+    /** Which of the props chain's two commands refuses. */
+    propsFails?: 'the spec' | 'the models' | 'the models, quietly';
 }
 
 /**
@@ -228,12 +293,17 @@ async function setup(opts: SetupOptions = {}) {
     });
     const map = mapBuildRunner();
     const mapBuild = new MapBuildService({ db: ctx.db, assets, dataDir, pipelineDir: '/pipeline', runner: map.runner, terrainEdits });
+    const props = propsRunner(opts.propsFails);
     const svc = new GsproSyncService({
         db: ctx.db, courses, exports, mapBuild, dataDir, terrainEdits, unityBridge: bridge, pollMs: 5,
         shaping: opts.shapingOver ? shapingView(shaping, opts.shapingOver) : shaping,
         meshesTimeoutMs: opts.meshesTimeoutMs,
+        commandRunner: props.runner, propsPython: '/pipeline/.venv/python', blender: '/blender/blender.exe',
     });
-    return { ctx, db: ctx.db, svc, exports, shaping, dataDir, exportDir, layersRoot, pipeline, map, editor, assets };
+    return {
+        ctx, db: ctx.db, svc, exports, shaping, dataDir, exportDir, layersRoot, pipeline, map, props, editor,
+        assets, project,
+    };
 }
 
 type Setup = Awaited<ReturnType<typeof setup>>;
@@ -262,6 +332,34 @@ async function buildSite(t: Setup, sources: string[] = ['dem.tif']) {
 }
 
 const row = (s: GsproSyncStatus, id: GsproTargetId) => s.targets.find(t => t.id === id)!;
+
+/**
+ * A props spec in the course's docs folder — the same folder the shaping
+ * layers hang off (`<layersRoot>/<course slug>/`), which is how the service
+ * finds it.
+ */
+async function propsSpec(t: Setup, name = 'clubhouse') {
+    const dir = path.join(t.layersRoot, 'linkan');
+    await mkdir(dir, { recursive: true });
+    const gen = path.join(dir, `${name}-props.gen.py`);
+    await writeFile(gen, '# the spec generator\n');
+    return { dir, gen, json: path.join(dir, `${name}-props.json`) };
+}
+
+/** `<project>/Assets/GolfMap/Linkan/Props` — where the models go and `placed.json` lives. */
+const propsDir = (t: Setup) => path.join(t.project, 'Assets', 'GolfMap', 'Linkan', 'Props');
+
+/** Unity's record of what the last place put where: `hand` marks the ones the user moved. */
+async function placedRecord(t: Setup, hand: number, total = hand + 5) {
+    const dir = propsDir(t);
+    await mkdir(dir, { recursive: true });
+    const instances = Array.from({ length: total }, (_, i) => ({
+        asset: 'shed', index: i, name: `shed#${i}`, hand: i < hand,
+        spec: { e: 0, n: 0, yawDeg: 0, dz: 0 }, placed: { pos: [0, 0, 0], euler: [0, 0, 0], scale: [1, 1, 1] },
+    }));
+    await writeFile(path.join(dir, PROPS_PLACED), JSON.stringify({ format: PROPS_PLACED_FORMAT, instances }));
+    return dir;
+}
 
 /** A record in the export folder saying every target was updated at `lastRun`. */
 async function writeRecord(exportDir: string, lastRun: string) {
@@ -365,8 +463,12 @@ test('with no record, "last updated" comes from the files each target writes', a
     expect(row(s, 'buildings').lastRun).toBe(await mtimeIso(buildings));
     expect(row(s, 'creeks').lastRun).toBe(await mtimeIso(creeks));
     expect(row(s, 'course-file').lastRun).toBe(await mtimeIso(gkd));
-    // Nothing was edited after those files were written, so nothing is stale any more.
-    expect(s.targets.filter(r => r.stale).map(r => r.id)).toEqual([]);
+    // The props manifest is in the Unity project, so without an editor there is nothing to read —
+    // and this course has no props spec either, which is what blocks the row.
+    expect(row(s, 'props').lastRun).toBeNull();
+    expect(row(s, 'props').blocked).toMatch(/^No props spec in .*linkan\/$/);
+    // Nothing was edited after those files were written, so nothing runnable is stale any more.
+    expect(s.targets.filter(r => r.stale && r.blocked === null).map(r => r.id)).toEqual([]);
 });
 
 test('"changed since" counts the edits each target is made of', async () => {
@@ -682,6 +784,179 @@ test('a second update of the same target renders nothing again, and --force does
     await t.svc.whenIdle(TEST_COURSE_ID);
     expect(t.svc.job(forced.id).error).toBeNull();
     expect(t.pipeline.commands()).toEqual(['dem', 'dem', 'dem', 'dem']);
+});
+
+// --- The props row and its chain ---
+
+test('the Props row: blocked without a spec, fresh from the manifest, stale when the spec is newer, and the note from placed.json', async () => {
+    const t = await setup({ unity: true });
+    expect(row(await t.svc.status(TEST_COURSE_ID), 'props').blocked).toMatch(/^No props spec in .*linkan\/$/);
+
+    // A spec and a manifest Unity's Props folder already holds, both older than the spec's last build.
+    const spec = await propsSpec(t);
+    const dir = await placedRecord(t, 3);
+    await writeFile(path.join(dir, 'props.json'), '{}');
+    const anHourAgo = new Date(Date.now() - 3600_000);
+    await utimes(spec.gen, anHourAgo, anHourAgo);
+
+    const fresh = row(await t.svc.status(TEST_COURSE_ID), 'props');
+    expect(fresh.blocked).toBeNull();
+    expect(fresh.lastRun).toBe(await mtimeIso(path.join(dir, 'props.json')));
+    expect(fresh.changedSince).toEqual({ count: 0, kinds: [] });
+    expect(fresh.stale).toBe(false);
+    expect(fresh.note).toBe('3 hand-placed props are kept on update');
+
+    // Edit the generator: one spec changed.
+    const now = new Date();
+    await utimes(spec.gen, now, now);
+    const stale = row(await t.svc.status(TEST_COURSE_ID), 'props');
+    expect(stale.changedSince).toEqual({ count: 1, kinds: ['props spec'] });
+    expect(stale.stale).toBe(true);
+
+    // No record yet: the note says the first update records the scene before it places.
+    await rm(path.join(dir, PROPS_PLACED));
+    expect(row(await t.svc.status(TEST_COURSE_ID), 'props').note)
+        .toBe('no placed.json yet: the first update records the scene before placing');
+    // Every other row keeps `note` empty — it is the Props row's line.
+    expect((await t.svc.status(TEST_COURSE_ID)).targets.filter(r => r.note !== null).map(r => r.id)).toEqual(['props']);
+});
+
+test('the props chain: the spec in Python, the models in Blender, then record and place in Unity', async () => {
+    const t = await setup({ unity: true });
+    const spec = await propsSpec(t);
+
+    const started = await t.svc.update(TEST_COURSE_ID, 'props');
+    expect(started.phases.map(p => p.id)).toEqual(['props:spec', 'props:models', 'props:unity']);
+    await t.svc.whenIdle(TEST_COURSE_ID);
+    const job = t.svc.job(started.id);
+    expect(job.error).toBeNull();
+    expect(job.status).toBe('succeeded');
+
+    // Two runs: the generator under the pipeline venv's Python from the repo root, then Blender.
+    expect(t.props.which()).toEqual(['python', 'blender']);
+    expect(t.props.calls[0]).toEqual(['/pipeline/.venv/python', spec.gen]);
+    const out = propsDir(t);
+    expect(t.props.calls[1]!.slice(1, 5)).toEqual(['-b', '--factory-startup', '--python', path.join(REPO_DIR, 'blender', 'tools', 'build_props.py')]);
+    expect(t.props.calls[1]!.slice(5)).toEqual(['--', '--spec', spec.json, '--out', out]);
+    expect(await Bun.file(path.join(out, 'props.json')).exists()).toBe(true);
+
+    // Unity: no placed.json, so the scene is recorded before anything is placed; then the place saves.
+    const calls = t.editor!.calls.filter(c => c.command !== 'golfmap.course');
+    expect(calls.map(c => c.command)).toEqual(['golfmap.props.record', 'golfmap.props.place']);
+    expect(calls[1]!.args.save).toBe(true);
+
+    const report = job.results[0]!.report;
+    expect(report).toContain('spec: wrote clubhouse-props.json');
+    expect(report).toContain('Unity (linkan_v4): golfmap.props.record — 12 paired by position, 9 still at their index, 2 hand-placed (nothing in the scene was touched)');
+    expect(report).toContain('Unity (linkan_v4): golfmap.props.place — placed 48 prop(s), 1 kept where they were moved by hand');
+    expect(report).toContain('kept: shed#2 moved by hand 1.42 m / 12.5°');
+    expect(report).toContain('warning: the spec moved bench_stone#0 since it was placed by hand: it is back on the spec');
+    expect(report).toContain('warning: flag#3 (1) was added by hand in Unity and is left standing');
+    expect(report).toContain('warning: dropped the hand-placed shed#7 (hand-placed, but the spec no longer has this instance)');
+    expect(report).toContain('Saved Assets/Scenes/Linkan.unity (0.4 s)');
+    expect(report.at(-1)).toBe('A hand move becomes permanent only in clubhouse-props.gen.py (docs/workflows.md section 4).');
+    expect(job.phases.map(p => [p.id, p.status])).toEqual([
+        ['props:spec', 'done'], ['props:models', 'done'], ['props:unity', 'done'],
+    ]);
+
+    // Recorded like every other target, and the row is no longer stale.
+    const record = JSON.parse(await readFile(path.join(t.exportDir, SYNC_RECORD_FILE), 'utf8')) as GsproSyncRecord;
+    expect(record.targets.props!.lastRun).toBe(job.startedAt!);
+    expect(typeof record.targets.props!.seconds).toBe('number');
+    const after = row(await t.svc.status(TEST_COURSE_ID), 'props');
+    expect(after.stale).toBe(false);
+    expect(after.note).toBe('no placed.json yet: the first update records the scene before placing');
+});
+
+test('a second props update runs neither command again, and the place no longer records first', async () => {
+    const t = await setup({ unity: true });
+    await propsSpec(t);
+    await t.svc.update(TEST_COURSE_ID, 'props');
+    await t.svc.whenIdle(TEST_COURSE_ID);
+    expect(t.props.calls).toHaveLength(2);
+    // The place wrote the record Unity keeps (the fake editor does not, so stand it in).
+    await placedRecord(t, 1);
+    t.editor!.calls.length = 0;
+
+    const again = await t.svc.update(TEST_COURSE_ID, 'props');
+    await t.svc.whenIdle(TEST_COURSE_ID);
+    const job = t.svc.job(again.id);
+    expect(job.error).toBeNull();
+    // Nothing changed: no Python, no Blender — but the props still go into the scene.
+    expect(t.props.calls).toHaveLength(2);
+    const skipped = job.results[0]!.report.filter(l => l.includes('unchanged: '));
+    expect(skipped).toHaveLength(2);
+    expect(skipped[0]).toMatch(/^spec: unchanged: clubhouse-props\.json \(inputs unchanged since .+\)$/);
+    expect(skipped[1]).toMatch(/^models: unchanged: clubhouse-props\.json \(inputs unchanged since .+\)$/);
+    expect(t.editor!.calls.filter(c => c.command !== 'golfmap.course').map(c => c.command)).toEqual(['golfmap.props.place']);
+
+    // --force builds both again.
+    const forced = await t.svc.update(TEST_COURSE_ID, 'props', { force: true });
+    await t.svc.whenIdle(TEST_COURSE_ID);
+    expect(t.svc.job(forced.id).error).toBeNull();
+    expect(t.props.which()).toEqual(['python', 'blender', 'python', 'blender']);
+});
+
+test('without Unity the props spec is still written and the models and the place wait for the editor', async () => {
+    const t = await setup();
+    const spec = await propsSpec(t);
+
+    const started = await t.svc.update(TEST_COURSE_ID, 'props');
+    await t.svc.whenIdle(TEST_COURSE_ID);
+    const job = t.svc.job(started.id);
+    expect(job.status).toBe('succeeded');
+    expect(t.props.which()).toEqual(['python']);
+    expect(await Bun.file(spec.json).exists()).toBe(true);
+
+    const phase = (id: string) => job.phases.find(p => p.id === id)!;
+    expect(phase('props:spec').status).toBe('done');
+    for (const id of ['props:models', 'props:unity']) {
+        expect(phase(id).status).toBe('skipped');
+        expect(phase(id).detail).toMatch(/^Not in Unity: no open Unity editor imports from /);
+    }
+    expect(job.results[0]!.report.at(-1)).toMatch(/the spec is written; the models and the place wait for the editor$/);
+});
+
+test('a props generator that fails fails the job with the last of its output, and the models never run', async () => {
+    const t = await setup({ unity: true, propsFails: 'the spec' });
+    await propsSpec(t);
+
+    const started = await t.svc.update(TEST_COURSE_ID, 'props');
+    await t.svc.whenIdle(TEST_COURSE_ID);
+    const job = t.svc.job(started.id);
+    expect(job.status).toBe('failed');
+    expect(job.error).toBe('Props: The props spec (clubhouse-props.gen.py) failed:'
+        + ' Traceback (most recent call last) ModuleNotFoundError: no rasterio');
+    expect(job.phases.find(p => p.id === 'props:spec')!.status).toBe('failed');
+    expect(job.phases.find(p => p.id === 'props:models')!.status).toBe('skipped');
+    expect(t.editor!.calls.some(c => c.command.startsWith('golfmap.props'))).toBe(false);
+});
+
+test("Blender's last words land in the phase when building the props models fails", async () => {
+    const t = await setup({ unity: true, propsFails: 'the models' });
+    await propsSpec(t);
+
+    const started = await t.svc.update(TEST_COURSE_ID, 'props');
+    await t.svc.whenIdle(TEST_COURSE_ID);
+    const job = t.svc.job(started.id);
+    expect(job.status).toBe('failed');
+    expect(job.error).toBe('Props: Building the props (clubhouse-props.json) failed: Error: asset shed has no parts');
+    expect(job.phases.find(p => p.id === 'props:models')!.detail).toBe('Building the props (clubhouse-props.json) failed: Error: asset shed has no parts');
+    expect(job.phases.find(p => p.id === 'props:unity')!.status).toBe('skipped');
+});
+
+test('Blender quitting 0 without writing props.json is a failure, not a silent success', async () => {
+    const t = await setup({ unity: true, propsFails: 'the models, quietly' });
+    await propsSpec(t);
+
+    const started = await t.svc.update(TEST_COURSE_ID, 'props');
+    await t.svc.whenIdle(TEST_COURSE_ID);
+    const job = t.svc.job(started.id);
+    expect(job.status).toBe('failed');
+    expect(job.error).toBe('Props: Building the props (clubhouse-props.json) wrote no props.json'
+        + ' (Blender quit 0 — read the traceback) failed: KeyError: material concrete_weathered has no textures');
+    // Nothing was placed in Unity off a manifest that was never written.
+    expect(t.editor!.calls.some(c => c.command.startsWith('golfmap.props'))).toBe(false);
 });
 
 // --- The photo chain's vintage ---

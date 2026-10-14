@@ -10,8 +10,9 @@
 //
 // `status` prints the course's folders, terrains, ortho sources and files,
 // then the STATUS BOARD: one row per target (Terrain, Photo, Course shapes,
-// Meshes, Vegetation, Trees, Buildings, Creeks, Course file) with when it was
-// last updated, what has changed since, whether it is stale, why it cannot run
+// Meshes, Vegetation, Trees, Buildings, Props, Creeks, Course file) with when
+// it was last updated, what has changed since, whether it is stale, why it
+// cannot run, the row's own note (Props: the hand-placed props an update keeps)
 // and the manual step that follows it — plus the open Unity editors and the
 // Blender shaping worker.
 //
@@ -220,6 +221,7 @@ async function printBoard(courseId: string) {
         const state = row.blocked ? `blocked: ${row.blocked}` : row.stale ? 'STALE' : 'up to date';
         console.log(`  ${pad(row.id, 12)}${pad(when(row.lastRun), 18)}${pad(changedText(row), 40)}${state}`
             + (row.seconds !== null ? `  (last took ${row.seconds} s)` : ''));
+        if (row.note) console.log(`  ${pad('', 12)}${row.note}`);
         if (row.manual) console.log(`  ${pad('', 12)}then by hand: ${row.manual}`);
     }
     const stale = status.targets.filter(r => r.stale && r.blocked === null).map(r => r.id);
