@@ -1,10 +1,10 @@
-# Vreta in GSPro: handover 2026-10-13 (about 08:15 to 09:50)
+# Vreta in GSPro: handover 2026-10-13 (whole day; the "Update" section at the top is the current state)
 
 For an agent with no context. Read `docs/gspro/arborist.md` and `unity/ArboristMod/README.md` first
 for the tools; this file is what one session found and left. Nothing is committed. The session was
 stopped early: several things are prepared but not built.
 
-## Update 2026-10-13, 10:00 to 11:00 (second session; supersedes what it contradicts below)
+## Update 2026-10-13 (10:00 to 23:00; supersedes what it contradicts below, the last bullets are the latest)
 
 Built and loaded in GSPro: `Vreta_lidar_scene.gspcrse` of 10:33 and `arboristdata.dat` of about 10:40.
 Unity and Arborist are closed. Nothing committed. Screenshots: `tree-export/arborist-shots/day3/`.
@@ -104,11 +104,48 @@ Unity and Arborist are closed. Nothing committed. Screenshots: `tree-export/arbo
   (`arboristdata.baseline.dat` = the file before). Traps: always `trim restore=true` before a new
   trim list; lineup items carry their prefab names in GSPro.
 
-Still open: verify that build (bilberry again, hazel, wispy, range net from the range, vehicles
-without shadows, sun and sky as set, grass by hole 6) and run `perf.ts --rank --cap 120` with Unity
-closed; hazel still lime with black shaded leaves against the sun; a near-black patch of low plants
-around (910, 1505); far billboard wall brownish; beech billboards not recalibrated; Arborist's copy
-of the mod is not rebuilt; `arborist.md` and the mod's README lack today's findings.
+- **Late evening (20:40 to 23:00), supersedes the ring bullet above:**
+  - **The mod's `veg.draw` / `veg.set` matched a system by any part of its path**, and GSPro's own
+    (Arborist) system is `/MainGameObjects/VegetationStudioPro/...`, so `system: "/VegetationStudioPro"`
+    also took Arborist's. Fixed (`VegCommands.OfSystem`: a pattern starting with `/` must match the
+    path's start). **Every "Course VSP: ..." row measured before 21:53 (perf.ts --cases, --rank,
+    `rank-2026-10-13.md`) hid both systems' vegetation of that type.** So "Forst trees cost 0.98 ms,
+    ten times Arborist's per tree" was wrong, and the ring was built on it.
+  - **Ring switched off**: the key is renamed `forstRing_off` (Marcus: the Forst oaks look better lit
+    in the course's VSP than as Arborist's `Oak__`, closer up the usual light problems). Trees
+    regenerated without it, Unity trim `restore=true` then the far list (2 519 Forst trees stored),
+    scene saved with the June sun, **build of 22:13**, `arboristdata.dat` of 22:01 (both in the course
+    folder now). Trap: that `restore` gave 47 789 stored instead of 25 154 (duplicates of the trimmed
+    trees); the trim after it removed them pairwise and the end count is right, but restore needs a fix.
+  - **Beech** (`Forest_Large_beech_tree_03/04/05`, Arborist): tint `#729182`, saturation 0.85, chosen
+    live by Marcus; lowering the leaf saturation alone turned them brown (the texture is yellow), a
+    bluer tint fixed the yellow-green. Written into `arborist-species.json` and the 22:01 file; the
+    species file's `saturation` writes Arborist's `TextureSaturation`, the live trial set the shader's
+    `_Saturation`: check the beech in GSPro against `rings/beech-tints2.jpg` (rightmost).
+  - **Horizon thinning** `outerKeep` [[400, 0.8], [1000, 0.6], [null, 0.2]] (billboard-only trees outside
+    the boundary, by distance from it): 75 015 of 113 831 left out, no visible loss from play height,
+    about +2 fps at three of four viewpoints. Kept.
+  - **Ranking with the corrected tool, 22:15** (`tree-export/perf/rank-3.md`, `--only vsp,shadows`):
+    Arborist trees 0.83 ms, Arborist billboards 0.77, course grass 0.35, shadows 0.32, **course (Forst)
+    trees 0.11 ms** (0.44 in the woods). **Not trustworthy in detail**: noise 0.2-0.35 ms per view
+    (0.06 in the afternoon), the all-on baseline swung 10.4-11.6 ms within minutes; Marcus was
+    watching YouTube and working in the web app on the same GPU. Run it again with the machine idle.
+  - Viewpoint fps after the 22:13 build: tee 1 92.5, hole 6 103.3, woods 104.6, hole 4 tee 103.3.
+  - `perf.ts` reads the cap by looking at the sky; on this machine pass `--cap 120`, or measure
+    uncapped with the mod's `vsync '{"on":false}'` (GSPro sets vSync every frame; the command sets it
+    back at the end of each frame) and `vsync '{"on":true}'` after. The display has been at
+    3840x2160 59 Hz since about 11:00 (it was 120 Hz in the morning): under vSync anything below
+    59 fps shows as 30.
+  - Unity can start with a modal "Sign into your Unity Account" window that blocks the bridge:
+    Marcus's instruction is **Work offline**. `TimeAdjust` (OPCD) on the sun turned it back to its own
+    hour in the editor; `golfmap.look.apply` now switches it off before setting the direction.
+
+Still open: the vegetation ranking on an idle machine (`perf.ts --rank --rounds 3` with vSync held
+off; it takes about 75 minutes); what the fixed ~6 ms is (the sky alone with no vegetation ran at
+about 168 fps); fix `golfmap.vsp.trees.trim restore`; hazel still lime with black shaded leaves
+against the sun; a near-black patch of low plants around (910, 1505); far billboard wall brownish;
+beech and `Oak__` billboards not recalibrated; Arborist's copy of the mod is not rebuilt; `arborist.md`
+and the mod's README lack the system-match finding.
 
 ## State of the programs (as of 09:50, before the update above)
 
