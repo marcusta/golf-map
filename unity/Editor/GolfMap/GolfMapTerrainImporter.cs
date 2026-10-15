@@ -558,6 +558,83 @@ namespace GolfMap.Editor
             };
         }
 
+        // OPCD scenes switch the inner Terrain component off once the course meshes cover the square: the meshes are
+        // the ground the player sees, the terrain stays as collider and VSP's planting ground (docs/unity-gotchas.md).
+        [BridgeCommand("golfmap.terrain.draw", "Switch a terrain's Terrain component (its drawing) on or off; the TerrainCollider and VSP's use of it stay. OPCD scenes have the inner one off once the course meshes cover it. Omit on to only report.",
+            args = "terrain=inner|outer (default inner), on (true|false), " + GolfMapSceneSave.Arg)]
+        static object DrawCommand(BridgeArgs a)
+        {
+            var course = GolfMapCourses.Require();
+            var which = a.String("terrain", "inner");
+            var scene = EditorSceneManager.GetActiveScene();
+            var terrain = which == "outer"
+                ? GolfMapTreePlanter.RoleTerrain(scene, course.outerTerrainName, course.outerTerrainData, "outer")
+                : GolfMapTreePlanter.RoleTerrain(scene, course.innerTerrainName, course.innerTerrainData, "inner");
+            bool was = terrain.enabled;
+            if (a.Has("on") && a.Bool("on", true) != was)
+            {
+                Undo.RecordObject(terrain, "Terrain drawing");
+                terrain.enabled = a.Bool("on", true);
+                EditorSceneManager.MarkSceneDirty(scene);
+            }
+            return new Dictionary<string, object> { { "terrain", terrain.name }, { "was", was }, { "drawn", terrain.enabled }, { "dryRun", was == terrain.enabled } };
+        }
+
+        // A new course project carries the OPCD satellite materials (Resources/Materials/Theme - Satellite, the golfmap
+        // bunker/path copies) and the Stix grass materials with their photo slots empty and the source course's
+        // _TerrainSize: OPCD's theme step did that by hand. This puts the course's own -meshes photo into the project
+        // and onto every one of them.
+        [BridgeCommand("golfmap.satellite.assign", "Put an orthophoto JPEG of the course export folder (default <prefix>-*-meshes.jpg, the newest) into Assets/Terrain Backup/<prefix>/ (8192, high quality) and onto every project material with a _Satellite slot (OPCD MAHS satellite materials) and every Stix grass material's empty _ColorMap (NewRough), setting _TerrainSize / _ColorMapTiling to the inner terrain's side. For a new course whose materials still hold another course's photo or none. only=empty leaves materials that already show a texture other than the source course's alone.",
+            args = "file (a .jpg in the export folder), only=all|empty, list=false (every material in the answer, not the first 10), dryRun=false, " + GolfMapSceneSave.Arg)]
+        static object SatelliteAssignCommand(BridgeArgs a)
+        {
+            var course = GolfMapCourses.Require();
+            if (string.IsNullOrEmpty(course.exportFolder)) throw new BridgeError("The course asset names no export folder.");
+            var folder = Path.GetFullPath(Path.IsPathRooted(course.exportFolder) ? course.exportFolder : Path.Combine(Application.dataPath, course.exportFolder));
+            var file = a.String("file");
+            if (string.IsNullOrEmpty(file))
+                file = Directory.GetFiles(folder, course.exportPrefix + "-*-meshes.jpg").Where(p => !Path.GetFileName(p).Contains("-outer-"))
+                    .OrderByDescending(File.GetLastWriteTime).Select(Path.GetFileName).FirstOrDefault();
+            if (string.IsNullOrEmpty(file) || !File.Exists(Path.Combine(folder, file))) throw new BridgeError("No " + (file ?? course.exportPrefix + "-*-meshes.jpg") + " in " + folder + ".");
+            var inner = GolfMapTreePlanter.RoleTerrain(EditorSceneManager.GetActiveScene(), course.innerTerrainName, course.innerTerrainData, "inner");
+            float side = inner.terrainData.size.x;
+            bool emptyOnly = a.String("only", "all") == "empty";
+            bool dryRun = a.Bool("dryRun", false);
+
+            var assetPath = "Assets/Terrain Backup/" + course.exportPrefix + "/" + file;
+            Texture2D tex = null;
+            if (!dryRun)
+            {
+                EnsureFolder("Assets", "Terrain Backup", course.exportPrefix);
+                CopyIn(Path.Combine(folder, file), "Assets/Terrain Backup/" + course.exportPrefix);
+                tex = ImportOverlay(assetPath);
+            }
+
+            var rows = new List<object>();
+            foreach (var path in AssetDatabase.FindAssets("t:Material").Select(AssetDatabase.GUIDToAssetPath).Distinct().OrderBy(p => p))
+            {
+                if (!path.StartsWith("Assets/", StringComparison.Ordinal)) continue;
+                var m = AssetDatabase.LoadAssetAtPath<Material>(path);
+                if (m == null || m.shader == null) continue;
+                string slot = m.HasProperty("_Satellite") ? "_Satellite"
+                    : m.shader.name.StartsWith("Stix", StringComparison.OrdinalIgnoreCase) && m.HasProperty("_ColorMap") ? "_ColorMap" : null;
+                if (slot == null) continue;
+                var now = m.GetTexture(slot);
+                // A Stix material that samples a texture of its own (OPCD's 3dg themes: a speckled green) keeps it.
+                if ((emptyOnly || slot == "_ColorMap") && now != null && now != tex) continue;
+                if (!dryRun)
+                {
+                    m.SetTexture(slot, tex);
+                    if (m.HasProperty("_TerrainSize")) m.SetFloat("_TerrainSize", side);
+                    if (slot == "_ColorMap" && m.HasProperty("_ColorMapTiling")) m.SetFloat("_ColorMapTiling", side);
+                    EditorUtility.SetDirty(m);
+                }
+                rows.Add(path + " (" + slot + (now != null ? ", was " + now.name : ", was empty") + ")");
+            }
+            if (!dryRun) { AssetDatabase.SaveAssets(); SceneView.RepaintAll(); }
+            return new Dictionary<string, object> { { "file", file }, { "texture", assetPath }, { "terrainSize", side }, { "dryRun", dryRun }, { "materials", rows.Count }, { "first", rows.Take(a.Bool("list", false) ? rows.Count : 10).ToList() } };
+        }
+
         public static Dictionary<string, object> UpdateHeights(string which, string folder, float outerSinkM, bool dryRun)
         {
             var course = GolfMapCourses.Require();
