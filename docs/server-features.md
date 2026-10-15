@@ -91,7 +91,8 @@ with those stands (`WOODLAND_SOURCE`, `CourseFeaturesService.replaceGenerated`:
 `vegetation_zone` of zone type `woodland_floor`, D-VZ10; a stand someone deleted
 comes back), then re-registers the tile manifest. Job kind `trees`, steps `canopy`,
 `trees-stems`, `woodland`, `register`. The same pipeline steps run from the shell with
-`bun run trees:regen -- <courseId|siteId>` (`scripts/regen-trees.sh`), which writes
+`bun run trees:regen -- <courseId>` (`scripts/regen-trees-job.ts`, this same job, stands included) or
+`bash scripts/regen-trees.sh <courseId|siteId>` (needs sqlite3 on PATH), which writes
 `woodland.geojson` next to `trees.geojson`. Neither imports the tree polygons, and the
 script does not import the stands either; use `import-generated-features` for that.
 

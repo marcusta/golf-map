@@ -402,6 +402,40 @@ namespace GolfMap.Editor
         // is left alone. A previous golfmap.terrain.conform is undone by this:
         // re-run it once the course meshes are rebuilt from the new terrain.
 
+        // The window's Scan + Import without the window: a new course's first terrains from the bridge.
+        [BridgeCommand("golfmap.terrain.import", "Build Terrain (Inner) and Plot (Outer) from the course export folder, what the Terrain Importer window's Scan folder + Import terrains do: new TerrainData assets under Assets/<backupFolder>/<prefix>/, the default overlay of each terrain painted on (the inner's -terrain twin, the outer's -meshes variant), existing terrain objects replaced. For a course's first terrains; afterwards golfmap.terrain.update keeps the objects and assets.",
+            args = "folder (default: the active course's export folder), outerSink=0.5, backupFolder=Terrain Backup, importOuter=true, " + GolfMapSceneSave.Arg)]
+        static object ImportCommand(BridgeArgs a)
+        {
+            var course = GolfMapCourses.Require();
+            var folder = a.String("folder");
+            if (string.IsNullOrEmpty(folder))
+            {
+                if (string.IsNullOrEmpty(course.exportFolder)) throw new BridgeError("The course asset names no export folder; pass folder.");
+                folder = Path.IsPathRooted(course.exportFolder) ? course.exportFolder : Path.Combine(Application.dataPath, course.exportFolder);
+            }
+            var w = CreateInstance<GolfMapTerrainImporter>();
+            try
+            {
+                w.folder = Path.GetFullPath(folder);
+                w.outerSinkM = (float)a.Number("outerSink", 0.5);
+                w.backupFolder = a.String("backupFolder", "Terrain Backup");
+                w.importOuter = a.Bool("importOuter", true);
+                w.replaceExisting = true;
+                w.Scan();
+                if (w.inner == null) throw new BridgeError(w.status);
+                var overlays = new Dictionary<string, object>
+                {
+                    { "inner", w.inner.overlays.Count > 0 ? Path.GetFileName(w.inner.overlays[0]) : null },
+                    { "outer", w.outer != null && w.outer.overlays.Count > 0 ? Path.GetFileName(w.outer.overlays[0]) : null },
+                };
+                w.Import();
+                if (w.status.StartsWith("Import failed", StringComparison.Ordinal)) throw new BridgeError(w.status);
+                return new Dictionary<string, object> { { "folder", w.folder }, { "course", w.courseSlug }, { "overlays", overlays }, { "report", w.status } };
+            }
+            finally { DestroyImmediate(w); }
+        }
+
         [MenuItem("GolfMap/Terrain/Update heights from export")]
         static void UpdateMenu() { Debug.Log("[GolfMap] " + GolfMapJson.Serialize(UpdateHeights("both", null, float.NaN, false), false)); }
 

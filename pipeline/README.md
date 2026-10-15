@@ -154,7 +154,7 @@ leaf-off imagery cannot verify hidden stems.
 
 #### Regenerating a course
 
-`bun run trees:regen -- <courseId|siteId>` from the repo root runs `canopy` (tiles and
+`bun run trees:regen -- <courseId>` from the repo root (the app's job; `scripts/regen-trees.sh` is the bash version) runs `canopy` (tiles and
 `trees.geojson`) and `trees-stems` against `data/sources/<siteId>` and
 re-registers the manifest. The Create-mode actions menu has the same job as
 "Regenerate trees".

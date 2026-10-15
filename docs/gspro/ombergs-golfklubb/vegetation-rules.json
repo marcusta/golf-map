@@ -1,0 +1,7 @@
+{
+  "format": "golfmap-vegetation-rules-v1",
+  "_comment": "Vreta's own vegetation-generator rules: flags of each generator's script (server/services/vegetation-generators.ts, by source), passed by Update vegetation and `bun run grass:zones` before any CLI flags. tall-grass (pipeline/grass_zones.py): the tall rough thinned with distance from play (rough, semi, fairway, green, tee, bunker) for frame time (Marcus, 2026-10-14; VSP grass cost 0.4 ms at tee 1, 1.6 ms at the hole 4 tee view). Since 2026-10-15 (Marcus): 0.6 from 20 m and 0.3 from 50 m (was 0.5 from 10 m, 0.28 from 40 m). Near rule: the weight falls over 18-22 m, a ramp centred on 20 m so no density line shows, to 0.6. Far rule (the code's own is 30 / 10 / 0.56): falls over 40-50 m to 0.5; the two multiply, so 0.6 x 0.5 = 0.3 from 50 m. The far mix (rough_tall/far, from 40 m) is not thinned.",
+  "generators": {
+    "tall-grass": { "near-start": 18, "near-ramp": 4, "near-weight": 0.6, "far-start": 40, "far-ramp": 10, "far-weight": 0.5 }
+  }
+}

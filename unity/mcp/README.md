@@ -79,6 +79,14 @@ base (content hash per file as of the last sync) in `<project>/Library/GolfMapBr
    on `unity_sync` / `unity_compile` recompile without focusing Unity.
 3. Make the course scene and set its name as Scene Name on `GolfMap/<Name>/Course.asset` (or, without
    step 1, `unity_menu` `GolfMap/Course/New course for this scene`), then `unity_command golfmap.course`.
+   The scene is OPCD's prepared `Assets/Scenes/ImportTerrain.unity` saved as your own: with no dialog,
+   copy the file (not its `.meta`) to `Assets/Terrain Backup/<prefix>/<Name>_lidar_scene.unity` and
+   `unity_command scene.open` it. `exportPrefix` must be the app's file prefix (the app course name as a
+   slug, e.g. `ombergs-golfklubb`; pass `--prefix` in step 1): a wrong one finds no export files. Edit
+   `Course.asset` on disk, then `unity_command asset.reimport {path: "Assets/GolfMap/<Name>/Course.asset"}`.
+4. Terrains: `bun run gspro:export -- <course> dem:inner dem:outer ortho outer-ortho --collection <orto-l2-YYYY>
+   --tint --forest-floor --remove-buildings` (the GSPro board's photo defaults), then
+   `unity_command golfmap.terrain.import {save: true}` (the Terrain Importer window without the window).
 
 ## Adding a command
 

@@ -1,0 +1,616 @@
+{
+  "comment": "Vreta's prefabs (file name without .prefab) that pipeline/arborist.py's name rule cannot match to an Arborist catalogue label. null = leave it out. 'species' is the lower vegetation (palette prefabs), 'trees' the planted trees. The pines, firs, oaks and poplars 03-07 are the very same models in Arborist (identical first-LOD size); the birches, elms, the generic broadleaf, the smallest poplar and the three lower-vegetation entries have no like-for-like model, and those choices are first guesses to be judged on screen. treeSettings / plantSettings cap how bright the leaf and bark tints may be (see arborist.py apply_look): Arborist's defaults (0.8-1.0) are far too bright under this course's light; the values follow WaterfrontGC_GSP's (birch 0.36, oak and poplar about 0.5, pine 0.6-0.7, saturation left at 1). lodFactor: the detailed model is kept this many times further out; the simpler distance models of the broadleaves are a few large leaf cards, each lit on its own, which mottles the crowns at 50-150 m (seen in Arborist 2026-10-12, where the quality setting's LOD bias is 0.7).",
+  "vsp_comment": "Hybrid: the full-model trees of these prefabs (parts of prefab names) stay in the course's own VSP, because Arborist has no model as good (Forst's oaks and birches; Arborist's birches are SpeedTree models that cannot be tinted as needed). Unity must draw the same list: golfmap.vsp.trees on=true keep=<this list>. Their background trees still go to Arborist as billboard-only copies, through the 'trees' mapping.",
+  "vsp": [
+    "PF_Oak",
+    "PF Birch"
+  ],
+  "outerKeep_comment": "Marcus 2026-10-13: the horizon forest need not draw every tree, and less the further out. Bands by distance outside the course boundary [metres or null = beyond, share kept], for the billboard-only trees (arborist.py trees --surfaces). Half of all outer billboards showed no difference in the forest wall from three viewpoints and no measurable frame-rate gain either.",
+  "outerKeep": [
+    [
+      400,
+      0.8
+    ],
+    [
+      1000,
+      0.6
+    ],
+    [
+      null,
+      0.2
+    ]
+  ],
+  "billboardBeyondM_comment": "The far rule of arborist.py trees --surfaces: a tree both further than outsideOob outside the course boundary and further than fromPlay from the playing field (rough, semi, fairway, green, tee, bunker, wherever they lie: the range and the club's holes outside the layout count) is a billboard only; every tree inside the boundary is a full model (until 2026-10-14 either distance alone made a billboard, which put billboards beside the range tee). Marcus 2026-10-13: 40 m was too aggressive, 80 m.",
+  "billboardBeyondM": {
+    "outsideOob": 80,
+    "fromPlay": 80
+  },
+  "vegeSettings_comment": "Written into the file's VSProSettings.vegeSettings, which GSPro's Arborist system runs with (only keys the file has). PlantDistance (Marcus 2026-10-14): 350 -> 250 m saved 0.6 ms a frame at tee 1 (live in GSPro, main-thread CPU: the system culls fewer cells) with no visible difference from tee 1, the hole 4 tee and hole 6; trees stay full models to PlantDistance + AdditionalTreeMeshDistance (563 m).",
+  "vegeSettings": {
+    "PlantDistance": 250
+  },
+  "forstRing_comment": "SWITCHED OFF 2026-10-13 (the key is renamed forstRing_off; rename it back to use it): no radius gave a frame-time gain, the birch swap shows, and Marcus finds the Forst oaks better lit in the course's VSP than as Arborist's Oak__ items. The ring rule of arborist.py trees --surfaces (ForstRing; Marcus 2026-10-13): the course's own full-model trees (the 'vsp' prefabs, Forst's CTI oaks and birches, the most expensive thing on the course) stand only on the playing field (rough, semi, fairway, green, tee, bunker; not deep rough) and within playM metres of it. Further out, and still inside the far rule, the same tree at the same position, rotation and height is a full model drawn by Arborist: the species 'replace' names for its prefab (keys are prefab file names or parts of them, the whole name wins, then the longest part; values as in 'trees'). minM widens the ring per prefab (part of a prefab name -> metres): Arborist has no birch but the SpeedTree S7_European_White_Birch, which Marcus accepts only from about 30 m from the play, so the birch ring is max(playM, 30). The oaks become Arborist's Oak__* items, which are the very same Forst meshes (identical first-LOD sizes and triangle counts) under Arborist's DEC shader with one leaf tint (treeSettings, match Oak__: #a0acc4, measured against the Forst oaks in GSPro to within 2 %, lodFactor 1 as the course's items); there is no bare-crowned Oak__, so tall_bare becomes the slimmer Oak__medium. Positions that leave the course's VSP go to data/arborist/<course>-vsp-far.json: Unity golfmap.vsp.trees.trim restore=true, then file=<that>. Remove this key and the behaviour is the plain far rule. Variants built and measured 2026-10-13 (playM 15, 30, 45): docs/gspro/arborist.md.",
+  "forstRing_off": {
+    "playM": 30,
+    "minM": {
+      "PF Birch": 30
+    },
+    "replace": {
+      "PF_Oak_small Terrain": "Oak__small",
+      "PF_Oak_tall Terrain": "Oak__tall",
+      "PF_Oak_tall_bare Terrain": "Oak__medium",
+      "PF_Oak_big Terrain": "Oak__big",
+      "PF Birch": "S7_European_White_Birch@tint=#527e4b"
+    }
+  },
+  "species": {
+    "Common Fern_Var2": "Forest_fern_01_1",
+    "Common Fern_Var3": "Forest_fern_01_3",
+    "PF Birch F Sapling": "MeadowEnv_00_Poplar_plant_A",
+    "Cottonwood-Giant-Canopy PREFAB": "MeadowEnv_maple_bush_03",
+    "Prefab_billberry_04": null
+  },
+  "treeSettings": [
+    {
+      "match": [
+        "*"
+      ],
+      "tintCap": 0.52,
+      "barkCap": 0.7,
+      "even": true,
+      "lodFactor": 4,
+      "billboardTint": "#ffffff",
+      "billboardBrightness": 1.3,
+      "billboardDesat": 0.65,
+      "billboardNormal": 0.3
+    },
+    {
+      "match": [
+        "S7_European_White_Birch",
+        "S7_River_Birch"
+      ],
+      "tint": "#6e8056",
+      "barkTint": "#b3b4ae"
+    },
+    {
+      "match": [
+        "Fir_",
+        "Forest_pine",
+        "dwarf_pine"
+      ],
+      "tintCap": 0.68,
+      "lodFactor": 1.5
+    },
+    {
+      "match": [
+        "Poplar"
+      ],
+      "tint": "#527470",
+      "saturation": 0.65
+    },
+    {
+      "match": [
+        "S7_EuropeanLinden",
+        "S7_American_Elm"
+      ],
+      "tint": "#6f8062"
+    },
+    {
+      "match": [
+        "S7_European_White_Birch"
+      ],
+      "tint": "#527e4b",
+      "saturation": 0,
+      "calibrated": false,
+      "note": "2026-10-12: visually tuned in Arborist at close and medium range. Remove the leaf texture's yellow/olive colour variation and supply a uniform green tint; keep its shading and texture detail. The course's Arborist postprocessing lift.w was also raised from -0.20678772 to -0.03 to retain dark-leaf detail; scene lighting is unchanged. Billboard calibration is unchanged."
+    },
+    {
+      "match": [
+        "S7_White_Oak"
+      ],
+      "tint": "#969c81",
+      "calibrated": true
+    },
+    {
+      "match": [
+        "ModdedOak_Moline"
+      ],
+      "tint": "#8e99a0",
+      "calibrated": true
+    },
+    {
+      "match": [
+        "ModdedOak2_Moline"
+      ],
+      "tint": "#8d949d",
+      "calibrated": true
+    },
+    {
+      "match": [
+        "CE_Oak_CE_Large_Full"
+      ],
+      "tint": "#879da0",
+      "calibrated": true
+    },
+    {
+      "match": [
+        "S7_EuropeanLinden"
+      ],
+      "tint": "#657783",
+      "calibrated": true
+    },
+    {
+      "match": [
+        "S7_American_Elm"
+      ],
+      "tint": "#9fa5a9",
+      "calibrated": true
+    },
+    {
+      "match": [
+        "MeadowEnv_02_Poplar"
+      ],
+      "tint": "#789536",
+      "calibrated": true
+    },
+    {
+      "match": [
+        "MeadowEnv_03_Poplar"
+      ],
+      "tint": "#8ca675",
+      "calibrated": true
+    },
+    {
+      "match": [
+        "MeadowEnv_05_Poplar"
+      ],
+      "tint": "#90ac7c",
+      "calibrated": true
+    },
+    {
+      "match": [
+        "MeadowEnv_06_Poplar"
+      ],
+      "tint": "#809e4b",
+      "calibrated": true
+    },
+    {
+      "match": [
+        "MeadowEnv_07_Poplar"
+      ],
+      "tint": "#819e4f",
+      "calibrated": true
+    },
+    {
+      "match": [
+        "MountainEnv_Forest_pine_01"
+      ],
+      "tint": "#5a6f25",
+      "calibrated": true
+    },
+    {
+      "match": [
+        "MountainEnv_Forest_pine_03"
+      ],
+      "tint": "#6a923b",
+      "calibrated": true
+    },
+    {
+      "match": [
+        "MountainEnv_Forest_pine_04"
+      ],
+      "tint": "#3a5218",
+      "calibrated": true
+    },
+    {
+      "match": [
+        "MountainEnv_Forest_pine_05"
+      ],
+      "tint": "#73a64e",
+      "calibrated": true
+    },
+    {
+      "match": [
+        "MountainEnv_Forest_pine_06"
+      ],
+      "tint": "#466c24",
+      "calibrated": true
+    },
+    {
+      "match": [
+        "MountainEnv_Forest_pine_tree_00_B"
+      ],
+      "tint": "#89a34f",
+      "calibrated": true
+    },
+    {
+      "match": [
+        "MountainEnv_Forest_pine_tree_00_C"
+      ],
+      "tint": "#789239",
+      "calibrated": true
+    },
+    {
+      "match": [
+        "NM_Fir_02_Small"
+      ],
+      "tint": "#b7b4b2",
+      "calibrated": true
+    },
+    {
+      "match": [
+        "NM_Fir_03_Medium"
+      ],
+      "tint": "#c0bdb6",
+      "calibrated": true
+    },
+    {
+      "match": [
+        "NM_Fir_05_Standalone"
+      ],
+      "tint": "#b3b984",
+      "calibrated": true
+    },
+    {
+      "match": [
+        "NM_Fir_07_Forest"
+      ],
+      "tint": "#aeb275",
+      "calibrated": true
+    },
+    {
+      "match": [
+        "S7_EuropeanLinden"
+      ],
+      "billboardTint": "#ecfffc",
+      "billboardBrightness": 1.267,
+      "billboardDesat": 0.591,
+      "billboardNormal": 0.3,
+      "billboardCalibrated": true
+    },
+    {
+      "match": [
+        "S7_American_Elm"
+      ],
+      "billboardTint": "#f9ffff",
+      "billboardBrightness": 1.362,
+      "billboardDesat": 0.495,
+      "billboardNormal": 0.3,
+      "billboardCalibrated": true
+    },
+    {
+      "match": [
+        "Forest_Large_beech_tree_04"
+      ],
+      "tint": "#729182",
+      "saturation": 0.85,
+      "smoothness": 0.3,
+      "calibrated": true
+    },
+    {
+      "match": [
+        "Forest_Large_beech_tree_05"
+      ],
+      "tint": "#729182",
+      "saturation": 0.85,
+      "smoothness": 0.3,
+      "calibrated": true
+    },
+    {
+      "match": [
+        "Forest_Large_beech_tree_03"
+      ],
+      "tint": "#729182",
+      "saturation": 0.85,
+      "smoothness": 0.3,
+      "calibrated": true
+    },
+    {
+      "match": [
+        "Oak__"
+      ],
+      "tint": "#a0acc4",
+      "lodFactor": 1,
+      "calibrated": true,
+      "note": "2026-10-13: Forst's oaks as Arborist's own items (forstRing). Tint measured in GSPro against the course's CTI Forst oaks from 22 m, June sun: crown mean 80/84/56 against 79/83/57. lodFactor 1 as the course's VSP items of the same meshes. The billboard (beyond the Arborist tree distance) is not calibrated."
+    },
+    {
+      "match": [
+        "S7_European_White_Birch"
+      ],
+      "billboardTint": "#f0fffd",
+      "billboardBrightness": 2.345,
+      "billboardDesat": 0.671,
+      "billboardNormal": 0.3,
+      "billboardCalibrated": true
+    },
+    {
+      "match": [
+        "S7_White_Oak"
+      ],
+      "billboardTint": "#f8feff",
+      "billboardBrightness": 1.724,
+      "billboardDesat": 0.473,
+      "billboardNormal": 0.3,
+      "billboardCalibrated": true
+    },
+    {
+      "match": [
+        "ModdedOak_Moline"
+      ],
+      "billboardTint": "#fff7f8",
+      "billboardBrightness": 3.0,
+      "billboardDesat": 0.626,
+      "billboardNormal": 0.3,
+      "billboardCalibrated": true
+    },
+    {
+      "match": [
+        "ModdedOak2_Moline"
+      ],
+      "billboardTint": "#f8fffe",
+      "billboardBrightness": 3.0,
+      "billboardDesat": 0.638,
+      "billboardNormal": 0.3,
+      "billboardCalibrated": true
+    },
+    {
+      "match": [
+        "CE_Oak_CE_Large_Full"
+      ],
+      "billboardTint": "#f4fffe",
+      "billboardBrightness": 2.169,
+      "billboardDesat": 0.711,
+      "billboardNormal": 0.3,
+      "billboardCalibrated": true
+    },
+    {
+      "match": [
+        "MeadowEnv_02_Poplar"
+      ],
+      "billboardTint": "#e4fffa",
+      "billboardBrightness": 2.365,
+      "billboardDesat": 0.541,
+      "billboardNormal": 0.3,
+      "billboardCalibrated": true
+    },
+    {
+      "match": [
+        "MeadowEnv_03_Poplar"
+      ],
+      "billboardTint": "#e6fffa",
+      "billboardBrightness": 1.941,
+      "billboardDesat": 0.696,
+      "billboardNormal": 0.3,
+      "billboardCalibrated": true
+    },
+    {
+      "match": [
+        "MeadowEnv_05_Poplar"
+      ],
+      "billboardTint": "#e7fffa",
+      "billboardBrightness": 1.924,
+      "billboardDesat": 0.718,
+      "billboardNormal": 0.3,
+      "billboardCalibrated": true
+    },
+    {
+      "match": [
+        "MeadowEnv_06_Poplar"
+      ],
+      "billboardTint": "#e2fff9",
+      "billboardBrightness": 2.482,
+      "billboardDesat": 0.557,
+      "billboardNormal": 0.3,
+      "billboardCalibrated": true
+    },
+    {
+      "match": [
+        "MeadowEnv_07_Poplar"
+      ],
+      "billboardTint": "#e2fff9",
+      "billboardBrightness": 2.501,
+      "billboardDesat": 0.566,
+      "billboardNormal": 0.3,
+      "billboardCalibrated": true
+    },
+    {
+      "match": [
+        "MountainEnv_Forest_pine_01"
+      ],
+      "billboardTint": "#fff2f6",
+      "billboardBrightness": 2.666,
+      "billboardDesat": 0.475,
+      "billboardNormal": 0.3,
+      "billboardCalibrated": true
+    },
+    {
+      "match": [
+        "MountainEnv_Forest_pine_03"
+      ],
+      "billboardTint": "#f9fffe",
+      "billboardBrightness": 1.463,
+      "billboardDesat": 0.426,
+      "billboardNormal": 0.3,
+      "billboardCalibrated": true
+    },
+    {
+      "match": [
+        "MountainEnv_Forest_pine_04"
+      ],
+      "billboardTint": "#ffe2e9",
+      "billboardBrightness": 3.0,
+      "billboardDesat": 0.3,
+      "billboardNormal": 0.3,
+      "billboardCalibrated": true
+    },
+    {
+      "match": [
+        "MountainEnv_Forest_pine_05"
+      ],
+      "billboardTint": "#ecfffc",
+      "billboardBrightness": 1.171,
+      "billboardDesat": 0.429,
+      "billboardNormal": 0.3,
+      "billboardCalibrated": true
+    },
+    {
+      "match": [
+        "MountainEnv_Forest_pine_06"
+      ],
+      "billboardTint": "#ffebef",
+      "billboardBrightness": 2.953,
+      "billboardDesat": 0.326,
+      "billboardNormal": 0.3,
+      "billboardCalibrated": true
+    },
+    {
+      "match": [
+        "MountainEnv_Forest_pine_tree_00_B"
+      ],
+      "billboardTint": "#d4fff7",
+      "billboardBrightness": 1.265,
+      "billboardDesat": 0.451,
+      "billboardNormal": 0.3,
+      "billboardCalibrated": true
+    },
+    {
+      "match": [
+        "MountainEnv_Forest_pine_tree_00_C"
+      ],
+      "billboardTint": "#e4fffc",
+      "billboardBrightness": 1.597,
+      "billboardDesat": 0.554,
+      "billboardNormal": 0.3,
+      "billboardCalibrated": true
+    },
+    {
+      "match": [
+        "NM_Fir_02_Small"
+      ],
+      "billboardTint": "#cbfff5",
+      "billboardBrightness": 0.943,
+      "billboardDesat": 0.592,
+      "billboardNormal": 0.3,
+      "billboardCalibrated": true
+    },
+    {
+      "match": [
+        "NM_Fir_03_Medium"
+      ],
+      "billboardTint": "#cffff5",
+      "billboardBrightness": 0.924,
+      "billboardDesat": 0.583,
+      "billboardNormal": 0.3,
+      "billboardCalibrated": true
+    },
+    {
+      "match": [
+        "NM_Fir_05_Standalone"
+      ],
+      "billboardTint": "#d9fffa",
+      "billboardBrightness": 1.105,
+      "billboardDesat": 0.549,
+      "billboardNormal": 0.3,
+      "billboardCalibrated": true
+    },
+    {
+      "match": [
+        "NM_Fir_07_Forest"
+      ],
+      "billboardTint": "#d3fff6",
+      "billboardBrightness": 1.243,
+      "billboardDesat": 0.506,
+      "billboardNormal": 0.3,
+      "billboardCalibrated": true
+    },
+    {
+      "match": [
+        "Forest_Large_beech_tree_03"
+      ],
+      "billboardTint": "#e3fff9",
+      "billboardBrightness": 1.462,
+      "billboardDesat": 0.541,
+      "billboardNormal": 0.3,
+      "billboardCalibrated": true
+    },
+    {
+      "match": [
+        "Forest_Large_beech_tree_04"
+      ],
+      "billboardTint": "#dbfff8",
+      "billboardBrightness": 1.341,
+      "billboardDesat": 0.555,
+      "billboardNormal": 0.3,
+      "billboardCalibrated": true
+    },
+    {
+      "match": [
+        "Forest_Large_beech_tree_05"
+      ],
+      "billboardTint": "#defff9",
+      "billboardBrightness": 1.346,
+      "billboardDesat": 0.594,
+      "billboardNormal": 0.3,
+      "billboardCalibrated": true
+    }
+  ],
+  "plantSettings": [
+    {
+      "match": [
+        "*"
+      ],
+      "tint": "#6f7c63",
+      "barkCap": 0.7,
+      "even": true,
+      "smoothness": 0,
+      "renderDistance": 0.55
+    },
+    {
+      "comment": "Hazel's leaf texture is dark: under the common tint it drew near black in GSPro from every side (2026-10-13). Tried live with veg.material.",
+      "match": [
+        "hazel"
+      ],
+      "tint": "#b9c79f",
+      "ao": 0.5
+    },
+    {
+      "match": [
+        "billberry",
+        "lingonberry",
+        "heath",
+        "fern"
+      ],
+      "renderDistance": 0.3
+    },
+    {
+      "match": [
+        "fern"
+      ],
+      "scale": 0.45,
+      "sampleDistance": 1.3
+    }
+  ],
+  "trees": {
+    "Fir_02_S": "NM_Fir_02_Small",
+    "Fir_05_Standalone_cheap": "NM_Fir_05_Standalone",
+    "Fir_07_Forest_cheap": "NM_Fir_07_Forest",
+    "VS_prefab_01_Poplar": "MeadowEnv_02_Poplar",
+    "VS_prefab_03_Poplar": "MeadowEnv_03_Poplar",
+    "VS_prefab_05_Poplar": "MeadowEnv_05_Poplar",
+    "VS_prefab_06_Poplar": "MeadowEnv_06_Poplar",
+    "VS_prefab_07_Poplar": "MeadowEnv_07_Poplar",
+    "PF_Oak_small Terrain": "ModdedOak_Moline",
+    "PF_Oak_tall Terrain": "S7_White_Oak",
+    "PF_Oak_tall_bare Terrain": "ModdedOak2_Moline",
+    "PF_Oak_big Terrain": "CE_Oak_CE_Large_Full",
+    "PF Birch A large 1": "S7_European_White_Birch@tint=#527e4b,keep=0.8",
+    "PF Birch C wide": "S7_European_White_Birch@tint=#527e4b,keep=0.8",
+    "PF Birch D generic": "S7_European_White_Birch@tint=#527e4b,keep=0.8",
+    "PF Birch F Sapling": "S7_European_White_Birch@tint=#527e4b,keep=0.8",
+    "Broadleaf Balanced": "Forest_Large_beech_tree_04",
+    "Elm4-Tall PREFAB": "Forest_Large_beech_tree_05",
+    "Elm-Split PREFAB": "Forest_Large_beech_tree_03"
+  },
+  "species_comment": "Prefab_billberry_04 (the tall bilberry) is left out and the ferns are made small: NatureManufacture's grass-shader plants light their back faces as fronts, so from the sun's side a big bilberry bush or fern frond is white (seen in Arborist and GSPro 2026-10-12; the cure, _BackFaceMirrorNormal, is not among the values Arborist stores)."
+}

@@ -4,7 +4,11 @@
 // (OPCD material tuning, stale-keyword fixes) and the course's presets.
 //
 //   bun run unity:new-project -- --from <project> --to <project> --course <Name>
-//                                [--from-course <Name>] [--dry-run]
+//                                [--from-course <Name>] [--prefix <slug>] [--dry-run]
+//
+// --prefix is the file prefix the app's exports carry: the app course name as a
+// slug ("Ombergs Golfklubb" -> ombergs-golfklubb; gspro:status lists the files).
+// Without it the lowercased --course name is used.
 //
 // <project> is a Unity project folder or a name under D:/gspro_courses
 // ("vreta_v4_2025_12_02"). The new project is a fresh GSPro base project
@@ -186,7 +190,7 @@ function addDefines(settingsFile: string, defines: string[], dryRun: boolean): s
 function main() {
     const args = parseArgs(process.argv.slice(2));
     if (!args.from || !args.to || !args.course) {
-        console.error('Usage: bun run unity:new-project -- --from <project> --to <project> --course <Name> [--from-course <Name>] [--dry-run]');
+        console.error('Usage: bun run unity:new-project -- --from <project> --to <project> --course <Name> [--from-course <Name>] [--prefix <slug>] [--dry-run]');
         process.exit(2);
     }
     const dryRun = args['dry-run'] === true;
@@ -303,9 +307,11 @@ function main() {
         console.log('   already there, left alone');
     } else {
         const lower = course.toLowerCase();
+        // The Terrain Importer names the inner TerrainData <prefix>_Lidar_Inner.
+        const prefix = typeof args.prefix === 'string' ? args.prefix : lower;
         const fields: Record<string, string> = {
             courseName: course, sceneName: '', fallbackTreesFile: '',
-            exportFolder: `../../${lower}-opcd`, exportPrefix: lower, innerTerrainData: `${course}_lidar_inner`,
+            exportFolder: `../../${lower}-opcd`, exportPrefix: prefix, innerTerrainData: `${prefix}_Lidar_Inner`,
         };
         let asset = courseAsset;
         for (const [k, v] of Object.entries(fields)) asset = asset.replace(new RegExp(`^(  ${k}:).*$`, 'm'), `$1 ${v}`);

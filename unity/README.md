@@ -83,6 +83,9 @@ sidecars, nothing is named after a course.
      by the **Outer sink** (default 0.5 m) so no outer ground shows through the inner —
      the manual's "lower the Y value until no blue shows".
 
+The bridge's `golfmap.terrain.import [folder] [outerSink=0.5] [backupFolder] [importOuter=true] [save]` is
+Scan folder + Import terrains with the default overlay picks, for a new course from an agent.
+
 Existing `Terrain (Inner)` / `Plot (Outer)` objects are replaced when the toggle is on.
 Creation supports Undo. The importer does not touch other terrain settings (pixel error,
 base map distance …); set those as the base project prefers.
