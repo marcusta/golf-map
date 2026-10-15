@@ -1,0 +1,52 @@
+{
+  "format": "golfmap-shaping-layer-v1",
+  "id": "features",
+  "generated": true,
+  "generator": "pipeline/gspro.py shaping-global",
+  "course": {
+    "id": "ce4629e1-042d-4ea7-b31e-9226e2742a56",
+    "name": "Ombergs Golfklubb"
+  },
+  "ops": [
+    {
+      "id": "recipe-47",
+      "op": "afrod.recipe",
+      "select": {
+        "feature": "3eb5be62-5954-4322-9696-d919029ee9b9"
+      },
+      "recipe": "cesimgolf-Hazeltine_Bunker_Recipe.json",
+      "seed": 71,
+      "note": "cesimgolf-hazeltine (recipe edit)"
+    },
+    {
+      "id": "recipe-48",
+      "op": "afrod.recipe",
+      "select": {
+        "feature": "83b837c3-5636-43fc-b863-9ef757f0766e"
+      },
+      "recipe": "cesimgolf-Hazeltine_Bunker_Recipe.json",
+      "seed": 72,
+      "note": "cesimgolf-hazeltine (recipe edit)"
+    },
+    {
+      "id": "recipe-4b",
+      "op": "afrod.recipe",
+      "select": {
+        "feature": "b25224c4-0ca4-4585-9b8f-374fa296ea9f"
+      },
+      "recipe": "cesimgolf-Hazeltine_Bunker_Recipe.json",
+      "seed": 75,
+      "note": "cesimgolf-hazeltine (recipe edit)"
+    },
+    {
+      "id": "recipe-4c",
+      "op": "afrod.recipe",
+      "select": {
+        "feature": "56b969f6-270a-4591-80c6-7ae7b69a4acb"
+      },
+      "recipe": "cesimgolf-Hazeltine_Bunker_Recipe.json",
+      "seed": 76,
+      "note": "cesimgolf-hazeltine (recipe edit)"
+    }
+  ]
+}

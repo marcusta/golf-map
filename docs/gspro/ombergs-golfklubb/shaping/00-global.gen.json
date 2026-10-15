@@ -1,0 +1,96 @@
+{
+  "format": "golfmap-shaping-layer-v1",
+  "id": "global",
+  "generated": true,
+  "generator": "pipeline/gspro.py shaping-global",
+  "course": {
+    "id": "ce4629e1-042d-4ea7-b31e-9226e2742a56",
+    "name": "Ombergs Golfklubb"
+  },
+  "ops": [
+    {
+      "id": "tees",
+      "op": "afrod.flattentees",
+      "select": {
+        "type": "tee"
+      },
+      "params": {
+        "tees_flat_inset": 1,
+        "tees_flat_outset": 3.0
+      }
+    },
+    {
+      "id": "paths-smooth",
+      "op": "afrod.smoothcartpaths",
+      "select": {
+        "type": "path"
+      },
+      "params": {
+        "smooth_path_distance": 3.0,
+        "smooth_path_amt": 20
+      }
+    },
+    {
+      "id": "paths-surfaces",
+      "op": "golfmap.split_surfaces",
+      "select": {
+        "shape": [
+          "roads_1f"
+        ]
+      }
+    },
+    {
+      "id": "lot-22",
+      "op": "golfmap.flatten_footprint",
+      "featureId": "c75c2015-ce9a-4a8e-ac0e-24371a31ceeb",
+      "seed": 34,
+      "footprint3006": [
+        [477806.56, 6457714.58],
+        [477805.36, 6457754.33],
+        [477807.98, 6457757.61],
+        [477808.15, 6457773.95],
+        [477821.37, 6457773.87],
+        [477830.19, 6457775.56],
+        [477834.94, 6457779.14],
+        [477846.07, 6457772.01],
+        [477848.55, 6457766.34],
+        [477849.45, 6457730.05],
+        [477850.7, 6457698.14],
+        [477866.59, 6457697.12],
+        [477866.56, 6457692.41],
+        [477818.41, 6457695.03]
+      ],
+      "level": "plane",
+      "falloffM": 2.0
+    },
+    {
+      "id": "lot-3a",
+      "op": "golfmap.flatten_footprint",
+      "featureId": "bdf77d28-9ec8-411e-bfc0-d8d7bacbe1ba",
+      "seed": 58,
+      "footprint3006": [
+        [477946.59, 6457751.77],
+        [477942.43, 6457729.44],
+        [477937.79, 6457730.3],
+        [477941.94, 6457752.63]
+      ],
+      "level": "plane",
+      "falloffM": 2.0
+    },
+    {
+      "id": "paths-edge-fade",
+      "op": "golfmap.path_edge_fade",
+      "select": {
+        "type": "path"
+      }
+    },
+    {
+      "id": "paths-transitions",
+      "op": "golfmap.path_transition",
+      "select": {
+        "type": "path"
+      },
+      "maxEdgeM": 0.2
+    }
+  ]
+}
