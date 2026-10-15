@@ -87,7 +87,10 @@ import {
 import { FeatureHistoryService } from './feature-history.service';
 import { CourseFeaturesService } from './course-features.service';
 import { ZoneTypesService } from './zone-types.service';
-import { CREEK_BANKS, VEGETATION_RULES_FILE, generateVegetation, vegetationRulesArgs, type VegetationOptions } from './vegetation-generators';
+import {
+    CREEK_BANKS, VEGETATION_GENERATORS, VEGETATION_RULES_FILE, generateVegetation, vegetationRulesArgs,
+    type GeneratorFingerprint, type VegetationGenerator, type VegetationInputs, type VegetationOptions, type VegetationRun,
+} from './vegetation-generators';
 import { CREEK_BANK_ZONE_TYPE } from '../../shared/features/creek-vegetation';
 import { BUILDINGS_SURVEY, ROAD_CENTERLINES } from './terrain-generators.service';
 import { GKD_KEYWORDS, metaFromGkd, type GsproCourseMeta } from '../../shared/gspro-course-meta';
@@ -470,6 +473,85 @@ export const LOWER_VEGETATION_PACKAGE = 'GolfMap lower vegetation';
  */
 export const OUTER_VEGETATION_IS_ARBORIST = "outer terrain: nothing planted into the course's VSP - its vegetation is Arborist's "
     + '(the outer trees as billboards; no grass out there), so only the outer zones file is written and the generators are not run for it';
+
+/** The zones a terrain's masks were rendered from (`<zones>.json.index.json`), for Update vegetation's patch. */
+export const ZONES_INDEX_FORMAT = 'golfmap-zones-index-v1';
+/** More changed zones than this and Update vegetation rasterizes the whole terrain instead of patching. */
+export const ZONES_PATCH_MAX = 200;
+
+export function zonesIndexFile(zonesJson: string): string {
+    return `${zonesJson}.index.json`;
+}
+
+/** What `recordZonesIndex` wrote, or null (none, unreadable, another format). */
+async function readZonesIndex(zonesJson: string): Promise<{ zones: ZoneContent[]; unity: { project: string; palette: string } | null } | null> {
+    try {
+        const doc = JSON.parse(await readFile(zonesIndexFile(zonesJson), 'utf8')) as { format?: unknown; zones?: unknown; unity?: unknown };
+        if (doc.format !== ZONES_INDEX_FORMAT || !Array.isArray(doc.zones)) return null;
+        const u = doc.unity as { project?: unknown; palette?: unknown } | null | undefined;
+        return {
+            zones: (doc.zones as Partial<ZoneContent>[]).filter((z): z is ZoneContent => typeof z?.id === 'string' && typeof z.content === 'string'),
+            unity: u && typeof u.project === 'string' && typeof u.palette === 'string' ? { project: u.project, palette: u.palette } : null,
+        };
+    } catch {
+        return null;
+    }
+}
+
+/** A vegetation zone by the digest of what decides its raster (no id, no stack slot), and its id. */
+export interface ZoneContent {
+    id: string;
+    content: string;
+}
+
+/**
+ * The zones as they are now against the ones the masks were rendered from,
+ * both in stack order: the ids of the zones whose content the masks have not
+ * seen (`changed`; `edited` of them were there under the same id), how many
+ * rendered ones are gone that way and are not edited ones (`removed`), and
+ * whether the zones both have are still in the same order. A zone matches by
+ * content whatever its id (a generator's re-run renumbers them); identical
+ * zones count by multiplicity. Pure + exported for tests.
+ */
+export function diffZoneContents(renderedZones: readonly ZoneContent[], now: readonly ZoneContent[]):
+    { changed: string[]; edited: number; removed: number; sameOrder: boolean } {
+    const rendered = renderedZones.map(z => z.content);
+    const count = (list: readonly string[]) => {
+        const m = new Map<string, number>();
+        for (const c of list) m.set(c, (m.get(c) ?? 0) + 1);
+        return m;
+    };
+    const left = count(rendered);
+    const changed: string[] = [];
+    const keptNow: string[] = [];
+    for (const z of now) {
+        const n = left.get(z.content) ?? 0;
+        if (n > 0) {
+            left.set(z.content, n - 1);
+            keptNow.push(z.content);
+        } else {
+            changed.push(z.id);
+        }
+    }
+    const gone = [...left.values()].reduce((a, b) => a + b, 0);
+    const there = count(now.map(z => z.content));
+    const keptRendered: string[] = [];
+    for (const c of rendered) {
+        const n = there.get(c) ?? 0;
+        if (n > 0) {
+            there.set(c, n - 1);
+            keptRendered.push(c);
+        }
+    }
+    const before = new Set(renderedZones.map(z => z.id));
+    const edited = changed.filter(id => before.has(id)).length;
+    return { changed, edited, removed: Math.max(0, gone - edited), sameOrder: keptNow.join() === keptRendered.join() };
+}
+
+/** A duration for the report's time line: "3.2 s". */
+function seconds(ms: number): string {
+    return `${(ms / 1000).toFixed(1)} s`;
+}
 
 /** `gspro.py zones-patch`'s exit code when the item bindings moved since the export (ZONES_LAYOUT_CHANGED_EXIT). */
 export const ZONES_LAYOUT_CHANGED_EXIT = 3;
@@ -1310,6 +1392,17 @@ export class GsproExportService {
      * the inner square to the inner file.
      */
     async exportZones(courseId: string, kind: TerrainKind, opts: { force?: boolean } = {}): Promise<GsproExportResult> {
+        const plan = await this.zonesPlan(courseId, kind);
+        const rendered = await this.runIfChanged(`GSPro ${kind} vegetation zones`, plan.args, plan.out, await plan.inputs(), opts.force);
+        // Rendered or unchanged, the masks are the zones as they are now: what the next patch diffs
+        // against. Masks rendered again are not in Unity until it imports them.
+        const unchanged = rendered.report.some(l => l.startsWith('unchanged: '));
+        await this.recordZonesIndex(courseId, plan.out, { unity: unchanged ? 'keep' : null });
+        return { path: rendered.path, report: [...plan.prepared, ...rendered.report] };
+    }
+
+    /** `gspro.py zones` for a terrain: its command, its output, and what its fingerprint is made of. */
+    private async zonesPlan(courseId: string, kind: TerrainKind) {
         const course = await this.courses.get(courseId);
         const terrain = await this.resolveTerrain(courseId, `export the GSPro ${kind} vegetation zones for`);
         const square = terrain[kind];
@@ -1328,15 +1421,140 @@ export class GsproExportService {
             '--terrain', kind,
         ];
         if (kind === 'outer') args.push('--exclude-square', terrainArg(terrain.inner));
-        const rendered = await this.runIfChanged(`GSPro ${kind} vegetation zones`, args, out, {
+        const inputs = async () => ({
             files: [sidecar],
             // The zones themselves by content (so a generator run that reproduced them counts as
             // unchanged), the zone types' bindings, and the rest of the course's features.
             values: { ...await this.zonesStamp(courseId), features: await this.history.latestStamp(courseId) },
             // The masks are only known once it has run: recorded, so a hand-deleted one is noticed.
             outputsAfter: async () => [out, ...await this.zoneMasks(dir, out)],
-        }, opts.force);
-        return { path: rendered.path, report: [...prepared, ...rendered.report] };
+        });
+        return { dir, out, args, prepared, inputs };
+    }
+
+    /**
+     * The zones a terrain's masks were rendered from, by content in stack
+     * order (`<zones>.json.index.json`), and whether Unity took that export
+     * with the grass palette as it was (`unity`): what lets Update
+     * vegetation patch only the zones that changed (`patchPlantedZones`).
+     * `unity: null` = not known to be in Unity; `'keep'` keeps the recorded one.
+     */
+    private async recordZonesIndex(courseId: string, zonesJson: string, opts: { unity: { project: string; palette: string } | null | 'keep' }) {
+        const index = zonesIndexFile(zonesJson);
+        let unity = opts.unity;
+        if (unity === 'keep') unity = (await readZonesIndex(zonesJson))?.unity ?? null;
+        try {
+            await writeFile(index, `${JSON.stringify({
+                format: ZONES_INDEX_FORMAT, at: new Date().toISOString(), unity, zones: await this.zoneContents(courseId),
+            })}\n`);
+        } catch {
+            // never fatal: without the index the next Update vegetation takes the full path
+        }
+    }
+
+    /** The course's vegetation zones in stack order, each with its content digest (what decides its raster: no id, no stack slot). */
+    private async zoneContents(courseId: string): Promise<ZoneContent[]> {
+        const rows = await this.db.selectFrom('course_features')
+            .select(['id', 'layer', 'hole_id', 'geometry_json', 'attributes_json', 'generated'])
+            .where('course_id', '=', courseId).where('type', '=', 'vegetation_zone')
+            .orderBy('layer').orderBy('hole_id').orderBy('sort_order').orderBy('id').execute();
+        return rows.map(r => ({
+            id: r.id,
+            content: digest([JSON.stringify([r.layer, r.hole_id, r.geometry_json, r.attributes_json, r.generated])]),
+        }));
+    }
+
+    /** The grass palette Unity's golfmap.grass.apply builds from, by size and mtime ('none' without one). */
+    private async paletteStamp(courseName: string): Promise<string> {
+        const s = await statOrNull(path.join(this.courseDocsRoot, courseSlug(courseName), 'grass-palette.json'));
+        return s ? `${s.size}:${Math.round(s.mtimeMs)}` : 'none';
+    }
+
+    /**
+     * Update vegetation's fast path for the inner masks: when Unity took the
+     * last export with this grass palette, and since then only some zones
+     * changed by content (drawn ones edited, a generator's re-run moving a
+     * few), `gspro.py zones-patch` re-rasterizes just their window and
+     * `golfmap.zones.patch` respawns just that in Unity — seconds, where the
+     * full rasterize and import take minutes. Returns why it cannot (the full
+     * path follows: anything but the zones changed, the zone types, the
+     * palette, the stack order, no index or masks yet), or the report.
+     * Zones the patch does not get by id (re-inserted by a generator) it
+     * matches by content itself.
+     */
+    private async patchPlantedZones(courseId: string, kind: TerrainKind, editor: UnityEditor, save: boolean,
+                                    time: <T>(label: string, step: () => Promise<T>) => Promise<T>,
+    ): Promise<{ full: string } | { report: string[]; unityError: string | null; saved: string | null; untouched?: boolean }> {
+        const plan = await this.zonesPlan(courseId, kind);
+        const inputs = await plan.inputs();
+        const now = await this.exportFingerprint(plan.args, plan.out, inputs);
+        const name = path.basename(plan.out);
+        if (await unchangedLine(now)) return { full: `no zone changed since ${name}` };
+        let doc: { hash?: unknown; files?: unknown; values?: Record<string, unknown>; outputs?: unknown };
+        try {
+            doc = JSON.parse(await readFile(now.sidecar, 'utf8'));
+        } catch {
+            return { full: `${name} has no record of what it was made from` };
+        }
+        // Everything but the zones and the other features must be as the masks were made.
+        const same = (key: string) => JSON.stringify(doc.values?.[key] ?? null) === JSON.stringify(now.doc.values[key] ?? null);
+        if (JSON.stringify(doc.files) !== JSON.stringify(now.doc.files) || !same('args') || !same('pipeline')) {
+            return { full: `the heightmap sidecar, the export's arguments or the pipeline changed since ${name}` };
+        }
+        if (!same('zoneTypes')) return { full: `the zone types changed since ${name}` };
+        const outputs = Array.isArray(doc.outputs) ? doc.outputs.filter((f): f is string => typeof f === 'string') : [];
+        for (const f of outputs) if (!await statOrNull(f)) return { full: `${path.basename(f)} is missing` };
+        const index = await readZonesIndex(plan.out);
+        const course = await this.courses.get(courseId);
+        if (!index) return { full: `${name} has no zone index yet (it comes with the next full export)` };
+        if (!index.unity) return { full: `Unity has not taken ${name} yet` };
+        if (index.unity.project !== editor.projectName || index.unity.palette !== await this.paletteStamp(course.name)) {
+            return { full: `the grass palette or the Unity project changed since ${name} went into Unity` };
+        }
+        const zones = await this.zoneContents(courseId);
+        const diff = diffZoneContents(index.zones, zones);
+        if (!diff.sameOrder) return { full: `the zones' stack order changed since ${name}` };
+        // A patch window the size of the square is no faster than the full rasterize (and the ids go on one command line).
+        if (diff.changed.length > ZONES_PATCH_MAX) return { full: `${diff.changed.length} zones changed, more than a patch takes (${ZONES_PATCH_MAX})` };
+
+        const record = plan.out.replace(/\.json$/, '-patch.json');
+        const args = [
+            path.join(this.pipelineDir, 'gspro.py'), 'zones-patch',
+            '--course', courseId,
+            '--zones-json', plan.out,
+            '--ids', diff.changed.join(','),
+            '--result', record,
+        ];
+        const exclude = plan.args.indexOf('--exclude-square');
+        if (exclude >= 0) args.push('--exclude-square', plan.args[exclude + 1]!);
+        const { code, stdout, stderr } = await time('zones patch', () => this.runner(args, this.pipelineDir));
+        if (code === ZONES_LAYOUT_CHANGED_EXIT) return { full: `${firstLine(stderr.replace(/^error: /, ''))}` };
+        if (code !== 0) throw failure(`Patching the ${kind} zones`, code, stdout, stderr);
+        const report = [`${kind}: ${diff.edited} zone(s) edited, ${diff.changed.length - diff.edited} new, ${diff.removed} removed `
+            + `since ${name} - patched instead of rasterizing every mask`,
+            ...reportLines(stdout).map(line => `${kind}: ${line}`)];
+        // The masks are now what a full export of the zones as they are would be.
+        const after = await this.exportFingerprint(plan.args, plan.out, inputs);
+        after.doc.outputs = await inputs.outputsAfter();
+        await recordInputs(after);
+        const patched = JSON.parse(await readFile(record, 'utf8')) as { changed?: boolean };
+        if (!patched.changed) {
+            await this.recordZonesIndex(courseId, plan.out, { unity: 'keep' });
+            report.push(`Unity (${editor.projectName}): nothing changed in the masks, nothing to take in`);
+            return { report, unityError: null, saved: null, untouched: true };
+        }
+        try {
+            const result = await time('Unity patch', () => editor.run('golfmap.zones.patch',
+                { terrain: kind, patch: record, package: LOWER_VEGETATION_PACKAGE, ...(save ? { save: true } : {}) }, 300));
+            report.push(`Unity (${editor.projectName}): ${firstLine(String(result?.status ?? `${kind} zones patched`))}`);
+            await this.recordZonesIndex(courseId, plan.out, { unity: 'keep' });
+            return { report, unityError: null, saved: savedLine(result) };
+        } catch (e) {
+            // The masks are patched, Unity is not: the next Update vegetation imports them whole.
+            await this.recordZonesIndex(courseId, plan.out, { unity: null });
+            return { report, saved: null, unityError: `The ${kind} masks are patched in ${plan.dir}, but Unity (${editor.projectName}) could not take them: `
+                + `${firstLine((e as Error).message)}. Update vegetation again to import them whole` };
+        }
     }
 
     /**
@@ -1361,10 +1579,13 @@ export class GsproExportService {
      * what was saved instead. `dryRun` only writes the generators' GeoJSON (the
      * CLI's --dry-run).
      *
-     * The generators always run (their output is rows in the database, not a
-     * file with a fingerprint to compare), but the masks are only rasterized
-     * again when the zones, the zone types or the heightmap sidecar moved —
-     * `force` renders them anyway.
+     * A generator runs only when something it reads changed since its last
+     * run (`generatorFingerprint`). When Unity has the last export and only
+     * some zones changed by content, those are patched into the masks and
+     * Unity (`patchPlantedZones`, seconds); otherwise the masks are
+     * rasterized again when the zones, the zone types or the heightmap
+     * sidecar moved, and imported whole. `force` runs and renders everything.
+     * The report ends with the time each step took (docs D-VZ18).
      *
      * The OUTER terrain plants nothing (OUTER_VEGETATION_IS_ARBORIST): no
      * Unity import (the course's VSP has no lower-vegetation package there),
@@ -1384,20 +1605,53 @@ export class GsproExportService {
             const exported = await this.exportZones(courseId, 'outer', { force: opts.force });
             return { path: exported.path, report: [OUTER_VEGETATION_IS_ARBORIST, ...exported.report] };
         }
+        // Where the time went, for the last line of the report.
+        const started = Date.now();
+        const steps: string[] = [];
+        const time = async <T>(label: string, step: () => Promise<T>): Promise<T> => {
+            const t0 = Date.now();
+            try {
+                return await step();
+            } finally {
+                steps.push(`${label} ${seconds(Date.now() - t0)}`);
+            }
+        };
+        const timeLine = () => `Time: ${steps.join(', ')} - ${seconds(Date.now() - started)} in all`;
+
         const generated = await this.runGenerators(courseId, kind, opts);
+        for (const run of generated.runs) {
+            const label = VEGETATION_GENERATORS.find(g => g.source === run.source)?.label ?? run.source;
+            steps.push(run.unchanged ? `${label} unchanged` : `${label} ${seconds(run.ms)}`);
+        }
         const report = [...generated.report];
         if (opts.dryRun || opts.exportZones === false) return { path: dir, report };
-
-        const exported = await this.exportZones(courseId, kind, { force: opts.force });
-        report.push(...exported.report);
 
         // Half one, Unity: the course's own VSP (grass, and what the palette keeps there).
         let editor: UnityEditor | null = null;
         let unityError: string | null = null;
         /** What `save` saved in Unity, when it was asked for: the line that replaces "Save the scene …". */
         let saved: string | null = null;
-        if (opts.unity !== false) {
-            const found = await editorForExportDir(this.unityBridge, dir);
+        /** Unity took nothing in (a patch that changed no mask): nothing to save there. */
+        let untouched = false;
+        const found = opts.unity !== false ? await editorForExportDir(this.unityBridge, dir) : null;
+        // Only some zones changed and Unity has the rest: patch those (seconds) instead of the whole
+        // rasterize and import (minutes). Anything else - or a patch that cannot - takes the full path.
+        const patched = found?.editor && !opts.force
+            ? await this.patchPlantedZones(courseId, kind, found.editor, opts.save === true, time)
+            : { full: '' };
+        const zonesJson = path.join(dir, zonesExportFileName((await this.courses.get(courseId)).name, kind));
+        if (!('full' in patched)) {
+            editor = found!.editor;
+            report.push(...patched.report);
+            unityError = patched.unityError;
+            saved = patched.saved;
+            untouched = patched.untouched === true;
+        } else {
+            if (patched.full) report.push(`${kind}: no patch - ${patched.full}`);
+            const exported = await time('zones export', () => this.exportZones(courseId, kind, { force: opts.force }));
+            report.push(...exported.report);
+        }
+        if ('full' in patched && found) {
             editor = found.editor;
             if (!editor) {
                 report.push(`Unity: not open, zones exported only - no open Unity editor imports from ${dir}`
@@ -1409,9 +1663,10 @@ export class GsproExportService {
                     // turns spawning on for those with rules. An item apply only now added (a new species in a
                     // palette) had no rules at the import: a second round binds it and lets it spawn.
                     const saving = opts.save ? { save: true } : {};
+                    const t0 = Date.now();
                     for (let round = 1; round <= 2; round++) {
                         const imported = await editor.run('golfmap.zones.import', { terrain: kind, package: LOWER_VEGETATION_PACKAGE, ...saving }, 600);
-                        report.push(`Unity (${editor.projectName}): imported ${path.basename(exported.path)} into '${LOWER_VEGETATION_PACKAGE}'`
+                        report.push(`Unity (${editor.projectName}): imported ${path.basename(zonesJson)} into '${LOWER_VEGETATION_PACKAGE}'`
                             + (imported?.status ? ` - ${firstLine(String(imported.status))}` : ''));
                         const applied = await editor.run('golfmap.grass.apply', { terrain: kind, ...saving }, 600);
                         const items = Array.isArray(applied?.items) ? applied.items.length : 0;
@@ -1421,6 +1676,11 @@ export class GsproExportService {
                         saved = savedLine(applied) ?? saved;
                         if (!log.some(l => /^(added|replaced) item /.test(l))) break;
                     }
+                    steps.push(`Unity import + apply ${seconds(Date.now() - t0)}`);
+                    // Unity has this export with this palette: the next zone edit can be patched in.
+                    await this.recordZonesIndex(courseId, zonesJson, {
+                        unity: { project: editor.projectName, palette: await this.paletteStamp((await this.courses.get(courseId)).name) },
+                    });
                 } catch (e) {
                     unityError = `The zones were generated and exported, but Unity (${editor.projectName}) could not take them: ${firstLine((e as Error).message)}`;
                 }
@@ -1430,7 +1690,8 @@ export class GsproExportService {
         // Half two, GSPro's Arborist file: the lower vegetation needs only the zones export, so it is
         // written whatever Unity did; the trees come out of the Unity scene. The masks are the inner terrain's.
         const arborist = kind === 'inner' && opts.arborist !== false
-            ? await this.arborist.generate(await this.arboristCourse(courseId), { trees: opts.arborist !== 'lower', editor: unityError ? null : editor })
+            ? await time('Arborist', async () => this.arborist.generate(await this.arboristCourse(courseId),
+                { trees: opts.arborist !== 'lower', editor: unityError ? null : editor }))
             : null;
         if (arborist) report.push(...arborist.report);
         if (unityError) throw new ConflictError(unityError + arboristAfterFailure(arborist));
@@ -1439,8 +1700,9 @@ export class GsproExportService {
                 + (arborist.written.length ? ` and the Arborist ${arborist.written.join(' and ')} written` : '')
                 + `, but: ${arborist.error}`);
         }
-        if (editor) report.push(saved ?? 'Save the scene in Unity to keep it.');
-        return { path: exported.path, report };
+        if (editor && !untouched) report.push(saved ?? 'Save the scene in Unity to keep it.');
+        report.push(timeLine());
+        return { path: zonesJson, report };
     }
 
     /**
@@ -1466,17 +1728,23 @@ export class GsproExportService {
         return { name: course.name, exportDir: dir, courseDir };
     }
 
-    /** The vegetation generators over the course as it is now (all, or `opts.from` on), with the inputs they find. */
+    /**
+     * The vegetation generators over the course as it is now (all, or `opts.from` on), with the
+     * inputs they find. A generator whose inputs are unchanged since its last run is skipped
+     * (`generatorFingerprint`) unless `force`.
+     */
     private async runGenerators(courseId: string, kind: TerrainKind,
-                                opts: Omit<VegetationOptions, 'workDir'> & { dbPath?: string }): Promise<{ report: string[] }> {
+                                opts: Omit<VegetationOptions, 'workDir'> & { dbPath?: string }): Promise<{ report: string[]; runs: VegetationRun[] }> {
         const course = await this.courses.get(courseId);
         const dir = await this.exportDir(courseId);
         const sources = course.siteId ? this.sourcesDir(course.siteId) : null;
         const found = async (file: string | null) => file && await statOrNull(file) ? file : null;
-        const inputs = {
-            surfaces: await found(path.join(dir, surfacesExportFileName(course.name, kind))),
+        const surfaces = await found(path.join(dir, surfacesExportFileName(course.name, kind)));
+        const inputs: VegetationInputs = {
+            surfaces,
             buildings: await found(sources && path.join(sources, BUILDINGS_SURVEY)),
             roads: await found(sources && path.join(sources, ROAD_CENTERLINES)),
+            demSidecar: surfaces ? await this.demBesideSurfaces(surfaces) : null,
         };
         // The course's own generator rules (e.g. Vreta's thinner tall rough from 10 m), if it has any.
         const rulesFile = path.join(this.courseDocsRoot, courseSlug(course.name), VEGETATION_RULES_FILE);
@@ -1489,10 +1757,81 @@ export class GsproExportService {
                 features: new CourseFeaturesService(this.db), zoneTypes: new ZoneTypesService(this.db),
                 pipelineDir: this.pipelineDir, dbPath: opts.dbPath,
                 run: (what, args, out) => this.run(what, args, out),
+                fingerprint: (g, args, ins) => this.generatorFingerprint(courseId, path.join(dir,
+                    surfacesExportFileName(course.name, kind).replace(/-surfaces\.json$/, `-vegetation-${g.source}`)), g, args, ins),
             }, courseId, inputs, { ...opts, courseRules, workDir: work });
         } finally {
             if (!opts.dryRun) await rm(work, { recursive: true, force: true });
         }
+    }
+
+    /** The DEM sidecar the generator scripts take next to a surface map: `<prefix>-dem-*.tif.json`, the first by name. */
+    private async demBesideSurfaces(surfaces: string): Promise<string | null> {
+        const prefix = `${path.basename(surfaces).replace(/-surfaces\.json$/i, '')}-dem-`;
+        try {
+            const name = (await readdir(path.dirname(surfaces))).filter(n => n.startsWith(prefix) && n.endsWith('.tif.json')).sort()[0];
+            return name ? path.join(path.dirname(surfaces), name) : null;
+        } catch {
+            return null;
+        }
+    }
+
+    /**
+     * What one generator run is made from (export-fingerprint.ts), kept in
+     * `<stem>.inputs.json` next to the export (`<course>-inner-vegetation-<source>`):
+     * its command (minus the throwaway --out), the files it reads, what it reads
+     * from the database by CONTENT (GeneratorReads: the feature types, the drawn
+     * creek sections, the zone types; ids and stack positions left out, since a
+     * generator run renumbers the stack), its scripts' mtimes, and its own zones
+     * as they are now, so zones deleted or edited since its run run it again.
+     * A drawn zone of a type it does not read changes none of this.
+     */
+    private async generatorFingerprint(courseId: string, stem: string, g: VegetationGenerator,
+                                       args: string[], inputs: VegetationInputs): Promise<GeneratorFingerprint> {
+        const reads = g.reads(inputs);
+        const command = args.map((a, i) => args[i - 1] === '--out' ? '<out>' : a);
+        const db = this.db;
+        const contentOf = async () => {
+            const features = reads.features === 'all'
+                ? await this.history.latestStamp(courseId)
+                : reads.features.length === 0 ? 'none' : digest((await db.selectFrom('course_features')
+                    .select(['type', 'hole_id', 'layer', 'geometry_json', 'attributes_json', 'generated'])
+                    .where('course_id', '=', courseId).where('type', 'in', [...reads.features]).execute()).map(r => JSON.stringify(r)));
+            const zoneTypeOf = (json: string | null) => {
+                try { return (JSON.parse(json ?? '{}') as { zoneType?: unknown }).zoneType; } catch { return undefined; }
+            };
+            // The drawn zones in stack order (their order decides which section wins), by content.
+            const drawn = reads.drawnZones.length === 0 ? [] : (await db.selectFrom('course_features')
+                .select(['hole_id', 'layer', 'geometry_json', 'attributes_json'])
+                .where('course_id', '=', courseId).where('type', '=', 'vegetation_zone').where('generated', '=', 0)
+                .orderBy('sort_order').orderBy('id').execute())
+                .filter(r => reads.drawnZones.includes(String(zoneTypeOf(r.attributes_json))));
+            const zoneTypes = reads.zoneTypes.length === 0 ? [] : await db.selectFrom('course_zone_types')
+                .select(['key', 'items_json', 'variants_json'])
+                .where('course_id', '=', courseId).where('key', 'in', [...reads.zoneTypes]).orderBy('key').execute();
+            const own = await db.selectFrom('course_features').select(['geometry_json', 'attributes_json'])
+                .where('course_id', '=', courseId).where('source', '=', g.source).where('generated', '=', 1).execute();
+            const scripts: Record<string, number | null> = {};
+            for (const s of reads.scripts) scripts[s] = await mtimeMs(path.join(this.pipelineDir, s));
+            return fingerprint(stem, {
+                files: [inputs.surfaces, inputs.buildings, inputs.roads, ...reads.files],
+                values: {
+                    command, scripts, features,
+                    drawnZones: digest([JSON.stringify(drawn)]),
+                    zoneTypes: digest([JSON.stringify(zoneTypes)]),
+                    zones: `${own.length}:${digest(own.map(r => JSON.stringify(r)))}`,
+                },
+                outputs: [],
+            });
+        };
+        const before = await contentOf();
+        const line = await unchangedLine(before);
+        const zones = line ? (await db.selectFrom('course_features').select(({ fn }) => fn.countAll<number>().as('n'))
+            .where('course_id', '=', courseId).where('source', '=', g.source).where('generated', '=', 1).executeTakeFirst())?.n ?? 0 : 0;
+        return {
+            unchanged: line && `not run - nothing it reads changed since its last run (${/since (.*)\)$/.exec(line)?.[1] ?? 'then'}); its ${Number(zones)} zones stay`,
+            record: async () => recordInputs(await contentOf()),
+        };
     }
 
     /**
@@ -2164,11 +2503,7 @@ export class GsproExportService {
         },
         force?: boolean,
     ): Promise<GsproExportResult> {
-        const fp = await fingerprint(out, {
-            files: inputs.files,
-            values: { ...inputs.values, args, pipeline: await this.pipelineStamp() },
-            outputs: [out, ...(inputs.more ?? [])],
-        });
+        const fp = await this.exportFingerprint(args, out, inputs);
         if (!force) {
             const unchanged = await unchangedLine(fp);
             if (unchanged) return { path: out, report: [unchanged] };
@@ -2177,6 +2512,16 @@ export class GsproExportService {
         if (inputs.outputsAfter) fp.doc.outputs = await inputs.outputsAfter();
         await recordInputs(fp);
         return result;
+    }
+
+    /** What `runIfChanged` hashes for an output: its files, its values, its arguments and the pipeline's mtimes. */
+    private async exportFingerprint(args: string[], out: string,
+                                    inputs: { files: ReadonlyArray<string | null | undefined>; values?: Record<string, unknown>; more?: readonly string[] }) {
+        return fingerprint(out, {
+            files: inputs.files,
+            values: { ...inputs.values, args, pipeline: await this.pipelineStamp() },
+            outputs: [out, ...(inputs.more ?? [])],
+        });
     }
 
     /** The mtimes of the pipeline code an export runs through, so an edited exporter renders again. */
@@ -2206,17 +2551,19 @@ export class GsproExportService {
      * What the vegetation masks are rasterized from: the course's
      * vegetation_zone features as CONTENT (the ids are left out — the
      * generators delete and re-insert their rows, so an id would never match
-     * twice, while identical zones must count as unchanged), plus the newest
-     * change to the zone types, whose item bindings decide the channels.
+     * twice, while identical zones must count as unchanged), plus the zone
+     * types by content, whose item bindings decide the channels (their
+     * `updated_at` has whole seconds only: an edit in the same second as the
+     * export went unseen).
      */
-    private async zonesStamp(courseId: string): Promise<{ zones: string; zoneTypes: string | null }> {
+    private async zonesStamp(courseId: string): Promise<{ zones: string; zoneTypes: string }> {
         const rows = await this.db.selectFrom('course_features')
             .select(['layer', 'hole_id', 'sort_order', 'geometry_json', 'attributes_json', 'generated', 'source'])
             .where('course_id', '=', courseId).where('type', '=', 'vegetation_zone').execute();
         const types = await this.db.selectFrom('course_zone_types')
-            .select(({ fn }) => fn.max<string | null>('updated_at').as('at'))
-            .where('course_id', '=', courseId).executeTakeFirst();
-        return { zones: `${rows.length}:${digest(rows.map(r => JSON.stringify(r)))}`, zoneTypes: types?.at ?? null };
+            .select(['key', 'name', 'texture_index', 'channel', 'sort_order', 'items_json', 'variants_json'])
+            .where('course_id', '=', courseId).orderBy('key').execute();
+        return { zones: `${rows.length}:${digest(rows.map(r => JSON.stringify(r)))}`, zoneTypes: digest([JSON.stringify(types)]) };
     }
 
     /** The mask PNGs `gspro.py zones` wrote next to a zones file, so a hand-deleted one is noticed. */

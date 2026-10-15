@@ -295,6 +295,44 @@ screen still needs a dense palette (Vreta's `shrub/dense`); a prefab with no rea
 keeps the palette's sizes (reported at import); the palette editor's live edits reach a twin at the
 next Apply.
 
+**D-VZ18. Update vegetation does only what changed.** Added 2026-10-15. One drawn zone on hole
+10's pond switched from Tall rough to Creek bank · Lush took 3 min 22 s: the three generators
+(35 + 41 + 9 s) always ran, since their output is database rows with no fingerprint, and any zone
+change moved the zones stamp, so all 26 4096-px masks were rasterized again (82 s) and Unity
+imported and applied them whole (16 + 17 s). Two changes, no new button:
+- A generator runs only when something it reads changed (`VegetationGenerator.reads`,
+  `GsproExportService.generatorFingerprint`, kept in `<course>-inner-vegetation-<source>.inputs.json`
+  next to the export): its command, the surface map, the DEM sidecar and tif, the buildings and
+  roads, the planted trees (woodland floor), the course's rules file (in the command), the feature
+  types its script queries (paths; water and creeks for the tall rough and the creek banks), the
+  hand-drawn creek_bank zones (creek sections; the tall rough lifts its water clearance there),
+  the zone types it reads, its scripts' mtimes, and its own zones as they are now. A drawn zone of
+  any other type invalidates none of them; the woodland floor reads no zones at all. A skipped
+  generator's zones stay, lifted back above an earlier generator's new ones
+  (`CourseFeaturesService.raiseGenerated`), so the stack is what a full run leaves.
+- When Unity has the last inner export with the grass palette as it is now, the zone types are
+  unchanged (by content: `updated_at` has whole seconds) and only some zones differ by content
+  from what the masks were made of (`<zones>.json.index.json`, the zones' content digests in
+  stack order), `gspro.py zones-patch` re-rasterizes those (D-VZ13's matching by content handles
+  a generator's renamed zones) and `golfmap.zones.patch` respawns only that window. The full path
+  stays for everything else, each with its reason in the report (`inner: no patch - ...`): no zone
+  changed (then Unity imports and applies the unchanged export, which also carries palette edits),
+  the zone types, the palette, the heightmap sidecar or the stack order changed, more than 200
+  zones changed, no index yet (the first planting after this change), or the patch refused.
+The report ends with where the time went (`Time: tall rough unchanged, ..., zones patch 5.0 s,
+Unity patch 0.8 s, Arborist 14.6 s - 22.3 s in all`).
+Measured on Vreta 2026-10-15, Unity open, nothing else running:
+- one drawn Tall rough zone's weight changed: **22.3 s** (was 3 min 22 s for a zone edit). No
+  generator ran; the patch re-rasterized a 29 x 37 m window (1 of 27 textures changed) in 5.0 s,
+  Unity respawned it in 0.8 s, the Arborist file (lower vegetation + 64 854 trees out of the scene)
+  took 14.6 s, now the largest step. Setting it back: 22.2 s.
+- one creek section's weight changed (a hand-drawn creek_bank zone near water): **80.5 s**. The
+  tall rough (34 s) and the creek banks (10 s) read sections and ran again, the woodland floor did
+  not; the patch matched their 3211 renamed zones by content in 16 s, found no mask to change, and
+  Unity took nothing in. Setting it back: 73.7 s.
+- nothing changed: 37 s (every generator and the masks unchanged; Unity's import + apply 19.6 s, the
+  Arborist file 14.9 s).
+
 ## 4. VSPro mechanics used
 
 - A texture mask group binds one texture channel over a world rectangle. A texture
@@ -649,8 +687,8 @@ The command bar's **Update vegetation** (Vegetation mode only; "Plant for
 GSPro" until 2026-10-14) runs the server's `vegetation` export job through
 `zones/plant-vegetation.service.ts`
 (start, or follow the planting already running; poll to the end): every
-vegetation generator, the zones export, the import into the open Unity
-project, and the Arborist file in the GSPro course folder (its lower
+vegetation generator whose inputs changed, the zones export, the import into the open Unity
+project (or, when only some zones changed, a patch of just those, D-VZ18), and the Arborist file in the GSPro course folder (its lower
 vegetation from the zones export; its trees out of the Unity scene, so only
 with Unity open; [gspro/arborist.md](gspro/arborist.md), "Who writes the file").
 Then the features reload and the job's report is shown; the result dialog's

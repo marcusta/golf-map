@@ -13,7 +13,7 @@ import {
     terrainTextureFileName, TERRAIN_TEXTURE_DARKEN, meshTextureFileName, TERRAIN_TINT_OPACITY, MESH_TEXTURE_SOFTEN_M, MESH_TEXTURE_SIZE, OUTER_TERRAIN_GRADE, treesExportFileName, OUTER_TREES_DIR, OUTER_TREES_RESOLUTION_M,
     ORTHO_EXPORT_SIZE, ORTHO_EXPORT_QUALITY, DEM_EXPORT_RESOLUTION_M, OUTER_DEM_SOURCE, OUTER_LIDAR_DIR, type ExportRunner,
     buildingsExportFileName, BUILDINGS_SURVEY_SOURCE, OUTER_DEM_EDITED_SOURCE, describeRequest, zonesExportFileName, creeksExportFileName,
-    ZONES_LAYOUT_CHANGED_EXIT, OUTER_VEGETATION_IS_ARBORIST,
+    ZONES_LAYOUT_CHANGED_EXIT, OUTER_VEGETATION_IS_ARBORIST, diffZoneContents,
 } from './gspro-export.service';
 import { TerrainEditsService } from './terrain-edits.service';
 import { digest } from './export-fingerprint';
@@ -22,6 +22,7 @@ import { defaultUnityBridge, type UnityBridge } from './unity-bridge';
 import { NotFoundError, ConflictError } from '@basics/core/server/auth';
 import { CourseFeaturesService } from './course-features.service';
 import { generatorsFrom } from './vegetation-generators';
+import { ZoneTypesService } from './zone-types.service';
 import { courseMetaDiff, emptyCourseMeta } from '../../shared/gspro-course-meta';
 import { TeeSetsService } from './tee-sets.service';
 
@@ -1562,11 +1563,15 @@ test('unity-sculpt captures in Unity, makes the GeoTIFF and stores it as the ter
 /** The test course has no Arborist species file under the docs root: the Arborist half says so in one line. */
 const NOT_ARBORIST = `Arborist: not used by this course (no ${path.join('/pipeline', '..', 'docs', 'gspro', 'linkan', 'arborist-species.json')})`;
 
-/** A runner standing in for the vegetation generators and `gspro.py zones`: each writes its --out. */
+/** A runner standing in for the vegetation generators, `gspro.py zones` and `zones-patch`: each writes its --out (the patch its --result). */
 function vegetationRunner(zones: Record<string, Record<string, unknown>[]>) {
     const runs: string[][] = [];
     const runner: ExportRunner = async args => {
         runs.push(args);
+        if (args[1] === 'zones-patch') {
+            await writeFile(flag(args, '--result')!, JSON.stringify({ format: 'unity-zones-patch-v1', changed: true, textures: ['linkan-inner-zones-0.png'] }));
+            return { code: 0, stdout: 'Patched linkan-inner-zones.json: 1 zone(s), window 40x40 px (20 x 20 m)\n', stderr: '' };
+        }
         const out = args[args.indexOf('--out') + 1]!;
         const script = path.basename(args[0]!);
         const sources: Record<string, string> = { 'grass_zones.py': 'tall-grass', 'woodland_floor_zones.py': 'woodland-floor', 'creek_bank_zones.py': 'creek-bank' };
@@ -1639,13 +1644,22 @@ test('vegetation: every generator in stack order, replacing only its own zones, 
                 expect(report).toContain('warning: 1 creek_bank zones use its Default mix, which has no items: nothing grows there - pick a palette that has items');
                 expect(report).toContain("Unity (linkan_v4): imported linkan-inner-zones.json into 'GolfMap lower vegetation' - Imported 3 zone groups");
                 expect(report).toContain('Unity (linkan_v4): grass palettes applied (2 items on Inner VSP)');
-                expect(report.at(-2)).toBe(NOT_ARBORIST);
-                expect(report.at(-1)).toBe('Save the scene in Unity to keep it.');
+                expect(report.at(-3)).toBe(NOT_ARBORIST);
+                expect(report.at(-2)).toBe('Save the scene in Unity to keep it.');
+                // Where the time went: every step, then the whole.
+                expect(report.at(-1)).toMatch(/^Time: tall rough \d+\.\d s, woodland floor \d+\.\d s, creek banks \d+\.\d s, zones export \d+\.\d s, Unity import \+ apply \d+\.\d s, Arborist \d+\.\d s - \d+\.\d s in all$/);
+            } else {
+                // Nothing they read changed: no generator runs, the zones stay as they were, and so do the masks.
+                const report = done.result!.report;
+                expect(report).toContainEqual(expect.stringMatching(/^tall rough: not run - nothing it reads changed since its last run \(.+\); its 2 zones stay$/));
+                expect(report).toContainEqual(expect.stringMatching(/^creek banks: not run - .*; its 1 zones stay$/));
+                expect(report).toContain('inner: no patch - no zone changed since linkan-inner-zones.json');
+                expect(report.at(-1)).toMatch(/^Time: tall rough unchanged, woodland floor unchanged, creek banks unchanged, zones export/);
             }
         }
-        // Generators in stack order, then the zones export; each gets the course's inputs.
+        // Generators in stack order, then the zones export; each gets the course's inputs. The second
+        // round runs nothing: the generators' inputs and the zones are as the first left them.
         expect(runs.map(a => path.basename(a[0]!) + (a[1] === 'zones' ? ' zones' : ''))).toEqual([
-            'grass_zones.py', 'woodland_floor_zones.py', 'creek_bank_zones.py', 'gspro.py zones',
             'grass_zones.py', 'woodland_floor_zones.py', 'creek_bank_zones.py', 'gspro.py zones',
         ]);
         expect(flag(runs[0]!, '--surfaces')).toBe(path.join(exportDir, 'linkan-inner-surfaces.json'));
@@ -1667,6 +1681,90 @@ test('vegetation: every generator in stack order, replacing only its own zones, 
     }
 });
 
+test('vegetation after a few zone edits: no generator whose inputs are unchanged runs, only the changed zones are patched into Unity; changed zone types take the full path', async () => {
+    const discovery = await mkdtemp(path.join(os.tmpdir(), 'bridges-'));
+    const exportDir = await mkdtemp(path.join(os.tmpdir(), 'gspro-out-'));
+    const { calls, server } = fakeUnity(exportDir, discovery, () => Response.json({ ok: true, result: {
+        status: 'Patched 1 mask texture(s) for 1 zone(s), respawned 20 x 20 m in 300 ms. Save the scene.', system: 'Inner VSP', items: [{}], log: [],
+    } }));
+    const planted: Record<string, Record<string, unknown>[]> = {
+        'grass_zones.py': [{ zoneType: 'rough_tall' }, { zoneType: 'rough_tall', weight: 0.5 }],
+        'woodland_floor_zones.py': [{ zoneType: 'woodland_floor' }],
+        'creek_bank_zones.py': [{ zoneType: 'creek_bank', zoneVariant: 'lush' }],
+    };
+    const { runs, runner } = vegetationRunner(planted);
+    try {
+        const t = await setup(runner, { unityBridge: defaultUnityBridge(discovery) });
+        await buildSite(t, []);
+        await t.svc.setDir(TEST_COURSE_ID, exportDir);
+        await writeFile(path.join(exportDir, 'linkan-inner-surfaces.json'), '{}');
+        await writeFile(path.join(exportDir, 'linkan-inner-dem-2050m.tif.json'), '{}');
+        const features = new CourseFeaturesService(t.db);
+        const ring = (dx: number) => ({ crs: 'EPSG:3006' as const, rings: [{ points: [{ x: 529400, y: 6487400 }, { x: 529420 + dx, y: 6487400 }, { x: 529420, y: 6487420 }] }] });
+        let drawn = await features.create({
+            courseId: TEST_COURSE_ID, holeId: null, type: 'vegetation_zone', geometry: ring(0),
+            attributes: { zoneType: 'rough_tall', zoneVariant: '', weight: 1, feather: 2, noise: 0 },
+        });
+        const plant = async () => {
+            runs.length = 0;
+            calls.length = 0;
+            const job = await t.svc.start(TEST_COURSE_ID, { kind: 'vegetation', terrain: 'inner' });
+            await t.svc.whenIdle(TEST_COURSE_ID);
+            const done = t.svc.job(job.id);
+            expect(done.error).toBeNull();
+            return done.result!.report;
+        };
+        const ran = () => runs.map(a => a[1] === 'zones' || a[1] === 'zones-patch' ? `gspro.py ${a[1]}` : path.basename(a[0]!));
+        const intoUnity = () => calls.map(c => c.command).filter(c => c !== 'golfmap.course');
+        // The first planting: everything, the whole masks, the whole import.
+        await plant();
+        expect(ran()).toEqual(['grass_zones.py', 'woodland_floor_zones.py', 'creek_bank_zones.py', 'gspro.py zones']);
+        expect(intoUnity()).toEqual(['golfmap.zones.import', 'golfmap.grass.apply']);
+
+        // A drawn tall rough zone reshaped: no generator reads it, and only it is patched.
+        drawn = await features.update(drawn.id, drawn.version, { geometry: ring(5) });
+        let report = await plant();
+        expect(ran()).toEqual(['gspro.py zones-patch']);
+        expect(flag(runs[0]!, '--ids')).toBe(drawn.id);
+        expect(flag(runs[0]!, '--zones-json')).toBe(path.join(exportDir, 'linkan-inner-zones.json'));
+        expect(calls.filter(c => c.command !== 'golfmap.course')).toEqual([{
+            command: 'golfmap.zones.patch',
+            args: { terrain: 'inner', patch: path.join(exportDir, 'linkan-inner-zones-patch.json'), package: 'GolfMap lower vegetation' },
+        }]);
+        expect(report).toContain('inner: 1 zone(s) edited, 0 new, 0 removed since linkan-inner-zones.json - patched instead of rasterizing every mask');
+        expect(report).toContain('Unity (linkan_v4): Patched 1 mask texture(s) for 1 zone(s), respawned 20 x 20 m in 300 ms. Save the scene.');
+        expect(report.at(-2)).toBe('Save the scene in Unity to keep it.');
+        expect(report.at(-1)).toMatch(/^Time: tall rough unchanged, woodland floor unchanged, creek banks unchanged, zones patch \d+\.\d s, Unity patch \d+\.\d s, Arborist \d+\.\d s - \d+\.\d s in all$/);
+
+        // Switched to a creek section: the tall rough and the creek banks read those, the woodland
+        // floor does not. The banks come out different; the tall rough the same, under new ids.
+        planted['creek_bank_zones.py'] = [{ zoneType: 'creek_bank', zoneVariant: 'lush', weight: 0.5 }];
+        drawn = await features.update(drawn.id, drawn.version, { attributes: { zoneType: 'creek_bank', zoneVariant: 'lush', weight: 1, feather: 2, noise: 0 } });
+        report = await plant();
+        expect(ran()).toEqual(['grass_zones.py', 'creek_bank_zones.py', 'gspro.py zones-patch']);
+        expect(report).toContainEqual(expect.stringMatching(/^woodland floor: not run - nothing it reads changed since its last run/));
+        // The skipped woodland floor went back above the new tall rough: the stack is as a full run leaves it.
+        const generated = (await features.listByCourse(TEST_COURSE_ID)).filter(f => f.generated).sort((a, b) => a.sortOrder - b.sortOrder);
+        expect(generated.map(f => f.source)).toEqual(['tall-grass', 'tall-grass', 'woodland-floor', 'creek-bank']);
+        // Patched: the drawn zone and the new banks; the tall rough the patch matches by content itself.
+        expect(flag(runs[2]!, '--ids')!.split(',').sort()).toEqual([drawn.id, generated[3]!.id].sort());
+        expect(report).toContain('inner: 1 zone(s) edited, 1 new, 1 removed since linkan-inner-zones.json - patched instead of rasterizing every mask');
+        expect(intoUnity()).toEqual(['golfmap.zones.patch']);
+
+        // A zone type's items changed: the channels may move, so the whole masks and the whole import.
+        const types = new ZoneTypesService(t.db);
+        const floor = (await types.listByCourse(TEST_COURSE_ID)).find(z => z.key === 'woodland_floor')!;
+        await types.update(floor.id, { items: [{ item: 'Bilberry', minDensity: 0, maxDensity: 1 }] });
+        drawn = await features.update(drawn.id, drawn.version, { geometry: ring(8) });
+        report = await plant();
+        expect(ran()).toEqual(['grass_zones.py', 'creek_bank_zones.py', 'gspro.py zones']);
+        expect(report).toContain('inner: no patch - the zone types changed since linkan-inner-zones.json');
+        expect(intoUnity()).toEqual(['golfmap.zones.import', 'golfmap.grass.apply']);
+    } finally {
+        server.stop(true);
+    }
+});
+
 test('vegetation without the surface map or an open Unity: what can run does, the rest is reported, the job still succeeds', async () => {
     const discovery = await mkdtemp(path.join(os.tmpdir(), 'bridges-'));
     const exportDir = await mkdtemp(path.join(os.tmpdir(), 'gspro-out-'));
@@ -1682,8 +1780,9 @@ test('vegetation without the surface map or an open Unity: what can run does, th
     expect(res.report).toContain("tall rough: warning: no surface map from Unity - run golfmap.surfaces.export in the course's Unity project; the drawn features stand in (they miss OPCD's Outer_Deep fill)");
     expect(res.report).toContain("woodland floor: not planted (no surface map from Unity - run golfmap.surfaces.export in the course's Unity project)");
     expect(res.report).toContain("creek banks: not planted (no surface map from Unity - run golfmap.surfaces.export in the course's Unity project)");
-    expect(res.report.at(-2)).toMatch(/^Unity: not open, zones exported only - no open Unity editor imports from .* \(none is open\)/);
-    expect(res.report.at(-1)).toBe(NOT_ARBORIST);
+    expect(res.report.at(-3)).toMatch(/^Unity: not open, zones exported only - no open Unity editor imports from .* \(none is open\)/);
+    expect(res.report.at(-2)).toBe(NOT_ARBORIST);
+    expect(res.report.at(-1)).toMatch(/^Time: /);
 });
 
 test("vegetation for the outer terrain: its zones file only - no generators to undo the inner's zones, nothing into the course's VSP", async () => {
@@ -1754,6 +1853,20 @@ test("vegetation: the course's own rules file gives its generators their flags, 
     await writeFile(rules, JSON.stringify({ format: 'golfmap-vegetation-rules-v1', generators: { 'tall-gras': { 'far-start': 8 } } }));
     await expect(t.svc.plantVegetation(TEST_COURSE_ID, 'inner', { exportZones: false }))
         .rejects.toThrow(`${rules}: no vegetation generator 'tall-gras' (have: tall-grass, woodland-floor, creek-bank)`);
+});
+
+test('the zones against the masks: changed by content whatever the id, an edit under its own id, removed ones, and the stack order', () => {
+    const rendered = [{ id: 'a', content: 'A' }, { id: 'b', content: 'B' }, { id: 'c', content: 'C' }, { id: 'd', content: 'D' }];
+    // A generator re-run: the same zones under new ids. Nothing to patch.
+    expect(diffZoneContents(rendered, [{ id: 'a2', content: 'A' }, { id: 'b2', content: 'B' }, { id: 'c', content: 'C' }, { id: 'd', content: 'D' }]))
+        .toEqual({ changed: [], edited: 0, removed: 0, sameOrder: true });
+    // b edited, d deleted, e drawn.
+    expect(diffZoneContents(rendered, [{ id: 'a', content: 'A' }, { id: 'b', content: 'B2' }, { id: 'c', content: 'C' }, { id: 'e', content: 'E' }]))
+        .toEqual({ changed: ['b', 'e'], edited: 1, removed: 1, sameOrder: true });
+    // c moved below a: the zones both have are in another order.
+    expect(diffZoneContents(rendered, [{ id: 'c', content: 'C' }, { id: 'a', content: 'A' }, { id: 'b', content: 'B' }, { id: 'd', content: 'D' }]).sameOrder).toBe(false);
+    // Two identical zones count as two.
+    expect(diffZoneContents([{ id: 'a', content: 'A' }], [{ id: 'a', content: 'A' }, { id: 'x', content: 'A' }]).changed).toEqual(['x']);
 });
 
 test('vegetation generators: a run from one generator re-runs every one after it (the zone stack order holds)', () => {

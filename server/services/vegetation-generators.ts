@@ -12,6 +12,11 @@
 // after (above) the earlier ones' and claim the ground first, so a run from
 // one generator re-runs every one after it too.
 //
+// A generator whose inputs did not change since its last run is skipped
+// (`VegetationDeps.fingerprint`): what it reads is declared in `reads`, so a
+// drawn zone it ignores does not run it again. A skipped generator's zones
+// stay; when an earlier one ran, they are lifted back above its new ones.
+//
 // A course can set its own rules: docs/gspro/<course slug>/vegetation-rules.json gives
 // each generator flags of its script (Vreta: the tall rough 0.6 as thick beyond 20 m
 // from play, 0.3 beyond 50 m); the CLI's tuning flags come after them and win.
@@ -29,6 +34,25 @@ export interface VegetationInputs {
     buildings: string | null;
     /** The site's road centerlines with widths (fetch-roads), EPSG:3006 GeoJSON. */
     roads: string | null;
+    /** The DEM sidecar the scripts find next to the surface map (`<prefix>-dem-*.tif.json`, the first by name). */
+    demSidecar?: string | null;
+}
+
+/**
+ * What a generator reads besides its command's arguments (the files and flags in
+ * them are hashed as they are): for the fingerprint that skips an unchanged run.
+ */
+export interface GeneratorReads {
+    /** Feature types it reads from the course, any provenance; 'all' = every hand-drawn feature. */
+    features: readonly string[] | 'all';
+    /** The hand-drawn vegetation_zone features of these zone types it reads (creek sections). */
+    drawnZones: readonly string[];
+    /** The course's zone types it reads (a variant's bindings switch a mix on). */
+    zoneTypes: readonly string[];
+    /** Files besides the arguments: the DEM next to the surface map, the planted trees. */
+    files: readonly string[];
+    /** The pipeline scripts it runs through (relative to the pipeline dir), by mtime. */
+    scripts: readonly string[];
 }
 
 /** A generator's command for one run, or why it cannot run on this course now. */
@@ -44,6 +68,8 @@ export interface VegetationGenerator {
     /** The zone types it writes: added to a course that lacks them (from DEFAULT_ZONE_TYPES). */
     readonly zoneTypes: readonly string[];
     command(inputs: VegetationInputs): VegetationCommand;
+    /** What it reads, for the inputs fingerprint (pipeline/<script>'s own database queries). */
+    reads(inputs: VegetationInputs): GeneratorReads;
 }
 
 /** Buildings and roads kept clear, when the site has them. */
@@ -56,6 +82,14 @@ function clearanceArgs(inputs: VegetationInputs): { args: string[]; notes: strin
     else notes.push('no road centerlines: only the course\'s path features keep roads clear (fetch the roads)');
     return { args, notes };
 }
+
+/** The DEM `<prefix>-dem-*.tif.json` the scripts read next to the surface map, and its .tif. */
+function demFiles(inputs: VegetationInputs): string[] {
+    return inputs.demSidecar ? [inputs.demSidecar, inputs.demSidecar.replace(/\.json$/i, '')] : [];
+}
+
+/** The scripts every generator goes through: its own imports grass_zones/creek_bank_zones/gspro/golfpipe. */
+const GENERATOR_SCRIPTS = ['grass_zones.py', 'creek_bank_zones.py', 'gspro.py', 'golfpipe/__init__.py'];
 
 const NO_SURFACE_MAP = 'no surface map from Unity - run golfmap.surfaces.export in the course\'s Unity project';
 
@@ -72,6 +106,15 @@ export const TALL_GRASS: VegetationGenerator = {
         else notes.push(`${NO_SURFACE_MAP}; the drawn features stand in (they miss OPCD's Outer_Deep fill)`);
         return { args, notes };
     },
+    reads(inputs) {
+        // With the surface map: the paths, the far variant's bindings, and the creeks marked
+        // for banks plus the creek sections (no water clearance there). Without: the drawn features.
+        return {
+            features: inputs.surfaces ? ['path', 'water', 'water_creek'] : 'all',
+            drawnZones: [CREEK_BANK_ZONE_TYPE], zoneTypes: ['rough_tall', CREEK_BANK_ZONE_TYPE],
+            files: inputs.surfaces ? demFiles(inputs) : [], scripts: GENERATOR_SCRIPTS,
+        };
+    },
 };
 
 /** Creek and pond banks (pipeline/creek_bank_zones.py): the marked creeks and water, and the creek_bank sections. */
@@ -85,6 +128,13 @@ export const CREEK_BANKS: VegetationGenerator = {
         if (!inputs.surfaces) return { skip: NO_SURFACE_MAP };
         const { args, notes } = clearanceArgs(inputs);
         return { args: ['--surfaces', inputs.surfaces, ...args], notes };
+    },
+    reads(inputs) {
+        // The paths, the creeks and water, the hand-drawn creek sections and the palettes they pick.
+        return {
+            features: ['path', 'water', 'water_creek'], drawnZones: [CREEK_BANK_ZONE_TYPE], zoneTypes: [CREEK_BANK_ZONE_TYPE],
+            files: demFiles(inputs), scripts: GENERATOR_SCRIPTS,
+        };
     },
 };
 
@@ -103,6 +153,14 @@ export const WOODLAND_FLOOR: VegetationGenerator = {
         if (!inputs.surfaces) return { skip: NO_SURFACE_MAP };
         const { args, notes } = clearanceArgs(inputs);
         return { args: ['--surfaces', inputs.surfaces, ...args], notes };
+    },
+    reads(inputs) {
+        // The paths only from the course; the planted trees next to the surface map. No zones at all.
+        const trees = inputs.surfaces ? [inputs.surfaces.replace(/-surfaces\.json$/i, '-trees.json')] : [];
+        return {
+            features: ['path'], drawnZones: [], zoneTypes: [],
+            files: [...demFiles(inputs), ...trees], scripts: [...GENERATOR_SCRIPTS, 'woodland_floor_zones.py', 'terrain_fields.py'],
+        };
     },
 };
 
@@ -131,6 +189,16 @@ export interface VegetationDeps {
     dbPath?: string;
     /** Runs a pipeline script (args[0] is the script path); throws with the script's output on failure. */
     run(what: string, args: string[], out: string): Promise<{ report: string[] }>;
+    /** One generator run's inputs fingerprint (`args`: its whole command); omitted = every generator always runs. */
+    fingerprint?(g: VegetationGenerator, args: string[], inputs: VegetationInputs): Promise<GeneratorFingerprint>;
+}
+
+/** Whether a generator run can be skipped, and how to remember the one that was not. */
+export interface GeneratorFingerprint {
+    /** The report line when its inputs AND its zones are as its last run left them, else null: run it. */
+    unchanged: string | null;
+    /** After the run and the replace: remember these inputs with the zones it wrote. */
+    record(): Promise<void>;
 }
 
 /** The course's own generator rules: `docs/gspro/<course slug>/vegetation-rules.json`. */
@@ -188,6 +256,8 @@ export interface VegetationOptions {
     workDir: string;
     /** The generators to choose from (tests); default VEGETATION_GENERATORS. */
     generators?: readonly VegetationGenerator[];
+    /** Run every generator even when its inputs are unchanged. */
+    force?: boolean;
 }
 
 export interface VegetationRun {
@@ -195,46 +265,70 @@ export interface VegetationRun {
     /** Zones written (or, dry run, generated); null when the generator was skipped. */
     zones: number | null;
     out: string | null;
+    /** Skipped because nothing it reads changed since its last run (its zones stay). */
+    unchanged?: boolean;
+    /** How long it took, script and replace (ms). */
+    ms: number;
 }
 
 /**
  * Run the generators over the course: each writes its zones as GeoJSON, which
  * replaces that generator's previous zones (in registry order, so the stack
- * order holds). Adds the zone types they use to a course that lacks them, and
- * warns when zones use a mix with no items (nothing grows there - e.g. a
- * creek_bank section left on "Default").
+ * order holds). One whose inputs are unchanged since its last run
+ * (`deps.fingerprint`) is skipped unless `force`: its zones stay, lifted back
+ * on top of an earlier generator's new ones. Adds the zone types they use to a
+ * course that lacks them, and warns when zones use a mix with no items
+ * (nothing grows there - e.g. a creek_bank section left on "Default").
  */
 export async function generateVegetation(deps: VegetationDeps, courseId: string, inputs: VegetationInputs,
                                          opts: VegetationOptions): Promise<{ runs: VegetationRun[]; report: string[] }> {
     const report: string[] = [];
     const runs: VegetationRun[] = [];
+    // Once a generator has put new zones on top, every later one's go back above them.
+    let replaced = false;
+    const keepOnTop = async (g: VegetationGenerator) => {
+        if (replaced && !opts.dryRun) await deps.features.raiseGenerated(courseId, g.source);
+    };
     for (const g of generatorsFrom(opts.from, opts.generators ?? VEGETATION_GENERATORS)) {
+        const started = Date.now();
         const command = g.command(inputs);
         if ('skip' in command) {
             report.push(`${g.label}: not planted (${command.skip})`);
-            runs.push({ source: g.source, zones: null, out: null });
+            await keepOnTop(g);
+            runs.push({ source: g.source, zones: null, out: null, ms: Date.now() - started });
+            continue;
+        }
+        const own = opts.courseRules?.args[g.source] ?? [];
+        const out = path.join(opts.workDir, `${g.source}.geojson`);
+        const args = [
+            path.join(deps.pipelineDir, g.script), ...(deps.dbPath ? ['--db', deps.dbPath] : []), '--course', courseId, '--out', out,
+            ...command.args, ...own, ...(opts.extraArgs?.[g.source] ?? []),
+        ];
+        const fp = opts.dryRun || !deps.fingerprint ? null : await deps.fingerprint(g, args, inputs);
+        if (fp?.unchanged && !opts.force) {
+            report.push(`${g.label}: ${fp.unchanged}`);
+            await keepOnTop(g);
+            runs.push({ source: g.source, zones: null, out: null, unchanged: true, ms: Date.now() - started });
             continue;
         }
         for (const note of command.notes ?? []) report.push(`${g.label}: warning: ${note}`);
-        const own = opts.courseRules?.args[g.source] ?? [];
         if (own.length) report.push(`${g.label}: the course's rules (${opts.courseRules!.file}): ${own.join(' ')}`);
-        const out = path.join(opts.workDir, `${g.source}.geojson`);
-        const ran = await deps.run(`${g.label} vegetation`, [
-            path.join(deps.pipelineDir, g.script), ...(deps.dbPath ? ['--db', deps.dbPath] : []), '--course', courseId, '--out', out,
-            ...command.args, ...own, ...(opts.extraArgs?.[g.source] ?? []),
-        ], out);
+        const ran = await deps.run(`${g.label} vegetation`, args, out);
         report.push(...ran.report.filter((l) => !l.includes("'Memory' driver")));
         const collection = JSON.parse(await readFile(out, 'utf8')) as GeneratedFeatureCollection;
         if (opts.dryRun) {
             report.push(`${g.label}: ${collection.features.length} zones (dry run: not imported, ${out})`);
-            runs.push({ source: g.source, zones: collection.features.length, out });
+            runs.push({ source: g.source, zones: collection.features.length, out, ms: Date.now() - started });
             continue;
         }
         const r = await deps.features.replaceGenerated(courseId, g.source, collection);
+        replaced = true;
         report.push(`${g.label}: replaced ${r.deleted} zones with ${r.inserted}`);
-        runs.push({ source: g.source, zones: r.inserted, out });
         if (r.inserted > 0) report.push(...await ensureZoneTypes(deps.zoneTypes, courseId, g.zoneTypes));
         report.push(...emptyMixWarnings(collection, await deps.zoneTypes.listByCourse(courseId)));
+        // After the zone types it added: they are among what it reads.
+        await fp?.record();
+        runs.push({ source: g.source, zones: r.inserted, out, ms: Date.now() - started });
     }
     return { runs, report };
 }

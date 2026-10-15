@@ -1317,6 +1317,42 @@ export class CourseFeaturesService {
     }
 
     /**
+     * Lift a generator's zones to where `replaceGenerated` would put them now
+     * (the top of their type's run in the course-level stack), without
+     * re-inserting them: a vegetation run that skipped an unchanged generator
+     * keeps its zones above the earlier generators' new ones. Like
+     * replaceGenerated it leaves `updated_at` alone. Returns the rows moved.
+     */
+    async raiseGenerated(courseId: string, source: string): Promise<number> {
+        return this.db.transaction().execute(async (trx) => {
+            const group = await this.byGroup(courseId, null, null, trx).execute();
+            const own = new Set((await trx.selectFrom('course_features').select('id')
+                .where('course_id', '=', courseId).where('source', '=', source).where('generated', '=', 1)
+                .execute()).map((row) => row.id));
+            const mine = group.filter((row) => own.has(row.id));
+            if (mine.length === 0) return 0;
+            const next = group.filter((row) => !own.has(row.id));
+            for (const type of [...new Set(mine.map((row) => row.type))].sort((a, b) => typeRank(a) - typeRank(b))) {
+                let at = 0;
+                for (let i = next.length - 1; i >= 0; i--) {
+                    if (typeRank(next[i]!.type) <= typeRank(type)) { at = i + 1; break; }
+                }
+                next.splice(at, 0, ...mine.filter((row) => row.type === type));
+            }
+            // The group's own sort_order values, handed out in the new order: only the rows
+            // between the old and the new place change (each one a `restack` history row).
+            const slots = group.map((row) => row.sort_order);
+            let moved = 0;
+            for (let i = 0; i < next.length; i++) {
+                if (next[i]!.sort_order === slots[i]) continue;
+                await this.updateById(next[i]!.id, trx).set({ sort_order: slots[i]! }).execute();
+                if (own.has(next[i]!.id)) moved++;
+            }
+            return moved;
+        });
+    }
+
+    /**
      * Rewrites a group's (course_id, hole_id|null, layer|null) stack order in one shot
      * (house pattern — see tees.service.ts reorder / game-plans.service.ts
      * reorderShots). orderedIds must be exactly the group's current
