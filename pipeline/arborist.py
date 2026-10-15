@@ -811,7 +811,7 @@ def init(args) -> None:
     doc["PersistentVegetationPackage"] = {"PersistentVegetationCellList": []}
     for name in ("biomeMasks", "vegeMasks", "vegeLines", "originalImportGameObjectsParents", "originalImportTerrains", "quicksets"):
         doc[name] = []
-    doc["terrainSize"] = args.inner_side
+    doc["terrainSize"] = int(round(args.inner_side))  # GSPro's parser takes an integer here: 1510.0 fails the whole file
     doc["satImagePath"] = ""
     if args.camera:
         doc["lastCamPos"] = {"x": args.camera[0], "y": args.camera[1], "z": args.camera[2]}

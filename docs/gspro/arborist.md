@@ -53,8 +53,16 @@ Unity, so the Arborist vegetation follows the zones without a shell (`ArboristSe
   (`lower`, then the trees when Unity is open). `--arborist-out <folder>` writes there instead of into
   the course folder, for a trial. `bun run grass:zones` runs `lower` after its zones export
   (`--no-arborist` leaves it), and so does the shaping run's replant after a rock slab.
-- Still by hand: the first `arboristdata.dat` of a course (golf-map only replaces its own packages
-  in an existing file), `arborist.py post` (look.json's post values), `lineup`, and after the trees
+- A new course's first `arboristdata.dat` (golf-map only replaces its own packages in an existing
+  file): `bun run py arborist.py init --course-dir <GSPro course folder> --source <another course's
+  arboristdata.dat> --inner-side <m> [--camera x y z]` (Omberg, 2026-10-16). `terrainSize` must be an
+  integer: `1510.0` made GreenKeeper's parser throw (`JsonParsingException ... actual '.'`) and load no
+  Arborist vegetation at all. `post` needs an `arborist_postprocess.dat` to edit: copy another course's.
+  Then load the course in GreenKeeper, switch ARBORIST ON and SAVE (overwrite): that writes
+  `coursedetails.txt`, which GSPro's course list reads (without it every hole shows "500 yards, par 0"
+  and the round refuses to start), and `IsArborist: true` in the GKD. GreenKeeper refuses to save
+  without a `splash.jpg` in the course folder.
+- Still by hand: `arborist.py post` (look.json's post values), `lineup`, and after the trees
   changed owner the trim in Unity (the reload in Arborist is `bun run arborist`, below): the report then ends with
   a warning naming `golfmap.vsp.trees.trim restore=true`, then `file=<path>`, save, build.
   The trim is not run for you, because `restore` after a replant in Unity would put the old trees
