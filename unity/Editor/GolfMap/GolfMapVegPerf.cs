@@ -459,7 +459,9 @@ namespace GolfMap.Editor
         static double Percentile(List<double> v, double p) { var s = v.OrderBy(x => x).ToList(); return s.Count == 0 ? 0 : s[Math.Min(s.Count - 1, (int)(s.Count * p))]; }
 
         // Yields null once per editor frame; the result lands in holder[0].
-        internal static IEnumerable<object> Measure(int warmup, int frames, int width, int height, bool withItems, Timing[] holder)
+        // burst: frames back to back, handing the editor a frame only every tenth. Do not use it for timings:
+        // tried 2026-10-15, the renders queued up on the GPU (p90 400-800 ms) and no view ever settled.
+        internal static IEnumerable<object> Measure(int warmup, int frames, int width, int height, bool withItems, Timing[] holder, bool burst = false)
         {
             var sv = SceneView.lastActiveSceneView;
             if (sv == null) throw new BridgeError("No Scene view is open.");
@@ -509,7 +511,7 @@ namespace GolfMap.Editor
                     {
                         total.Add(t2 - t0); vsp.Add(vMs); other.Add(oMs); render.Add(t2 - t1);
                     }
-                    yield return null;
+                    if (!burst || f % 10 == 9) yield return null;
                 }
             }
             finally

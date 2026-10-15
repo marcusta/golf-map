@@ -280,7 +280,15 @@ namespace GolfMap.Editor
             // The folded small rows last.
             result = result.OrderBy(c => c.id == SmallOther ? 1 : 0).ToList();
 
-            var behaviours = roots.SelectMany(g => g.GetComponentsInChildren<Behaviour>(true)).Where(b => b).ToList();
+            // A plain loop: Mono's SelectMany + ToList over these arrays threw ArrayTypeMismatchException
+            // (an array of a derived component type stored into the List<Behaviour>), 2026-10-14.
+            var behaviours = new List<Behaviour>();
+            foreach (var g in roots)
+                foreach (var c in g.GetComponentsInChildren(typeof(Behaviour), true))
+                {
+                    var b = c as Behaviour;   // not every element casts (seen on Vreta: a broken script reference)
+                    if (b) behaviours.Add(b);
+                }
             var systems = GolfMapVegPerf.Systems().Where(s => s.isActiveAndEnabled).ToList();
             var sv = SceneView.lastActiveSceneView;
             var stored = new Dictionary<string, long>();
@@ -863,6 +871,80 @@ namespace GolfMap.Editor
 
         // ---- bridge commands ------------------------------------------------------------------------
 
+        // ---- the quick reading -----------------------------------------------------------------------
+
+        // A few seconds per view instead of minutes: pose, let VSP load until two short readings agree
+        // (or maxSettle readings), then one reading with VSP's per-item counts. No categories switched
+        // off, nothing ranked: for an A/B of one change, the same views before and after.
+        static IEnumerable<object> Quick(List<ViewSpec> views, int frames, int maxSettle, int top, List<object> rows)
+        {
+            var sv = SceneView.lastActiveSceneView;
+            if (sv == null) throw new BridgeError("No Scene view is open.");
+            var oldPivot = sv.pivot; var oldRotation = sv.rotation; var oldSize = sv.size; bool oldOrtho = sv.orthographic;
+            var t = new GolfMapVegPerf.Timing[1];
+            try
+            {
+                foreach (var spec in views)
+                {
+                    var watch = System.Diagnostics.Stopwatch.StartNew();
+                    if (!spec.current)
+                    {
+                        Vector3 position; Quaternion rotation;
+                        Pose(sv, spec, out position, out rotation);
+                        for (int i = 0; i < 4; i++) { sv.Repaint(); yield return null; }
+                        sv.camera.transform.position = position;
+                        sv.camera.transform.rotation = rotation;
+                    }
+                    double last = -1; int settles = 0;
+                    for (; settles < maxSettle; settles++)
+                    {
+                        foreach (var step in GolfMapVegPerf.Measure(1, 6, 1920, 1080, false, t)) yield return step;
+                        double ms = t[0].totalMs;
+                        if (last > 0 && Math.Abs(ms - last) <= Math.Max(0.5, 0.03 * last)) break;
+                        last = ms;
+                    }
+                    foreach (var step in GolfMapVegPerf.Measure(0, frames, 1920, 1080, true, t)) yield return step;
+                    var f = t[0];
+                    var grass = f.items == null ? null : f.items.Where(s => TypeIs("Grass", s.type)).ToList();
+                    rows.Add(new Dictionary<string, object>
+                    {
+                        { "view", spec.name }, { "ms", Math.Round(f.totalMs, 2) }, { "fps", Math.Round(f.Fps, 1) },
+                        { "vspCpuMs", Math.Round(f.vspMs, 2) }, { "otherCpuMs", Math.Round(f.otherMs, 2) }, { "renderGpuMs", Math.Round(f.renderMs, 2) }, { "p90Ms", Math.Round(f.p90Ms, 2) },
+                        { "settled", settles < maxSettle }, { "grassInstances", grass == null ? 0 : grass.Sum(s => s.VisibleInstances) },
+                        { "grassTriangles", grass == null ? 0 : grass.Sum(s => s.VisibleTris) }, { "seconds", Math.Round(watch.Elapsed.TotalSeconds, 1) },
+                        // what draws most here: the VSP items (any type) with the most triangles in view
+                        { "top", f.items == null ? new List<object>() : f.items.Where(s => s.VisibleTris > 0).OrderByDescending(s => s.VisibleTris).Take(top)
+                            .Select(s => (object)(s.name + " (" + s.type + "): " + s.VisibleInstances + " inst, " + Math.Round(s.VisibleTris / 1e6, 2) + " M tris")).ToList() },
+                    });
+                }
+            }
+            finally
+            {
+                if (views.Any(v => !v.current)) { sv.LookAtDirect(oldPivot, oldRotation, oldSize); sv.orthographic = oldOrtho; }
+                sv.Repaint();
+            }
+        }
+
+        [BridgeCommand("golfmap.perf.quick", "The Scene view frame time at the course's viewpoints in a few seconds each, for an A/B of one change: per view the median ms, VSP CPU / other CPU / render ms, and the VSP grass instances and triangles drawn. Waits at each view until two short readings agree (VSP done loading), at most maxSettle readings ('settled': false = still loading, read again). Nothing is switched off or ranked (golfmap.perf.report does that). " + EditorNote,
+            args = "views (file; default <course folder>/perf-views.json), view (part of a viewpoint's name; several comma-separated), current=false, frames=30, maxSettle=6, top=8 (the VSP items drawing the most triangles in view)")]
+        static IEnumerator QuickCommand(BridgeArgs a)
+        {
+            var course = GolfMapCourses.Require();
+            List<ViewSpec> views;
+            if (a.Bool("current", false)) views = new List<ViewSpec> { CurrentView() };
+            else
+            {
+                views = LoadViews(a.String("views") ?? GolfMapCourses.Folder(course) + "perf-views.json");
+                var parts = a.Strings("view").SelectMany(x => x.Split(',')).Select(x => x.Trim()).Where(x => x.Length > 0).ToList();
+                if (parts.Count > 0) views = views.Where(v => parts.Any(p => v.name.IndexOf(p, StringComparison.OrdinalIgnoreCase) >= 0)).ToList();
+                if (views.Count == 0) throw new BridgeError("No viewpoint matches.");
+            }
+            var rows = new List<object>();
+            var watch = System.Diagnostics.Stopwatch.StartNew();
+            foreach (var s in Quick(views, Mathf.Clamp(a.Int("frames", 30), 5, 500), Mathf.Clamp(a.Int("maxSettle", 6), 1, 50), Mathf.Clamp(a.Int("top", 8), 0, 100), rows)) yield return s;
+            yield return new Dictionary<string, object> { { "seconds", Math.Round(watch.Elapsed.TotalSeconds, 1) }, { "views", rows } };
+        }
+
         static IEnumerator RunCommand(IEnumerable<object> steps, Func<object> result)
         {
             foreach (var s in steps) yield return s;
@@ -878,7 +960,8 @@ namespace GolfMap.Editor
                 rounds = Mathf.Clamp(a.Int("rounds", 3), 0, 20), frames = Mathf.Clamp(a.Int("frames", 40), 5, 2000), settle = Mathf.Clamp(a.Int("settle", 90), 0, 3000),
                 width = Mathf.Clamp(a.Int("width", 1920), 16, 4096), height = Mathf.Clamp(a.Int("height", 1080), 16, 4096),
                 baselineEvery = Mathf.Clamp(a.Int("baselineEvery", 3), 1, 100),
-                only = a.Has("only") ? a.String("only").Split(',').Select(x => x.Trim()).Where(x => x.Length > 0).ToArray() : null,
+                // a list or a comma-separated string (a list used to read as no filter at all: every category timed)
+                only = a.Has("only") ? a.Strings("only").SelectMany(x => x.Split(',')).Select(x => x.Trim()).Where(x => x.Length > 0).ToArray() : null,
             };
             string json = a.String("json");
             var holder = new Result[1];

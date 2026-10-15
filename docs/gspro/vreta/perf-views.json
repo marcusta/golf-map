@@ -5,6 +5,11 @@
     { "name": "tee 1", "note": "GSPro's own default tee view when the round starts (read from the camera)", "position": [1100.52, 16.08, 953.34], "rotation": [0, 279.16, 0] },
     { "name": "hole 6 water hazard", "note": "Marcus's own screenshot spot in the thick grass by the creek", "position": [823.4, 10.8, 1800.8], "rotation": [1.7, 135, 0] },
     { "name": "woods right of hole 4", "note": "55 m right of the first leg, looking along the hole", "position": [703, 0, 1317], "eye": 1.7, "rotation": [2, 327, 0] },
-    { "name": "hole 4 tee, forward-left", "note": "on the white tee looking up into the rough, 40 degrees left of the hole", "position": [720, 0, 1190.6], "eye": 1.7, "rotation": [-3, 287, 0] }
+    { "name": "hole 4 tee, forward-left", "note": "on the white tee looking up into the rough, 40 degrees left of the hole", "position": [720, 0, 1190.6], "eye": 1.7, "rotation": [-3, 287, 0] },
+    { "name": "flyover hole 12 tee", "note": "GreenKeeper flyover's slowest place (base-c 2026-10-14: 81 fps over 0.5 s; 134 without Stix and Arborist)", "position": [982, 17, 285], "rotation": [1, 349, 0] },
+    { "name": "flyover hole 3 below the tee", "note": "GreenKeeper flyover, down hole 3 from the tee into the birch/oak woods and tall grass (base-a 86 fps; Forst trees 2.2 ms, VSP grass 2.3, Stix 1.4, Arborist 1.1 measured by hand)", "position": [559, 36, 1316], "rotation": [-2, 163, 0] },
+    { "name": "flyover hole 7", "note": "GreenKeeper flyover (base-c 90 fps)", "position": [705, 14, 1674], "rotation": [3, 174, 0] },
+    { "name": "flyover hole 10", "note": "GreenKeeper flyover (base-a 96 fps)", "position": [1072, 19, 739], "rotation": [0, 216, 0] },
+    { "name": "flyover hole 14", "note": "GreenKeeper flyover (grass-arborist's slowest, 111 fps)", "position": [843, 15, 635], "rotation": [0, 149, 0] }
   ]
 }

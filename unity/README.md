@@ -1489,6 +1489,15 @@ What costs the most frame time on the course, ranked, per category, with the geo
 - Side by side: `bun unity/ArboristMod/perf.ts --md <out.md> --from <editor.json> <game.json>`. The markdown opens with a summary (the five largest costs overall, each viewpoint's baseline and its three largest); tables are ordered by measured saving, then triangles, the `other` rows last.
 - The game run ends with "Game left as found: yes" (`conditions.restoreCheck` in the JSON): nothing left hidden by `scene.hide` / `veg.draw`, shadow setting, quality level and vSync as at the start.
 
+**Quick A/B: `golfmap.perf.quick view=<names, comma-separated>`** - the frame time at named viewpoints in 4-6 s each
+(Vreta 2026-10-15: four views in 18.5 s): pose, wait until two short readings agree (VSP done loading; `settled`
+false = read again), one 30-frame median with VSP CPU / render ms and the VSP grass instances and triangles drawn.
+Nothing is switched off: measure the same views before and after one change. The first view after a script reload
+is slow (900 ms frames while the editor warms up): read one view first. A `golfmap.perf.report` with every category
+takes 10-20 minutes and holds the editor; `only` takes a list or a comma-separated string (before 2026-10-15 a list
+read as no filter and timed every category). Never measure the Scene view as it stands (`current=true`) for an A/B:
+it moves when someone works in the editor.
+
 Reading the numbers:
 
 - **The editor's are for ranking and geometry, the game's for fps.** The editor times the Scene view camera rendered off screen: no frame-rate cap, no GSPro systems (the Arborist vegetation, GSPro's sky and UI are not there), another field of view. Its triangle counts are the real meshes; a built course has static batches (below).
