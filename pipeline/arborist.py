@@ -10,6 +10,7 @@ handles (format read out of GSPro 3.1.6.20 and real course files; see docs/gspro
 Commands:
   decode <dat> <json>     unwrap an arboristdata.dat
   encode <json> <dat>     wrap a JSON file
+  init                    a new course's first arboristdata.dat, from another course's without its vegetation
   trial                   a few trees round two spots of a course, to see GSPro draw them
 
 The item definitions (about 140 settings each, the baked billboards included) are never
@@ -472,13 +473,19 @@ class FarRule:
         r0, c0 = int(round(oz - self.z0)), int(round(ox - self.x0))
         play[r0:r0 + coarse.shape[0], c0:c0 + coarse.shape[1]] = coarse[::-1]   # the map is north-up
         boundary = [(c["x"] - self.x0, c["z"] - self.z0) for c in (json.loads(gkd.read_text(encoding="utf-8-sig")).get("pOOB") or {}).get("coords") or []]
+        self.to_play = ndimage.distance_transform_edt(~play)
         if len(boundary) < 3:
-            sys.exit(f"{gkd} has no course boundary (pOOB).")
+            # A course still being drawn (Omberg's first hole, 2026-10-16) has no `oob` ring yet: the playing
+            # field stands in for the boundary, so the trees are judged by their distance from play alone.
+            print(f"warning: {gkd.name} has no course boundary (pOOB): the playing field stands in for it "
+                  "(draw an `oob` ring and export the GKD again)", file=sys.stderr)
+            self.inside = play
+            self.to_boundary = self.to_play
+            return
         image = Image.new("1", (self.w, self.h), 0)
         ImageDraw.Draw(image).polygon(boundary, fill=1)
         self.inside = np.array(image, dtype=bool)
         self.to_boundary = ndimage.distance_transform_edt(~self.inside)
-        self.to_play = ndimage.distance_transform_edt(~play)
 
     def outside(self, x: float, z: float) -> float:
         """Metres outside the course boundary; 0 inside it."""
@@ -789,6 +796,31 @@ def lineup(args) -> None:
     print(f"wrote {course_dir / 'arboristdata.dat'}: lineup of {len(items)}")
 
 
+def init(args) -> None:
+    """A new course's first arboristdata.dat, which `trees` and `lower` then fill: another course's file with
+    its packages and stored instances taken out, the system settings and terrain list kept (the names are the
+    GolfMap scenes' own), terrainSize and the camera set for this course. Refuses to overwrite a course file."""
+    key = Path(args.key_file) if args.key_file else DEFAULT_KEY
+    out = Path(args.course_dir) / "arboristdata.dat"
+    if out.exists() and not args.force:
+        sys.exit(f"{out} exists: `trees` and `lower` replace their own packages in it (--force starts it again)")
+    doc = load_any(Path(args.source), key)
+    settings = doc["VSProSettings"]
+    settings["vegetationPackages"] = []
+    settings["totalPrefabs"] = 0
+    doc["PersistentVegetationPackage"] = {"PersistentVegetationCellList": []}
+    for name in ("biomeMasks", "vegeMasks", "vegeLines", "originalImportGameObjectsParents", "originalImportTerrains", "quicksets"):
+        doc[name] = []
+    doc["terrainSize"] = args.inner_side
+    doc["satImagePath"] = ""
+    if args.camera:
+        doc["lastCamPos"] = {"x": args.camera[0], "y": args.camera[1], "z": args.camera[2]}
+    out.parent.mkdir(parents=True, exist_ok=True)
+    write_dat(doc, out, key)
+    (out.parent / "arboristversion.dat").write_text(str(doc.get("catalogVersion", CATALOG_VERSION)), encoding="ascii")
+    print(f"wrote {out}: no packages, terrains {[t.get('Name') for t in settings.get('terrains', [])]}, terrainSize {args.inner_side}")
+
+
 def post(args) -> None:
     """The course folder's arborist_postprocess.dat with look.json's `post` values written in. GSPro takes the
     post-processing of an Arborist course from that file, not from the scene's profile (seen 2026-10-13: a
@@ -875,6 +907,13 @@ def main() -> None:
     p.add_argument("--look", required=True, help="the course's look.json")
     p.add_argument("--out-dir", help="where to write (default: the course folder)")
     p.add_argument("--key-file")
+    p = sub.add_parser("init", help="a new course's first arboristdata.dat, from another course's file without its vegetation")
+    p.add_argument("--course-dir", required=True, help="the new course's GSPro course folder")
+    p.add_argument("--source", required=True, help="another course's arboristdata.dat / decoded .json (its settings and terrain list are kept)")
+    p.add_argument("--inner-side", type=float, required=True, help="the inner terrain's side in metres (terrainSize)")
+    p.add_argument("--camera", nargs=3, type=float, metavar=("X", "Y", "Z"), help="where Arborist opens the view")
+    p.add_argument("--force", action="store_true", help="replace an existing arboristdata.dat")
+    p.add_argument("--key-file")
     for name in ("decode", "encode"):
         p = sub.add_parser(name)
         p.add_argument("src")
@@ -902,6 +941,8 @@ def main() -> None:
         trees(args)
     elif args.command == "lineup":
         lineup(args)
+    elif args.command == "init":
+        init(args)
     elif args.command == "post":
         post(args)
     else:
