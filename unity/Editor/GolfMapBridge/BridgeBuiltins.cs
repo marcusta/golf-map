@@ -234,6 +234,17 @@ namespace GolfMap.Bridge
             return rows;
         }
 
+        [BridgeCommand("scene.open", "Open a scene file (File > Open Scene), replacing the open scenes. Refuses while an open scene has unsaved changes.", args = "path (e.g. Assets/Scenes/Course.unity)")]
+        static object SceneOpen(BridgeArgs a)
+        {
+            var path = a.Require("path");
+            if (AssetDatabase.LoadAssetAtPath<SceneAsset>(path) == null) throw new BridgeError("No scene at " + path + ".");
+            for (int i = 0; i < SceneManager.sceneCount; i++)
+                if (SceneManager.GetSceneAt(i).isDirty) throw new BridgeError("Scene '" + SceneManager.GetSceneAt(i).name + "' has unsaved changes: save or discard them first.");
+            var scene = UnityEditor.SceneManagement.EditorSceneManager.OpenScene(path, UnityEditor.SceneManagement.OpenSceneMode.Single);
+            return new Dictionary<string, object> { { "scene", scene.path }, { "roots", scene.rootCount } };
+        }
+
         [BridgeCommand("selection", "Get the selection, or select (and ping) the object at path.", args = "path")]
         static object SelectionCommand(BridgeArgs a)
         {

@@ -997,7 +997,9 @@ How the paint reaches the game:
   apply warns about it.
 - **Reproducible.** Paint is always computed from the original FBX colours
   (`PaintedMeshes/restore.json` remembers each object's original), so re-running after tuning or after an
-  FBX re-import gives the same result. Objects no rule touches any more go back to the FBX mesh. Apply marks
+  FBX re-import gives the same result. Objects no rule touches any more go back to the FBX mesh. A painted
+  copy whose asset is gone (deleted, or zeroed by a crash) leaves an empty MeshFilter: apply puts the original
+  from `restore.json` back first and rebuilds the copy (reported under `healed`). Apply marks
   the scene dirty and does not save it: save the scene to keep the swaps.
 - **Rewritten through the Mesh API.** An existing copy is refilled channel by channel (`Overwrite`), never with
   `EditorUtility.CopySerialized`: that kept the loaded mesh's old render buffers, so after a Blender shaping run

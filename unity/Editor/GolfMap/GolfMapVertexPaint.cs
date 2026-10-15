@@ -238,6 +238,17 @@ namespace GolfMap.Editor
             var records = LoadRecords(meshFolder + RestoreFile);
 
             var scene = EditorSceneManager.GetActiveScene();
+            // A painted copy whose asset is gone (deleted, or zeroed by a crash) leaves an empty MeshFilter that
+            // CourseMeshes skips: put its original back first, so it is painted (and reshaped) again below.
+            var healed = new List<object>();
+            foreach (var f in scene.GetRootGameObjects().SelectMany(r => r.GetComponentsInChildren<MeshFilter>(true)))
+            {
+                if (f.sharedMesh != null || !records.ContainsKey(PathOf(f.transform))) continue;
+                var original = LoadOriginal(records, PathOf(f.transform));
+                if (original == null) continue;
+                healed.Add(PathOf(f.transform));
+                if (!dryRun) SetMesh(f, original, original);
+            }
             var allFilters = CourseMeshes(scene);
             float reach = Mathf.Max(1f, rules.Where(r => r.edge == "bunker").Select(r => r.widthM).DefaultIfEmpty(1f).Max());
             bool scoped = only != null || within != null;
@@ -383,6 +394,7 @@ namespace GolfMap.Editor
                 { "paintedVertices", totalPainted },
                 { "checkedVertices", totalVerts },
                 { "reverted", reverted },
+                { "healed", healed },
                 { "untouched", unchanged },
                 { "ground", ground == null ? null : ground.report },
                 { "terrainLowered", terrainLowered },
