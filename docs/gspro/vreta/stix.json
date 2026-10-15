@@ -1,0 +1,16 @@
+{
+  "format": "golfmap-stix-v1",
+  "comment": "Vreta's StixGames 3D grass shader values, tuned by hand by Marcus in the editor for look and frame time (GreenKeeper flyover: Stix on top of the VSP vegetation was the largest cost). The editor reads the copy in the course folder (Assets/GolfMap/Vreta/stix.json): golfmap.roughgrass.plant sets 'rough' on NewRough, golfmap.wispy.build sets 'wispy' / 'wispyFloor' on the materials it derives (wispy rough is VSP only on Vreta since 2026-10-14, so those two are not in use). 'before' = the values until the hand tuning, for comparing frame times (golfmap.stix.apply which=before|current); 'history' = the steps. golfmap.stix.read shows the live values.",
+  "rough": { "_TargetDensity": 0.06, "_Softness00": 0.591, "_MinHeight00": 0.1, "_MaxHeight00": 0.12, "_DensityFalloffPower": 0.96 },
+  "wispy": { "_TargetDensity": 0.063 },
+  "wispyFloor": { "_TargetDensity": 0.06, "_Softness00": 0.759 },
+  "before": {
+    "rough": { "_TargetDensity": 0.03, "_Softness00": 1, "_MinHeight00": 0.11, "_MaxHeight00": 0.14, "_DensityFalloffPower": 0.66 },
+    "wispy": { "_TargetDensity": 0.0594 },
+    "wispyFloor": { "_TargetDensity": 0.03 }
+  },
+  "history": [
+    { "at": "2026-10-14 23:11", "rough": { "_TargetDensity": 0.046, "_Softness00": 0.591, "_MinHeight00": 0.1, "_MaxHeight00": 0.12 }, "note": "first hand tuning; editor below hole 3's tee 73.2 -> 63.6 ms" },
+    { "at": "2026-10-14 23:50", "rough": { "_TargetDensity": 0.06, "_DensityFalloffPower": 0.96 }, "note": "sparser still, thinning faster with distance" }
+  ]
+}

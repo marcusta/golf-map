@@ -11,14 +11,15 @@
 //
 // Two renderers per zone, so the wisps are added to the floor instead of taking its blades:
 //   floor  the rough's own Stix material (the same asset the rough meshes use), red = the zone's weight: the
-//          sward is the rough's, blade for blade. Deep rough only: a rough mesh under the zone has it already.
-//          With floor != 1 it is <course>/Grass/<rough> Wispy Floor.mat instead: the rough's material with the
-//          blades that much longer (rebuilt from the rough's on every run, like the wisps'), and it then grows
-//          on the rough meshes under the zone too, over their own sward;
+//          sward is the rough's, blade for blade. With floor != 1 it is <course>/Grass/<rough> Wispy Floor.mat
+//          instead: the rough's material with the blades that much longer (rebuilt from the rough's on every run,
+//          like the wisps');
 //   wisps  <course>/Grass/<rough> Wispy.mat on a second copy of the mesh, red = the zone's weight x the drift
 //          noise. The material is rebuilt from the rough's on every run (so it follows the rough's colour map
-//          and terrain scale; hand edits to it do not survive): the same blade, longer, thinner, paler, and
-//          spaced wider (the rough's spacing / sqrt(wisp share)).
+//          and terrain scale): the same blade, longer, thinner, paler, and spaced wider (the rough's spacing /
+//          sqrt(wisp share)). Hand-tuned values go in <course>/stix.json (wispy, wispyFloor), set after that.
+// Both grow on the deep rough under the zone only: a rough mesh there keeps its own Stix and gets nothing of
+// ours on top, the zone's look there being the VSP wispy grass alone.
 using System;
 using System.Collections.Generic;
 using System.IO;
@@ -54,7 +55,7 @@ namespace GolfMap.Editor
             public bool dryRun;
         }
 
-        [BridgeCommand("golfmap.wispy.build", "Wispy rough (links-style deep rough) in every vegetation zone of type rough_wispy in the course's inner zones export: one object per zone under 'GolfMap Wispy Rough' holding the deep-rough course meshes under the zone, cut to it (blade chance fading out over the zone's feather), with two StixGames GrassRenderers: the floor on the rough's own Stix material (the rough's sward, blade for blade) and, added to it, the wisps on <course>/Grass/<material> Wispy.mat (rebuilt from the rough's material: longer, thinner, paler blades, spaced wider, in drifts). The course meshes and their materials are not touched. Replaces what the last run made; zones that are gone lose their object. Marks the scene dirty, does not save it.",
+        [BridgeCommand("golfmap.wispy.build", "Wispy rough (links-style deep rough) in every vegetation zone of type rough_wispy in the course's inner zones export: one object per zone under 'GolfMap Wispy Rough' holding the deep-rough course meshes under the zone (deep only: rough meshes keep their own Stix and get none of ours), cut to it (blade chance fading out over the zone's feather), with two StixGames GrassRenderers: the floor on the rough's own Stix material (the rough's sward, blade for blade) and, added to it, the wisps on <course>/Grass/<material> Wispy.mat (rebuilt from the rough's material: longer, thinner, paler blades, spaced wider, in drifts; then <course>/stix.json's wispy / wispyFloor values). The course meshes and their materials are not touched. Replaces what the last run made; zones that are gone lose their object. Marks the scene dirty, does not save it.",
             args = "zoneType=rough_wispy, material=NewRough (the rough's Stix material), floor=1.3 (floor blade length x the rough's; other than 1 = its own material <material> Wispy Floor.mat), wisp=0.15 (wisps per floor blade), patch=0.7 (drift of that over the area, 0 = even), patchM=7 (drift size), wispMin=0.20, wispMax=0.38 (m), wispWidth=0.006 (m), wispColor/wispSecColor (multipliers on the ortho colour: #rrggbb, or r,g,b which may exceed 1), file (zones export; default the course's inner), dryRun=false")]
         static object BuildCommand(BridgeArgs a)
         {
@@ -113,11 +114,13 @@ namespace GolfMap.Editor
             var scene = EditorSceneManager.GetActiveScene();
             var terrain = GolfMapTreePlanter.RoleTerrain(scene, course.innerTerrainName, course.innerTerrainData, "inner");
             var origin = terrain.transform.position;   // zone nodes are metres from the plot's south-west corner
-            // deep rough gets the floor and the wisps; a rough mesh has the floor already (golfmap.roughgrass.plant)
+            // Deep rough only gets the floor and the wisps. A rough mesh under the zone keeps its own Stix sward
+            // (golfmap.roughgrass.plant) and gets no Stix of ours on top: there the zone's look is the VSP wispy
+            // grass alone (Marcus, 2026-10-14: rough + floor + wisps there was Stix planted two and three times over).
             var ground = scene.GetRootGameObjects()
                 .SelectMany(r => r.GetComponentsInChildren<MeshFilter>(true))
                 .Where(f => f.sharedMesh != null && f.name.StartsWith("Spline_", StringComparison.Ordinal) && !GolfMapWaterplanes.IsWaterPlane(f.name)
-                    && (GolfMapSurfaces.Classify(f.name) == GolfMapSurfaces.Surface.Deep || GolfMapSurfaces.Classify(f.name) == GolfMapSurfaces.Surface.Rough)
+                    && GolfMapSurfaces.Classify(f.name) == GolfMapSurfaces.Surface.Deep
                     && f.GetComponent<Renderer>() != null)
                 .OrderBy(f => f.name, StringComparer.Ordinal).ToList();
 
@@ -149,6 +152,9 @@ namespace GolfMap.Editor
             var rough = FindMaterial(o.material);
             var material = built.Count > 0 ? WispyMaterial(folder, rough, o) : null;
             var floor = built.Count > 0 && !Mathf.Approximately(o.floor, 1f) ? FloorMaterial(folder, rough, o) : rough;
+            // the hand-tuned values (<course>/stix.json) over what was just derived from the rough's
+            var tunedWisps = material == null ? new Dictionary<string, object>() : GolfMapStixSettings.Apply(material, course, "wispy");
+            var tunedFloor = floor == null || floor == rough ? new Dictionary<string, object>() : GolfMapStixSettings.Apply(floor, course, "wispyFloor");
             if (!AssetDatabase.IsValidFolder(folder + MeshFolder)) AssetDatabase.CreateFolder(folder.TrimEnd('/'), MeshFolder);
 
             var root = scene.GetRootGameObjects().FirstOrDefault(g => g.name == RootName);
@@ -169,6 +175,7 @@ namespace GolfMap.Editor
             result["wispMaterial"] = material == null ? null : AssetDatabase.GetAssetPath(material);
             result["wispSpacingM"] = material == null ? 0 : material.GetFloat("_TargetDensity");
             result["objects"] = built.Count;
+            result["stixSettings"] = new Dictionary<string, object> { { "wispy", tunedWisps }, { "wispyFloor", tunedFloor } };
             Debug.Log("[GolfMap Wispy rough] " + built.Count + " of " + zones.Count + " " + o.zoneType + " zone(s) built under '" + RootName + "' in " + scene.name +
                 (material == null ? "" : ", material " + AssetDatabase.GetAssetPath(material)) + ". Undo is available for this run.");
             return result;

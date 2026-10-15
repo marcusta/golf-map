@@ -54,7 +54,7 @@ namespace GolfMap.Editor
             Plant(DefaultMaterial, new LipOptions(), false);
         }
 
-        [BridgeCommand("golfmap.roughgrass.plant", "Add a StixGames GrassRenderer to every rough course mesh (Spline_*_Rough_-_Mesh, no blends) in the active scene and set its material; with lip=true (default) also to bunker meshes painted with a red grass-lip ring (rough material, blades by red) and to every bunker blend (*_Bunker_-_Blend) on a lip material derived from the rough one (<course>/Grass/<material> Lip.mat, rebuilt every run: even density instead of by vertex red, denser, taller, more lean), so the grass grows right up to the sand. Meshes that already have one only get the material; new ones get their Stix mesh cache rebuilt. Sets _ColorMapTiling/_TerrainSize to the inner terrain's size.",
+        [BridgeCommand("golfmap.roughgrass.plant", "Add a StixGames GrassRenderer to every rough course mesh (Spline_*_Rough_-_Mesh, no blends) in the active scene and set its material; with lip=true (default) also to bunker meshes painted with a red grass-lip ring (rough material, blades by red) and to every bunker blend (*_Bunker_-_Blend) on a lip material derived from the rough one (<course>/Grass/<material> Lip.mat, rebuilt every run: even density instead of by vertex red, denser, taller, more lean), so the grass grows right up to the sand. Meshes that already have one only get the material; new ones get their Stix mesh cache rebuilt. Sets _ColorMapTiling/_TerrainSize to the inner terrain's size, then the hand-tuned values of <course>/stix.json's 'rough' section (blade spacing, softness, heights) on the material.",
             args = "material=NewRough (material asset name), lip=true, lipDensity=0.7 (x the rough's blade spacing), lipHeight=1.15, lipDisorder=1.5, dryRun=false, only (object names, comma-separated)")]
         static object Command(BridgeArgs a)
         {
@@ -159,6 +159,8 @@ namespace GolfMap.Editor
             int undoGroup = Undo.GetCurrentGroup();
             Undo.SetCurrentGroupName("Plant 3D grass to roughs");
             var scaled = FitToTerrain(material, terrain);
+            // the hand-tuned values (<course>/stix.json, rough), before the lip material is derived from it
+            var tuned = GolfMapStixSettings.Apply(material, course, "rough");
             var rough = Put(type, meshes, material);
             var pathEdge = Put(type, pathEdges, material);
             Material lipMaterial = null;
@@ -182,7 +184,7 @@ namespace GolfMap.Editor
             Undo.CollapseUndoOperations(undoGroup);
             if (rough["added"] + rough["updated"] + pathEdge["added"] + pathEdge["updated"] + (lipCounts == null ? 0 : lipCounts["added"] + lipCounts["updated"] + lipCounts["bunkerAdded"] + lipCounts["bunkerUpdated"]) + lipOff.Count > 0)
                 EditorSceneManager.MarkSceneDirty(scene);
-            if (scaled.Count > 0 || lipMaterial != null) AssetDatabase.SaveAssets();
+            if (scaled.Count > 0 || tuned.Count > 0 || lipMaterial != null) AssetDatabase.SaveAssets();
             SceneView.RepaintAll();
 
             var materialPath = AssetDatabase.GetAssetPath(material);
@@ -203,6 +205,7 @@ namespace GolfMap.Editor
                 { "unchanged", rough["unchanged"] },
                 { "terrain", terrain.name },
                 { "materialChanges", scaled },
+                { "stixSettings", tuned },
                 { "lip", lipCounts == null ? null : new Dictionary<string, object>
                     {
                         { "material", AssetDatabase.GetAssetPath(lipMaterial) }, { "bunkerBlends", blends.Count },

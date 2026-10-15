@@ -773,6 +773,16 @@ across the course, and rough grass next to a path turns white where it picks up 
 the ortho. The action sets both from the course's inner terrain on every run (logged, one Undo step with the
 rest) and warns if that terrain is not square or not at the origin, which the shader cannot follow.
 
+**Hand-tuned values: `<course>/stix.json`** (`golfmap-stix-v1`, `GolfMapStixSettings.cs`; the repo keeps the copy at
+`docs/gspro/<course>/stix.json`). Its `rough` section (shader floats such as `_TargetDensity`, `_Softness00`,
+`_MinHeight00`, `_MaxHeight00`) is set on the rough material on every `roughgrass.plant` run, before the lip material
+is derived from it (so the lips follow: Vreta's 0.046 rough spacing makes the lips 0.032); `wispy` and `wispyFloor` are
+set by `golfmap.wispy.build` on the materials it derives. Tune by hand in the editor, then write the values there, or a
+rebuild of the derived materials loses them. `before` holds the values until the last tuning, for an A/B:
+`golfmap.stix.apply which=before`, `golfmap.perf.report current=true rounds=3` (the baseline at the Scene view), then
+`which=current` and the same report. Vreta 2026-10-14 below hole 3's tee: 73.2 ms before, 63.6 ms after (GPU 52 -> 42 ms;
+editor numbers, for direction only).
+
 **Bunker lips** (`lip=true`, the default; `golfmap.course.refresh` runs this as step `roughgrass.plant`, so a mesh
 the sync re-adds gets its grass back): every bunker blend (`*_Bunker_-_Blend`) gets a `GrassRenderer` on
 `<course>/Grass/<material> Lip.mat`, rebuilt from the rough material on every run (so it follows the rough's colour
@@ -801,12 +811,22 @@ succeeded, ["Saving what a command changed"](#saving-what-a-command-changed-save
 
 ## Wispy rough
 
+**Retired 2026-10-14 for Vreta**: the Stix floor and wisps below faded out at 50 m and popped in (Marcus), so
+the scene's `GolfMap Wispy Rough` was cleared (`golfmap.wispy.clear`) and wispy rough is the VSP palette
+`rough_wispy` alone, drawn to 300 m with distance copies (`copies` [30, 60] in `grass-palette.json`, every
+layer thinning out from 15 % of its distance, `distanceFalloff` 0.15, so no layer ends in a line; a hard
+`renderDistance` popped in). Do not run `golfmap.wispy.build` on Vreta; the tool stays for
+other courses (deep rough only, `stix.json` wispy / wispyFloor values).
+
 Links-style deep rough on part of a deep-rough mesh: a rough-height floor with thin, longer, sparser blades over
 it, both Stix 3D grass coloured from the ortho. Where: hand-drawn vegetation zones of type `rough_wispy` ("Wispy
 rough", a default zone type; it binds no VSP items, so on top of the tall rough it only takes that grass away).
 `golfmap.wispy.build` (`GolfMapWispyRough.cs`) reads the outlines from the inner zones export, so update the zone
 in Unity first (web "Update N zones" / `bun run zones -- update <course> <zone>`).
 
+- **Deep rough only** (since 2026-10-14): a rough mesh under a zone keeps its own Stix and gets neither floor nor
+  wisps of ours on top; there the zone's look is the VSP wispy grass alone (rough + floor + wisps was Stix planted
+  two and three times over).
 - **Its own mesh.** `GrassRenderer` draws the `MeshFilter` beside it and needs no `MeshRenderer`, so each zone gets
   an object under `GolfMap Wispy Rough` whose mesh (`<course>/WispyRough/<zone id>.asset`) is the deep course
   meshes' triangles under the zone, painted for Stix alone (blade chance = red), fading over the zone's feather

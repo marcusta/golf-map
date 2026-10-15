@@ -132,6 +132,20 @@ fraction and 1 of the draw distance: 0.75 = full density to 225 m, gone by 300 m
 item: `width`, `height`, `minScale/maxScale`, `sampleDistance` (spacing; smaller = thicker),
 `noiseDensityScale`, `maxSteepness` (default 75 degrees: grass must grow on steep banks; VSP's usual
 30-40 leaves them bare), `lodFactor` (palette or item, default 5), `maxDensity` (the zone binding).
+`renderDistance` (metres, palette or item; 0 = the full `plantDistance`): how far the item draws (VSP's
+render distance factor = this / plant distance). `copies` (item, metres, e.g. `[15, 30]`): stingreye's
+trick, the item again as `"<name> @15m"` / `@30m` drawn only that far, so the grass is denser near the
+camera; the copies take their base's mask rules (no mask channel of their own; the zone import keeps
+them) and are removed when the palette drops them. **Never end grass in a hard line**: a short
+`renderDistance` (45 / 90 m on Vreta's creek and tall rough, 2026-10-15) popped in and left banks bare
+in GreenKeeper. Thin it with an early `distanceFalloff` instead (0.15 = each instance culled at a
+random 15-100 % of its distance, so the density falls evenly from 45 m to 300 m); a copy thins the
+same way from 15 % of its own distance (a 15 m copy from 2 m), so copies add no line either.
+**Green is the bulk, straw/brown the accent** (Marcus): copies go on the green items only (Vreta's
+tall rough mixes: the carpet item `[15, 30]`, the other green ones `[30]`, about 3x at 3 m and 1x at
+30 m; GreenKeeper 4K 99/92 with them), and the green tints sit close to the ground mesh as rendered,
+or the grass shows where it thins (compare a Scene-view shot with `golfmap.vegperf.hide
+{wholeSystem: true}` against one with it on; item hides do not reach the screenshot).
 
 **Density lines ("pop-in" 5-20 m out)**: VSP draws texture grass with its `DefaultGrassPatch` mesh,
 whose LODs drop blade cards (135 -> 63 -> 36 vertices) at ~5 m and ~18 m - a visible line where the

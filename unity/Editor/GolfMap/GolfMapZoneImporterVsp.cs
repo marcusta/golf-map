@@ -275,6 +275,21 @@ namespace GolfMap.Editor
                     tp.scale = ScanRules(plan, label, "scale", item.TextureMaskScaleRuleList, heightId, true, golfIds, deletedIds, names);
                     continue;
                 }
+                if (GolfMapZones.IsDistanceCopyName(item.Name))
+                {
+                    // A distance copy (grass-palette.json "copies"): its base item's mask, given by
+                    // golfmap.grass.apply; kept here on the base's group, never bound on its own.
+                    var baseItem = FindItem(package, GolfMapZones.DistanceCopyBase(item.Name));
+                    ItemPlan basePlan = null;
+                    if (baseItem != null) owner.TryGetValue(baseItem, out basePlan);
+                    var baseGroupId = basePlan != null && basePlan.group != null ? basePlan.group.TextureMaskGroupID : null;
+                    ScanRules(plan, label, "density", item.TextureMaskDensityRuleList, baseGroupId, true, golfIds, deletedIds, names);
+                    ScanRules(plan, label, "include", item.TextureMaskIncludeRuleList, baseGroupId, true, golfIds, deletedIds, names);
+                    ScanRules(plan, label, "scale", item.TextureMaskScaleRuleList, baseGroupId, false, golfIds, deletedIds, names);
+                    plan.bound.Add(item.Name + " <- copy of '" + GolfMapZones.DistanceCopyBase(item.Name) + "'" + (baseGroupId == null ? " (its base has no zone mask: nothing kept)" : "")
+                        + " (golfmap.grass.apply refreshes its rules)");
+                    continue;
+                }
                 ItemPlan own;
                 owner.TryGetValue(item, out own);
                 var ownId = own != null && own.group != null ? own.group.TextureMaskGroupID : null;

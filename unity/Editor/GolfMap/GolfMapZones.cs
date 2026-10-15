@@ -143,6 +143,18 @@ namespace GolfMap.Editor
 
         public static string TwinBase(string name) { return name.Substring(0, name.Length - TwinSuffix.Length); }
 
+        // A grass item's distance copy (grass-palette.json "copies"): the same item drawn only to
+        // that many metres, so the grass is denser near the camera (stingreye's trick). It has no
+        // mask of its own: golfmap.grass.apply gives it its base item's mask rules, and the zone
+        // import keeps them.
+        static readonly System.Text.RegularExpressions.Regex CopyName = new System.Text.RegularExpressions.Regex(@"^(.*) @(\d+)m$");
+
+        public static string DistanceCopyName(string item, float metres) { return item + " @" + Mathf.RoundToInt(metres) + "m"; }
+
+        public static bool IsDistanceCopyName(string name) { return name != null && CopyName.IsMatch(name); }
+
+        public static string DistanceCopyBase(string name) { var m = CopyName.Match(name ?? ""); return m.Success ? m.Groups[1].Value : null; }
+
         public static bool HasHeight(GolfMapZoneFile file) { return file != null && file.height != null && !string.IsNullOrEmpty(file.height.file); }
 
         public static bool IsGroupName(string name) { return name != null && name.StartsWith(GroupPrefix, StringComparison.Ordinal); }

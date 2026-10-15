@@ -59,6 +59,7 @@ using System.Collections.Generic;
 using System.IO;
 using System.Linq;
 using AwesomeTechnologies.VegetationSystem;
+using AwesomeTechnologies.Vegetation.Masks;
 using GolfMap.Bridge;
 using UnityEditor;
 using UnityEditor.SceneManagement;
@@ -90,6 +91,17 @@ namespace GolfMap.Editor
             public float lodFactor = 5f;       // grass grows on near-vertical banks; VSP's 30-40 default leaves them bare
             public float randomDarkening = 0.2f, rootAmbient = 0.4f, alphaCutoff = 0.3f;
             public float whitePoint = 0.92f;       // greyscale level the bright blades are lifted to
+            // Metres from the camera the item draws to (VSP's render distance factor = this / the system's
+            // plant distance); 0 = the full plant distance. A short one ends the grass in a line that
+            // pops in (Vreta 2026-10-15, 45 / 90 m): thin with the palette's distanceFalloff instead.
+            public float renderDistance = 0f;
+            // Distance copies (stingreye's trick): the same item again, drawn only to each of these
+            // distances, so the grass is denser near the camera; with distanceFalloff each copy thins
+            // out from that share of its own distance, so [15, 30] is ~3x at 3 m and 1x at 30 m, no
+            // line. Each copy is "<name> @<m>m" in VSP and takes its base item's mask rules (no mask of
+            // its own).
+            public float[] copies = new float[0];
+            public Item AtDistance(float metres) { var c = (Item)MemberwiseClone(); c.renderDistance = metres; c.copies = new float[0]; return c; }
             public Dictionary<string, float> material = new Dictionary<string, float>();   // prefab items: shader floats on local copies
         }
 
@@ -160,6 +172,8 @@ namespace GolfMap.Editor
                         randomDarkening = F(i, "randomDarkening", d.randomDarkening), rootAmbient = F(i, "rootAmbient", d.rootAmbient),
                         alphaCutoff = F(i, "alphaCutoff", d.alphaCutoff), whitePoint = F(i, "whitePoint", d.whitePoint),
                         lodFactor = F(i, "lodFactor", F(p, "lodFactor", d.lodFactor)),
+                        renderDistance = F(i, "renderDistance", F(p, "renderDistance", d.renderDistance)),
+                        copies = (i.Array("copies") ?? new List<object>()).OfType<GolfMapJsonNumber>().Select(n => (float)n.Value).Where(m => m > 0).Distinct().OrderBy(m => m).ToArray(),
                     };
                     var overrides = i.Object("material");
                     if (overrides != null)
@@ -379,7 +393,60 @@ namespace GolfMap.Editor
             return local;
         }
 
-        static void Configure(VegetationPackagePro package, VegetationItemInfoPro item, Item spec, Palette palette, Texture2D texture, bool spawn)
+        // The item's distance copies ("copies" in the palette): made or updated with the item's own
+        // settings at their shorter render distance and its mask rules (cloned, so a zone import that
+        // re-aims the item's rule leaves the copies on the same group until the next apply); copies
+        // the palette no longer lists are removed. A copy spawns when its item does.
+        static void DistanceCopies(VegetationPackagePro package, VegetationItemInfoPro item, Item spec, Palette palette, Texture2D texture, bool spawn, float plantDistanceM, List<string> log)
+        {
+            var wanted = spec.copies.Select(m => GolfMapZones.DistanceCopyName(spec.name, m)).ToList();
+            int removed = package.VegetationInfoList.RemoveAll(i => i != null && GolfMapZones.DistanceCopyBase(i.Name) == spec.name && !wanted.Contains(i.Name));
+            if (removed > 0) log.Add("removed " + removed + " distance copy(ies) of '" + spec.name + "' the palette no longer lists");
+            for (int k = 0; k < spec.copies.Length; k++)
+            {
+                var name = wanted[k];
+                var copy = package.VegetationInfoList.FirstOrDefault(i => i != null && i.Name == name);
+                if (copy == null)
+                {
+                    package.AddVegetationItem(texture, VegetationType.Grass, false);
+                    copy = package.VegetationInfoList.Last();
+                    copy.Name = name;
+                    log.Add("added distance copy '" + name + "'");
+                }
+                copy.TextureMaskIncludeRuleList = CloneRules(item.TextureMaskIncludeRuleList);
+                copy.TextureMaskDensityRuleList = CloneRules(item.TextureMaskDensityRuleList);
+                copy.TextureMaskExcludeRuleList = CloneRules(item.TextureMaskExcludeRuleList);
+                copy.TextureMaskScaleRuleList = CloneRules(item.TextureMaskScaleRuleList);
+                copy.UseTextureMaskIncludeRules = item.UseTextureMaskIncludeRules;
+                copy.UseTextureMaskDensityRules = item.UseTextureMaskDensityRules;
+                copy.UseTextureMaskExcludeRules = item.UseTextureMaskExcludeRules;
+                copy.UseTextureMaskScaleRules = item.UseTextureMaskScaleRules;
+                Configure(package, copy, spec.AtDistance(spec.copies[k]), palette, texture, spawn, plantDistanceM);
+                copy.Seed = item.Seed + 31 * (k + 1);   // its own scatter, not the item's blades twice
+                // its own Perlin field: with the item's offset every copy thickened the same clumps
+                // (VSP: chance x cnoise((x + offset) / scale)), so the layers added up to blotches
+                var shift = new Vector2(397f, 211f) * (k + 1);
+                copy.NoiseDensityOffset = item.NoiseDensityOffset + shift;
+                copy.NoiseCutoffOffset = item.NoiseCutoffOffset + shift;
+                copy.EnableRuntimeSpawn = item.EnableRuntimeSpawn;
+            }
+        }
+
+        static List<TextureMaskRule> CloneRules(List<TextureMaskRule> rules)
+        {
+            var result = new List<TextureMaskRule>();
+            if (rules == null) return result;
+            foreach (var r in rules)
+            {
+                if (r == null) continue;
+                var c = (TextureMaskRule)System.Runtime.Serialization.FormatterServices.GetUninitializedObject(typeof(TextureMaskRule));
+                JsonUtility.FromJsonOverwrite(JsonUtility.ToJson(r), c);
+                result.Add(c);
+            }
+            return result;
+        }
+
+        static void Configure(VegetationPackagePro package, VegetationItemInfoPro item, Item spec, Palette palette, Texture2D texture, bool spawn, float plantDistanceM)
         {
             if (spec.prefab == null)
             {
@@ -419,6 +486,7 @@ namespace GolfMap.Editor
             item.MaxSteepness = spec.maxSteepness;
             item.DisableShadows = !spec.shadows;
             item.LODFactor = spec.lodFactor;
+            item.RenderDistanceFactor = spec.renderDistance > 0 && plantDistanceM > 0 ? Mathf.Clamp(spec.renderDistance / plantDistanceM, 0.01f, 1f) : 1f;
             item.UseDistanceFalloff = palette.distanceFalloff > 0;
             item.DistanceFalloffStartDistance = Mathf.Clamp01(palette.distanceFalloff);
             if (spec.prefab == null)
@@ -460,6 +528,9 @@ namespace GolfMap.Editor
             var terrain = TerrainFor(course, role);
             var system = SystemFor(terrain);
             var log = new List<string>();
+            // the plant distance the items' render distances are shares of: what this run sets, else the system's
+            float plantDistanceM = palettes.Max(p => p.plantDistance);
+            if (plantDistanceM <= 0) plantDistanceM = system.VegetationSettings.PlantDistance;
             var items = new List<object>();
             foreach (var palette in palettes)
             {
@@ -493,8 +564,9 @@ namespace GolfMap.Editor
                         item.Name = spec.name;
                         log.Add("added item '" + spec.name + "'");
                     }
-                    Configure(package, item, spec, palette, texture, a.Bool("spawn", true));
+                    Configure(package, item, spec, palette, texture, a.Bool("spawn", true), plantDistanceM);
                     if (prefab != null) GolfMapZoneImporter.RefreshTwin(package, item, log);   // its height-driven twin, if a zone import made one
+                    if (prefab == null) DistanceCopies(package, item, spec, palette, texture, a.Bool("spawn", true), plantDistanceM, log);
                     items.Add(new Dictionary<string, object>
                     {
                         { "palette", palette.key }, { "item", item.Name }, { "id", item.VegetationItemID },
