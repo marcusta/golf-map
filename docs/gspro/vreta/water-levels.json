@@ -1,0 +1,10 @@
+{
+  "format": "golfmap-water-levels-v1",
+  "note": "Water surfaces set by hand (world Y, metres). golfmap.waterplanes.build gives each named plane the lift that puts its water there, through rebuilds and fresh planes; an explicit liftM still wins. Unity copy: Assets/GolfMap/Vreta/water-levels.json.",
+  "planes": {
+    "Spline_hole_15_12_WaterPlane": {
+      "surfaceM": 9.553,
+      "note": "Marcus 2026-10-15, by hand in Unity (lift 0.4 over the level 9.153): the lake by hole 15's green with the klippa hall_247; 9.45 left the bed's 9.6-9.7 m shelf dry, 9.75 was a touch high."
+    }
+  }
+}

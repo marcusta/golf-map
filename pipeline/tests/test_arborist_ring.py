@@ -67,4 +67,13 @@ def test_ring_and_far_rule_split_the_trees_three_ways(rule):
             return "billboard"
         return "arborist" if ring.replaced("PF_Oak_big Terrain", rule.from_play(x, 100)) else "course"
 
-    assert [who(x) for x in (100.5, 120.5, 135.5, 160.5, 175.5)] == ["course", "course", "arborist", "arborist", "billboard"]
+    # 175.5 is 65 m from the play but inside the boundary, 195.5 is 15 m outside it and 85 m from the play
+    assert [who(x) for x in (100.5, 120.5, 135.5, 160.5, 175.5, 195.5)] == ["course", "course", "arborist", "arborist", "arborist", "billboard"]
+
+
+def test_billboard_only_when_far_from_both_the_boundary_and_the_play(rule):
+    assert not rule.far(175.5, 100)    # in bounds, 65 m from the play: a player can stand there
+    assert not rule.far(185.5, 100)    # 5 m outside the boundary, 75 m from the play
+    assert not rule.far(100, 5)      # 15 m outside the boundary but on the fairway (a driving range out of bounds)
+    assert not rule.far(165, 5)        # 15 m outside, 55 m from the fairway
+    assert rule.far(195.5, 100)        # 15 m outside, 85 m from the fairway

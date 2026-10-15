@@ -27,7 +27,7 @@ billboard-only copies. Not yet seen in GSPro: whether the two draw together.
 | Arborist app | `D:\gspro\Arborist_Launcher\Data\Application` (the launcher only updates and starts it; an update may remove the mod); log in `%USERPROFILE%\AppData\LocalLow\OPCD\Arborist\output_log.txt` |
 | The mod | [unity/ArboristMod/README.md](../../unity/ArboristMod/README.md): `bun unity/ArboristMod/call.ts <command> ['{json}'] [timeoutSec]`; `call.ts commands` lists them. Marcus opens the course in Arborist; ask him when no bridge answers. |
 | Course folder | `C:\GSProV1\Core\GSP\Courses\<course>` (Vreta: `Vreta_lidar_scene`): `arboristdata.dat`, `arboristversion.dat`, GKD with `IsArborist: true` |
-| Per-course choices | `docs/gspro/<course>/arborist-species.json`: species mapping (`species`, `trees`) and looks (`treeSettings`, `plantSettings`; keys in `arborist.py apply_look`) |
+| Per-course choices | `docs/gspro/<course>/arborist-species.json`: species mapping (`species`, `trees`) and looks (`treeSettings`, `plantSettings`; keys in `arborist.py apply_look`); `vegeSettings` = the Arborist system's own settings (`PlantDistance` ...), written by `trees` and `lower` |
 | Inputs (git-ignored, `data/arborist/`) | `GolfMap library.biome` (species library), `catalog-sizes.json` (`arb.catalog` with `sizes`), `<course>-planted-trees.json` (Unity `golfmap.trees.dump file=<abs path>`), `lineup-items.txt` (the tree species in calibration order) |
 | File key | `data/arborist-wrapper.key` (git-ignored; never into the repo) |
 
@@ -45,6 +45,10 @@ Unity, so the Arborist vegetation follows the zones without a shell (`ArboristSe
 
 - **Update N zones** (selected zones) patches the masks, respawns them in Unity and runs `lower`
   again. It leaves the trees.
+- **The outer terrain** goes into none of the course's VSP: Arborist draws all its vegetation (the
+  outer catalogue's trees as billboards; no grass out there). Planting it writes its zones file only,
+  with no generators and no Unity import (`OUTER_VEGETATION_IS_ARBORIST`); `lower` reads the inner
+  zones export only, so the outer has no lower vegetation yet.
 - The file alone, e.g. after an edit to `arborist-species.json`: `bun run gspro:export -- <course> arborist`
   (`lower`, then the trees when Unity is open). `--arborist-out <folder>` writes there instead of into
   the course folder, for a trial. `bun run grass:zones` runs `lower` after its zones export
@@ -246,7 +250,10 @@ rule; the key's `_comment` in the species file the reasons for Vreta's values.
 - The replaced trees' positions go into the trim list with the billboard ones
   (`data/arborist/<course>-vsp-far.json`). In Unity always from the full storage:
   `golfmap.vsp.trees.trim restore=true`, then `golfmap.vsp.trees.trim file=<abs path>`; its
-  `storedNow` must equal the "kept in the course's VSP" count `arborist.py` printed. Then
+  `storedNow` must equal the "kept in the course's VSP" count `arborist.py` printed. Restore is
+  idempotent (since 2026-10-14): a tree goes back only where its item does not stand already, a tree
+  stored or written twice counts once (`alreadyStored`, `duplicatesRemoved`, `fileDoubles` in the
+  result), so after it `storedNow` is the full storage (Vreta 25 154) however often it runs. Then
   `scene.save`, `golfmap.course.build`.
 - Arborist's `Oak__big / medium / small / tall / wide` **are Forst's oaks**: the same meshes
   (first-LOD size and triangle count identical to `PF_Oak_*`) under Arborist's own shader
@@ -388,6 +395,25 @@ Features we do not write yet:
   trees billboard-only; Unity's `golfmap.vsp.trees.trim` takes the trees Arborist draws out of the
   course's storage (22 600 of 25 100; `restore=true` puts them back, and `golfmap.trees.dump`
   still writes them).
+- **The far rule makes a billboard only where a tree is far from both the boundary and the play**
+  (changed 2026-10-14). It used to take either distance alone: the GKD boundary (`pOOB`) covers only
+  the layout's 18 holes, and Vreta's driving range (surface class fairway) lies about 100 m outside
+  it, so seen from the range tee the trees beyond the net were billboard-only blobs a few metres
+  away, and so were trees on the club's holes outside the layout. Now: 0 billboards within 80 m of
+  the range tee (11 before); +1 191 full models over the course (+4 %, of them 613 Forst trees back
+  in the course's VSP, so the trim list shrinks from 6 451 to 5 838). Measured on a scratch run,
+  not yet built or seen in GSPro.
+- **Frame time on Vreta is main-thread CPU** (2026-10-14, GSPro Very High 1920x1440, vSync off): the
+  main thread is 80-90 % busy in every case and a quarter of the pixels changes nothing. Looking
+  straight up at the sky a frame is 6.3 ms, of which Arborist's VSP system (switched off whole)
+  2.25 ms and the course's 1.1 ms, though almost nothing is drawn; at tee 1 (9.6 ms) 2.0 and 1.7 ms.
+  `veg.draw` rows measure only the drawing. Levers tried live: Arborist's `PlantDistance` 350 -> 250
+  m -0.6 ms at tee 1 (now `vegeSettings` in the species file), 150 m -0.85 ms; the course system's
+  tree-mesh distance 3 000 -> 700 m and `PlantDistance` 300 -> 200 m about nothing. A trial file
+  with the new far rule and `PlantDistance` 250 ran 3-5 fps faster than the 22:01 one at the four
+  viewpoints (two rounds each, course reloaded per file). **Shadows only within 25 m of the play**
+  (a "(no shadow)" copy of each species beyond it: 26 045 of 26 935 full models, 19 more items) ran
+  2-6 fps slower than without: the extra items cost more CPU than the shadows saved; dropped.
 - NatureManufacture's grass-shader ground plants (bilberry, lingonberry, heather, ferns) are white
   from the sun's side in Arborist and GSPro; no value Arborist stores cures it (smoothness, AO,
   tint, specular all tried live). They stay in the course's VSP, where the palette's `material`
@@ -395,6 +421,13 @@ Features we do not write yet:
   VSP draws NatureManufacture plants in GSPro (tested live).
 - Arborist bushes and saplings beyond the player's shadow distance (250 m on Medium) stand unshaded
   and glint against the dark floor: `renderDistance` 0.55 in `plantSettings`.
+- **The mod's `system` argument once matched any part of a system's path** (fixed 2026-10-13 21:53,
+  `VegCommands.OfSystem`): GSPro's own Arborist system is `/MainGameObjects/VegetationStudioPro/...`,
+  so `system: "/VegetationStudioPro"` also took it, and every "Course VSP: ..." row of `veg.draw` /
+  `veg.set` measured before then (perf.ts `--cases`, `--rank`, the ring table above) hid both systems'
+  vegetation of that type. A pattern starting with `/` now has to match the path's start; a pattern
+  without one still matches any part. Pick a system by its root (`/VegetationStudioPro` = the course's,
+  `/MainGameObjects` = Arborist's).
 - The look is `docs/gspro/<course>/look.json` -> Unity `golfmap.look.apply` (ambient, colour
   grading saturation and exposure, AO colour); try values live in GSPro first with `set` on
   `UnityEngine.RenderSettings` and the `/PostProcessingVolume` profile.

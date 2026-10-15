@@ -88,6 +88,29 @@ def test_kept_off_fairways_greens_and_blocked_ground():
     assert w[row_at(1.0), 120:160].min() == 1.0
 
 
+def test_a_rock_in_the_water_stands_in_a_ring_of_grass_bare_but_for_its_fringe_and_patches():
+    """Hole 15's klippa: the clumps would cover the rock; the rock keeps grass_zones' slab rule only, and a ring of
+    grass grows round it in the water."""
+    y = (np.arange(ROWS)[:, None] - CENTRE_ROW + 0.5) * CELL * np.ones((1, COLS))
+    water = np.abs(y) <= 6.0                                   # a 12 m wide channel
+    z = np.clip(np.abs(y) - 6.0, 0, 2) * 0.7
+    cls = np.full(water.shape, 1, dtype=np.uint8)
+    cls[water] = cb.S_WATER
+    rock = (np.abs(y) <= 2.0) & (np.abs(np.arange(COLS)[None, :] - 120) * CELL <= 3.0)
+    cls[rock] = cb.S_SLAB
+    water_only = water & ~rock
+    w = cb.creek_weight(water_only, z.astype(np.float32), cls, None, None, CELL, 0.2, 6.0, seed=3)
+    on_rock = w[rock] > 0.5
+    assert 0.1 < on_rock.mean() < 0.7, on_rock.mean()          # fringe and patches, not a carpet
+    edge = rock & ~np.roll(rock, 1, axis=0) | rock & ~np.roll(rock, -1, axis=0)
+    assert (w[edge] > 0.5).mean() > 0.6                        # the rock's edge is under grass
+    from scipy.ndimage import binary_dilation
+    ring = binary_dilation(rock, iterations=int(0.45 / CELL)) & ~rock
+    assert (w[ring] == 1.0).all()                              # grass all round it in the water
+    far = water_only & ~binary_dilation(rock, iterations=int(4 / CELL))
+    assert w[far].mean() < 0.4                                 # elsewhere the 20 % cover of open water
+
+
 def creek_on_grid(palette="reed", variants=frozenset()):
     west, north = 1000.0, 2000.0
     y_top = north - (CENTRE_ROW * CELL - HALF_WATER_M)

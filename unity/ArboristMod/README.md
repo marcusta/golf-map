@@ -89,7 +89,11 @@ What it gives in GSPro:
 - `veg.systems`: GSPro's own system (`/MainGameObjects/...`, the Arborist file's trees and
   bushes) and the course's systems, each with its camera, items and stored instances. Both get
   the game camera, so a course's own VSP and Arborist vegetation draw together (seen 2026-10-12).
-- `veg.at u v`: which placed tree stands at that spot of the picture, in which system.
+- `veg.at u v`: which placed tree stands at that spot of the picture, in which system. Items in
+  GSPro carry their prefab names, so an Arborist billboard-only copy does not show as `(far)`.
+- `system` in `veg.draw` / `veg.set`: a part of the system's path, or, starting with `/`, the start of
+  it. `/VegetationStudioPro` is the course's own system, `/MainGameObjects` GSPro's Arborist one (before
+  2026-10-13 21:53 a `/` pattern matched anywhere in the path and took both; see arborist.md, findings).
 - `fps`: the frame rate where the camera stands (mean, 1 % low, resolution, quality level, and
   vSync / refresh rate, i.e. where it is capped).
 - `perf.ts`: the frame rate at the course's judged viewpoints, and with `--rank` what costs frame

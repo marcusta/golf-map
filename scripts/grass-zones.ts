@@ -14,8 +14,9 @@
 //   bun run grass:zones -- <course> [--terrain inner|outer] [--dry-run] [--no-export] [--no-arborist]
 //                          [--only <source>]   that generator and every one after it (keeps the zone stack order)
 //                          [--max-distance 75] [--spill 0.3] [--feather 4] [--noise 0] [--zone-type rough_tall]
-//                          [--far-start 30] [--far-weight 0.56] [--out-start 40]   thinner far from play; the <type>/far mix
-//                                              tall-rough tuning, passed to pipeline/grass_zones.py
+//                          [--far-start 30] [--far-ramp 10] [--far-weight 0.56] [--near-start 8 --near-ramp 4 --near-weight 0.5] [--out-start 40]   thinner far from play; the <type>/far mix
+//                                              tall-rough tuning, passed to pipeline/grass_zones.py after the
+//                                              course's own (docs/gspro/<course>/vegetation-rules.json), so they win
 //
 // Inputs, found from the course: the Unity surface map in its GSPro export
 // folder (<prefix>-<terrain>-surfaces.json, written by the bridge command
@@ -34,7 +35,7 @@ import { TALL_GRASS, VEGETATION_GENERATORS } from '../server/services/vegetation
 
 const ROOT = path.resolve(import.meta.dir, '..');
 const PIPELINE = process.env.MAP_PIPELINE_DIR ?? path.join(ROOT, 'pipeline');
-const TALL_GRASS_TUNING = ['max-distance', 'spill', 'feather', 'band-feather', 'noise', 'zone-type', 'building-margin', 'road-margin', 'path-margin', 'far-start', 'far-weight', 'out-start'];
+const TALL_GRASS_TUNING = ['max-distance', 'spill', 'feather', 'band-feather', 'noise', 'zone-type', 'building-margin', 'road-margin', 'path-margin', 'far-start', 'far-ramp', 'far-weight', 'near-start', 'near-ramp', 'near-weight', 'out-start'];
 
 function usage(message?: string): never {
     if (message) console.error(`error: ${message}\n`);
@@ -89,7 +90,7 @@ try {
         extraArgs: { [TALL_GRASS.source]: tuning },
     });
     console.log(result.report.map((l) => `  ${l}`).join('\n'));
-    if (!flags['dry-run'] && !flags['no-export']) {
+    if (!flags['dry-run'] && !flags['no-export'] && terrain === 'inner') {
         console.log(`next, in Unity: golfmap.zones.import {terrain: "${terrain}", package: "GolfMap lower vegetation"}, then golfmap.grass.apply`
             + ' (or press Update vegetation in the web command bar, which does it all)');
     }

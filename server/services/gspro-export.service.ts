@@ -87,7 +87,7 @@ import {
 import { FeatureHistoryService } from './feature-history.service';
 import { CourseFeaturesService } from './course-features.service';
 import { ZoneTypesService } from './zone-types.service';
-import { CREEK_BANKS, generateVegetation, type VegetationOptions } from './vegetation-generators';
+import { CREEK_BANKS, VEGETATION_RULES_FILE, generateVegetation, vegetationRulesArgs, type VegetationOptions } from './vegetation-generators';
 import { CREEK_BANK_ZONE_TYPE } from '../../shared/features/creek-vegetation';
 import { BUILDINGS_SURVEY, ROAD_CENTERLINES } from './terrain-generators.service';
 import { GKD_KEYWORDS, metaFromGkd, type GsproCourseMeta } from '../../shared/gspro-course-meta';
@@ -462,6 +462,14 @@ export function surfacesExportFileName(courseName: string, kind: TerrainKind): s
 
 /** The VSP package the grass palettes plant into (grass-palette.json's default `package`). */
 export const LOWER_VEGETATION_PACKAGE = 'GolfMap lower vegetation';
+
+/**
+ * Why nothing of the OUTER terrain's vegetation goes into the course's own VSP (Marcus, 2026-10-14):
+ * GSPro's Arborist draws all of it (the outer catalogue's trees as billboards, `arborist.py trees`),
+ * and all VSP grass is on the inner terrain. Planting the outer is therefore its zones file only.
+ */
+export const OUTER_VEGETATION_IS_ARBORIST = "outer terrain: nothing planted into the course's VSP - its vegetation is Arborist's "
+    + '(the outer trees as billboards; no grass out there), so only the outer zones file is written and the generators are not run for it';
 
 /** `gspro.py zones-patch`'s exit code when the item bindings moved since the export (ZONES_LAYOUT_CHANGED_EXIT). */
 export const ZONES_LAYOUT_CHANGED_EXIT = 3;
@@ -1357,6 +1365,13 @@ export class GsproExportService {
      * file with a fingerprint to compare), but the masks are only rasterized
      * again when the zones, the zone types or the heightmap sidecar moved —
      * `force` renders them anyway.
+     *
+     * The OUTER terrain plants nothing (OUTER_VEGETATION_IS_ARBORIST): no
+     * Unity import (the course's VSP has no lower-vegetation package there),
+     * no Arborist half, and no generators — they are course-wide and plan from
+     * the INNER surface map; run for the outer, which has none, the tall rough
+     * replaced the inner's zones with the drawn features' few (Vreta,
+     * 2026-10-14: 1616 -> 30). Only its zones file is written.
      */
     async plantVegetation(courseId: string, kind: TerrainKind,
                           opts: Omit<VegetationOptions, 'workDir'> & {
@@ -1364,6 +1379,11 @@ export class GsproExportService {
                               arborist?: 'lower' | false; save?: boolean; force?: boolean;
                           } = {}): Promise<GsproExportResult> {
         const dir = await this.exportDir(courseId);
+        if (kind === 'outer') {
+            if (opts.dryRun || opts.exportZones === false) return { path: dir, report: [OUTER_VEGETATION_IS_ARBORIST] };
+            const exported = await this.exportZones(courseId, 'outer', { force: opts.force });
+            return { path: exported.path, report: [OUTER_VEGETATION_IS_ARBORIST, ...exported.report] };
+        }
         const generated = await this.runGenerators(courseId, kind, opts);
         const report = [...generated.report];
         if (opts.dryRun || opts.exportZones === false) return { path: dir, report };
@@ -1458,13 +1478,18 @@ export class GsproExportService {
             buildings: await found(sources && path.join(sources, BUILDINGS_SURVEY)),
             roads: await found(sources && path.join(sources, ROAD_CENTERLINES)),
         };
+        // The course's own generator rules (e.g. Vreta's thinner tall rough from 10 m), if it has any.
+        const rulesFile = path.join(this.courseDocsRoot, courseSlug(course.name), VEGETATION_RULES_FILE);
+        const courseRules = await statOrNull(rulesFile)
+            ? { file: rulesFile, args: vegetationRulesArgs(JSON.parse(await readFile(rulesFile, 'utf8')), rulesFile) }
+            : null;
         const work = await mkdtemp(path.join(os.tmpdir(), 'vegetation-'));
         try {
             return await generateVegetation({
                 features: new CourseFeaturesService(this.db), zoneTypes: new ZoneTypesService(this.db),
                 pipelineDir: this.pipelineDir, dbPath: opts.dbPath,
                 run: (what, args, out) => this.run(what, args, out),
-            }, courseId, inputs, { ...opts, workDir: work });
+            }, courseId, inputs, { ...opts, courseRules, workDir: work });
         } finally {
             if (!opts.dryRun) await rm(work, { recursive: true, force: true });
         }
@@ -1479,7 +1504,8 @@ export class GsproExportService {
      * Unity project takes just the changed textures and respawns just that
      * window (`golfmap.zones.patch`); when the inner masks changed, the
      * Arborist file's lower vegetation is written again from them (about 10 s;
-     * the trees are left). The generators do not run. It needs Unity open up
+     * the trees are left). Patched outer masks stay in the export: the outer
+     * terrain's vegetation is Arborist's (OUTER_VEGETATION_IS_ARBORIST). The generators do not run. It needs Unity open up
      * front, since masks patched without Unity would leave the scene behind
      * the export with nothing to say so. With no zones export to patch at all
      * it runs the whole planting instead (`plantInsteadOfPatch`) rather than
@@ -1574,7 +1600,14 @@ export class GsproExportService {
             report.push('Nothing changed in the masks, so nothing to take into Unity or the Arborist file');
             return { path: dir, report };
         }
-        for (const p of patches) {
+        // The outer terrain's vegetation is Arborist's: its patched masks stay in the export.
+        if (patches.some(p => p.kind === 'outer')) report.push('outer: the masks are patched in the export only - ' + OUTER_VEGETATION_IS_ARBORIST);
+        const intoUnity = patches.filter(p => p.kind === 'inner');
+        if (intoUnity.length === 0) {
+            report.push('Nothing changed in the inner masks, so nothing to take into Unity or the Arborist file');
+            return { path: dir, report };
+        }
+        for (const p of intoUnity) {
             try {
                 const result = await editor.run('golfmap.zones.patch', { terrain: p.kind, patch: p.record, package: LOWER_VEGETATION_PACKAGE }, 300);
                 report.push(`Unity (${editor.projectName}): ${firstLine(String(result?.status ?? `${p.kind} zones patched`))}`);
@@ -1584,11 +1617,9 @@ export class GsproExportService {
             }
         }
         // The Arborist file carries the inner masks themselves: the same zones, its lower vegetation again.
-        if (patches.some(p => p.kind === 'inner')) {
-            const arborist = await this.arborist.generate({ name: course.name, exportDir: dir, courseDir: (await this.settings(courseId)).courseDir }, { trees: false });
-            report.push(...arborist.report);
-            if (arborist.error) throw new ConflictError(`The zones are updated in Unity (${editor.projectName}), but: ${arborist.error}`);
-        }
+        const arborist = await this.arborist.generate({ name: course.name, exportDir: dir, courseDir: (await this.settings(courseId)).courseDir }, { trees: false });
+        report.push(...arborist.report);
+        if (arborist.error) throw new ConflictError(`The zones are updated in Unity (${editor.projectName}), but: ${arborist.error}`);
         report.push('Save the scene in Unity to keep it.');
         return { path: dir, report };
     }
@@ -1614,8 +1645,8 @@ export class GsproExportService {
     /**
      * What a zones patch falls back to when it cannot patch and the caller
      * asked for it: the whole planting (`plantVegetation`) for the inner
-     * terrain, and for the outer too when it already has a zones export — the
-     * generators, the masks, the Unity import and the Arborist file. `why`
+     * terrain — the generators, the masks, the Unity import and the Arborist
+     * file — and the outer's zones file when it already has one. `why`
      * leads the report, so the panel says why the fast path was not taken.
      */
     private async plantInsteadOfPatch(courseId: string, kinds: TerrainKind[], why: string, sofar: string[] = []): Promise<GsproExportResult> {

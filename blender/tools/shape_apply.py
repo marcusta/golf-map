@@ -1857,11 +1857,13 @@ def plan_units(ctx, op):
                               extra=extra))
         return units, problems
     if kind == "golfmap.cut_out":
-        # one unit, named by the op; reads = every Spline mesh the cut or its weld can reach (the outline's box + 1 m)
+        # one unit, named by the op; reads = every Spline mesh the cut or its weld can reach (the outline's box + 1 m;
+        # with `rise`, + its apron, which it lifts)
         box = sl.polygon_bbox(cut_out_poly(ctx, op))
+        reach = 1.0 + (rise_params(op["rise"])["apronM"] if op.get("rise") else 0.0)
         return [Unit(op["name"], [], None, lambda margin=0.0: {
             o.name for o in spline_meshes() if ctx.box(o.name)
-            and sl.bbox_distance(box, ctx.box(o.name)) <= 1.0 + margin})], []
+            and sl.bbox_distance(box, ctx.box(o.name)) <= reach + margin})], []
     if kind == "golfmap.weld_tjunctions":
         recs, problems = sl.select(op["select"], ctx.index)
         names = [r["name"] for r in recs]
@@ -3934,6 +3936,8 @@ def cut_out(ctx, op):
     new["golfmap_surface"] = surface.lower()
     new["golfmap_cut_from"] = ",".join(s["name"] for s in sources)
     new.hide_render = first.hide_render
+    if op.get("rise"):
+        run["rise"] = rock_rise(ctx, op, new, poly)
     # The border: every boundary vertex of the new object has the same vertex on a mesh outside.
     outside = np.concatenate([boundary_points(o) for o in spline_meshes()
                               if o.name != name and ctx.box(o.name) is not None
@@ -3962,6 +3966,272 @@ def cut_out(ctx, op):
     print(f"[shape_apply] cut_out {name}: {len(sources)} source mesh(es), {run['faces']} faces, {run['areaM2']} m2, "
           f"border {len(own)} vertices / {unmatched} unmatched, {run['seconds']} s")
     return run
+
+
+# ---------------------------------------------------------------- golfmap.cut_out `rise`
+#
+# A slab that rises out of the ground or the water instead of lying in it (Vreta hall_247, the klippa in hole 15's
+# lake: the slab lay on the dug lake bed and the shore notch around it pulled the water plane down to it). After
+# the cut: the slab is refined to `maxEdgeM` (the cut keeps OPCD's ~1.2 m triangles, too coarse to shape) and the
+# ground around it within `apronM` to twice that, T-junctions closed; then every vertex of the slab and of the meshes
+# within reach goes to max(z, target(x, y)): inside the outline a rounded rise from the foot (`footM` under
+# `waterM`) to the top (`topM` over `waterM`, or over the highest ground on the outline when there is no water) with
+# lumpy noise (`noiseM`), outside it a shoal / apron falling from the foot to the lowest ground within the apron.
+# Lift only and one height per XY: vertices two meshes share move alike, so no seam opens. Green, bunker and tee
+# meshes are left alone. Moved vertices get fresh normals, the others keep theirs.
+
+RISE_DEFAULTS = {"footM": 0.35, "apronM": 3.0, "noiseM": 0.22, "maxEdgeM": 0.35, "seed": 0.0}
+RISE_KEEP = ("green", "bunker", "tee")
+
+
+def rise_params(rise):
+    p = dict(RISE_DEFAULTS)
+    p.update({k: float(v) for k, v in (rise or {}).items()})
+    return p
+
+
+def _poly_signed_distance(pts, poly):
+    """Signed XY distance of each point to the closed polygon: > 0 inside, < 0 outside."""
+    a = np.asarray(poly, dtype=np.float64)
+    b = np.roll(a, -1, axis=0)
+    ab = b - a
+    ab2 = np.maximum((ab ** 2).sum(1), 1e-12)
+    p = pts[:, None, :2]
+    t = np.clip(((p - a[None]) * ab[None]).sum(2) / ab2[None], 0.0, 1.0)
+    d = np.sqrt((((a[None] + t[..., None] * ab[None]) - p) ** 2).sum(2)).min(1)
+    # even-odd crossing test, vectorised
+    x, y = pts[:, 0][:, None], pts[:, 1][:, None]
+    y1, y2 = a[None, :, 1], b[None, :, 1]
+    cross = ((y1 > y) != (y2 > y)) & (x < a[None, :, 0] + (y - y1) * (b[None, :, 0] - a[None, :, 0]) / np.where(y2 - y1 == 0, 1e-12, y2 - y1))
+    inside = cross.sum(1) % 2 == 1
+    return np.where(inside, d, -d)
+
+
+def _rock_noise(x, y, seed):
+    import shape_edgefade as ef
+    s = int(seed) & 0xFFFF
+    return (0.6 * ef.value_noise(x / 2.2, y / 2.2, s) + 0.3 * ef.value_noise(x / 0.9, y / 0.9, s + 7)
+            + 0.1 * ef.value_noise(x / 0.35, y / 0.35, s + 13))
+
+
+def _refine(obj, max_edge, keep=None):
+    """Halve the edges longer than max_edge (of the faces `keep` selects, all when None) until none is; triangulated.
+    Returns the number of passes."""
+    import bmesh
+    bm = bmesh.new()
+    bm.from_mesh(obj.data)
+    passes = 0
+    for _ in range(8):
+        faces = [f for f in bm.faces if keep is None or keep(f)]
+        long_edges = list({e for f in faces for e in f.edges if e.calc_length() > max_edge})
+        if not long_edges:
+            break
+        bmesh.ops.subdivide_edges(bm, edges=long_edges, cuts=1, use_grid_fill=True)
+        bmesh.ops.triangulate(bm, faces=[f for f in bm.faces if len(f.verts) > 3])
+        passes += 1
+    bm.to_mesh(obj.data)
+    bm.free()
+    obj.data.update()
+    return passes
+
+
+RISE_SINK_REACH_M = 12.0    # how far from the slab a face under the water can join the lake (the shore notch)
+RISE_SINK_BELOW_M = 0.05    # a face joins the lake when all its vertices lie this far under the water
+LAKE_TYPES = ("water", "water_lake", "lake")
+
+
+def _rise_sink_into_lake(ctx, slab, poly, near, water, apron):
+    """The faces of the meshes around the slab (not the lake, not the slab) that lie wholly under the water and
+    connect to the lake join the lake mesh: a shore notch drawn around a rock (Vreta hole 15) leaves a ring and a
+    channel of rough on the lake bed, and grass would grow up through the water there. Positions are kept, so the
+    seams stay closed; the moved corners take the lake's own paint. Returns {lake, moved: {mesh: faces}} or None."""
+    import bmesh
+    lakes = [o for o in near if (ctx.by_name.get(o.name) or {}).get("type") in LAKE_TYPES]
+    if not lakes:
+        return None
+    lake = max(lakes, key=lambda o: int((_poly_signed_distance(positions(o), poly) > -apron).sum()))
+    key = lambda c: (round(c[0] * 1000), round(c[1] * 1000))
+    reach = apron + RISE_SINK_REACH_M
+    cands = [o for o in near if o is not lake and (ctx.by_name.get(o.name) or {}).get("type") not in LAKE_TYPES
+             and o.data.polygons]
+    # faces under the water, per mesh, and the XY keys of their corners
+    faces, keys_of = {}, {}
+    for o in cands:
+        co = positions(o)
+        sd = _poly_signed_distance(co, poly)
+        ok_v = (co[:, 2] < water - RISE_SINK_BELOW_M) & (sd > -reach)
+        for p in o.data.polygons:
+            vs = list(p.vertices)
+            if all(ok_v[v] for v in vs):
+                faces.setdefault(o.name, []).append(p.index)
+                keys_of[(o.name, p.index)] = {key(co[v]) for v in vs}
+    under = {n: len(v) for n, v in faces.items()}
+    if not faces:
+        return {"lake": lake.name, "moved": {}, "underWater": under}
+    # flood from the boundary of the lake and its blends (water too) across shared corners
+    lake_keys = {key(c) for o in lakes for c in boundary_points(o)}
+    by_key = {}
+    for f, ks in keys_of.items():
+        for k in ks:
+            by_key.setdefault(k, []).append(f)
+    seen, stack = set(), [f for f, ks in keys_of.items() if ks & lake_keys]
+    seeds = len(stack)
+    while stack:
+        f = stack.pop()
+        if f in seen:
+            continue
+        seen.add(f)
+        for k in keys_of[f]:
+            stack.extend(g for g in by_key.get(k, ()) if g not in seen)
+    moved = {}
+    lake_col = None
+    lc = lake.data.color_attributes.get("Col")
+    if lc is not None and len(lc.data):
+        buf = np.empty(len(lc.data) * 4, dtype=np.float32)
+        lc.data.foreach_get("color_srgb", buf)
+        lake_col = np.median(buf.reshape(-1, 4), axis=0)
+    lb = bmesh.new()
+    lb.from_mesh(lake.data)
+    for o in cands:
+        idx = {i for (n, i) in seen if n == o.name}
+        if not idx:
+            continue
+        part = o.data.copy()
+        pb = bmesh.new()
+        pb.from_mesh(part)
+        pb.faces.ensure_lookup_table()
+        bmesh.ops.delete(pb, geom=[f for f in pb.faces if f.index not in idx], context="FACES")
+        bmesh.ops.delete(pb, geom=[v for v in pb.verts if not v.link_faces], context="VERTS")
+        pb.to_mesh(part)
+        pb.free()
+        sb = bmesh.new()
+        sb.from_mesh(o.data)
+        sb.faces.ensure_lookup_table()
+        bmesh.ops.delete(sb, geom=[f for f in sb.faces if f.index in idx], context="FACES")
+        bmesh.ops.delete(sb, geom=[v for v in sb.verts if not v.link_faces], context="VERTS")
+        sb.to_mesh(o.data)
+        sb.free()
+        o.data.update()
+        n0 = len(lb.faces)
+        lb.from_mesh(part)
+        lb.faces.ensure_lookup_table()
+        col = lb.loops.layers.color.get("Col")
+        if col is not None and lake_col is not None:
+            lin =[c / 12.92 if c <= 0.04045 else ((c + 0.055) / 1.055) ** 2.4 for c in lake_col[:3]] + [float(lake_col[3])]
+            for f in lb.faces[n0:]:
+                for l in f.loops:
+                    l[col] = lin
+        bpy.data.meshes.remove(part)
+        moved[o.name] = len(idx)
+    bmesh.ops.remove_doubles(lb, verts=[v for v in lb.verts if v.is_boundary], dist=CUT_OUT_WELD_M)
+    for f in lb.faces:
+        f.material_index = 0
+        f.smooth = True
+    lb.to_mesh(lake.data)
+    lb.free()
+    me = lake.data
+    if me.has_custom_normals:
+        bpy.context.view_layer.objects.active = lake
+        with bpy.context.temp_override(**view3d_override()):
+            bpy.ops.mesh.customdata_custom_splitnormals_clear()
+    me.update()
+    return {"lake": lake.name, "moved": moved, "underWater": under, "seeds": seeds}
+
+
+def rock_rise(ctx, op, slab, poly):
+    p = rise_params(op["rise"])
+    t0 = time.time()
+    apron, max_edge = p["apronM"], p["maxEdgeM"]
+    box = sl.polygon_bbox(poly, apron)
+    keep = {r["name"] for r in ctx.index if r["type"] in RISE_KEEP}
+    near = [o for o in spline_meshes() if o.name != slab.name and o.visible_get() and o.name not in keep
+            and (b := bbox_xy(o)) and sl.bbox_distance(sl.polygon_bbox(poly), b) <= apron]
+    # 1. refine: the slab all over, the ground within the apron
+    passes = {slab.name: _refine(slab, max_edge)}
+    poly_np = np.asarray(poly)
+    for o in near:
+        def in_apron(f, o=o):
+            c = f.calc_center_median()
+            if not (box[0] <= c.x <= box[2] and box[1] <= c.y <= box[3]):
+                return False
+            return _poly_signed_distance(np.array([[c.x, c.y]]), poly_np)[0] > -apron
+        passes[o.name] = _refine(o, 2 * max_edge, in_apron)
+    weld = weld_tjunctions([slab.name] + [o.name for o in near])
+    # 2. the target heights
+    objs = [slab] + near
+    cos = {o.name: positions(o) for o in objs}
+    border = boundary_points(slab)
+    water = p.get("waterM")
+    base = water if water is not None else float(border[:, 2].max())
+    top, foot = base + p["topM"], (water - p["footM"]) if water is not None else float(border[:, 2].min())
+    s_slab = _poly_signed_distance(cos[slab.name], poly)
+    s_max = max(float(s_slab.max()), 0.5)
+    in_reach = [(o, co, _poly_signed_distance(co, poly)) for o, co in ((o, cos[o.name]) for o in near)]
+    bed = min([float(co[s > -apron, 2].min()) for o, co, s in in_reach if (s > -apron).any()] + [foot])
+    seed = int(p["seed"]) or (sum(map(ord, op["name"])) & 0xFFFF)
+    lifted, max_lift = {}, 0.0
+    for o, co, s in [(slab, cos[slab.name], s_slab)] + in_reach:
+        target = np.full(len(co), -1e9)
+        inside = s >= 0
+        if inside.any():
+            t = np.clip(s[inside] / s_max, 0.0, 1.0)
+            prof = 1.0 - (1.0 - t) ** 2.4
+            noise = np.array([_rock_noise(x, y, seed) for x, y in co[inside, :2].tolist()])
+            target[inside] = foot + (top - foot) * prof + noise * p["noiseM"] * np.sqrt(t)
+        out = (s < 0) & (s > -apron)
+        if out.any():
+            u = np.clip(-s[out] / apron, 0.0, 1.0)
+            target[out] = foot - (foot - bed) * (u * u * (3 - 2 * u))
+        new_z = np.maximum(co[:, 2], target)
+        moved = new_z > co[:, 2] + 1e-6
+        if not moved.any():
+            continue
+        max_lift = max(max_lift, float((new_z - co[:, 2])[moved].max()))
+        me = o.data
+        old_vn = None
+        if me.has_custom_normals:
+            cn = np.empty(len(me.loops) * 3, dtype=np.float32)
+            me.corner_normals.foreach_get("vector", cn)
+            vi = np.empty(len(me.loops), dtype=np.int64)
+            me.loops.foreach_get("vertex_index", vi)
+            old_vn = np.zeros((len(me.vertices), 3))
+            np.add.at(old_vn, vi, cn.reshape(-1, 3))
+        co = co.copy()
+        co[:, 2] = new_z
+        me.vertices.foreach_set("co", co.reshape(-1).astype(np.float32))
+        me.update()
+        if old_vn is not None:
+            # moved vertices (and their ring) take the new geometry's normals, the rest keep the custom ones
+            vn = np.empty(len(me.vertices) * 3, dtype=np.float32)
+            me.vertex_normals.foreach_get("vector", vn)   # the geometry's own, not the custom ones
+            vn = vn.reshape(-1, 3)
+            ring = moved.copy()
+            ev = np.empty(len(me.edges) * 2, dtype=np.int64)
+            me.edges.foreach_get("vertices", ev)
+            ev = ev.reshape(-1, 2)
+            ring[ev[moved[ev[:, 0]], 1]] = True
+            ring[ev[moved[ev[:, 1]], 0]] = True
+            keep_vn = old_vn / np.maximum(np.linalg.norm(old_vn, axis=1, keepdims=True), 1e-9)
+            final = np.where(ring[:, None], vn, keep_vn)
+            me.normals_split_custom_set_from_vertices([tuple(v) for v in final.tolist()])
+        elif o is slab:
+            me.polygons.foreach_set("use_smooth", [True] * len(me.polygons))
+        me.update()
+        lifted[o.name] = int(moved.sum())
+    sunk = _rise_sink_into_lake(ctx, slab, poly, near, water, apron) if water is not None else None
+    # the slab's planar UVs again, on the refined mesh
+    uv_m = float(op.get("uvM", CUT_OUT_UV_M))
+    if slab.data.uv_layers:
+        uvl = slab.data.uv_layers[0].data
+        vi = np.empty(len(slab.data.loops), dtype=np.int64)
+        slab.data.loops.foreach_get("vertex_index", vi)
+        xy = positions(slab)[vi, :2] / uv_m
+        uvl.foreach_set("uv", xy.astype(np.float32).reshape(-1))
+    out = {"waterM": water, "topZ": round(top, 3), "footZ": round(foot, 3), "bedZ": round(bed, 3), "inradiusM": round(s_max, 2),
+           "refinePasses": passes, "weld": weld, "lifted": lifted, "maxLiftM": round(max_lift, 3), "sunk": sunk,
+           "seconds": round(time.time() - t0, 2)}
+    print(f"[shape_apply] cut_out {slab.name} rise: top {top:.2f}, foot {foot:.2f}, bed {bed:.2f}, lifted {lifted}")
+    return out
 
 
 # ---------------------------------------------------------------- golfmap.path_edge_fade

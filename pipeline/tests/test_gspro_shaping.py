@@ -539,6 +539,19 @@ def test_a_course_with_only_slabs_gets_only_their_ops(tmp_path):
     assert [o["id"] for o in doc["ops"]] == ["hall-2a", "hall-2b"]
 
 
+def test_a_slab_with_rise_attributes_gets_a_rise_the_engine_accepts(tmp_path, capsys):
+    """riseTopM turns the klippa on; the other rise* attributes come along under the cut-out's own key names, and
+    rise* without riseTopM leaves the slab flat with a warning (shared/features/rock-slab.ts)."""
+    attrs = {"riseWaterM": 9.43, "riseTopM": 0.9, "riseFootM": 0.35, "riseApronM": 3, "riseSeed": 247, "other": "x"}
+    op = _only_slab(tmp_path, _slab("rock-r", 200, 0, 208, 6, 0x2c, attrs=attrs))
+    assert op["rise"] == {"waterM": 9.43, "topM": 0.9, "footM": 0.35, "apronM": 3.0, "seed": 247.0}
+    assert _shape_layers().validate_op(op) == []
+    doc, stats = _layer(tmp_path, features=[_slab("rock-f", 200, 0, 208, 6, 0x2d, attrs={"riseWaterM": 9.4})], edits=[],
+                        name="flat.sqlite")
+    assert "rise" not in _slab_ops(doc)[0]
+    assert any("riseTopM" in w for w in stats["rock_slab_warnings"])
+
+
 def test_the_slab_names_pass_the_engines_validation_whatever_the_feature_id(tmp_path):
     """Named from the feature number in hex, never from its id (an id may spell a golf surface word); an
     unnumbered slab takes a hash of its id."""

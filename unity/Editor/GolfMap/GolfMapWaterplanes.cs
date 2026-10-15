@@ -78,7 +78,7 @@ namespace GolfMap.Editor
         static void BuildMenu() { Log(Build(new BridgeArgs(null))); }
 
         [BridgeCommand("golfmap.waterplanes.build", "Build a flat AQUAS water plane over every lake of the course (or only the selected meshes) the way OPCD's Blender 'Add Water Plane' does, from the meshes in the scene (Spline_*_Water_Base_Lake_-_Mesh): flattened to the lowest point of the mesh's edge minus belowM, edges pushed out by outsetM, object <key>_WaterPlane under 'Waterplanes' raised liftM, mesh saved to <course>/WaterPlanes/, then OPCD's Set Default Materials (AQUAS material, GSPwater physics, child 'Default Reflection Probe'). A rebuild refills the same objects and keeps their current lift. Meshes another water plane already covers are skipped unless replaceExisting (switches that plane off). dryRun lists the lakes, levels and existing planes. Marks the scene dirty; save=true saves it (and the plane meshes it wrote) once the build has succeeded.",
-            args = "dryRun=false, selected=false (the editor's selected meshes, any name, instead of the lakes; a selected plane rebuilds from its mesh), only (comma-separated lake keys or name parts; may name a Water_Base_Creek), outsetM=2, belowM=0.05, liftM=0.3 (new planes; existing ones keep theirs unless given), parent=Waterplanes, replaceExisting=false, prune=false (delete planes made here whose lake is gone, and any water plane whose mesh is gone, e.g. OPCD's after a new .blend), " + GolfMapSceneSave.Arg)]
+            args = "dryRun=false, selected=false (the editor's selected meshes, any name, instead of the lakes; a selected plane rebuilds from its mesh), only (comma-separated lake keys or name parts; may name a Water_Base_Creek), outsetM=2, belowM=0.05, liftM=0.3 (new planes; existing ones keep theirs unless given), slabs=true (rock slabs in a lake join its plane and the rim beside them does not set the level), parent=Waterplanes, replaceExisting=false, prune=false (delete planes made here whose lake is gone, and any water plane whose mesh is gone, e.g. OPCD's after a new .blend), " + GolfMapSceneSave.Arg)]
         static object Command(BridgeArgs a) { return Build(a); }
 
         sealed class Lake
@@ -106,6 +106,7 @@ namespace GolfMap.Editor
             // Read the course now: OPCD's Set Default Materials unloads unused assets, the course with them.
             var course = GolfMapCourses.Require();
             var assetFolder = GolfMapCourses.Folder(course) + AssetFolder;
+            var levels = FixedLevels(course);
             course = null;
 
             var scene = EditorSceneManager.GetActiveScene();
@@ -119,12 +120,20 @@ namespace GolfMap.Editor
             var report = new List<object>();
             var jobs = new List<KeyValuePair<Lake, Geometry>>();
             var switchOff = new List<GameObject>();
+            // Rock slabs (golfmap.cut_out, Spline_*_Rock_-_Mesh): one standing in a lake joins its plane, and the
+            // shore beside it does not set the level (see Flatten).
+            var slabs = a.Bool("slabs", true)
+                ? all.Where(g => g.activeInHierarchy && GolfMapRockSlabs.IsSlab(g.name) && MeshOf(g) != null).ToList()
+                : new List<GameObject>();
             foreach (var lake in lakes)
             {
-                var geo = Flatten(lake, outset, below, parent != null ? parent.transform : null);
+                var geo = Flatten(lake, outset, below, parent != null ? parent.transform : null, slabs);
                 var mine = planes.FirstOrDefault(p => p.name == lake.planeName && ours(p));
                 var others = planes.Where(p => p.activeInHierarchy && !ours(p) && Covers(p, lake.bounds)).ToList();
                 float lift = liftArg ?? (mine != null ? mine.transform.localPosition.y : 0.3f);
+                float fixedSurface = 0f;
+                bool isFixed = liftArg == null && levels.TryGetValue(lake.planeName, out fixedSurface);
+                if (isFixed) lift = fixedSurface - geo.level;
                 var entry = new Dictionary<string, object>
                 {
                     { "lake", lake.go.name },
@@ -132,12 +141,15 @@ namespace GolfMap.Editor
                     { "levelM", Round(geo.level) },
                     { "surfaceM", Round(geo.level + lift) },
                     { "liftM", Round(lift) },
+                    { "fixedLevel", isFixed },
                     { "rimM", new List<object> { Round(geo.rimMin), Round(geo.rimMax) } },
                     // How much of the lake's edge lies below the water surface: there the plane shows over the bank
                     // unless the outset ring runs in under higher ground (blends, rough).
                     { "rimBelowSurface", Math.Round(geo.rimHeights.Count(h => h < geo.level + lift) / (double)Math.Max(1, geo.rimHeights.Count), 3) },
                     { "verts", geo.vertices.Count },
                     { "boundaryEdges", geo.boundaryEdges },
+                    { "slabs", geo.slabs.Select(s => (object)s).ToList() },
+                    { "rimLeftOutNearSlabs", geo.rimLeftOut },
                     { "action", mine != null ? "rebuild" : "create" },
                 };
                 if (lake.creek) entry["warning"] = "A creek base: one flat level over a creek that falls leaves the upper end dry. R.A.M. creeks (golfmap.creeks.import) follow the fall.";
@@ -192,6 +204,8 @@ namespace GolfMap.Editor
                 var geo = job.Value;
                 var go = planes.FirstOrDefault(p => p.name == lake.planeName && ours(p)) ?? Unfinished(all, lake.planeName);
                 float lift = liftArg ?? (go != null ? go.transform.localPosition.y : 0.3f);
+                float fixedSurface;
+                if (liftArg == null && levels.TryGetValue(lake.planeName, out fixedSurface)) lift = fixedSurface - geo.level;
                 bool fresh = go == null;
                 if (fresh)
                 {
@@ -332,7 +346,8 @@ namespace GolfMap.Editor
             public List<int> triangles = new List<int>();
             public float level, rimMin, rimMax;
             public List<float> rimHeights = new List<float>();
-            public int boundaryEdges;
+            public int boundaryEdges, rimLeftOut;
+            public List<string> slabs = new List<string>();
 
             public Mesh ToMesh(string name)
             {
@@ -348,40 +363,106 @@ namespace GolfMap.Editor
             }
         }
 
+        // <course>/water-levels.json (golfmap-water-levels-v1): {"planes": {"<plane name>": {"surfaceM": 9.553}}} - a
+        // water surface set by hand (world Y): the build gives that plane the lift that puts it there, whatever its
+        // level comes to, so a hand-tuned lake keeps its water through a rebuild and a fresh plane (a new .blend).
+        // An explicit liftM still wins. The repo keeps the copy at docs/gspro/<course>/water-levels.json.
+        public const string LevelsFile = "water-levels.json";
+        const string LevelsFormat = "golfmap-water-levels-v1";
+
+        static Dictionary<string, float> FixedLevels(GolfMapCourse course)
+        {
+            var result = new Dictionary<string, float>();
+            var path = GolfMapCourses.Folder(course) + LevelsFile;
+            if (!File.Exists(path)) return result;
+            var root = GolfMapJsonDoc.ParseObject(File.ReadAllText(path));
+            if (root.String("format") != LevelsFormat) throw new InvalidOperationException(path + ": format must be " + LevelsFormat + ".");
+            var planes = root.Object("planes");
+            if (planes == null) return result;
+            foreach (var key in planes.keys)
+            {
+                var o = planes.Object(key);
+                if (o == null || !o.Has("surfaceM")) throw new InvalidOperationException(path + " planes." + key + ": needs surfaceM.");
+                result[key] = (float)o.Number("surfaceM");
+            }
+            return result;
+        }
+
+        const float SlabShoreM = 2.5f;   // a lake rim vertex this close (XZ) to a rock slab does not set the level
+
         // The lake mesh welded (the FBX splits vertices at normal seams), flattened to the level,
         // plus a ring outset wide around every boundary edge, in the parent's space.
-        static Geometry Flatten(Lake lake, float outset, float below, Transform parent)
+        // A rock slab standing in the lake (golfmap.cut_out with `rise`: a hole in the lake mesh, its foot under the
+        // water; or one drawn into a notch of the shore) joins the plane, so the water runs on round it, and the lake's
+        // rim near it does not set the level: a notch's rim lies down on the lake bed (Vreta hole 15, 2026-10-15:
+        // the water stood 1.5 m low).
+        static Geometry Flatten(Lake lake, float outset, float below, Transform parent, List<GameObject> slabs = null)
         {
-            var src = lake.mesh.vertices;
-            var tris = lake.mesh.triangles;
-            var toWorld = lake.go.transform.localToWorldMatrix;
             var index = new Dictionary<Vector3Int, int>();   // millimetres
             var world = new List<Vector3>();
-            var map = new int[src.Length];
-            for (int i = 0; i < src.Length; i++)
-            {
-                var w = toWorld.MultiplyPoint3x4(src[i]);
-                var k = new Vector3Int(Mathf.RoundToInt(w.x * 1000f), Mathf.RoundToInt(w.y * 1000f), Mathf.RoundToInt(w.z * 1000f));
-                int at;
-                if (!index.TryGetValue(k, out at)) { at = world.Count; index[k] = at; world.Add(w); }
-                map[i] = at;
-            }
-            // Boundary edges: used by one triangle; the triangle's third vertex says which side is inside.
             var uses = new Dictionary<long, int>();
             var third = new Dictionary<long, int>();
             var faces = new List<int>();
-            for (int t = 0; t + 2 < tris.Length; t += 3)
+            Action<Mesh, Matrix4x4> addMesh = (mesh, toWorld) =>
             {
-                int a = map[tris[t]], b = map[tris[t + 1]], c = map[tris[t + 2]];
-                if (a == b || b == c || a == c) continue;
-                faces.Add(a); faces.Add(b); faces.Add(c);
-                AddEdge(uses, third, a, b, c); AddEdge(uses, third, b, c, a); AddEdge(uses, third, c, a, b);
+                var src = mesh.vertices;
+                var tris = mesh.triangles;
+                var map = new int[src.Length];
+                for (int i = 0; i < src.Length; i++)
+                {
+                    var w = toWorld.MultiplyPoint3x4(src[i]);
+                    var k = new Vector3Int(Mathf.RoundToInt(w.x * 1000f), Mathf.RoundToInt(w.y * 1000f), Mathf.RoundToInt(w.z * 1000f));
+                    int at;
+                    if (!index.TryGetValue(k, out at)) { at = world.Count; index[k] = at; world.Add(w); }
+                    map[i] = at;
+                }
+                // Boundary edges: used by one triangle; the triangle's third vertex says which side is inside.
+                for (int t = 0; t + 2 < tris.Length; t += 3)
+                {
+                    int a = map[tris[t]], b = map[tris[t + 1]], c = map[tris[t + 2]];
+                    if (a == b || b == c || a == c) continue;
+                    faces.Add(a); faces.Add(b); faces.Add(c);
+                    AddEdge(uses, third, a, b, c); AddEdge(uses, third, b, c, a); AddEdge(uses, third, c, a, b);
+                }
+            };
+            addMesh(lake.mesh, lake.go.transform.localToWorldMatrix);
+            var lakeRim = new HashSet<int>();
+            foreach (var kv in uses) if (kv.Value == 1) { lakeRim.Add((int)(kv.Key >> 32)); lakeRim.Add((int)(kv.Key & 0xffffffffL)); }
+            // The slabs in or at the lake: their box within SlabShoreM of the lake's.
+            var near = new List<Vector2>();
+            var joined = new List<string>();
+            var grown = lake.bounds; grown.Expand(2f * SlabShoreM);
+            foreach (var s in slabs ?? new List<GameObject>())
+            {
+                var r = s.GetComponent<Renderer>();
+                if (r == null || !r.bounds.Intersects(grown)) continue;
+                var mesh = MeshOf(s);
+                var m = s.transform.localToWorldMatrix;
+                var vs = mesh.vertices.Select(v => m.MultiplyPoint3x4(v)).ToList();
+                // In the lake when one of its vertices is a vertex of the lake's (it shares the seam).
+                bool shares = vs.Any(w => index.ContainsKey(new Vector3Int(Mathf.RoundToInt(w.x * 1000f), Mathf.RoundToInt(w.y * 1000f), Mathf.RoundToInt(w.z * 1000f))));
+                bool close = vs.Any(w => lakeRim.Any(i => Mathf.Abs(world[i].x - w.x) < SlabShoreM && Mathf.Abs(world[i].z - w.z) < SlabShoreM));
+                if (!shares && !close) continue;
+                foreach (var w in vs) near.Add(new Vector2(w.x, w.z));
+                if (shares) { addMesh(mesh, m); joined.Add(s.name); }
             }
             var boundary = uses.Where(kv => kv.Value == 1).Select(kv => kv.Key).ToList();
-            var geo = new Geometry { boundaryEdges = boundary.Count };
-            var rim = new HashSet<int>();
-            foreach (var e in boundary) { rim.Add((int)(e >> 32)); rim.Add((int)(e & 0xffffffffL)); }
-            foreach (var v in rim) geo.rimHeights.Add(world[v].y);
+            var geo = new Geometry { boundaryEdges = boundary.Count, slabs = joined };
+            // The level: the lake's own rim, but for the part beside a slab.
+            var cell = SlabShoreM;
+            var grid = new HashSet<Vector2Int>(near.Select(p => new Vector2Int(Mathf.FloorToInt(p.x / cell), Mathf.FloorToInt(p.y / cell))));
+            Func<Vector3, bool> besideSlab = w =>
+            {
+                int cx = Mathf.FloorToInt(w.x / cell), cz = Mathf.FloorToInt(w.z / cell);
+                for (int dx = -1; dx <= 1; dx++) for (int dz = -1; dz <= 1; dz++)
+                    if (grid.Contains(new Vector2Int(cx + dx, cz + dz)) && near.Any(p => (p - new Vector2(w.x, w.z)).sqrMagnitude < cell * cell)) return true;
+                return false;
+            };
+            foreach (var v in lakeRim)
+            {
+                if (grid.Count > 0 && besideSlab(world[v])) { geo.rimLeftOut++; continue; }
+                geo.rimHeights.Add(world[v].y);
+            }
             geo.rimMin = geo.rimHeights.Count > 0 ? geo.rimHeights.Min() : world.Min(p => p.y);
             geo.rimMax = geo.rimHeights.Count > 0 ? geo.rimHeights.Max() : world.Max(p => p.y);
             geo.level = geo.rimMin - below;

@@ -52,8 +52,9 @@
 // One worker for the machine, so one apply at a time across courses. Paths,
 // all overridable (env, or deps in tests):
 //   - blend:      GOLFMAP_SHAPING_BLEND (absolute, or a name in the export
-//                 folder), else the newest `*.conformed.blend` in the course's
-//                 export folder, else its newest source `.blend` (the worker
+//                 folder), else the newest source `.blend` in the course's
+//                 export folder (the worker prepares its conformed cache), else
+//                 the newest `*.conformed.blend` there (the worker
 //                 prepares the conformed cache itself);
 //   - layers:     `<repo>/docs/gspro/<course slug>/shaping` (GOLFMAP_SHAPING_LAYERS_ROOT
 //                 replaces `<repo>/docs/gspro`);
@@ -621,9 +622,9 @@ export class ShapingService {
     }
 
     /**
-     * The .blend to shape: the configured one, else the newest conformed
-     * cache in the export folder (a newer source .blend is a warning: its
-     * cache is not made yet), else the newest source .blend.
+     * The .blend to shape: the configured one, else the newest source .blend
+     * in the export folder (the worker prepares or reuses its conformed
+     * cache), else the newest conformed cache when no source is there.
      */
     private async resolveBlend(exportDir: string, warnings: string[]): Promise<string> {
         if (this.blend) {
@@ -644,13 +645,16 @@ export class ShapingService {
         const newest = (list: typeof blends) => list.sort((a, b) => b.mtime - a.mtime || a.name.localeCompare(b.name))[0] ?? null;
         const conformed = newest(blends.filter(b => b.conformed));
         const source = newest(blends.filter(b => !b.conformed));
-        if (conformed) {
-            if (source && source.mtime > conformed.mtime) {
-                warnings.push(`${source.name} is newer than the conformed cache ${conformed.name} used here: set GOLFMAP_SHAPING_BLEND=${source.name} to shape it (the worker prepares its cache)`);
-            }
-            return conformed.file;
+        // The newest SOURCE .blend is the course as OPCD last built it; the worker makes or reuses
+        // its `<name>.conformed.blend` itself (and notices a changed terrain.obj). Picking the newest
+        // conformed cache first, as this did until 2026-10-14, kept shaping an old build after a
+        // new one had been downloaded.
+        if (source) {
+            const cache = blends.find(b => b.conformed && b.name.toLowerCase() === source.name.toLowerCase().replace(/\.blend$/, '.conformed.blend'));
+            if (!cache) warnings.push(`${source.name} has no conformed cache yet: the worker prepares it on load (a minute or two)`);
+            return source.file;
         }
-        if (source) return source.file;
+        if (conformed) return conformed.file;
         throw new ConflictError(`No .blend in the export folder ${exportDir}: build the course's .blend with OPCD first (or set GOLFMAP_SHAPING_BLEND)`);
     }
 

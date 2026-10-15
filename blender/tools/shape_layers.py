@@ -67,7 +67,7 @@ OPS = {
     # Spline_<name>_<surface>_-_Mesh (shape_apply "golfmap.cut_out"): a rock slab that is no drawn feature.
     "golfmap.cut_out": {
         "params": {},
-        "keys": {"name", "outline3006", "surface", "sliverM", "weld", "protect", "uvM"},
+        "keys": {"name", "outline3006", "surface", "sliverM", "weld", "protect", "uvM", "rise"},
         "required": {"name", "outline3006"},
         "noSelect": True,
     },
@@ -230,6 +230,15 @@ def validate_op(op):
         pr = op.get("protect", [])
         if not (isinstance(pr, list) and all(isinstance(t, str) for t in pr)):
             errors.append("protect must be a list of golf-map types")
+        if "rise" in op:
+            rise = op["rise"]
+            rise_keys = {"waterM", "topM", "footM", "apronM", "noiseM", "maxEdgeM", "seed"}
+            if not isinstance(rise, dict) or set(rise) - rise_keys or not all(_is_type(v, float) for v in rise.values()):
+                errors.append("rise must be an object of numbers: " + ", ".join(sorted(rise_keys)))
+            elif not (rise.get("topM", 0) > 0) or any(rise.get(k, 0) < 0 for k in ("footM", "apronM", "noiseM", "maxEdgeM")):
+                errors.append("rise needs topM > 0; footM, apronM, noiseM and maxEdgeM >= 0")
+            elif "maxEdgeM" in rise and rise["maxEdgeM"] < 0.1:
+                errors.append("rise.maxEdgeM must be >= 0.1 (the slab's faces grow with 1 / maxEdgeM^2)")
     if name == "golfmap.split_surfaces":
         for k, lo in (("fadeM", 0.0), ("minPartM2", 0.0), ("sliverM", 0.0), ("slitM", 0.0)):
             if k in op and not (_is_type(op[k], float) and op[k] >= lo):

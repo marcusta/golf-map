@@ -11,11 +11,11 @@ import { GSPRO_TARGETS, type GsproTargetId } from '../../shared/gspro-targets';
 import { FeaturesService } from '../src/draw/features.service';
 import type { CourseFeature, CourseFeaturesApi } from '../../shared/api/course-features.gen';
 
-// Render smoke for the GSPro dialog — the status board (there are no
-// per-component specs by design — TESTING.md — but the board's rows, the
-// folder field, the default hint and the report list are worth one
-// throw-check through happy-dom). Every legacy export button now lives behind
-// its row's "…" details toggle, so the pins on them read from there.
+// Render smoke for the GSPro dialog — its tabs, each with its targets' rows and
+// that area's files (there are no per-component specs by design — TESTING.md —
+// but the rows, the tabs, the folder field, the default hint and the report
+// list are worth one throw-check through happy-dom). A hidden tab's buttons
+// are still in the DOM, so the pins on them click them where they are.
 
 afterEach(() => {
     _reset();
@@ -355,16 +355,17 @@ test('a failure shows the error section and the run button recovers', async () =
 
 // --- The status board ---
 
-test('the dialog is the board: a row per target in order, with its time and what changed', async () => {
+test('the dialog is tabs of rows: a row per target in tab order, with its time and what changed', async () => {
     const { host, svc } = await mount();
     await open(svc);
 
     const dialog = host.querySelector('[data-testid=gspro-dialog]') as HTMLElement;
     expect(dialog.querySelector('h3')!.textContent).toBe('GSPro');
     const rows = [...host.querySelectorAll('[data-testid^=gspro-row-]')];
-    expect(rows.map(r => r.getAttribute('data-testid'))).toEqual(GSPRO_TARGETS.map(t => `gspro-row-${t.id}`));
+    // Every target once, grouped by tab: Nature takes the creeks in with vegetation and trees.
+    expect(rows.map(r => r.getAttribute('data-testid')).sort()).toEqual(GSPRO_TARGETS.map(t => `gspro-row-${t.id}`).sort());
     expect(rows.map(r => r.querySelector('.gspro-export__blabel')!.textContent!.trim().split(' ')[0]))
-        .toEqual(['Terrain', 'Photo', 'Course', 'Meshes', 'Vegetation', 'Trees', 'Buildings', 'Props', 'Creeks', 'Course']);
+        .toEqual(['Terrain', 'Photo', 'Course', 'Meshes', 'Vegetation', 'Trees', 'Creeks', 'Buildings', 'Props', 'Course']);
 
     const status = (id: string) => host.querySelector(`[data-testid=gspro-status-${id}]`)!.textContent;
     expect(status('terrain')).toBe('2 h ago · up to date');
@@ -409,7 +410,7 @@ test('the manual step a row leaves behind shows under it', async () => {
     expect(host.querySelector('[data-testid=gspro-manual-terrain]')!.textContent).toBe('');
 });
 
-test("the Props row shows its note and its details name the spec as the only permanent place for a hand move", async () => {
+test("the Props row shows its note and the Buildings tab names the spec as the only permanent place for a hand move", async () => {
     const { host, svc } = await mount();
     await open(svc);
 
@@ -419,11 +420,11 @@ test("the Props row shows its note and its details name the spec as the only per
     const notes = [...host.querySelectorAll('[data-testid^=gspro-note-]')].filter(n => n.textContent !== '');
     expect(notes.map(n => n.getAttribute('data-testid'))).toEqual(['gspro-note-props']);
 
-    const panel = host.querySelector('[data-testid=gspro-panel-props]')!;
-    expect(panel.textContent).toContain('docs/gspro/vreta/*-props.gen.py');
-    // The long "what keeps a hand move" explanation sits behind the panel's (i) tip.
-    expect(panel.querySelector('.info-tip__text')!.textContent)
-        .toContain('only a place(...) call in the *-props.gen.py makes a hand move permanent');
+    const pane = host.querySelector('[data-testid=gspro-pane-buildings]')!;
+    expect(pane.textContent).toContain('docs/gspro/vreta/*-props.gen.py');
+    // The long "what keeps a hand move" explanation sits behind the Props head's (i) tip.
+    const tips = [...pane.querySelectorAll('.info-tip__text')].map(tip => tip.textContent);
+    expect(tips.some(tip => tip!.includes('only a place(...) call in the *-props.gen.py makes a hand move permanent'))).toBe(true);
 });
 
 test('Update runs one target and the header button runs every stale one', async () => {
@@ -484,42 +485,57 @@ test('the Unity chip names the editor with this course active, or says it is not
     expect(none.className).not.toContain('matched');
 });
 
-test('a row\'s "…" opens its own files and settings', async () => {
+test('each tab shows its own rows, files and settings, and a tab with a stale row carries a dot', async () => {
     const { host, svc } = await mount();
     await open(svc);
 
-    const panel = (id: string) => host.querySelector(`[data-testid=gspro-panel-${id}]`) as HTMLElement;
-    const toggle = (id: string) => host.querySelector(`[data-testid=gspro-details-${id}]`) as HTMLButtonElement;
-    expect(panel('photo').className).toContain('hidden');
-    expect(toggle('photo').getAttribute('aria-expanded')).toBe('false');
+    const pane = (id: string) => host.querySelector(`[data-testid=gspro-pane-${id}]`) as HTMLElement;
+    const tab = (id: string) => host.querySelector(`[data-testid=gspro-tab-${id}]`) as HTMLButtonElement;
+    expect([...host.querySelectorAll('[data-testid^=gspro-tab-]')].map(b => b.textContent))
+        .toEqual(['Terrain', 'Photo', 'Course', 'Nature', 'Buildings', 'GreenKeeper', 'Course details']);
+    // One pane at a time, Terrain first.
+    expect(tab('terrain').getAttribute('aria-selected')).toBe('true');
+    expect(pane('terrain').className).not.toContain('hidden');
+    expect(pane('photo').className).toContain('hidden');
 
-    toggle('photo').click();
-    expect(panel('photo').className).not.toContain('hidden');
-    expect(toggle('photo').getAttribute('aria-expanded')).toBe('true');
-    // The Textures tab's content, now under the Photo row: the vintage picker,
-    // the cleaning boxes and the four JPEG buttons plus the one into Unity.
-    expect(panel('photo').querySelector('[data-testid=gspro-ortho-source]')).not.toBeNull();
-    expect(panel('photo').querySelector('.gspro-export__run-ortho')).not.toBeNull();
-    expect(panel('photo').querySelector('.gspro-export__run-clean-ortho')).not.toBeNull();
-    expect(panel('photo').querySelector('[data-testid=gspro-unity-ortho]')).not.toBeNull();
+    tab('photo').click();
+    expect(tab('photo').getAttribute('aria-selected')).toBe('true');
+    expect(tab('terrain').getAttribute('aria-selected')).toBe('false');
+    expect(pane('photo').className).not.toContain('hidden');
+    expect(pane('terrain').className).toContain('hidden');
+    // The Photo tab: its row, the vintage picker, the cleaning boxes, the JPEG buttons and the one into Unity.
+    expect(pane('photo').querySelector('[data-testid=gspro-row-photo]')).not.toBeNull();
+    expect(pane('photo').querySelector('[data-testid=gspro-ortho-source]')).not.toBeNull();
+    expect(pane('photo').querySelector('.gspro-export__run-ortho')).not.toBeNull();
+    expect(pane('photo').querySelector('.gspro-export__run-clean-ortho')).not.toBeNull();
+    expect(pane('photo').querySelector('[data-testid=gspro-unity-ortho]')).not.toBeNull();
 
-    // Each other row's own files are under its own toggle.
-    expect(panel('terrain').querySelector('.gspro-export__run-inner-dem')).not.toBeNull();
-    expect(panel('terrain').querySelector('[data-testid=gspro-inner-unity]')).not.toBeNull();
-    expect(panel('terrain').querySelector('[data-testid=gspro-outer-unity]')).not.toBeNull();
-    expect(panel('terrain').querySelector('[data-testid=gspro-inner-sculpt]')).not.toBeNull();
-    expect(panel('shapes').querySelector('[data-testid=gspro-run-svg]')).not.toBeNull();
-    expect(panel('trees').querySelector('.gspro-export__run-inner-trees')).not.toBeNull();
-    expect(panel('buildings').querySelector('.gspro-export__run-inner-buildings')).not.toBeNull();
-    expect(panel('vegetation').querySelector('.gspro-export__run-inner-zones')).not.toBeNull();
-    expect(panel('creeks').querySelector('.gspro-export__run-creeks')).not.toBeNull();
-    expect(panel('course-file').querySelector('.gspro-export__run-gkd')).not.toBeNull();
-    expect(panel('course-file').querySelector('[data-testid=gspro-tee-sets]')).not.toBeNull();
-    expect(panel('course-file').querySelector('[data-testid=gspro-meta]')).not.toBeNull();
-    expect(panel('meshes').textContent).toContain('docs/gspro/Vreta/shaping');
+    // Each other tab holds its own rows and files.
+    expect(pane('terrain').querySelector('.gspro-export__run-inner-dem')).not.toBeNull();
+    expect(pane('terrain').querySelector('[data-testid=gspro-inner-unity]')).not.toBeNull();
+    expect(pane('terrain').querySelector('[data-testid=gspro-outer-unity]')).not.toBeNull();
+    expect(pane('terrain').querySelector('[data-testid=gspro-inner-sculpt]')).not.toBeNull();
+    expect(pane('course').querySelector('[data-testid=gspro-row-shapes]')).not.toBeNull();
+    expect(pane('course').querySelector('[data-testid=gspro-row-meshes]')).not.toBeNull();
+    expect(pane('course').querySelector('[data-testid=gspro-run-svg]')).not.toBeNull();
+    expect(pane('course').textContent).toContain('docs/gspro/Vreta/shaping');
+    for (const id of ['vegetation', 'trees', 'creeks']) expect(pane('nature').querySelector(`[data-testid=gspro-row-${id}]`)).not.toBeNull();
+    expect(pane('nature').querySelector('.gspro-export__run-inner-zones')).not.toBeNull();
+    expect(pane('nature').querySelector('.gspro-export__run-inner-trees')).not.toBeNull();
+    expect(pane('nature').querySelector('.gspro-export__run-creeks')).not.toBeNull();
+    expect(pane('buildings').querySelector('[data-testid=gspro-row-props]')).not.toBeNull();
+    expect(pane('buildings').querySelector('.gspro-export__run-inner-buildings')).not.toBeNull();
+    expect(pane('greenkeeper').querySelector('[data-testid=gspro-row-course-file]')).not.toBeNull();
+    expect(pane('greenkeeper').querySelector('.gspro-export__run-gkd')).not.toBeNull();
+    expect(pane('greenkeeper').querySelector('[data-testid=gspro-tee-sets]')).not.toBeNull();
+    expect(pane('details').querySelector('[data-testid=gspro-meta]')).not.toBeNull();
+    expect(pane('details').querySelector('[data-testid^=gspro-row-]')).toBeNull();
 
-    toggle('photo').click();
-    expect(panel('photo').className).toContain('hidden');
+    // The stale rows' tabs (Course shapes, Trees) carry the dot; the rest do not.
+    const dotted = [...host.querySelectorAll('[data-testid^=gspro-tab-]')]
+        .filter(b => b.querySelector('.gspro-export__tab-dot.stale'))
+        .map(b => b.getAttribute('data-testid'));
+    expect(dotted).toEqual(['gspro-tab-course', 'gspro-tab-nature']);
 });
 
 test('the board opened from the command bar brings the export half with it', async () => {
@@ -711,7 +727,7 @@ test('the trees buttons export the inner and the outer terrain', async () => {
 test('the footer shows what single-file export is running and what last ran', async () => {
     const { host, svc } = await mount();
     await open(svc);
-    const note = () => host.querySelector('[data-testid=gspro-status] .gspro-export__job') as HTMLElement;
+    const note = () => host.querySelector('[data-testid=gspro-export-job]') as HTMLElement;
     expect(note().closest('.gspro-export__section')!.className).toContain('hidden');
     await svc.runDem('inner');
     expect(note().textContent).toMatch(/^Last export: dem, done in \d+ s$/);

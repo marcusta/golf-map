@@ -60,7 +60,7 @@ Batch: the user prefers several zone edits, then one update/replant, not one per
      CLI without Unity: `bun run grass:zones -- <course>` (zones export + `arborist.py lower`), then those two `unity_command`s (import, apply, import, apply for a new item); the Arborist file alone: `bun run gspro:export -- <course> arborist`.
      Done when the report says imported + applied with no unbound-item warnings, and "Arborist lower vegetation written" and "Arborist trees written" (a course without `docs/gspro/<course>/arborist-species.json`: "Arborist: not used by this course").
    - A warning that the trees Arborist draws in place of the course's own changed: run the two `golfmap.vsp.trees.trim` commands it names, then save and build ([arborist.md](gspro/arborist.md), "The ring rule").
-   - The outer terrain is not refreshed by Update vegetation: `bun run gspro:export -- <course> zones:outer`, then `golfmap.zones.import {terrain: "outer"}` + `golfmap.grass.apply {terrain: "outer"}`. <!-- VERIFY: whether the user plants zones on the outer at all -->
+   - The outer terrain gets nothing in the course's VSP (Marcus, 2026-10-14): Arborist draws all its vegetation, so Update vegetation writes only its zones file (when there is one) and never imports it into Unity ([arborist.md](gspro/arborist.md), "Who writes the file").
 5. **Verify**: `unity_screenshot` over the zone with `warmup` 20-80 (an unfocused 2018 editor never ticks VSP on its own); `golfmap.vsp` lists the item spawning with mask rules. Done when the grass/bushes are visible in the screenshot.
    - Bare where the mask says it should grow: run `golfmap.terrain.conform` (grass buried under the meshes).
    - VSP throws `JobHandle.Complete()` every frame: `golfmap.vsp.reset` or any `unity_sync push`.

@@ -2000,7 +2000,16 @@
       ],
       "featureId": "bf9f819d-3de1-4a10-8099-70821f0d36f8",
       "origin": "rock_slab",
-      "note": "rock slab 247: the drawn outline grown 0 m"
+      "note": "rock slab 247: the drawn outline grown 0 m",
+      "rise": {
+        "apronM": 3.0,
+        "footM": 0.35,
+        "maxEdgeM": 0.35,
+        "noiseM": 0.22,
+        "seed": 247.0,
+        "topM": 0.9,
+        "waterM": 9.43
+      }
     },
     {
       "id": "hall-272",

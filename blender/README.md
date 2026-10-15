@@ -675,6 +675,22 @@ course meshes and lifts the inside out as one new object. Hand layer, one op per
   same way and no more: 15 of 1037 fingerprints over all of `00-global` with all 1037 position and colour hashes
   equal, and of five slab cut-outs re-run with every attribute hashed, the one mesh that differed differed in
   `custom_normal` only. It costs a re-export of those meshes, no gap.
+- **`rise`** (a klippa instead of a flat slab; from the feature's `rise*` attributes, shared/features/rock-slab.ts):
+  `{topM, waterM?, footM 0.35, apronM 3, noiseM 0.22, maxEdgeM 0.35, seed}`. After the cut the slab is refined to
+  `maxEdgeM` (the cut keeps OPCD's ~1.2 m triangles) and the ground within `apronM` to twice that, T-junctions
+  closed, then every vertex of the slab and of the meshes within reach (not green, bunker, tee) goes to
+  `max(z, target(x, y))`: inside the outline a rounded rise (`1 - (1 - t)^2.4` of the distance in, over the
+  inradius) from the foot (`footM` under `waterM`) to the top (`topM` over `waterM`, or over the highest ground on
+  the outline without water) plus lumpy noise (2.2 / 0.9 / 0.35 m) of `noiseM`; outside a shoal / apron falling from
+  the foot to the lowest ground within `apronM`. Lift only and one height per XY, so the vertices two meshes share move
+  alike and no seam opens. With `waterM`, the faces of the meshes around that end up wholly under the water and
+  connect to the lake (flood from the lake's and its blends' boundary, within `apronM` + 12 m) join the lake mesh,
+  with the lake's paint: a shore notch drawn round a rock leaves rough on the lake bed, and the tall grass grew up
+  through the water there. Report `rise` = `{topZ, footZ, bedZ, inradiusM, refinePasses, weld, lifted, maxLiftM,
+  sunk}`. Unity's water plane takes a slab standing in a lake into the plane and leaves the rim beside it out of the
+  level (unity/README.md "Water planes"). Vreta hall_247 (hole 15's lake, 2026-10-15): the slab lay on the dug lake
+  bed in a notch of the shore and the plane followed it down to 7.91 m; with `rise` {waterM 9.43, topM 0.9} the rock
+  stands 9.08-10.40 m, 3126 faces of the rough ring and channel round it joined the lake, 0 seam gaps.
 - **Vreta** (`vreta_svg_1985`, two slabs east of hole 11's green, out of `Spline_Outer_Deep_Sat_3_5_piece2_-_Mesh`):
   41.6 m² / 92 faces and 54.2 m² / 115 faces, border 57 and 61 vertices with 0 unmatched, 0 new seam gaps and 0
   T-junctions over the course, 1.9 s each, op-cache replay 0.1 s with the fresh apply's all-mesh hash. The op only

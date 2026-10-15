@@ -467,7 +467,7 @@ namespace GolfMap.Editor
 
         static string TrimFile(PersistentVegetationStoragePackage package) { return AssetDatabase.GetAssetPath(package) + ".trimmed.json"; }
 
-        [BridgeCommand("golfmap.vsp.trees.trim", "Hybrid course: take out of the course's own tree storage (the system that also holds the lower vegetation) the trees Arborist draws instead, so VSP neither draws nor culls them: every instance of an item golfmap.vsp.trees keep= has hidden, and of the kept items the trees at the positions in `file` (pipeline/arborist.py trees --surfaces writes it: the scenery trees that became Arborist billboards). What is removed is written beside the storage asset (<asset>.trimmed.json) and restore=true puts every one of them back. Without arguments: reports. Saves the storage asset; mark: the scene must be saved and built for GSPro to see it.",
+        [BridgeCommand("golfmap.vsp.trees.trim", "Hybrid course: take out of the course's own tree storage (the system that also holds the lower vegetation) the trees Arborist draws instead, so VSP neither draws nor culls them: every instance of an item golfmap.vsp.trees keep= has hidden, and of the kept items the trees at the positions in `file` (pipeline/arborist.py trees --surfaces writes it: the scenery trees that became Arborist billboards). What is removed is written beside the storage asset (<asset>.trimmed.json), each tree once, and restore=true puts every one of them back where its item does not already stand (to the centimetre) and drops a catalogue tree stored twice, so restore can be run any number of times (compare storedNow with the full count). Without arguments: reports. Saves the storage asset; mark: the scene must be saved and built for GSPro to see it.",
             args = "file (golfmap-vsp-far-v1 JSON, absolute path), hidden=true (also the hidden items' trees), restore=true, dryRun=false")]
         static object TrimCommand(BridgeArgs a)
         {
@@ -480,28 +480,59 @@ namespace GolfMap.Editor
                 if (packages.All(GolfMapTreePlanter.IsImportedCatalogue)) continue;   // a trees-only (background) system is switched off whole
                 var storagePackage = system.PersistentVegetationStorage.PersistentVegetationStoragePackage;
                 string file = TrimFile(storagePackage);
-                var saved = File.Exists(file) ? (BridgeJson.Parse(File.ReadAllText(file)) as List<object> ?? new List<object>()) : new List<object>();
+                int fileDoubles;
+                var saved = TrimRows(file, out fileDoubles);
                 var origin = system.VegetationSystemPosition;
                 var cells = storagePackage.PersistentVegetationCellList;
-                int removed = 0, restored = 0, farGiven = 0;
+                long storedBefore = cells.SelectMany(c => c.PersistentVegetationInfoList).Sum(i => (long)i.VegetationItemList.Count);
+                int removed = 0, restored = 0, alreadyStored = 0, duplicatesRemoved = 0, farGiven = 0;
                 var byItem = new Dictionary<string, int>();
-                if (a.Bool("restore", false))
+                var names = new Dictionary<string, string>();   // the catalogues' tree items, id to prefab name
+                var hiddenIds = new HashSet<string>();
+                foreach (var catalog in packages.Where(GolfMapTreePlanter.IsImportedCatalogue))
                 {
-                    if (!a.Bool("dryRun", false))
+                    var hiddenNow = HiddenItems(catalog);
+                    foreach (var item in catalog.VegetationInfoList)
                     {
-                        Undo.RegisterCompleteObjectUndo(storagePackage, "Restore trimmed GolfMap trees");
-                        foreach (Dictionary<string, object> row in saved)
-                        {
-                            var cell = cells[Convert.ToInt32(row["cell"])];
-                            string id = (string)row["item"];
-                            var info = cell.PersistentVegetationInfoList.FirstOrDefault(i => i.VegetationItemID == id);
-                            if (info == null) { info = new PersistentVegetationInfo { VegetationItemID = id }; cell.PersistentVegetationInfoList.Add(info); }
-                            info.VegetationItemList.Add(TrimmedItem(row));
-                        }
-                        restored = saved.Count;
-                        saved.Clear();
+                        names[item.VegetationItemID] = ItemName(item);
+                        if (a.Bool("hidden", true) && hiddenNow.ContainsKey(item.VegetationItemID)) hiddenIds.Add(item.VegetationItemID);
                     }
-                    else restored = saved.Count;
+                }
+                bool dry = a.Bool("dryRun", false), restoring = a.Bool("restore", false);
+                if (restoring)
+                {
+                    // Idempotent: a tree goes back only where its item does not already stand (to the centimetre,
+                    // as Listed), and a tree stored twice loses its second copy. Rows that outlived a restore (the
+                    // delete below could fail silently), or a full storage put back under a trimmed one, were all
+                    // added again: 47 789 stored instead of 25 154 on 2026-10-13.
+                    if (!dry) Undo.RegisterCompleteObjectUndo(storagePackage, "Restore trimmed GolfMap trees");
+                    var standing = new Dictionary<string, HashSet<long>>();
+                    foreach (var cell in cells)
+                        foreach (var info in cell.PersistentVegetationInfoList)
+                        {
+                            if (!names.ContainsKey(info.VegetationItemID)) continue;   // not a tree of the catalogue
+                            var list = info.VegetationItemList;
+                            for (int i = 0; i < list.Count; i++)
+                            {
+                                if (!Stands(standing, info.VegetationItemID, list[i].Position)) { Mark(standing, info.VegetationItemID, list[i].Position); continue; }
+                                duplicatesRemoved++;
+                                if (!dry) list.RemoveAt(i--);
+                            }
+                        }
+                    foreach (Dictionary<string, object> row in saved)
+                    {
+                        string id = (string)row["item"];
+                        var t = TrimmedItem(row);
+                        if (Stands(standing, id, t.Position)) { alreadyStored++; continue; }
+                        Mark(standing, id, t.Position);
+                        restored++;
+                        if (dry) continue;
+                        var cell = cells[Convert.ToInt32(row["cell"])];
+                        var info = cell.PersistentVegetationInfoList.FirstOrDefault(i => i.VegetationItemID == id);
+                        if (info == null) { info = new PersistentVegetationInfo { VegetationItemID = id }; cell.PersistentVegetationInfoList.Add(info); }
+                        info.VegetationItemList.Add(t);
+                    }
+                    if (!dry) saved.Clear();
                 }
                 else if (a.Has("file") || a.Has("hidden"))
                 {
@@ -513,18 +544,10 @@ namespace GolfMap.Editor
                         foreach (List<object> xz in (List<object>)doc["positions"]) far.Add(Key(Convert.ToDouble(xz[0], System.Globalization.CultureInfo.InvariantCulture), Convert.ToDouble(xz[1], System.Globalization.CultureInfo.InvariantCulture)));
                         farGiven = far.Count;
                     }
-                    var hiddenIds = new HashSet<string>();
-                    var names = new Dictionary<string, string>();
-                    foreach (var catalog in packages.Where(GolfMapTreePlanter.IsImportedCatalogue))
-                    {
-                        var hiddenNow = HiddenItems(catalog);
-                        foreach (var item in catalog.VegetationInfoList)
-                        {
-                            names[item.VegetationItemID] = ItemName(item);
-                            if (a.Bool("hidden", true) && hiddenNow.ContainsKey(item.VegetationItemID)) hiddenIds.Add(item.VegetationItemID);
-                        }
-                    }
-                    bool dry = a.Bool("dryRun", false);
+                    // A tree already on file (trimmed before, then back in the storage by a replant or a storage
+                    // backup) is taken out again but written once.
+                    var onFile = new Dictionary<string, HashSet<long>>();
+                    foreach (Dictionary<string, object> row in saved) Mark(onFile, (string)row["item"], TrimmedItem(row).Position);
                     if (!dry) Undo.RegisterCompleteObjectUndo(storagePackage, "Trim GolfMap trees");
                     for (int c = 0; c < cells.Count; c++)
                         foreach (var info in cells[c].PersistentVegetationInfoList)
@@ -539,18 +562,28 @@ namespace GolfMap.Editor
                                 removed++;
                                 int n; byItem.TryGetValue(names[info.VegetationItemID], out n); byItem[names[info.VegetationItemID]] = n + 1;
                                 if (dry) continue;
-                                saved.Add(new Dictionary<string, object>
+                                if (!Stands(onFile, info.VegetationItemID, t.Position))
                                 {
-                                    { "cell", c }, { "item", info.VegetationItemID }, { "source", (int)t.VegetationSourceID },
-                                    { "v", new List<object> { t.Position.x, t.Position.y, t.Position.z, t.Scale.x, t.Scale.y, t.Scale.z, t.Rotation.x, t.Rotation.y, t.Rotation.z, t.Rotation.w, t.DistanceFalloff } },
-                                });
+                                    Mark(onFile, info.VegetationItemID, t.Position);
+                                    saved.Add(new Dictionary<string, object>
+                                    {
+                                        { "cell", c }, { "item", info.VegetationItemID }, { "source", (int)t.VegetationSourceID },
+                                        { "v", new List<object> { t.Position.x, t.Position.y, t.Position.z, t.Scale.x, t.Scale.y, t.Scale.z, t.Rotation.x, t.Rotation.y, t.Rotation.z, t.Rotation.w, t.DistanceFalloff } },
+                                    });
+                                }
                                 list.RemoveAt(i);
                             }
                         }
                 }
-                if (removed + restored > 0 && !a.Bool("dryRun", false))
+                if (!dry && (removed > 0 || restoring))
                 {
-                    if (saved.Count > 0) File.WriteAllText(file, BridgeJson.Write(saved)); else if (File.Exists(file)) AssetDatabase.DeleteAsset(file);
+                    // AssetDatabase.DeleteAsset does nothing (returns false) for a file the editor has not imported
+                    // yet, and a file written by a trim is not imported until the next refresh.
+                    if (saved.Count > 0) File.WriteAllText(file, BridgeJson.Write(saved));
+                    else if (File.Exists(file) && !AssetDatabase.DeleteAsset(file)) { File.Delete(file); if (File.Exists(file + ".meta")) File.Delete(file + ".meta"); }
+                }
+                if (!dry && removed + restored + duplicatesRemoved > 0)
+                {
                     EditorUtility.SetDirty(storagePackage);
                     AssetDatabase.SaveAssets();
                     if (system.isActiveAndEnabled) system.ClearCache();
@@ -559,8 +592,9 @@ namespace GolfMap.Editor
                 report.Add(new Dictionary<string, object>
                 {
                     { "storage", AssetDatabase.GetAssetPath(storagePackage) }, { "removed", removed }, { "restored", restored }, { "farPositionsGiven", farGiven },
+                    { "alreadyStored", alreadyStored }, { "duplicatesRemoved", duplicatesRemoved }, { "fileDoubles", fileDoubles },
                     { "removedByItem", byItem.ToDictionary(k => k.Key, k => (object)k.Value) }, { "trimmedOnFile", saved.Count },
-                    { "storedNow", cells.SelectMany(c => c.PersistentVegetationInfoList).Sum(i => (long)i.VegetationItemList.Count) },
+                    { "storedBefore", storedBefore }, { "storedNow", cells.SelectMany(c => c.PersistentVegetationInfoList).Sum(i => (long)i.VegetationItemList.Count) },
                 });
             }
             return report;
@@ -578,18 +612,59 @@ namespace GolfMap.Editor
 
         // The trees golfmap.vsp.trees.trim took out of a storage, by item id: still planted trees of
         // the course (Arborist draws them), so golfmap.trees.dump writes them with the stored ones.
+        // Each once, and none that stands in the storage again.
         internal static Dictionary<string, List<PersistentVegetationItem>> Trimmed(PersistentVegetationStoragePackage package)
         {
             var byItem = new Dictionary<string, List<PersistentVegetationItem>>();
-            string file = TrimFile(package);
-            if (!File.Exists(file)) return byItem;
-            foreach (Dictionary<string, object> row in BridgeJson.Parse(File.ReadAllText(file)) as List<object> ?? new List<object>())
+            int doubles;
+            var rows = TrimRows(TrimFile(package), out doubles);
+            if (rows.Count == 0) return byItem;
+            var ids = new HashSet<string>(rows.Select(r => (string)((Dictionary<string, object>)r)["item"]));
+            var standing = new Dictionary<string, HashSet<long>>();
+            foreach (var info in package.PersistentVegetationCellList.SelectMany(c => c.PersistentVegetationInfoList).Where(i => ids.Contains(i.VegetationItemID)))
+                foreach (var t in info.VegetationItemList) Mark(standing, info.VegetationItemID, t.Position);
+            foreach (Dictionary<string, object> row in rows)
             {
+                string id = (string)row["item"];
+                var t = TrimmedItem(row);
+                if (Stands(standing, id, t.Position)) continue;
                 List<PersistentVegetationItem> list;
-                if (!byItem.TryGetValue((string)row["item"], out list)) byItem[(string)row["item"]] = list = new List<PersistentVegetationItem>();
-                list.Add(TrimmedItem(row));
+                if (!byItem.TryGetValue(id, out list)) byItem[id] = list = new List<PersistentVegetationItem>();
+                list.Add(t);
             }
             return byItem;
+        }
+
+        // The trim file's rows, a tree written twice (same item, same centimetre) once: `doubles` counts the rest.
+        static List<object> TrimRows(string file, out int doubles)
+        {
+            doubles = 0;
+            var rows = File.Exists(file) ? (BridgeJson.Parse(File.ReadAllText(file)) as List<object> ?? new List<object>()) : new List<object>();
+            var seen = new Dictionary<string, HashSet<long>>();
+            var once = new List<object>(rows.Count);
+            foreach (Dictionary<string, object> row in rows)
+            {
+                string id = (string)row["item"];
+                var p = TrimmedItem(row).Position;
+                if (Stands(seen, id, p)) { doubles++; continue; }
+                Mark(seen, id, p);
+                once.Add(row);
+            }
+            return once;
+        }
+
+        // Where the trees of each item stand, by item id: storage positions (x, z) to the centimetre.
+        static bool Stands(Dictionary<string, HashSet<long>> at, string id, Vector3 p)
+        {
+            HashSet<long> keys;
+            return at.TryGetValue(id, out keys) && Listed(keys, p.x, p.z);
+        }
+
+        static void Mark(Dictionary<string, HashSet<long>> at, string id, Vector3 p)
+        {
+            HashSet<long> keys;
+            if (!at.TryGetValue(id, out keys)) at[id] = keys = new HashSet<long>();
+            keys.Add(Key(p.x, p.z));
         }
 
         // Positions are matched to the centimetre (the file rounds to the millimetre).

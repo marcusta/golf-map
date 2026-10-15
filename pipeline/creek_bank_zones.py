@@ -249,6 +249,28 @@ def water_clumps(water: np.ndarray, cell: float, cover: float, noise: np.ndarray
     return best
 
 
+# A rock slab standing in the water or on the bank (surface map S_SLAB, golfmap.cut_out with `rise`: Vreta hole
+# 15's klippa): the bank grass keeps off the rock but for grass_zones' slab rule (a ragged fringe in over its edge and
+# SLAB_PATCH_COVER patches), and a ragged ring of it grows round the rock in the water, SLAB_RING_M out (0 .. 2x by
+# noise, never under SLAB_RING_MIN_M), so the rock stands in reeds and grass rather than in bare water (Marcus, 2026-10-15).
+S_SLAB = 12
+SLAB_RING_M = 1.2
+SLAB_RING_MIN_M = 0.5      # never narrower: grass right up against the rock all round
+SLAB_RING_NOISE_FEATURE_M = 1.5
+
+
+def _round_rocks(w: np.ndarray, cls: np.ndarray, cell: float, seed: int) -> np.ndarray:
+    slab = cls == S_SLAB
+    if not slab.any():
+        return w
+    from grass_zones import slab_grass
+    reach = np.maximum(SLAB_RING_MIN_M, SLAB_RING_M * (1.0 + smooth_noise(cls.shape, cell, SLAB_RING_NOISE_FEATURE_M, seed + 7)))
+    ring = ~slab & (_dist(slab, cell) < reach)
+    on_rock = slab_grass(cls, cell, seed)
+    w = np.where(ring, np.maximum(w, 1.0), w)
+    return np.where(slab, on_rock.astype(np.float32) if on_rock is not None else 0.0, w).astype(np.float32)
+
+
 def creek_weight(water: np.ndarray, z: np.ndarray, cls: np.ndarray, blocked: np.ndarray | None,
                  other_water: np.ndarray | None, cell: float, cover: float, max_m: float, seed: int,
                  paths: np.ndarray | None = None) -> np.ndarray:
@@ -263,6 +285,7 @@ def creek_weight(water: np.ndarray, z: np.ndarray, cls: np.ndarray, blocked: np.
     w[(_dist(water, cell) > max_m + FADE_M)] = 0.0
     clumps = water_clumps(water, cell, cover, smooth_noise(water.shape, cell, WATER_NOISE_FEATURE_M, seed + 1))
     w = np.where(water, clumps.astype(np.float32), w)
+    w = _round_rocks(w, cls, cell, seed)
     for codes, clear, ramp in CLEARANCES:
         present = np.isin(cls, codes)
         if present.any():

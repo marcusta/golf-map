@@ -303,6 +303,7 @@ def lower(args) -> None:
     course_dir = Path(args.course_dir)
     doc = load_any(Path(args.base) if args.base else course_dir / "arboristdata.dat", key)
     settings = doc["VSProSettings"]
+    apply_vege_settings(doc, species_file)
     settings["vegetationPackages"] = [p for p in settings["vegetationPackages"] if p.get("PackageName") != LOWER_PACKAGE] + [package]
     settings["totalPrefabs"] = sum(len(p.get("VegetationInfoList") or []) for p in settings["vegetationPackages"])
     out_dir = Path(args.out_dir or course_dir)
@@ -341,6 +342,21 @@ def _cap_colour(text: str, cap: float) -> str:
 def _hex_colour(value: str) -> str:
     v = value.lstrip("#")
     return "RGBA(%.3f, %.3f, %.3f, 1.000)" % tuple(int(v[i:i + 2], 16) / 255 for i in (0, 2, 4))
+
+
+def apply_vege_settings(doc: dict, species_file: dict) -> None:
+    """The species file's "vegeSettings" into the file's system settings (what GSPro's Arborist system
+    runs with: PlantDistance, AdditionalTreeMeshDistance, AdditionalBillboardDistance ...). Only keys
+    the file already has; an unknown one stops the run, as a typo would otherwise do nothing."""
+    wanted = {k: v for k, v in species_file.get("vegeSettings", {}).items() if not k.startswith("_")}
+    settings = doc["VSProSettings"]["vegeSettings"]
+    unknown = sorted(set(wanted) - set(settings))
+    if unknown:
+        sys.exit(f"vegeSettings: no such setting in the file: {', '.join(unknown)} (it has {', '.join(settings)})")
+    for key, value in wanted.items():
+        if settings[key] != value:
+            print(f"vegeSettings.{key}: {settings[key]} -> {value}")
+        settings[key] = value
 
 
 def apply_look(item: dict, rules: list[dict], also: str = "") -> None:
@@ -427,10 +443,13 @@ def far_copy(item: dict) -> dict:
 
 
 class FarRule:
-    """Which trees are scenery: billboard only. A tree more than `outside_m` outside the course
-    boundary (the GKD's pOOB), or inside it but more than `play_m` from the playing field (the
-    surface map's rough, semi, fairway, green, tee and bunker), is never seen from close by.
-    Both distances are looked up on 1 m grids over the terrains' square."""
+    """Which trees are scenery: billboard only. A tree that is both more than `outside_m` outside the
+    course boundary (the GKD's pOOB) and more than `play_m` from the playing field (the surface
+    map's rough, semi, fairway, green, tee and bunker, wherever they lie: the driving range and the
+    club's holes outside this layout's boundary count too) is never seen from close by. Every tree
+    inside the boundary is a full model. Both distances are looked up on 1 m grids over the
+    terrains' square. (Until 2026-10-14 either distance alone made a billboard: the range, about
+    100 m outside Vreta's boundary, then stood among billboards a few metres away.)"""
 
     PLAY = ("rough", "semi", "fairway", "green", "tee", "bunker")
 
@@ -468,7 +487,7 @@ class FarRule:
 
     def far(self, x: float, z: float) -> bool:
         c, r = min(max(int(x - self.x0), 0), self.w - 1), min(max(int(z - self.z0), 0), self.h - 1)
-        return bool(self.to_boundary[r, c] > self.outside_m or (self.inside[r, c] and self.to_play[r, c] > self.play_m))
+        return bool(self.to_boundary[r, c] > self.outside_m and self.to_play[r, c] > self.play_m)
 
     def from_play(self, x: float, z: float) -> float:
         """Metres to the playing field; 0 on it."""
@@ -662,6 +681,7 @@ def trees(args) -> None:
     course_dir = Path(args.course_dir)
     doc = load_any(Path(args.base) if args.base else course_dir / "arboristdata.dat", key)
     settings = doc["VSProSettings"]
+    apply_vege_settings(doc, species_file)
     replaced = [p for p in settings["vegetationPackages"] if p.get("PackageName") in (TREES_PACKAGE, *args.drop_package)]
     gone = {item["VegetationItemID"] for p in replaced for item in p.get("VegetationInfoList") or []} | {i["VegetationItemID"] for i in items.values()}
     settings["vegetationPackages"] = [p for p in settings["vegetationPackages"] if p not in replaced] + [package]
@@ -696,7 +716,7 @@ def trees(args) -> None:
         print("left to the course's VSP (\"vsp\" in the species file): " + ", ".join(f"{k} x{v}" for k, v in left.items()))
     if rule:
         far_total = sum(r[3] for r in rows if r[2].endswith(FAR_SUFFIX))
-        print(f"far rule (more than {rule.outside_m:g} m outside the boundary, or inside it more than {rule.play_m:g} m from the play): "
+        print(f"far rule (more than {rule.outside_m:g} m outside the boundary and more than {rule.play_m:g} m from the play): "
               f"{far_total} billboard-only, {total - far_total} full models here")
         trim_file = Path(args.planted).with_name(Path(args.planted).stem.replace("-planted-trees", "") + "-vsp-far.json")
         trim_file.write_text(json.dumps({"format": "golfmap-vsp-far-v1", "comment": "x, z of the trees of the course's own VSP (the \"vsp\" prefabs, inner catalogue) that Arborist now draws, as billboards (the far rule) or as full models of another species (forstRing): Unity must not draw them (golfmap.vsp.trees.trim restore=true, then file=<this file>).", "positions": trim}), encoding="utf-8")

@@ -83,9 +83,17 @@ between deep rough and a semi becomes a thin, dipping band - it reads as a hole 
   area). Where a slab lies in mown rough, a ragged skirt of grass also grows out into the rough
   (`SLAB_SKIRT_M` 0.5 m x 0..2 by noise), so the rock's edge is broken up from both sides. The painted klippor (`rock`) keep their 0.2 m clearance;
 - times a 10 m ramp to 0 at the reach limit (75 m from rough/semi/fairway/green/tee/bunker);
-- **thinner far from play** (`Rules.far_start/far_ramp/far_weight`, `--far-start --far-weight`): from 30 m from
-  play (same six surfaces) the weight falls over 10 m to 0.56. The mask value is the density, so that is a
-  little over half the plants;
+- **thinner far from play** (`Rules.far_start/far_ramp/far_weight`, `--far-start --far-ramp --far-weight`): from 30 m from
+  play (same six surfaces) the weight falls over 10 m to 0.56. The mask value is VSP's density (spawn chance x
+  value/256), so that is a little over half the plants; `far_weight` is also a band level, so the zones carry
+  exactly it. A course can thin nearer as well (`Rules.near_*`, `--near-start --near-ramp --near-weight`), which
+  multiplies with the far rule, so nothing gets thicker; it sets that in `docs/gspro/<course>/vegetation-rules.json`
+  (flags per generator source, passed by Update vegetation and `grass:zones` before any CLI flag). **Vreta: near
+  18 / 4 / 0.6, far 40 / 10 / 0.5** = 0.6 of the tall rough beyond 20 m from play and 0.3 beyond 50 m, for frame
+  time (2026-10-15; before that near 8 / 4 / 0.5 with the code's far rule: 0.5 from 10 m, 0.28 from 40 m, the near
+  rule alone -0.48 M of 3.25 M VSP grass instances by the masks). Only the
+  generated Default mix thins: the far mix, the verge, hand-drawn zones and the creek banks keep their weight (a
+  thinner creek zone would hand the rest of the mask budget to the tall rough under it);
 - **the far mix** (`rough_tall/far`, `Rules.out_start/out_ramp`, `--out-start`): from 40 m from play the ordinary
   mix hands over, across 40-50 m, to the type's `far` variant, written as its own nested bands above the ordinary
   ones (it claims its share of the mask budget first, the ordinary mix keeps the rest, so the two cross-fade and
@@ -112,7 +120,7 @@ between deep rough and a semi becomes a thin, dipping band - it reads as a hole 
   (`zones -- bind <course> rough_tall --variant verge "<item>=<density>" ...`); Vreta: blond green foot 0.7, straw
   blades 0.6, seed tips 0.5, wisps 0.4, tall green 0.3, dry umbels 0.2, brown tufts 0.12, dark seed stems 0.1,
   thistle heads 0.08 (the first mix, without the green foot, read as brown bushes).
-Tune with `--max-distance --spill --band-feather --building-margin --road-margin --path-margin --far-start --far-weight --out-start` (the clearances are constants).
+Tune with `--max-distance --spill --band-feather --building-margin --road-margin --path-margin --far-start --far-ramp --far-weight --near-start --near-ramp --near-weight --out-start` (the clearances are constants).
 History: grass first grew onto paths and tee boxes (not ok), then the margins left bare deep-rough bands
 (1 m path margin + ramp + noise, tee clearance through the rough: not ok either) - keep the borders tight. `ground.probe {x, z}` lists every collider and terrain height under a point, for "what is really here" questions.
 

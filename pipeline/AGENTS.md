@@ -24,7 +24,8 @@ Venv missing (fresh machine): `python -m venv .venv` in `pipeline/`, then `bun r
 Whole-course `vegetation_zone` features (source `tall-grass`) from the Unity surface map
 (`golfmap.surfaces.export`) or, without one, the app's features in OPCD paint order: deep rough +
 Outer_Deep, a little spill into rough, within 75 m of play, clear of tees/fairways/greens/semi/bunkers/
-water/blends, roads (OSM centerlines + `path`) and buildings (`fetch-buildings` survey). Run through
+water/blends, roads (OSM centerlines + `path`) and buildings (`fetch-buildings` survey), thinner far from
+play (`Rules.far_*`, a course's nearer `Rules.near_*` multiplying with it; a course's own flags in `docs/gspro/<course>/vegetation-rules.json`). Run through
 `bun run grass:zones -- <course>` (imports + re-exports zones). Rules and loop:
 `.claude/skills/grass-planting/SKILL.md`; tests `tests/test_grass_zones.py`.
 

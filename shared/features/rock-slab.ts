@@ -21,6 +21,20 @@ export const ROCK_SLAB_MARGIN_RANGE_M = { min: 0, max: 5 } as const;
 export const ROCK_SLAB_TILE_ATTRIBUTE = 'uvM';
 export const DEFAULT_ROCK_SLAB_TILE_M = 4;
 
+/**
+ * A rock that rises out of the ground or the water instead of lying flat (`golfmap.cut_out`'s `rise`,
+ * blender/README.md "Shaping: cut-outs"), flat attributes (the feature API takes scalars only): the slab is
+ * refined and lifted into a rounded klippa whose top stands `riseTopM` over `riseWaterM` (or over the highest
+ * ground on its outline when there is no water), its foot `riseFootM` under the water, and the ground around it
+ * within `riseApronM` is lifted into a shoal/apron that meets the foot; with water, the faces around it that end up
+ * under the water join the lake. Lift only, one height per position, so the seams stay closed. `riseTopM` turns
+ * it on; the rest is optional (`riseNoiseM` lumps, `riseMaxEdgeM` mesh size, `riseSeed`).
+ */
+export const ROCK_SLAB_RISE_ATTRIBUTES = {
+    riseWaterM: 'waterM', riseTopM: 'topM', riseFootM: 'footM', riseApronM: 'apronM',
+    riseNoiseM: 'noiseM', riseMaxEdgeM: 'maxEdgeM', riseSeed: 'seed',
+} as const;
+
 /** The slab's margin, the default when unset. */
 export function rockSlabMarginOf(attributes: object | null | undefined): number {
     const value = (attributes as Record<string, unknown> | null | undefined)?.[ROCK_SLAB_MARGIN_ATTRIBUTE];
@@ -44,6 +58,14 @@ export function rockSlabProblem(attributes: object | null | undefined): string |
     const tile = a[ROCK_SLAB_TILE_ATTRIBUTE];
     if (tile !== undefined && (typeof tile !== 'number' || !Number.isFinite(tile) || tile <= 0)) {
         return `attributes.${ROCK_SLAB_TILE_ATTRIBUTE} must be a number above 0 (metres)`;
+    }
+    for (const key of Object.keys(ROCK_SLAB_RISE_ATTRIBUTES)) {
+        const value = a[key];
+        if (value === undefined) continue;
+        if (typeof value !== 'number' || !Number.isFinite(value)) return `attributes.${key} must be a number`;
+        if (key === 'riseTopM' && (value <= 0 || value > 10)) return 'attributes.riseTopM must be above 0 and up to 10 (metres)';
+        if (['riseFootM', 'riseApronM', 'riseNoiseM'].includes(key) && (value < 0 || value > 10)) return `attributes.${key} must be between 0 and 10 (metres)`;
+        if (key === 'riseMaxEdgeM' && (value < 0.1 || value > 2)) return 'attributes.riseMaxEdgeM must be between 0.1 and 2 (metres)';
     }
     return null;
 }

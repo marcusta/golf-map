@@ -1,7 +1,7 @@
 // The frame rate at the course's judged viewpoints (docs/gspro/<course>/perf-views.json), in a running
 // GSPro with the course loaded. Close Unity and Arborist first (`pwsh unity/ArboristMod/apps.ps1 close`):
 // they take the graphics card.
-//   bun unity/ArboristMod/perf.ts [--course Vreta] [--views <file>] [--view <part of a name>] [--settle 25] [--seconds 5]
+//   bun unity/ArboristMod/perf.ts [--course Vreta] [--views <file>] [--view <part of a name>] [--settle 25] [--seconds 5] [--resolution 3840x2160]
 //       the table: fps (mean) and 1 % low per viewpoint, as built
 //   bun unity/ArboristMod/perf.ts --rank [--rounds 3] [--only <id or group>,...] [--pause 4] [--baseline-every 3] [--cap <fps>]
 //       what costs frame time, ranked, per category (unity/Editor/GolfMap/GolfMapPerfCategories.json, the
@@ -84,7 +84,8 @@ async function restore() {
 }
 async function measure() {
   const f = await run(bridge, "fps", { seconds });
-  return { fps: Number(f.fps), low: Number(f.onePercentLowFps), ms: Number(f.meanMs), resolution: f.resolution, quality: f.quality, raw: f };
+  return { fps: Number(f.fps), low: Number(f.onePercentLowFps), ms: Number(f.meanMs), worstMs: Number(f.worstMs), over: Number(f.framesOver ?? NaN),
+           frames: Number(f.frames), resolution: f.resolution, quality: f.quality, raw: f };
 }
 async function pose(view: { position: number[]; rotation: number[]; eye?: number }) {
   const p: any = { position: view.position, rotation: view.rotation };
@@ -102,6 +103,12 @@ else await table();
 // refresh rate (120 Hz here: a cost that leaves the frame rate at 120 is not measured, only hidden).
 async function table() {
   const out: any[] = [];
+  // --resolution 3840x2160: measure at another resolution (Screen.SetResolution, windowed), put back at the end.
+  const wanted = opt("--resolution")?.split("x").map(Number);
+  const was = wanted ? String((await measure()).resolution).split("x").map(Number) : null;
+  const setResolution = (wh: number[]) => run(bridge, "call", { type: "UnityEngine.Screen", method: "SetResolution", args: [wh[0], wh[1], false] });
+  if (wanted) { await setResolution(wanted); await sleep(3000); }
+  try {
   for (const view of views) {
     const at = await pose(view);
     const built = await measure();
@@ -127,8 +134,13 @@ async function table() {
     }
     out.push(row);
   }
-  console.log("\n" + "viewpoint".padEnd(28) + "fps".padStart(7) + "1% low".padStart(9));
-  for (const r of out) console.log(r.view.padEnd(28) + r.asBuilt.fps.toFixed(1).padStart(7) + r.asBuilt.low.toFixed(1).padStart(9));
+  } finally {
+    if (was) await setResolution(was);
+  }
+  // worst = the slowest frame; > 25 ms = frames under 40 fps (hitches), of all frames in the reading.
+  console.log("\n" + "viewpoint".padEnd(28) + "fps".padStart(7) + "1% low".padStart(9) + "worst ms".padStart(10) + "> 25 ms".padStart(12));
+  for (const r of out) console.log(r.view.padEnd(28) + r.asBuilt.fps.toFixed(1).padStart(7) + r.asBuilt.low.toFixed(1).padStart(9)
+    + r.asBuilt.worstMs.toFixed(1).padStart(10) + (Number.isNaN(r.asBuilt.over) ? "-" : `${r.asBuilt.over} of ${r.asBuilt.frames}`).padStart(12));
   if (opt("--json")) writeFileSync(opt("--json")!, JSON.stringify(out, null, 1));
 }
 

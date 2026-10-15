@@ -993,7 +993,11 @@ export class GsproSyncService {
         }
     }
 
-    /** Vegetation: the whole planting for the inner terrain, and the outer when it already has masks. */
+    /**
+     * Vegetation: the whole planting for the inner terrain; for the outer only its zones file, when
+     * it already has one — the outer terrain's vegetation is Arborist's, never the course's VSP
+     * (OUTER_VEGETATION_IS_ARBORIST, which `plantVegetation` puts in the report).
+     */
     private async updateVegetation(rec: JobRecord, ctx: SyncContext, id: (s: string) => string): Promise<string[]> {
         const report: string[] = [];
         rec.phases.begin(id('inner'), 'generators, masks, Unity, the Arborist file');
@@ -1004,9 +1008,9 @@ export class GsproSyncService {
         if (!await statOrNull(ctx.file(zonesExportFileName(ctx.courseName, 'outer')))) {
             rec.phases.skip(id('outer'), 'the outer terrain has no vegetation zones export to refresh');
         } else {
-            rec.phases.begin(id('outer'), 'generators and masks for the outer terrain');
+            rec.phases.begin(id('outer'), 'the outer zones file (its vegetation is Arborist\'s: nothing into Unity)');
             report.push(...prefixed('outer', (await this.exports.plantVegetation(ctx.courseId, 'outer', plant)).report));
-            rec.phases.end(id('outer'), 'done', 'planted for the outer terrain');
+            rec.phases.end(id('outer'), 'done', 'outer zones file written; nothing planted in Unity (Arborist draws the outer)');
         }
         return report;
     }

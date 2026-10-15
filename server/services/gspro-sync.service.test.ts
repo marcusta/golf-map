@@ -20,7 +20,7 @@ import { PinsService } from './pins.service';
 import { TerrainEditsService } from './terrain-edits.service';
 import { FeatureHistoryService } from './feature-history.service';
 import { MapBuildService, type PipelineRunner } from './map-build.service';
-import { GsproExportService, type ExportRunner } from './gspro-export.service';
+import { GsproExportService, OUTER_VEGETATION_IS_ARBORIST, type ExportRunner } from './gspro-export.service';
 import { ShapingService } from './shaping.service';
 import {
     GsproSyncService, SYNC_RECORD_FILE, SYNC_RECORD_FORMAT,
@@ -760,6 +760,28 @@ test('every Unity push a chain makes runs with save: true, and the report names 
     expect(reports.filter(l => l === saved || l === `inner: ${saved}`).length).toBeGreaterThanOrEqual(4);
     expect(reports.some(l => l.includes('Save the scene in Unity to keep it.'))).toBe(false);
     expect(reports.some(l => l.includes('Save the scene to keep it.'))).toBe(false);
+});
+
+test("the vegetation chain plants the inner terrain; the outer only gets its zones file, nothing into Unity (Arborist draws the outer)", async () => {
+    const t = await setup({ unity: true });
+    await buildSite(t, ['dem.tif', 'dem-edited.tif', 'outer-dem.tif']);
+    await writeFile(path.join(t.exportDir, 'linkan-inner-surfaces.json'), '{}');
+    // An outer zones export from earlier, which is what made the chain plant the outer.
+    await writeFile(path.join(t.exportDir, 'linkan-outer-zones.json'), '{}');
+
+    const started = await t.svc.update(TEST_COURSE_ID, 'vegetation');
+    await t.svc.whenIdle(TEST_COURSE_ID);
+    const job = t.svc.job(started.id);
+    expect(job.error).toBeNull();
+    const pushes = t.editor!.calls.filter(c => c.command !== 'golfmap.course');
+    expect(pushes.map(c => [c.command, c.args.terrain])).toEqual([['golfmap.zones.import', 'inner'], ['golfmap.grass.apply', 'inner']]);
+    // The generators ran once, for the inner planting.
+    expect(t.pipeline.calls.filter(a => path.basename(a[0]!) === 'grass_zones.py')).toHaveLength(1);
+    expect(t.pipeline.calls.filter(a => a[1] === 'zones').map(a => flag(a, '--terrain'))).toEqual(['inner', 'outer']);
+    const outer = job.phases.find(p => p.id === 'vegetation:outer')!;
+    expect(outer.status).toBe('done');
+    expect(outer.detail).toBe('outer zones file written; nothing planted in Unity (Arborist draws the outer)');
+    expect(job.results.flatMap(r => r.report)).toContain(`outer: ${OUTER_VEGETATION_IS_ARBORIST}`);
 });
 
 test('a second update of the same target renders nothing again, and --force does', async () => {

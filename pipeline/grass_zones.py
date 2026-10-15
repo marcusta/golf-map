@@ -37,7 +37,8 @@ forbidden surface (zero within its clearance, full beyond clearance + ramp; tees
 and greens widest) - but only where the deep rough meets that surface itself:
 where mown rough lies between (a metre or two, ROUGH_BUFFER_M), the rough is the
 buffer and the grass grows right up to it; times a ramp towards the reach limit
-and buildings. Paths and roads are not in the field at all: it runs on under
+and buildings; thinner far from play (Rules.far_*: a course's own in
+docs/gspro/<course>/vegetation-rules.json, passed in as flags). Paths and roads are not in the field at all: it runs on under
 them, and their drawn outlines (+ margin) are cut out of the band polygons, so
 the grass edge is the path's edge to the centimetre instead of to a 0.5 m cell
 (cells left bare strips beside a path and grass half across it). On loose ones
@@ -105,12 +106,20 @@ class Rules:
     clearance: float = DEFAULT_NOISE_M + 0.5
     # Far from play the grass is thinner: beyond far_start metres from the nearest rough, semi,
     # fairway, green, tee or bunker the weight falls over far_ramp metres to far_weight (the mask
-    # value is the density, so 0.56 is a little over half the plants; it lands in the 0.55 band).
-    # Nobody walks there, it is seen from a distance, and it is most of the grass the player's
-    # machine draws (Marcus 2026-10-13). far_weight 1 = off.
+    # value is VSP's density, so 0.56 is a little over half the plants; far_weight is also a band
+    # level, so the thinned field is written at exactly that weight). Nobody walks there, it is
+    # seen from a distance, and it is most of the grass the player's machine draws (Marcus
+    # 2026-10-13). far_weight 1 = off.
     far_start: float = 30.0
     far_ramp: float = 10.0
     far_weight: float = 0.56
+    # A course can thin nearer as well (docs/gspro/<course>/vegetation-rules.json, which can also move
+    # the far rule): beyond near_start the weight falls over near_ramp to near_weight, and the two
+    # multiply, so no stretch is ever thicker than the far rule alone makes it (Vreta, 2026-10-15:
+    # 0.6 from 20 m, 0.3 from 50 m). near_weight 1 = off.
+    near_start: float = 0.0
+    near_ramp: float = 0.0
+    near_weight: float = 1.0
     # Further out still, where no ball is played from, the mix itself changes: beyond out_start
     # metres from play the ordinary mix hands over, across out_ramp metres, to the type's
     # FAR_VARIANT (zones of slot <type>/far): few, large, wide cards that read as the same grass
@@ -132,6 +141,14 @@ CLEARANCES = (
     ((11,), 0.2, 1.0),     # rock: klippor and tee-wall faces (stone-painted course mesh)
 )
 BAND_LEVELS = (0.1, 0.25, 0.4, 0.55, 0.7, 0.85, 0.97)   # w >= level; the top band has weight 1
+
+
+def band_levels(rules: Rules, levels=BAND_LEVELS) -> tuple:
+    """`levels` plus the thinning weights (far, near and the two together), so the thinned field is
+    written at exactly those weights (0.5 between the 0.4 and 0.55 levels would be written as 0.4:
+    60 % thinner, not half). The top level stays last: its band has weight 1."""
+    extra = {w for w in (rules.far_weight, rules.near_weight, rules.far_weight * rules.near_weight) if 0.0 < w < levels[-1]}
+    return tuple(sorted({*levels[:-1], *extra})) + (levels[-1],)
 DEFAULT_BAND_FEATHER_M = 0.5   # centred on the band's edge: full a quarter metre inside it
 DEFAULT_BAND_NOISE_M = 0.0     # the field's own edges are ragged; zone noise would open bare patches along them
 DEFAULT_REACH_RAMP_M = 10.0
@@ -318,6 +335,8 @@ def weight_field(cls: np.ndarray, cell: float, blocked: np.ndarray | None, rules
         far, w = w * t, w * (1.0 - t)
     if rules.far_weight < 1.0 and play.any():
         w *= 1.0 - (1.0 - rules.far_weight) * ramp(d_play, rules.far_start, rules.far_ramp)
+    if rules.near_weight < 1.0 and play.any():
+        w *= 1.0 - (1.0 - rules.near_weight) * ramp(d_play, rules.near_start, rules.near_ramp)
     w, far = w.astype(np.float32), far.astype(np.float32)
     return (w, far) if split else w
 
@@ -401,6 +420,7 @@ def tall_grass_from_surfaces(cls: np.ndarray, cell: float, west: float, north: f
         geoms = [g for g in geoms if not g.is_empty]
         return features.rasterize(geoms, out_shape=cls.shape, transform=transform, all_touched=all_touched).astype(bool) if geoms else None
 
+    levels = band_levels(rules, levels)
     paths = [p if isinstance(p, tuple) else (p, None) for p in paths]
     blocked = raster([b.buffer(rules.building_margin, join_style=2) for b in buildings])
     drawn = raster([g for g, _ in paths], all_touched=True)
@@ -604,7 +624,11 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--path-margin", type=float, default=DEFAULT_PATH_MARGIN_M, help="metres kept clear beside the app's path features")
     p.add_argument("--clearance", type=float, help="metres kept from forbidden surfaces and the reach limit (default: noise + 0.5)")
     p.add_argument("--far-start", type=float, default=Rules.far_start, help="metres from play where the grass starts to thin")
-    p.add_argument("--far-weight", type=float, default=Rules.far_weight, help="its weight beyond --far-start + 10 m (1 = no thinning)")
+    p.add_argument("--far-ramp", type=float, default=Rules.far_ramp, help="metres over which it thins, from --far-start")
+    p.add_argument("--far-weight", type=float, default=Rules.far_weight, help="its weight beyond --far-start + --far-ramp (1 = no thinning)")
+    p.add_argument("--near-start", type=float, default=Rules.near_start, help="metres from play where a course's own, nearer thinning starts")
+    p.add_argument("--near-ramp", type=float, default=Rules.near_ramp, help="metres over which it thins, from --near-start")
+    p.add_argument("--near-weight", type=float, default=Rules.near_weight, help="its weight beyond --near-start + --near-ramp, times the far rule's (1 = off)")
     p.add_argument("--out-start", type=float, default=Rules.out_start,
                    help=f"metres from play where the <type>/{FAR_VARIANT} mix takes over (only when the course binds that variant)")
     args = p.parse_args(argv)
@@ -614,7 +638,8 @@ def main(argv: list[str] | None = None) -> int:
     rules = Rules(max_distance=args.max_distance, spill=args.spill,
                   building_margin=args.building_margin, road_margin=args.road_margin, path_margin=args.path_margin,
                   clearance=args.clearance if args.clearance is not None else (DEFAULT_NOISE_M if args.noise is None else args.noise) + 0.5,
-                  far_start=args.far_start, far_weight=args.far_weight, out_start=args.out_start)
+                  far_start=args.far_start, far_ramp=args.far_ramp, far_weight=args.far_weight,
+                  near_start=args.near_start, near_ramp=args.near_ramp, near_weight=args.near_weight, out_start=args.out_start)
     if args.surfaces:
         rules.far_variant = far_variant_bound(Path(args.db), args.course, args.zone_type)
         cls, cell, west, north, doc = load_surfaces_map(Path(args.surfaces), Path(args.sidecar) if args.sidecar else None)
@@ -641,6 +666,10 @@ def main(argv: list[str] | None = None) -> int:
           f"(deep rough {r.habitat_m2:,.0f} m2 + rough spill {r.spill_m2:,.0f} m2; cut: beyond {args.max_distance:g} m "
           f"{r.cut_by_reach_m2:,.0f} m2, buildings {r.cut_by_buildings_m2:,.0f} m2 ({len(buildings)}), "
           f"roads {r.cut_by_roads_m2:,.0f} m2 ({len(roads)} centerlines))")
+    if args.surfaces and rules.far_weight < 1.0:
+        print(f"  thinner far from play: from {rules.far_start:g} m the weight falls over {rules.far_ramp:g} m to {rules.far_weight:g}")
+    if args.surfaces and rules.near_weight < 1.0:
+        print(f"  and nearer: from {rules.near_start:g} m over {rules.near_ramp:g} m to {rules.near_weight:g} (times the far rule's)")
     if r.far_bands:
         print(f"  {r.far_bands[0][1].area:,.0f} m2 beyond {rules.out_start:g} m from play: the thin {args.zone_type}/{FAR_VARIANT} mix "
               f"(hand-over across {rules.out_start:g}-{rules.out_start + rules.out_ramp:g} m)")

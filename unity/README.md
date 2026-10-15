@@ -1249,6 +1249,17 @@ build succeeded, ["Saving what a command changed"](#saving-what-a-command-change
   runs in under the banks and blends. All red vertex colour, normals up, no UVs (the shader samples its waves in
   world XZ). Saved to `<course>/WaterPlanes/<key>_WaterPlane.asset`. On Vreta's `others_49` it gives the same
   21 502 vertices as OPCD's plane, 1 cm higher.
+- **Rocks in the water**: a rock slab (`*_Rock_-_Mesh`, blender/README.md "Shaping: cut-outs", `rise`) that shares a
+  vertex with the lake joins the plane (its triangles flattened in, so the water runs on round its foot and the rock
+  stands through it), and every lake rim vertex within 2.5 m of a slab near the lake is left out of the level
+  (reported `slabs`, `rimLeftOutNearSlabs`): a shore notch drawn round a rock lies down on the lake bed. Vreta's hole
+  15 lake stood 1.5 m low on it (rim 7.66 m at the rock, the rest of the shore from 9.18 m), 2026-10-15.
+- **Hand-set water levels: `<course>/water-levels.json`** (`golfmap-water-levels-v1`, repo copy
+  `docs/gspro/<course>/water-levels.json`): `{"planes": {"<plane>": {"surfaceM": 9.553}}}`. The build gives a named
+  plane the lift that puts its water there, whatever its level comes to, so a lake tuned by hand keeps its water
+  through a rebuild, a new `.blend` and a fresh plane (reported `fixedLevel`); an explicit `liftM` still wins. Tune
+  the plane's Y in the Inspector, then write `level + Y` there. Vreta hole 15_12: 9.553 (Marcus 2026-10-15; the bed's
+  shelf lies at 9.6-9.7 m).
 - **Object**: `<key>_WaterPlane` (e.g. `Spline_others_49_WaterPlane`; another mesh's name without `_-_Mesh`,
   e.g. `Spline_hole_17_12_Bunker_WaterPlane`) under **Waterplanes**, its transform `liftM`
   above the level, as the hand-made plane was raised. A MeshCollider, then OPCD's **Set Default Materials**, which

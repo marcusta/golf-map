@@ -69,11 +69,12 @@ namespace GolfMap.Bridge
             return rows;
         }
 
-        [BridgeCommand("fps", "The frame rate where the camera stands now, measured over `seconds`: frames per second (mean), the mean, median and worst frame time in ms, and the 1 % low. The app's own counter shows the same thing; this one can be read.",
-            args = "seconds=3")]
+        [BridgeCommand("fps", "The frame rate where the camera stands now, measured over `seconds`: frames per second (mean), the mean, median and worst frame time in ms, the 1 % low, and how many frames took longer than overMs (a hitch: under 40 fps at the default 25). The app's own counter shows the same thing; this one can be read.",
+            args = "seconds=3, overMs=25")]
         static System.Collections.IEnumerator Fps(BridgeArgs a)
         {
             float seconds = Mathf.Clamp((float)a.Number("seconds", 3), 0.5f, 60f);
+            float overMs = (float)a.Number("overMs", 25);
             var frames = new List<float>();
             float start = Time.realtimeSinceStartup;
             yield return null;   // the bridge steps a command once per frame
@@ -86,6 +87,7 @@ namespace GolfMap.Bridge
             {
                 { "fps", Math.Round(1000f / mean, 1) }, { "frames", frames.Count }, { "meanMs", Math.Round(mean, 2) }, { "medianMs", Math.Round(sorted[sorted.Count / 2], 2) },
                 { "worstMs", Math.Round(sorted[sorted.Count - 1], 2) }, { "onePercentLowFps", Math.Round(1000f / sorted.Skip(sorted.Count - slow).Average(), 1) },
+                { "overMs", overMs }, { "framesOver", frames.Count(f => f > overMs) },
                 { "vSync", QualitySettings.vSyncCount }, { "targetFrameRate", Application.targetFrameRate }, { "refreshRate", Screen.currentResolution.refreshRate },
                 { "resolution", Screen.width + "x" + Screen.height }, { "quality", QualitySettings.names[QualitySettings.GetQualityLevel()] },
             };

@@ -11,6 +11,10 @@
 // Their order is the zone stack's: a later generator's zones are imported
 // after (above) the earlier ones' and claim the ground first, so a run from
 // one generator re-runs every one after it too.
+//
+// A course can set its own rules: docs/gspro/<course slug>/vegetation-rules.json gives
+// each generator flags of its script (Vreta: the tall rough 0.6 as thick beyond 20 m
+// from play, 0.3 beyond 50 m); the CLI's tuning flags come after them and win.
 import * as path from 'node:path';
 import { readFile } from 'node:fs/promises';
 import type { CourseFeaturesService, GeneratedFeatureCollection } from './course-features.service';
@@ -129,12 +133,56 @@ export interface VegetationDeps {
     run(what: string, args: string[], out: string): Promise<{ report: string[] }>;
 }
 
+/** The course's own generator rules: `docs/gspro/<course slug>/vegetation-rules.json`. */
+export const VEGETATION_RULES_FILE = 'vegetation-rules.json';
+export const VEGETATION_RULES_FORMAT = 'golfmap-vegetation-rules-v1';
+
+/** A course's rules file, read: the flags per generator source, and the file they came from (for the report). */
+export interface CourseVegetationRules {
+    file: string;
+    args: Record<string, string[]>;
+}
+
+/**
+ * The flags a course's rules file gives each generator:
+ * `{"format": "golfmap-vegetation-rules-v1", "generators": {"tall-grass": {"far-start": 8, ...}}}`
+ * -> `{"tall-grass": ["--far-start", "8", ...]}`. Keys are the script's own flag names; keys
+ * starting with `_` are comments. Throws on a source no generator has or a value that is not
+ * a number or string, so a typo does not plant the course with the defaults unnoticed. Pure.
+ */
+export function vegetationRulesArgs(doc: unknown, file: string,
+                                    all: readonly VegetationGenerator[] = VEGETATION_GENERATORS): Record<string, string[]> {
+    const d = doc as { format?: unknown; generators?: unknown } | null;
+    if (!d || d.format !== VEGETATION_RULES_FORMAT || typeof d.generators !== 'object' || d.generators === null) {
+        throw new Error(`${file}: not ${VEGETATION_RULES_FORMAT} (needs "format" and a "generators" object)`);
+    }
+    const out: Record<string, string[]> = {};
+    for (const [source, flags] of Object.entries(d.generators as Record<string, unknown>)) {
+        if (source.startsWith('_')) continue;
+        if (!all.some((g) => g.source === source)) {
+            throw new Error(`${file}: no vegetation generator '${source}' (have: ${all.map((g) => g.source).join(', ')})`);
+        }
+        const args: string[] = [];
+        for (const [name, value] of Object.entries((flags ?? {}) as Record<string, unknown>)) {
+            if (name.startsWith('_')) continue;
+            if (!/^[a-z][a-z0-9-]*$/.test(name) || (typeof value !== 'number' && typeof value !== 'string')) {
+                throw new Error(`${file}: ${source}.${name} must be a flag name with a number or string value`);
+            }
+            args.push(`--${name}`, String(value));
+        }
+        out[source] = args;
+    }
+    return out;
+}
+
 export interface VegetationOptions {
     /** Run this generator and every one after it (default: all). */
     from?: string;
     /** Write the GeoJSON only: nothing replaced, no zone types added. */
     dryRun?: boolean;
-    /** Extra arguments per generator source (the CLI's tuning flags). */
+    /** The course's own rules (its vegetation-rules.json), before `extraArgs`. */
+    courseRules?: CourseVegetationRules | null;
+    /** Extra arguments per generator source (the CLI's tuning flags); after the course's rules, so they win. */
     extraArgs?: Record<string, string[]>;
     /** Where the GeoJSON files go (`<workDir>/<source>.geojson`). */
     workDir: string;
@@ -168,10 +216,12 @@ export async function generateVegetation(deps: VegetationDeps, courseId: string,
             continue;
         }
         for (const note of command.notes ?? []) report.push(`${g.label}: warning: ${note}`);
+        const own = opts.courseRules?.args[g.source] ?? [];
+        if (own.length) report.push(`${g.label}: the course's rules (${opts.courseRules!.file}): ${own.join(' ')}`);
         const out = path.join(opts.workDir, `${g.source}.geojson`);
         const ran = await deps.run(`${g.label} vegetation`, [
             path.join(deps.pipelineDir, g.script), ...(deps.dbPath ? ['--db', deps.dbPath] : []), '--course', courseId, '--out', out,
-            ...command.args, ...(opts.extraArgs?.[g.source] ?? []),
+            ...command.args, ...own, ...(opts.extraArgs?.[g.source] ?? []),
         ], out);
         report.push(...ran.report.filter((l) => !l.includes("'Memory' driver")));
         const collection = JSON.parse(await readFile(out, 'utf8')) as GeneratedFeatureCollection;

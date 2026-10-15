@@ -3,7 +3,7 @@
 Plain shapely geometry in metres; each test states one rule of the module doc.
 """
 
-from shapely.geometry import LineString, Point, box
+from shapely.geometry import LineString, Point, box, shape
 
 import pytest
 
@@ -264,6 +264,32 @@ def test_grass_far_from_play_is_thinner():
     assert 0.56 < w[20 + 35] < 1.0                          # on the ramp
     off = gz.weight_field(cls, 1.0, None, gz.Rules(min_area=1, simplify=0, spill=0, max_distance=150, far_weight=1.0))[20]
     assert off[20 + 60] == pytest.approx(1.0)
+
+
+def test_a_course_can_halve_the_tall_grass_beyond_ten_metres_from_play():
+    """Vreta's rule (vegetation-rules.json: near-start 8, near-ramp 4, near-weight 0.5): whole near play,
+    a ramp centred on 10 m, and beyond it the zones are written at exactly half weight - the mask
+    value is VSP's density, so half the instances (not the 0.4 band, which would be 60 % fewer).
+    It multiplies with the far rule (30 / 10 / 0.56), so beyond 40 m it is 0.28: never thicker than before."""
+    import numpy as np
+    cls = np.full((40, 200), gz.S_DEEP, dtype=np.uint8)
+    cls[:, :20] = gz.S_ROUGH
+    rules = gz.Rules(min_area=1, simplify=0, spill=0, max_distance=150, near_start=8, near_ramp=4, near_weight=0.5)
+    w = gz.weight_field(cls, 1.0, None, rules)[20]
+    assert w[20 + 6] == pytest.approx(1.0)                  # 7 m from the rough: whole
+    assert w[20 + 9] == pytest.approx(0.75, abs=0.02)       # 10 m: half-way down the ramp
+    assert w[20 + 25] == pytest.approx(0.5)                 # 26 m: half
+    assert w[20 + 60] == pytest.approx(0.28)                # 61 m: half of the far rule's 0.56
+
+    r = gz.tall_grass_from_surfaces(cls, 1.0, 0.0, 40.0, [], [], rules)
+    doc = gz.feature_collection(r.area, "rough_tall", "tall-grass", 1.0, 0.5, 0.0, r.bands)
+
+    def weight_at(x):
+        return max(f["properties"]["weight"] for f in doc["features"]
+                   if shape(f["geometry"]).contains(Point(x, 20)))
+    assert weight_at(20 + 5) == 1.0
+    assert weight_at(20 + 25) == 0.5
+    assert weight_at(20 + 100) == 0.28
 
 
 def test_far_from_play_the_far_mix_takes_over_when_the_course_has_one():

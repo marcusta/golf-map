@@ -4,6 +4,38 @@ For an agent with no context. Read `docs/gspro/arborist.md` and `unity/ArboristM
 for the tools; this file is what one session found and left. Nothing is committed. The session was
 stopped early: several things are prepared but not built.
 
+## Update 2026-10-14 (08:45 to 13:30; the current state, supersedes what it contradicts below)
+
+Built and in GSPro: `Vreta_lidar_scene.gspcrse` of 2026-10-14 (after 13:00, the fog below) and
+`arboristdata.dat` of about 12:45 (billboards recalibrated; backups beside it: `arboristdata.2026-10-13-2201.dat`,
+`.2026-10-14-1200.dat`, `.2026-10-14-1245-calibrated.dat`). Nothing committed. Screenshots and numbers:
+`tree-export/arborist-shots/day4/`, `tree-export/perf/` (`rank-4.*`, `fixedcost-sky.json`, `vspcpu.json`,
+`treeshadows.json`, `trial/`, `final-1211-*.json`).
+
+- **Frame rate, measured clean** (GPU log shows only GSPro; noise 0.02-0.17 ms): build of 12:11, Very High
+  1920x1440, vSync off, mean / 1 % low: tee 1 107.1 / 80, 107.9 / 86; hole 6 102.0 / 80, 103.4 / 80; woods
+  109.1 / 83, 108.5 / 85; hole 4 tee 107.8 / 80, 107.8 / 57. The 22:01 file measured 100-107. Target met.
+- **The frame is main-thread CPU bound** (80-90 % busy in every case; a quarter of the pixels changes nothing).
+  Sky with nothing drawn 6.3 ms: Arborist's VSP system (component off) 2.25 ms, the course's 1.1, GSPro itself
+  about 2.5. Tee 1 about 10 ms: Arborist VSP 2.0, course VSP 1.7, shadows 0.6, terrains 0.55, meshes/props
+  0.3-0.5, UI 0.3, post 0.15-0.3. `veg.draw` rows of the ranking see only drawing. Measuring needs no other CPU
+  work on the machine either (a subagent's Python run made baselines drift 1.8 ms).
+- **Done**: `golfmap.vsp.trees.trim restore` idempotent (verified live: 25 154 twice; the old `.trimmed.json`
+  held every tree twice and the 00:29 dump had 22 635 duplicates); far rule = billboard only when far from both
+  boundary and play (range and the club's outer holes were billboard blobs, seen fixed in GSPro); Arborist
+  `vegeSettings.PlantDistance` 250 (-0.6 ms live); the tall rough half as thick from 10 m and 0.28 from 40 m
+  (`vegetation-rules.json` near-*, multiplying the far rule; masks -15 % course-wide); shadows only within 25 m
+  tried and dropped (2-6 fps slower: more items); outer terrain = Arborist only (Update vegetation no longer
+  pushes outer zones to Unity; an earlier run had replaced the DB's tall rough 1 616 -> 30, restored with
+  `grass:zones`, masks byte-identical); billboards recalibrated in Arborist, 3 rounds (most 3-11 %); fog back
+  to 150 / 1000 / 2.0 (Marcus: hides billboard mismatch, a little haze is fine in June).
+- **Not done / open**: Moline oak billboards stay 23 % dark at the brightness cap 3.0 (option: background oaks as
+  `CE_Oak_CE_Large_Full`, 3 %; Marcus's call); hazel is rare and small in the file, judge it with a lineup at a
+  known spot; the web app's Update vegetation / Update N zones not clicked live (needs Marcus's login);
+  `arborist.py lower` for outer zones (nothing to plant today); the `trees` target for the outer terrain probably
+  fails the same way (planter looks only at active systems), not checked; Arborist's mod rebuilt, `reload` not
+  run in a running Arborist since (it loads the new DLLs at start).
+
 ## Update 2026-10-13 (10:00 to 23:00; supersedes what it contradicts below, the last bullets are the latest)
 
 Built and loaded in GSPro: `Vreta_lidar_scene.gspcrse` of 10:33 and `arboristdata.dat` of about 10:40.

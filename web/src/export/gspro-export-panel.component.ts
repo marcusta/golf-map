@@ -1,26 +1,26 @@
-// The GSPro dialog: a STATUS BOARD over the course's GSPro build, one row per
-// target — the thing you changed in the editor (terrain, photo, course shapes,
-// meshes, vegetation, trees, buildings, creeks, course file) — with "last
-// updated / what changed since / Update". One verb per row: Update runs that
-// target's whole chain on the server (both terrains, every file on the way and
-// the push into the open Unity editor), and the header's "Update all stale"
-// does every stale, runnable row in board order. See
-// docs/gspro/export.md "The GSPro status board".
+// The GSPro dialog: one TAB per area of the course's GSPro build (Terrain,
+// Photo, Course, Nature, Buildings, GreenKeeper, Course details), each sized
+// to fit without scrolling. A tab opens with its targets' rows — the thing you
+// changed in the editor, "last updated / what changed since / Update" — and
+// under them that area's own files and settings. Update runs the target's
+// whole chain on the server (both terrains, every file on the way and the push
+// into the open Unity editor); the header's "Update all stale" does every
+// stale, runnable row in target order, and a tab with a stale row carries a
+// dot. See docs/gspro/export.md "The GSPro status board".
 //
-// The files themselves have not gone anywhere: every legacy export button
-// (heightmaps, orthophoto JPEGs, hillshades, trees/buildings/zones/creeks
-// files, the SVG, GreenKeeper's .GKD) lives behind its row's "…" details
-// toggle and still runs through `GsproExportService`, for the times one file
-// is what you want. The export folder stays in the dialog header, since every
-// row writes into it.
+// The single-file export buttons (heightmaps, orthophoto JPEGs, hillshades,
+// trees/buildings/zones/creeks files, the SVG, GreenKeeper's .GKD) still run
+// through `GsproExportService`, for the times one file is what you want. The
+// export folder stays in the dialog header, since every tab writes into it.
 //
 // Two surfaces, one at a time (`view`):
 // - the dialog, over the whole page: folder, the Unity chip and the shaping
-//   worker in its head, the update job with its phases, then the board;
+//   worker in its head, the tabs, and a footer with the update job's phases
+//   and the last single-file export;
 // - the SVG test-variant panel (leave features out, bisect a failing Blender
 //   build), docked at the map's right edge like the import wizards: it picks
 //   features from the map and marks them on it, so it cannot cover it. The
-//   Course shapes row opens it and it leads back.
+//   Course tab opens it and it leads back.
 //
 // The folder is a typed path, not an OS picker: the file is written by the
 // SERVER (which runs the pipeline), and a browser folder chooser would name a
@@ -48,7 +48,7 @@ import { pathSurfaceOf } from '../../../shared/features/path-surface';
 import type { CourseFeature } from '../../../shared/api/course-features.gen';
 import { GKD_KEYWORDS, type GsproCourseMeta } from '../../../shared/gspro-course-meta';
 import { GKD_TEE_TYPES, gkdRating, type GkdTeeType } from '../../../shared/tee-sets';
-import { GSPRO_TARGETS, type GsproTargetId } from '../../../shared/gspro-targets';
+import { GSPRO_TARGETS, gsproTarget, type GsproTargetId } from '../../../shared/gspro-targets';
 import type { GsproTargetStatus } from '../../../shared/api/gspro-sync.gen';
 import { FurnitureService } from '../furniture/furniture.service';
 import { teeFill } from '../furniture/furniture-overlay';
@@ -59,13 +59,13 @@ import { infoTip, infoTipStyles, attachInfoTips } from '../ui/info-tip';
 // view is only what the operator must act on — a missing map, what is stale,
 // where the next file goes.
 const TIP = {
-    board: 'One row per thing you change in the editor. Update runs that row\'s whole chain on the server: both '
-        + 'terrains, every file on the way and the push into the open Unity editor (no editor open is a skipped step, '
-        + 'not a failure). "Changed since" counts the edits made since that row was last updated.',
-    stale: 'Runs every row that is stale and not blocked, in board order.',
+    stale: 'Runs every row that is stale and not blocked, in target order. A row is one thing you change in the editor; '
+        + 'its Update runs that row\'s whole chain on the server: both terrains, every file on the way and the push into the '
+        + 'open Unity editor (no editor open is a skipped step, not a failure). "Changed since" counts the edits made since '
+        + 'that row was last updated. A tab with an out-of-date row carries a dot.',
     unity: 'The open Unity editor whose GolfMap course imports from this course\'s export folder — the one an Update '
         + 'can push into. Hover for every editor that answered.',
-    files: 'The single files behind this row, for when one of them is what you want. Update does all of them, in order.',
+    files: 'The single files behind this tab\'s rows, for when one of them is what you want. Update does all of them, in order.',
     terrains: 'The inner square is the map area the course was built over, its side on a 10 m step; '
         + 'the outer square is the background scenery, centred on it. Every export below renders over one of the two.',
     svg: 'The course\'s drawn features as a layered OPCD SVG over the inner terrain.',
@@ -190,14 +190,27 @@ const MATRIX_HEAD = `
 
 const matrix = (rows: string) => `<div class="gspro-export__matrix">${MATRIX_HEAD}${rows}</div>`;
 
-/** A row's details: its own settings, then the single files behind it. */
+/** A tab's files: its single-file exports under one head. */
 const filesHead = `<div class="gspro-export__head">Files ${infoTip({ text: TIP.files })}</div>`;
 
 /**
- * What each row's "…" opens: everything the old tabbed dialog offered for that
- * target, unchanged in behaviour — the same binds, so the same wiring runs it.
+ * The dialog's tabs, in order: one per area of the build, each with the
+ * targets whose rows open it (none for Course details, which only feeds the
+ * Course file's .GKD).
  */
-const DETAILS: Record<GsproTargetId, string> = {
+const TABS = [
+    { id: 'terrain', label: 'Terrain', targets: ['terrain'] },
+    { id: 'photo', label: 'Photo', targets: ['photo'] },
+    { id: 'course', label: 'Course', targets: ['shapes', 'meshes'] },
+    { id: 'nature', label: 'Nature', targets: ['vegetation', 'trees', 'creeks'] },
+    { id: 'buildings', label: 'Buildings', targets: ['buildings', 'props'] },
+    { id: 'greenkeeper', label: 'GreenKeeper', targets: ['course-file'] },
+    { id: 'details', label: 'Course details', targets: [] },
+] as const satisfies readonly { id: string; label: string; targets: readonly GsproTargetId[] }[];
+type TabId = typeof TABS[number]['id'];
+
+/** What each tab holds under its rows: that area's settings and single files. */
+const PANES: Record<TabId, string> = {
     terrain: `
         <div class="gspro-export__group">
             <div class="gspro-export__head">Terrains ${infoTip({ text: TIP.terrains })}</div>
@@ -260,40 +273,35 @@ const DETAILS: Record<GsproTargetId, string> = {
             ${matrixRow('Cleaned orthophoto', TIP.clean, runBtn('runCleanOrtho', 'clean-ortho'), runBtn('runCleanOuterOrtho', 'clean-outer-ortho'))}
             ${matrixRow('→ Unity meshes', TIP.unityOrtho, runBtn('runUnityOrtho', 'unity-ortho', 'gspro-unity-ortho'))}`)}`,
 
-    shapes: `
+    course: `
         ${filesHead}
         ${matrix(`
             ${matrixRow('Course SVG', TIP.svg, '<button bind="run" type="button" class="gspro-export__run" data-testid="gspro-run-svg"></button>')}
             <div class="gspro-export__mnote">
                 <span bind="svgFileHint" class="hint"></span>
                 <button bind="openSvg" type="button" class="gspro-export__link" data-testid="gspro-open-svg"><span bind="excludeSummary"></span></button>
-            </div>`)}`,
+            </div>`)}
+        <div class="gspro-export__group">
+            <div class="gspro-export__head">Meshes</div>
+            <div bind="meshesHint" class="hint"></div>
+        </div>`,
 
-    meshes: `<div bind="meshesHint" class="hint"></div>`,
-
-    vegetation: `
+    nature: `
         ${filesHead}
-        ${matrix(matrixRow('Vegetation zones', TIP.zones, runBtn('runInnerZones', 'inner-zones'), runBtn('runOuterZones', 'outer-zones')))}`,
-
-    trees: `
-        ${filesHead}
-        ${matrix(matrixRow('Trees', TIP.trees, runBtn('runInnerTrees', 'inner-trees'), runBtn('runOuterTrees', 'outer-trees')))}`,
+        ${matrix(`
+            ${matrixRow('Vegetation zones', TIP.zones, runBtn('runInnerZones', 'inner-zones'), runBtn('runOuterZones', 'outer-zones'))}
+            ${matrixRow('Trees', TIP.trees, runBtn('runInnerTrees', 'inner-trees'), runBtn('runOuterTrees', 'outer-trees'))}
+            ${matrixRow('Creeks', TIP.creeks, runBtn('runCreeks', 'creeks'))}`)}`,
 
     buildings: `
         ${filesHead}
-        ${matrix(matrixRow('Buildings', TIP.buildingsFile, runBtn('runInnerBuildings', 'inner-buildings'), runBtn('runOuterBuildings', 'outer-buildings')))}`,
-
-    props: `
+        ${matrix(matrixRow('Buildings', TIP.buildingsFile, runBtn('runInnerBuildings', 'inner-buildings'), runBtn('runOuterBuildings', 'outer-buildings')))}
         <div class="gspro-export__group">
             <div class="gspro-export__head">Props ${infoTip({ text: TIP.props })}</div>
             <div bind="propsHint" class="hint"></div>
         </div>`,
 
-    creeks: `
-        ${filesHead}
-        ${matrix(matrixRow('Creeks', TIP.creeks, runBtn('runCreeks', 'creeks')))}`,
-
-    'course-file': `
+    greenkeeper: `
         <div class="gspro-export__group">
             <div class="gspro-export__head">GreenKeeper course file (.GKD) ${infoTip({ text: TIP.gkd })}</div>
             <label class="gspro-export__field"><span class="gspro-export__label">GSPro course folder ${infoTip({ text: TIP.courseDir })}</span>
@@ -311,18 +319,20 @@ const DETAILS: Record<GsproTargetId, string> = {
             <div bind="teeHint" class="hint"></div>
             <div bind="ratingsHint" class="hint gspro-export__warn" data-testid="gspro-ratings-hint"></div>
             <button bind="readGkdRatings" type="button" class="gspro-export__small gspro-export__fit" data-testid="gspro-ratings-read">Read the ratings from the .GKD</button>
-        </div>
+        </div>`,
+
+    details: `
         <div class="gspro-export__group gspro-export__meta" data-testid="gspro-meta">
             <div class="gspro-export__head">Course details ${infoTip({ text: TIP.meta })}</div>
             <div bind="metaHint" class="hint gspro-export__warn" data-testid="gspro-meta-hint"></div>
             <button bind="readGkdMeta" type="button" class="gspro-export__link" data-testid="gspro-meta-read">Read the course details from the .GKD</button>
-            <div class="gspro-export__cols">
+            <div class="gspro-export__cols gspro-export__cols3">
                 ${META_TEXT.map(([key, label]) => `<label class="gspro-export__field">${label}
                     <input bind="meta_${key}" type="text" autocomplete="off" data-testid="gspro-meta-${key}" />
                 </label>`).join('')}
             </div>
             <label class="gspro-export__field">Description
-                <textarea bind="meta_description" rows="5" data-testid="gspro-meta-description"></textarea>
+                <textarea bind="meta_description" rows="4" data-testid="gspro-meta-description"></textarea>
             </label>
             <label class="gspro-export__field gspro-export__narrow">Difficulty
                 <input bind="meta_difficulty" type="text" inputmode="decimal" autocomplete="off" />
@@ -334,22 +344,29 @@ const DETAILS: Record<GsproTargetId, string> = {
         </div>`,
 };
 
-/** One board row: the stale marker, the label, the status line, the details toggle and Update. */
-const boardRow = (id: GsproTargetId, label: string, description: string) => `
+/** One target's row: the stale marker, the label, the status line and Update. */
+const boardRow = (id: GsproTargetId) => {
+    const { label, description } = gsproTarget(id);
+    return `
     <div bind="row_${id}" class="gspro-export__brow" data-testid="gspro-row-${id}">
         <div class="gspro-export__bmain">
             <span bind="dot_${id}" class="gspro-export__dot"></span>
             <div class="gspro-export__blabel">${label} ${infoTip({ text: description })}</div>
             <div bind="status_${id}" class="gspro-export__bstatus" data-testid="gspro-status-${id}"></div>
-            <button bind="toggle_${id}" type="button" class="gspro-export__more" data-testid="gspro-details-${id}"
-                aria-label="Files and settings for ${label}" title="Files and settings">…</button>
             <button bind="update_${id}" type="button" class="gspro-export__update gspro-export__primary"
                 data-testid="gspro-update-${id}">Update</button>
         </div>
         <div bind="note_${id}" class="hint gspro-export__note" data-testid="gspro-note-${id}"></div>
         <div bind="manual_${id}" class="hint gspro-export__manual" data-testid="gspro-manual-${id}"></div>
         <div bind="blocked_${id}" class="hint gspro-export__blocked" data-testid="gspro-blocked-${id}"></div>
-        <div bind="details_${id}" class="gspro-export__details hidden" data-testid="gspro-panel-${id}">${DETAILS[id]}</div>
+    </div>`;
+};
+
+/** A tab's pane: its rows, then its files and settings. */
+const pane = (tab: typeof TABS[number]) => `
+    <div bind="pane_${tab.id}" class="gspro-export__pane hidden" role="tabpanel" data-testid="gspro-pane-${tab.id}">
+        ${tab.targets.length ? `<div class="gspro-export__rows">${tab.targets.map(boardRow).join('')}</div>` : ''}
+        ${PANES[tab.id]}
     </div>`;
 
 const tpl = template(`
@@ -372,8 +389,10 @@ const tpl = template(`
                         <label class="gspro-export__field">Folder on this machine
                             <input bind="dir" type="text" spellcheck="false" autocomplete="off" data-testid="gspro-dir" />
                         </label>
-                        <div bind="dirHint" class="hint"></div>
-                        <button bind="reset" type="button" class="gspro-export__link">Use the default folder</button>
+                        <div class="gspro-export__row gspro-export__dir-line">
+                            <div bind="dirHint" class="hint"></div>
+                            <button bind="reset" type="button" class="gspro-export__link">Use the default folder</button>
+                        </div>
                     </div>
                     <div class="gspro-export__top-col gspro-export__top-right">
                         <div class="gspro-export__option">
@@ -385,24 +404,22 @@ const tpl = template(`
                     </div>
                 </div>
 
-                <div bind="syncSection" class="gspro-export__sync" data-testid="gspro-job">
-                    <div bind="syncStatus" class="gspro-export__job" data-testid="gspro-job-status"></div>
-                    <div bind="phasesHost"></div>
-                    <div bind="syncResults" class="gspro-export__results" data-testid="gspro-job-results"></div>
-                    <div bind="syncError" class="gspro-export__fail" data-testid="gspro-job-error"></div>
-                </div>
+                <div bind="tabBar" class="gspro-export__tabs" role="tablist" data-testid="gspro-tabs"></div>
 
-                <div class="gspro-export__body">
-                    <div class="gspro-export__board" data-testid="gspro-board">
-                        <div class="gspro-export__head">What is out of date in GSPro ${infoTip({ text: TIP.board })}</div>
-                        ${GSPRO_TARGETS.map(target => boardRow(target.id, target.label, target.description)).join('')}
-                    </div>
+                <div class="gspro-export__body" data-testid="gspro-board">
+                    ${TABS.map(pane).join('')}
                 </div>
 
                 <div class="gspro-export__footer" data-testid="gspro-status">
+                    <div bind="syncSection" class="gspro-export__sync" data-testid="gspro-job">
+                        <div bind="syncStatus" class="gspro-export__job" data-testid="gspro-job-status"></div>
+                        <div bind="phasesHost"></div>
+                        <div bind="syncResults" class="gspro-export__results" data-testid="gspro-job-results"></div>
+                        <div bind="syncError" class="gspro-export__fail" data-testid="gspro-job-error"></div>
+                    </div>
                     <div bind="idleNote" class="hint">Nothing exported since the dialog opened.</div>
                     <div bind="jobSection" class="gspro-export__section">
-                        <div bind="jobNote" class="gspro-export__job"></div>
+                        <div bind="jobNote" class="gspro-export__job" data-testid="gspro-export-job"></div>
                     </div>
                     <div bind="resultSection" class="gspro-export__section">
                         <div bind="resultPath" class="gspro-export__path"></div>
@@ -497,8 +514,9 @@ export class GsproExportPanelComponent extends Component {
             &.show { display: block; }
 
             /* ── The dialog: header (Unity, worker), folder + Update all
-               stale, the running job, the board (the only part that scrolls),
-               the legacy status footer. ── */
+               stale, the tabs, the active tab's pane (sized to fit; it
+               scrolls only on a short window), and a footer with the update
+               job and the last single-file export. ── */
             & .gspro-export__modal {
                 position: fixed;
                 inset: 0;
@@ -575,26 +593,72 @@ export class GsproExportPanelComponent extends Component {
             & .gspro-export__top-col { display: flex; flex-direction: column; gap: var(--space-2); min-width: 0; }
             & .gspro-export__top-right { align-items: flex-start; justify-content: flex-start; }
 
+            & .gspro-export__dir-line { justify-content: space-between; flex-wrap: wrap; gap: ${s('xs')} ${s('md')}; }
+
+            & .gspro-export__tabs {
+                display: flex;
+                gap: var(--space-1);
+                padding: 0 var(--space-5);
+                border-bottom: 1px solid ${t('color-border-default')};
+                background: ${t('color-surface-sunken')};
+                & > button {
+                    display: inline-flex;
+                    align-items: center;
+                    gap: 6px;
+                    padding: var(--space-3) var(--space-4);
+                    border: none;
+                    border-bottom: 2px solid transparent;
+                    margin-bottom: -1px;
+                    background: none;
+                    color: ${t('color-text-secondary')};
+                    font: inherit;
+                    font-size: 0.82rem;
+                    white-space: nowrap;
+                    cursor: pointer;
+                    &:hover { color: ${t('color-text-primary')}; }
+                    &[aria-selected="true"] {
+                        color: ${t('color-text-primary')};
+                        font-weight: 600;
+                        border-bottom-color: ${t('color-accent-primary')};
+                        background: ${t('color-surface-card')};
+                    }
+                }
+            }
+            /* Out of date: the same marker as the row's. */
+            & .gspro-export__tab-dot {
+                width: 7px;
+                height: 7px;
+                border-radius: 50%;
+                display: none;
+                &.stale { display: inline-block; background: ${t('color-status-caution')}; }
+            }
+
             & .gspro-export__body { flex: 1; min-height: 0; overflow-y: auto; }
-            & .gspro-export__board {
+            & .gspro-export__pane {
+                display: flex;
+                flex-direction: column;
+                gap: var(--space-3);
+                padding: var(--space-4) var(--space-5);
+                &.hidden { display: none; }
+            }
+
+            /* ── The tab's rows: marker, label, status, Update. ── */
+            & .gspro-export__rows {
                 display: flex;
                 flex-direction: column;
                 gap: var(--space-2);
-                padding: var(--space-4) var(--space-5);
+                padding-bottom: var(--space-3);
+                margin-bottom: var(--space-1);
+                border-bottom: 1px solid ${t('color-border-default')};
             }
-
-            /* ── A board row: marker, label, status, "…", Update. ── */
             & .gspro-export__brow {
                 display: flex;
                 flex-direction: column;
                 gap: ${s('xs')};
-                padding-bottom: var(--space-2);
-                border-bottom: 1px solid ${t('color-border-subtle')};
-                &:last-child { border-bottom: none; }
             }
             & .gspro-export__bmain {
                 display: grid;
-                grid-template-columns: 10px minmax(7rem, 11rem) minmax(0, 1fr) auto auto;
+                grid-template-columns: 10px minmax(7rem, 11rem) minmax(0, 1fr) auto;
                 align-items: center;
                 gap: ${s('sm')};
             }
@@ -614,37 +678,14 @@ export class GsproExportPanelComponent extends Component {
                 line-height: 1.4;
                 color: ${t('color-text-secondary')};
             }
-            & .gspro-export__more {
-                ${btn()}
-                padding: 0 ${s('sm')};
-                font-size: 0.85rem;
-                line-height: 1.6;
-                &[aria-expanded="true"] { color: ${t('color-text-primary')}; }
-            }
             & .gspro-export__update { min-width: 6rem; }
             & .gspro-export__note, & .gspro-export__manual, & .gspro-export__blocked { padding-left: calc(10px + ${s('sm')}); }
-            & .gspro-export__details {
-                display: flex;
-                flex-direction: column;
-                gap: var(--space-3);
-                margin: ${s('xs')} 0 var(--space-2) calc(10px + ${s('sm')});
-                padding: var(--space-3);
-                border: 1px solid ${t('color-border-subtle')};
-                border-radius: var(--radius-sm, 4px);
-                background: ${t('color-surface-sunken')};
-                &.hidden { display: none; }
-            }
 
-            /* The update job: one line, its phases, each target's report. */
+            /* The update job, in the footer: one line, its phases, each target's report. */
             & .gspro-export__sync {
                 display: flex;
                 flex-direction: column;
                 gap: var(--space-2);
-                padding: var(--space-3) var(--space-5);
-                border-bottom: 1px solid ${t('color-border-default')};
-                background: ${t('color-surface-sunken')};
-                max-height: 34%;
-                overflow-y: auto;
                 &.hidden { display: none; }
             }
             & .gspro-export__results {
@@ -694,6 +735,7 @@ export class GsproExportPanelComponent extends Component {
 
             /* Settings side by side, each group under its own head. */
             & .gspro-export__cols { display: grid; grid-template-columns: 1fr 1fr; gap: var(--space-3) var(--space-5); }
+            & .gspro-export__cols3 { grid-template-columns: repeat(3, minmax(0, 1fr)); gap: var(--space-2) var(--space-3); }
             & .gspro-export__group { display: flex; flex-direction: column; gap: var(--space-2); min-width: 0; }
             & .gspro-export__narrow { max-width: 10rem; }
             & .gspro-export__fit { align-self: flex-start; flex: none; }
@@ -937,9 +979,9 @@ export class GsproExportPanelComponent extends Component {
             & .gspro-export__bisect-status { font-size: 0.72rem; line-height: 1.4; }
             & .gspro-export__links { display: flex; flex-wrap: wrap; gap: ${s('xs')} ${s('md')}; }
 
-            /* A single-file export button is quiet: a row's details hold
-               several, and the status footer says which one is running. The
-               board's own verb — Update — takes the accent. */
+            /* A single-file export button is quiet: a tab holds several, and
+               the status footer says which one is running. The rows' own
+               verb — Update — takes the accent. */
             & .gspro-export__run {
                 ${btn()}
                 padding: ${s('sm')} ${s('md')};
@@ -968,8 +1010,8 @@ export class GsproExportPanelComponent extends Component {
      * cover it).
      */
     private view = new Signal<'dialog' | 'svg'>('dialog');
-    /** Rows whose "…" details are open; kept while the page lives. */
-    private open = new Signal<ReadonlySet<GsproTargetId>>(new Set());
+    /** The dialog's active tab; kept while the page lives. */
+    private tab = new Signal<TabId>('terrain');
 
     /** The exclusion list's filter (panel-local view state). */
     private filter = new Signal<SvgExclusionFilter>(NO_FILTER);
@@ -1143,19 +1185,21 @@ export class GsproExportPanelComponent extends Component {
                 },
                 onclick: () => this.runUpdate(id),
             };
-            out[`toggle_${id}`] = {
-                'aria-expanded': () => String(this.open.get().has(id)),
-                onclick: () => this.open.update(set => {
-                    const next = new Set(set);
-                    if (!next.delete(id)) next.add(id);
-                    return next;
-                }),
-            };
-            out[`details_${id}`] = {
-                className: () => (this.open.get().has(id) ? 'gspro-export__details' : 'gspro-export__details hidden'),
+        }
+        for (const tab of TABS) {
+            out[`pane_${tab.id}`] = {
+                className: () => (this.tab.get() === tab.id ? 'gspro-export__pane' : 'gspro-export__pane hidden'),
             };
         }
         return out;
+    }
+
+    /** True when one of the tab's rows is out of date (and can be updated). */
+    private tabStale(tab: typeof TABS[number]): boolean {
+        return tab.targets.some(id => {
+            const r = this.row(id);
+            return !!r && r.stale && !r.blocked;
+        });
     }
 
     render(): DocumentFragment {
@@ -1199,7 +1243,7 @@ export class GsproExportPanelComponent extends Component {
                 textContent: () => {
                     const worker = this.sync.status.get()?.worker;
                     if (!worker) return '';
-                    if (!worker.reachable) return this.open.get().has('meshes') ? 'Blender: off' : '';
+                    if (!worker.reachable) return this.tab.get() === 'course' ? 'Blender: off' : '';
                     return worker.state ? `Blender: ${worker.state}` : '';
                 },
                 title: () => {
@@ -1232,7 +1276,8 @@ export class GsproExportPanelComponent extends Component {
             syncError: () => this.sync.error.get(),
             // --- The folder ---
             idleNote: {
-                className: () => (this.svc.job.get() || this.svc.lastPath.get() || this.svc.error.get() ? 'hint hidden' : 'hint'),
+                className: () => (this.svc.job.get() || this.svc.lastPath.get() || this.svc.error.get()
+                    || this.sync.job.get() || this.sync.error.get() ? 'hint hidden' : 'hint'),
             },
             svgFileHintSide: () => svgFileHint(),
             runSide: {
@@ -1712,6 +1757,26 @@ export class GsproExportPanelComponent extends Component {
                 results.append(box);
             });
         }));
+
+        // Tabs: one button per pane, with a dot while one of its rows is out of date.
+        const tabBar = this.ref(frag, 'tabBar');
+        for (const tab of TABS) {
+            const button = document.createElement('button');
+            button.type = 'button';
+            button.setAttribute('role', 'tab');
+            button.dataset.testid = `gspro-tab-${tab.id}`;
+            const dot = document.createElement('span');
+            dot.className = 'gspro-export__tab-dot';
+            button.append(tab.label, dot);
+            button.addEventListener('click', () => this.tab.set(tab.id));
+            this.track(effect(() => button.setAttribute('aria-selected', String(this.tab.get() === tab.id))));
+            this.track(effect(() => {
+                const stale = this.tabStale(tab);
+                dot.classList.toggle('stale', stale);
+                button.title = stale ? `${tab.label}: something here is out of date in GSPro` : '';
+            }));
+            tabBar.appendChild(button);
+        }
 
         // The two halves of the dialog open and close together: the board can
         // be opened from the command bar (GsproSyncService) and the file

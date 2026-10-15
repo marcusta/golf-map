@@ -3600,6 +3600,9 @@ SHAPING_EDGE_FADE_SURFACES = ("gravel", "dirt")   # shape_edgefade.SURFACES
 ROCK_SLAB_TYPE = "rock_slab"
 SHAPING_SLAB_PREFIX = "hall"               # Spline_hall_<feature number in hex>_Rock_-_Mesh
 SHAPING_SLAB_MARGIN_ATTRIBUTE, SHAPING_SLAB_TILE_ATTRIBUTE = "marginM", "uvM"
+# shared/features/rock-slab.ts ROCK_SLAB_RISE_ATTRIBUTES: feature attribute -> the cut-out's `rise` key
+SHAPING_SLAB_RISE_ATTRIBUTES = {"riseWaterM": "waterM", "riseTopM": "topM", "riseFootM": "footM", "riseApronM": "apronM",
+                                "riseNoiseM": "noiseM", "riseMaxEdgeM": "maxEdgeM", "riseSeed": "seed"}
 SHAPING_SLAB_MARGIN_M = 1.5                # the default margin; attribute marginM takes 0..5
 SHAPING_SLAB_MARGIN_MAX_M = 5.0
 SHAPING_SLAB_UV_M = 4.0                    # shape_apply CUT_OUT_UV_M: written only when a slab differs
@@ -3701,6 +3704,14 @@ def _rock_slab_ops(rows: list) -> tuple[list[dict], dict]:
                       + (f", trimmed to keep {SHAPING_SLAB_GAP_M:g} m off the slab before it" if cut else "")}
         if uv != SHAPING_SLAB_UV_M:
             op["uvM"] = uv
+        # A rock rising out of the ground or the water (shared/features/rock-slab.ts `rise`): passed to the cut-out
+        # as is, Blender refines and lifts the slab after the cut (blender/README.md "Shaping: cut-outs").
+        rise = {k: float(attrs[a]) for a, k in SHAPING_SLAB_RISE_ATTRIBUTES.items()
+                if isinstance(attrs.get(a), (int, float)) and not isinstance(attrs.get(a), bool)}
+        if rise.get("topM", 0) > 0:
+            op["rise"] = dict(sorted(rise.items()))
+        elif rise:
+            warnings.append(f"rock slab {name} ({r['id']}): rise* attributes without a riseTopM above 0; left flat")
         ops.append(op)
         polygon = Polygon(ring)
         written.append(polygon if polygon.is_valid else polygon.buffer(0))

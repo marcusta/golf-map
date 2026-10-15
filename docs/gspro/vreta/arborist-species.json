@@ -6,11 +6,28 @@
     "PF Birch"
   ],
   "outerKeep_comment": "Marcus 2026-10-13: the horizon forest need not draw every tree, and less the further out. Bands by distance outside the course boundary [metres or null = beyond, share kept], for the billboard-only trees (arborist.py trees --surfaces). Half of all outer billboards showed no difference in the forest wall from three viewpoints and no measurable frame-rate gain either.",
-  "outerKeep": [[400, 0.8], [1000, 0.6], [null, 0.2]],
-  "billboardBeyondM_comment": "The far rule of arborist.py trees --surfaces: a tree further than this outside the course boundary, or inside it further than this from the playing field (rough, semi, fairway, green, tee, bunker), is a billboard only. Marcus 2026-10-13: 40 m was too aggressive, 80 m.",
+  "outerKeep": [
+    [
+      400,
+      0.8
+    ],
+    [
+      1000,
+      0.6
+    ],
+    [
+      null,
+      0.2
+    ]
+  ],
+  "billboardBeyondM_comment": "The far rule of arborist.py trees --surfaces: a tree both further than outsideOob outside the course boundary and further than fromPlay from the playing field (rough, semi, fairway, green, tee, bunker, wherever they lie: the range and the club's holes outside the layout count) is a billboard only; every tree inside the boundary is a full model (until 2026-10-14 either distance alone made a billboard, which put billboards beside the range tee). Marcus 2026-10-13: 40 m was too aggressive, 80 m.",
   "billboardBeyondM": {
     "outsideOob": 80,
     "fromPlay": 80
+  },
+  "vegeSettings_comment": "Written into the file's VSProSettings.vegeSettings, which GSPro's Arborist system runs with (only keys the file has). PlantDistance (Marcus 2026-10-14): 350 -> 250 m saved 0.6 ms a frame at tee 1 (live in GSPro, main-thread CPU: the system culls fewer cells) with no visible difference from tee 1, the hole 4 tee and hole 6; trees stay full models to PlantDistance + AdditionalTreeMeshDistance (563 m).",
+  "vegeSettings": {
+    "PlantDistance": 250
   },
   "forstRing_comment": "SWITCHED OFF 2026-10-13 (the key is renamed forstRing_off; rename it back to use it): no radius gave a frame-time gain, the birch swap shows, and Marcus finds the Forst oaks better lit in the course's VSP than as Arborist's Oak__ items. The ring rule of arborist.py trees --surfaces (ForstRing; Marcus 2026-10-13): the course's own full-model trees (the 'vsp' prefabs, Forst's CTI oaks and birches, the most expensive thing on the course) stand only on the playing field (rough, semi, fairway, green, tee, bunker; not deep rough) and within playM metres of it. Further out, and still inside the far rule, the same tree at the same position, rotation and height is a full model drawn by Arborist: the species 'replace' names for its prefab (keys are prefab file names or parts of them, the whole name wins, then the longest part; values as in 'trees'). minM widens the ring per prefab (part of a prefab name -> metres): Arborist has no birch but the SpeedTree S7_European_White_Birch, which Marcus accepts only from about 30 m from the play, so the birch ring is max(playM, 30). The oaks become Arborist's Oak__* items, which are the very same Forst meshes (identical first-LOD sizes and triangle counts) under Arborist's DEC shader with one leaf tint (treeSettings, match Oak__: #a0acc4, measured against the Forst oaks in GSPro to within 2 %, lodFactor 1 as the course's items); there is no bare-crowned Oak__, so tall_bare becomes the slimmer Oak__medium. Positions that leave the course's VSP go to data/arborist/<course>-vsp-far.json: Unity golfmap.vsp.trees.trim restore=true, then file=<that>. Remove this key and the behaviour is the plain far rule. Variants built and measured 2026-10-13 (playM 15, 30, 45): docs/gspro/arborist.md.",
   "forstRing_off": {
@@ -243,56 +260,6 @@
     },
     {
       "match": [
-        "S7_European_White_Birch"
-      ],
-      "billboardTint": "#fff5f7",
-      "billboardBrightness": 2.363,
-      "billboardDesat": 0.563,
-      "billboardNormal": 0.3,
-      "billboardCalibrated": true
-    },
-    {
-      "match": [
-        "S7_White_Oak"
-      ],
-      "billboardTint": "#fffafd",
-      "billboardBrightness": 1.75,
-      "billboardDesat": 0.527,
-      "billboardNormal": 0.3,
-      "billboardCalibrated": true
-    },
-    {
-      "match": [
-        "ModdedOak_Moline"
-      ],
-      "billboardTint": "#ffeff1",
-      "billboardBrightness": 3.0,
-      "billboardDesat": 0.712,
-      "billboardNormal": 0.3,
-      "billboardCalibrated": true
-    },
-    {
-      "match": [
-        "ModdedOak2_Moline"
-      ],
-      "billboardTint": "#fff8fa",
-      "billboardBrightness": 3.0,
-      "billboardDesat": 0.698,
-      "billboardNormal": 0.3,
-      "billboardCalibrated": true
-    },
-    {
-      "match": [
-        "CE_Oak_CE_Large_Full"
-      ],
-      "billboardTint": "#fafffe",
-      "billboardBrightness": 2.483,
-      "billboardDesat": 0.746,
-      "billboardNormal": 0.3,
-      "billboardCalibrated": true
-    },
-    {
-      "match": [
         "S7_EuropeanLinden"
       ],
       "billboardTint": "#ecfffc",
@@ -313,166 +280,6 @@
     },
     {
       "match": [
-        "MeadowEnv_02_Poplar"
-      ],
-      "billboardTint": "#f3fffd",
-      "billboardBrightness": 2.356,
-      "billboardDesat": 0.602,
-      "billboardNormal": 0.3,
-      "billboardCalibrated": true
-    },
-    {
-      "match": [
-        "MeadowEnv_03_Poplar"
-      ],
-      "billboardTint": "#f1fffd",
-      "billboardBrightness": 2.084,
-      "billboardDesat": 0.749,
-      "billboardNormal": 0.3,
-      "billboardCalibrated": true
-    },
-    {
-      "match": [
-        "MeadowEnv_05_Poplar"
-      ],
-      "billboardTint": "#f0fffd",
-      "billboardBrightness": 2.032,
-      "billboardDesat": 0.743,
-      "billboardNormal": 0.3,
-      "billboardCalibrated": true
-    },
-    {
-      "match": [
-        "MeadowEnv_06_Poplar"
-      ],
-      "billboardTint": "#f1fffc",
-      "billboardBrightness": 2.413,
-      "billboardDesat": 0.622,
-      "billboardNormal": 0.3,
-      "billboardCalibrated": true
-    },
-    {
-      "match": [
-        "MeadowEnv_07_Poplar"
-      ],
-      "billboardTint": "#f1fffc",
-      "billboardBrightness": 2.472,
-      "billboardDesat": 0.632,
-      "billboardNormal": 0.3,
-      "billboardCalibrated": true
-    },
-    {
-      "match": [
-        "MountainEnv_Forest_pine_01"
-      ],
-      "billboardTint": "#ffecf0",
-      "billboardBrightness": 2.293,
-      "billboardDesat": 0.351,
-      "billboardNormal": 0.3,
-      "billboardCalibrated": true
-    },
-    {
-      "match": [
-        "MountainEnv_Forest_pine_03"
-      ],
-      "billboardTint": "#fff9fb",
-      "billboardBrightness": 1.444,
-      "billboardDesat": 0.356,
-      "billboardNormal": 0.3,
-      "billboardCalibrated": true
-    },
-    {
-      "match": [
-        "MountainEnv_Forest_pine_04"
-      ],
-      "billboardTint": "#ffecf0",
-      "billboardBrightness": 2.293,
-      "billboardDesat": 0.351,
-      "billboardNormal": 0.3,
-      "billboardCalibrated": true
-    },
-    {
-      "match": [
-        "MountainEnv_Forest_pine_05"
-      ],
-      "billboardTint": "#fcffff",
-      "billboardBrightness": 1.109,
-      "billboardDesat": 0.399,
-      "billboardNormal": 0.3,
-      "billboardCalibrated": true
-    },
-    {
-      "match": [
-        "MountainEnv_Forest_pine_06"
-      ],
-      "billboardTint": "#ffecf0",
-      "billboardBrightness": 2.293,
-      "billboardDesat": 0.351,
-      "billboardNormal": 0.3,
-      "billboardCalibrated": true
-    },
-    {
-      "match": [
-        "MountainEnv_Forest_pine_tree_00_B"
-      ],
-      "billboardTint": "#e3fffa",
-      "billboardBrightness": 1.109,
-      "billboardDesat": 0.381,
-      "billboardNormal": 0.3,
-      "billboardCalibrated": true
-    },
-    {
-      "match": [
-        "MountainEnv_Forest_pine_tree_00_C"
-      ],
-      "billboardTint": "#effffe",
-      "billboardBrightness": 1.374,
-      "billboardDesat": 0.344,
-      "billboardNormal": 0.3,
-      "billboardCalibrated": true
-    },
-    {
-      "match": [
-        "NM_Fir_02_Small"
-      ],
-      "billboardTint": "#d6fff8",
-      "billboardBrightness": 1.055,
-      "billboardDesat": 0.617,
-      "billboardNormal": 0.3,
-      "billboardCalibrated": true
-    },
-    {
-      "match": [
-        "NM_Fir_03_Medium"
-      ],
-      "billboardTint": "#d8fff8",
-      "billboardBrightness": 0.998,
-      "billboardDesat": 0.637,
-      "billboardNormal": 0.3,
-      "billboardCalibrated": true
-    },
-    {
-      "match": [
-        "NM_Fir_05_Standalone"
-      ],
-      "billboardTint": "#dffffa",
-      "billboardBrightness": 1.112,
-      "billboardDesat": 0.596,
-      "billboardNormal": 0.3,
-      "billboardCalibrated": true
-    },
-    {
-      "match": [
-        "NM_Fir_07_Forest"
-      ],
-      "billboardTint": "#dcfff9",
-      "billboardBrightness": 1.182,
-      "billboardDesat": 0.537,
-      "billboardNormal": 0.3,
-      "billboardCalibrated": true
-    },
-    {
-      "match": [
         "Forest_Large_beech_tree_04"
       ],
       "tint": "#729182",
@@ -497,36 +304,6 @@
       "saturation": 0.85,
       "smoothness": 0.3,
       "calibrated": true
-    },
-    {
-      "match": [
-        "Forest_Large_beech_tree_03"
-      ],
-      "billboardTint": "#fffdfd",
-      "billboardBrightness": 1.712,
-      "billboardDesat": 0.665,
-      "billboardNormal": 0.3,
-      "billboardCalibrated": true
-    },
-    {
-      "match": [
-        "Forest_Large_beech_tree_04"
-      ],
-      "billboardTint": "#f4fffd",
-      "billboardBrightness": 1.484,
-      "billboardDesat": 0.578,
-      "billboardNormal": 0.3,
-      "billboardCalibrated": true
-    },
-    {
-      "match": [
-        "Forest_Large_beech_tree_05"
-      ],
-      "billboardTint": "#f3fffc",
-      "billboardBrightness": 1.359,
-      "billboardDesat": 0.609,
-      "billboardNormal": 0.3,
-      "billboardCalibrated": true
     },
     {
       "match": [
@@ -536,6 +313,246 @@
       "lodFactor": 1,
       "calibrated": true,
       "note": "2026-10-13: Forst's oaks as Arborist's own items (forstRing). Tint measured in GSPro against the course's CTI Forst oaks from 22 m, June sun: crown mean 80/84/56 against 79/83/57. lodFactor 1 as the course's VSP items of the same meshes. The billboard (beyond the Arborist tree distance) is not calibrated."
+    },
+    {
+      "match": [
+        "S7_European_White_Birch"
+      ],
+      "billboardTint": "#f0fffd",
+      "billboardBrightness": 2.345,
+      "billboardDesat": 0.671,
+      "billboardNormal": 0.3,
+      "billboardCalibrated": true
+    },
+    {
+      "match": [
+        "S7_White_Oak"
+      ],
+      "billboardTint": "#f8feff",
+      "billboardBrightness": 1.724,
+      "billboardDesat": 0.473,
+      "billboardNormal": 0.3,
+      "billboardCalibrated": true
+    },
+    {
+      "match": [
+        "ModdedOak_Moline"
+      ],
+      "billboardTint": "#fff7f8",
+      "billboardBrightness": 3.0,
+      "billboardDesat": 0.626,
+      "billboardNormal": 0.3,
+      "billboardCalibrated": true
+    },
+    {
+      "match": [
+        "ModdedOak2_Moline"
+      ],
+      "billboardTint": "#f8fffe",
+      "billboardBrightness": 3.0,
+      "billboardDesat": 0.638,
+      "billboardNormal": 0.3,
+      "billboardCalibrated": true
+    },
+    {
+      "match": [
+        "CE_Oak_CE_Large_Full"
+      ],
+      "billboardTint": "#f4fffe",
+      "billboardBrightness": 2.169,
+      "billboardDesat": 0.711,
+      "billboardNormal": 0.3,
+      "billboardCalibrated": true
+    },
+    {
+      "match": [
+        "MeadowEnv_02_Poplar"
+      ],
+      "billboardTint": "#e4fffa",
+      "billboardBrightness": 2.365,
+      "billboardDesat": 0.541,
+      "billboardNormal": 0.3,
+      "billboardCalibrated": true
+    },
+    {
+      "match": [
+        "MeadowEnv_03_Poplar"
+      ],
+      "billboardTint": "#e6fffa",
+      "billboardBrightness": 1.941,
+      "billboardDesat": 0.696,
+      "billboardNormal": 0.3,
+      "billboardCalibrated": true
+    },
+    {
+      "match": [
+        "MeadowEnv_05_Poplar"
+      ],
+      "billboardTint": "#e7fffa",
+      "billboardBrightness": 1.924,
+      "billboardDesat": 0.718,
+      "billboardNormal": 0.3,
+      "billboardCalibrated": true
+    },
+    {
+      "match": [
+        "MeadowEnv_06_Poplar"
+      ],
+      "billboardTint": "#e2fff9",
+      "billboardBrightness": 2.482,
+      "billboardDesat": 0.557,
+      "billboardNormal": 0.3,
+      "billboardCalibrated": true
+    },
+    {
+      "match": [
+        "MeadowEnv_07_Poplar"
+      ],
+      "billboardTint": "#e2fff9",
+      "billboardBrightness": 2.501,
+      "billboardDesat": 0.566,
+      "billboardNormal": 0.3,
+      "billboardCalibrated": true
+    },
+    {
+      "match": [
+        "MountainEnv_Forest_pine_01"
+      ],
+      "billboardTint": "#fff2f6",
+      "billboardBrightness": 2.666,
+      "billboardDesat": 0.475,
+      "billboardNormal": 0.3,
+      "billboardCalibrated": true
+    },
+    {
+      "match": [
+        "MountainEnv_Forest_pine_03"
+      ],
+      "billboardTint": "#f9fffe",
+      "billboardBrightness": 1.463,
+      "billboardDesat": 0.426,
+      "billboardNormal": 0.3,
+      "billboardCalibrated": true
+    },
+    {
+      "match": [
+        "MountainEnv_Forest_pine_04"
+      ],
+      "billboardTint": "#ffe2e9",
+      "billboardBrightness": 3.0,
+      "billboardDesat": 0.3,
+      "billboardNormal": 0.3,
+      "billboardCalibrated": true
+    },
+    {
+      "match": [
+        "MountainEnv_Forest_pine_05"
+      ],
+      "billboardTint": "#ecfffc",
+      "billboardBrightness": 1.171,
+      "billboardDesat": 0.429,
+      "billboardNormal": 0.3,
+      "billboardCalibrated": true
+    },
+    {
+      "match": [
+        "MountainEnv_Forest_pine_06"
+      ],
+      "billboardTint": "#ffebef",
+      "billboardBrightness": 2.953,
+      "billboardDesat": 0.326,
+      "billboardNormal": 0.3,
+      "billboardCalibrated": true
+    },
+    {
+      "match": [
+        "MountainEnv_Forest_pine_tree_00_B"
+      ],
+      "billboardTint": "#d4fff7",
+      "billboardBrightness": 1.265,
+      "billboardDesat": 0.451,
+      "billboardNormal": 0.3,
+      "billboardCalibrated": true
+    },
+    {
+      "match": [
+        "MountainEnv_Forest_pine_tree_00_C"
+      ],
+      "billboardTint": "#e4fffc",
+      "billboardBrightness": 1.597,
+      "billboardDesat": 0.554,
+      "billboardNormal": 0.3,
+      "billboardCalibrated": true
+    },
+    {
+      "match": [
+        "NM_Fir_02_Small"
+      ],
+      "billboardTint": "#cbfff5",
+      "billboardBrightness": 0.943,
+      "billboardDesat": 0.592,
+      "billboardNormal": 0.3,
+      "billboardCalibrated": true
+    },
+    {
+      "match": [
+        "NM_Fir_03_Medium"
+      ],
+      "billboardTint": "#cffff5",
+      "billboardBrightness": 0.924,
+      "billboardDesat": 0.583,
+      "billboardNormal": 0.3,
+      "billboardCalibrated": true
+    },
+    {
+      "match": [
+        "NM_Fir_05_Standalone"
+      ],
+      "billboardTint": "#d9fffa",
+      "billboardBrightness": 1.105,
+      "billboardDesat": 0.549,
+      "billboardNormal": 0.3,
+      "billboardCalibrated": true
+    },
+    {
+      "match": [
+        "NM_Fir_07_Forest"
+      ],
+      "billboardTint": "#d3fff6",
+      "billboardBrightness": 1.243,
+      "billboardDesat": 0.506,
+      "billboardNormal": 0.3,
+      "billboardCalibrated": true
+    },
+    {
+      "match": [
+        "Forest_Large_beech_tree_03"
+      ],
+      "billboardTint": "#e3fff9",
+      "billboardBrightness": 1.462,
+      "billboardDesat": 0.541,
+      "billboardNormal": 0.3,
+      "billboardCalibrated": true
+    },
+    {
+      "match": [
+        "Forest_Large_beech_tree_04"
+      ],
+      "billboardTint": "#dbfff8",
+      "billboardBrightness": 1.341,
+      "billboardDesat": 0.555,
+      "billboardNormal": 0.3,
+      "billboardCalibrated": true
+    },
+    {
+      "match": [
+        "Forest_Large_beech_tree_05"
+      ],
+      "billboardTint": "#defff9",
+      "billboardBrightness": 1.346,
+      "billboardDesat": 0.594,
+      "billboardNormal": 0.3,
+      "billboardCalibrated": true
     }
   ],
   "plantSettings": [
