@@ -12,8 +12,8 @@ namespace GolfMap.Editor
 {
     static class GolfMapBridgeCommands
     {
-        [BridgeCommand("golfmap.trees.plant", "The Tree Planter's 'Plant' for one area without its window: re-reads the area's trees file (<prefix>-<terrain>-trees.json, the panel's own setting), replaces that area's imported trees with it (never appends; manual tree edits are applied as in the window; a planting backup is written first) and returns the planter's status text. check=true is the panel's 'Load and check': nothing is planted. Marks the scene dirty; save=true saves it (and the assets it changed) once the plant has succeeded.",
-            args = "terrain=inner|outer, check=false, " + GolfMapSceneSave.Arg)]
+        [BridgeCommand("golfmap.trees.plant", "The Tree Planter's 'Plant' for one area without its window: re-reads the area's trees file (<prefix>-<terrain>-trees.json, the panel's own setting), replaces that area's imported trees with it (never appends; manual tree edits are applied as in the window; a planting backup is written first) and returns the planter's status text. check=true is the panel's 'Load and check': nothing is planted. ignoreAlignment=true/false sets the panel's 'Plant even if misaligned' (kept on the component) before the run. Marks the scene dirty; save=true saves it (and the assets it changed) once the plant has succeeded.",
+            args = "terrain=inner|outer, check=false, ignoreAlignment (omit to keep the panel's), " + GolfMapSceneSave.Arg)]
         static object PlantTrees(BridgeArgs a)
         {
             var terrain = a.String("terrain", "inner");
@@ -21,6 +21,7 @@ namespace GolfMap.Editor
             var host = GolfMapTreePlanter.Host();
             var component = terrain == "outer" ? GolfMapTreePlanter.Outer(host) : host;
             bool check = a.Bool("check", false);
+            if (a.Has("ignoreAlignment")) { component.ignoreAlignment = a.Bool("ignoreAlignment", false); EditorUtility.SetDirty(component); }
             var status = GolfMapTreePlanter.For(component).RunFromBridge(!check);
             // check=true plants nothing, so the bridge's save hook must treat it as the dry run it is.
             return new System.Collections.Generic.Dictionary<string, object>
