@@ -4,6 +4,7 @@
 //
 //   bun run zones -- types <course>                      zone types, their Default VSP item bindings and
 //                                                        each variant's
+//   bun run zones -- copy-types <from course> <to course> every zone type's Default items and variants, by key
 //   bun run zones -- list <course>                       vegetation_zone features (with their variant)
 //   bun run zones -- add <course> <zoneType> --from-feature <id|prefix> [--variant key] [--weight 1] [--feather 2] [--noise 0]
 //                        [--blend replace|mix] [--also 'type[/variant][=weight], ...']
@@ -76,7 +77,7 @@ const dbPath = process.env.DB_PATH ?? path.join(dataDir, 'app.sqlite');
 
 function usage(message?: string): never {
     if (message) console.error(`error: ${message}\n`);
-    console.error('usage: bun run zones -- types|list <course> | add <course> <zoneType> (--from-feature <id> | --from-geojson <file>) [--variant --weight --feather --noise --blend --also --edge-blend --height]\n'
+    console.error('usage: bun run zones -- types|list <course> | copy-types <from> <to> | add <course> <zoneType> (--from-feature <id> | --from-geojson <file>) [--variant --weight --feather --noise --blend --also --edge-blend --height]\n'
         + '       | set <course> <zoneId> [--variant --weight --feather --noise --blend --also --edge-blend --height] | remove <course> <zoneId> | update <course> <zoneId>...\n'
         + '       | bind <course> <zoneType> [--variant <key> [--name <label>]] (--palette <grass-palette.json> | <item>[=maxDensity]...)\n'
         + '       | creeks <course> | creek <course> <creekId> --palette <default|variant|none> [--cover 0-1] [--max m] [--wet m]');
@@ -210,6 +211,20 @@ try {
         for (const t of await zoneTypes.listByCourse(c.id)) {
             console.log(`${t.key} (${t.name}) Default: ${itemList(t.items)}`);
             for (const v of t.variants) console.log(`  ${t.key}/${v.key} (${v.name}): ${itemList(v.items)}`);
+        }
+    } else if (command === 'copy-types') {
+        // Every zone type's Default items and variants from another course, by key (a new course seeded from a
+        // finished one); types the source lacks are left alone, types this course lacks are created on the
+        // source's texture/channel.
+        if (!arg) usage('copy-types needs the course to copy to');
+        const to = await course(arg);
+        const target = await zoneTypes.listByCourse(to.id);
+        for (const t of await zoneTypes.listByCourse(c.id)) {
+            const mine = target.find((x) => x.key === t.key);
+            const patch = { name: t.name, color: t.color, items: t.items, variants: t.variants };
+            if (mine) await zoneTypes.update(mine.id, patch);
+            else await zoneTypes.create({ courseId: to.id, key: t.key, textureIndex: t.textureIndex, channel: t.channel, ...patch });
+            console.log(`${t.key}: ${mine ? 'updated' : 'created'}, Default ${t.items.length} item(s), ${t.variants.length} variant(s)`);
         }
     } else if (command === 'list') {
         const zones = (await features.listByCourse(c.id)).filter((f) => f.type === 'vegetation_zone');

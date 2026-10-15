@@ -39,6 +39,16 @@ namespace GolfMap.Editor
             f.SetValue(null, value);
         }
 
+        // The collider switches are in the 2024 builder only: the 2025-12 one (Omberg's base project) has no such
+        // fields and decides itself in DisableTerrains. Returns whether this builder took the value.
+        static bool SetIfPresent(Type type, string field, object value)
+        {
+            var f = type.GetField(field, BindingFlags.Static | BindingFlags.Public | BindingFlags.NonPublic);
+            if (f == null) return false;
+            f.SetValue(null, value);
+            return true;
+        }
+
         static string CoursesDir()
         {
             var saved = Resources.Load("OPCDThemes/Store/BuildCourseSaveLocation");
@@ -94,10 +104,10 @@ namespace GolfMap.Editor
             if (!Directory.Exists(dir)) throw new BridgeError("No courses folder at " + dir + ".");
 
             WriteStatus(statusFile, true, begun, "preparing", previous);
-            Set(builder, "TerrainColDisable", !a.Bool("terrainCollider", false));
-            Set(builder, "GrassesColDisable", !a.Bool("grassesCollider", false));
-            Set(builder, "FoliageColDisable", !a.Bool("foliageCollider", false));
-            Set(builder, "OuterColDisable", !a.Bool("outerCollider", false));
+            bool colliderSwitches = SetIfPresent(builder, "TerrainColDisable", !a.Bool("terrainCollider", false));
+            colliderSwitches &= SetIfPresent(builder, "GrassesColDisable", !a.Bool("grassesCollider", false));
+            colliderSwitches &= SetIfPresent(builder, "FoliageColDisable", !a.Bool("foliageCollider", false));
+            colliderSwitches &= SetIfPresent(builder, "OuterColDisable", !a.Bool("outerCollider", false));
             Set(builder, "MyScene", asset);
             Set(builder, "gspdir", dir);
             var started = DateTime.Now;
@@ -131,6 +141,7 @@ namespace GolfMap.Editor
                 { "file", file }, { "megabytes", Math.Round(info.Length / 1048576.0, 1) }, { "written", info.LastWriteTime.ToString("s") },
                 { "seconds", Math.Round((DateTime.Now - started).TotalSeconds) }, { "scene", scene.path }, { "sceneDirtyAfter", SceneManager.GetActiveScene().isDirty },
             };
+            if (!colliderSwitches) result["colliderSwitches"] = "not in this BuildCourseDLL: its DisableTerrains decides the terrain colliders";
             if (statusFile != null) result["statusFile"] = statusFile;
             WriteStatus(statusFile, false, begun, "done", result);
             return result;
