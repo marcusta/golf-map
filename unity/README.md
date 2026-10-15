@@ -1439,7 +1439,9 @@ the stone in).
   lidar knoll, placed as `boulders` (`docs/gspro/vreta/stone-walls.gen.py` `outcrop_rocks`). The pack's cliff pieces are
   one-sided facades, hollow from behind: `golfmap.props.measure` reports `face.oneSided` (~0.8 for them, ~0.05 closed).
 - A boulder with `pose` (`dy` over the ground under its pivot, `euler`, `scale`) is placed exactly so: that is how stones
-  moved by hand in Unity are kept (capture them into the generator before any rebuild).
+  moved by hand in Unity are kept (capture them into the generator before any rebuild). `golfmap.walls.capture
+  [only=<id prefixes>] [all=true]` lists the boulders whose transform differs from where the spec puts them, with
+  the pose to paste; an empty list after regenerating means the spec reproduces the scene.
 - A stone may carry `tint`, `materialFloats` and `materialColors`: drawn with course copies of its materials under
   `<course>/Walls/Materials/` (e.g. less moss on the grass-top rocks: `_Snow_Amount`, `_SnowMaxAngle`).
 - Colliders: every stone collider gets the spec's `physicMaterial` (`GSPstone`); GSPro reads bounce and roll off the

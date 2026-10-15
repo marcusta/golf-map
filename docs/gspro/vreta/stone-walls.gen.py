@@ -249,7 +249,7 @@ OUTCROP_MATT = {"_SmoothnessPower": 0.35, "_MetallicPower": 0.0}
 # (their material's _Color is 0.68 against the plain 0.81).
 OUTCROP_MOSS = {"tint": [0.68, 0.69, 0.73], "materialFloats": {"_Snow_Amount": 1.0, "_SnowMaxAngle": 40},
                 "materialColors": {"_SnowAlbedoColor": [0.6, 0.63, 0.5, 1]}}
-# Klippa A's rocks as Marcus moved and turned them in Unity (2026-09-28): e/n of the pivot, dy = pivot over the ground
+# Klippa A's rocks as Marcus moved and turned them in Unity (2026-09-28; top-03 and top-05 turned again 2026-10-15): e/n of the pivot, dy = pivot over the ground
 # under it (course mesh), Euler rotation, local scale. They override the generated spots.
 H4_POSES = {
     "h4-klippa-a-face-01": {"e": 529577.080, "n": 6488108.680, "dy": -1.632, "euler": [0, 158.3, 0], "scale": [2.6024, 2.6024, 2.6024]},
@@ -262,9 +262,9 @@ H4_POSES = {
     "h4-klippa-a-face-08": {"e": 529589.054, "n": 6488089.770, "dy": -1.291, "euler": [0, 113.3, 0], "scale": [2.2206, 2.2206, 2.2206]},
     "h4-klippa-a-top-01": {"e": 529567.350, "n": 6488106.530, "dy": -1.075, "euler": [0, 148.8, 0], "scale": [2.0835, 2.0835, 2.0835]},
     "h4-klippa-a-top-02": {"e": 529567.160, "n": 6488110.190, "dy": -1.125, "euler": [0, 161.1, 0], "scale": [2.1718, 2.1718, 2.1718]},
-    "h4-klippa-a-top-03": {"e": 529573.680, "n": 6488104.680, "dy": -2.411, "euler": [0, 138, 0], "scale": [2.7973, 2.7973, 2.7973]},
+    "h4-klippa-a-top-03": {"e": 529573.680, "n": 6488104.680, "dy": -2.411, "euler": [0, 300, 0], "scale": [2.7973, 2.7973, 2.7973]},
     "h4-klippa-a-top-04": {"e": 529572.470, "n": 6488109.950, "dy": -1.594, "euler": [0, 147.7, 0], "scale": [3.4061, 3.4061, 3.4061]},
-    "h4-klippa-a-top-05": {"e": 529579.850, "n": 6488095.760, "dy": -1.269, "euler": [0, 124.2, 0], "scale": [1.8577, 1.8577, 1.8577]},
+    "h4-klippa-a-top-05": {"e": 529579.850, "n": 6488095.760, "dy": -1.269, "euler": [0, 224.2, 0], "scale": [1.8577, 1.8577, 1.8577]},
     "h4-klippa-a-top-06": {"e": 529584.560, "n": 6488093.230, "dy": -2.016, "euler": [0, 164.3, 0], "scale": [2.427, 2.427, 2.427]},
 }
 OUTCROP_FACE = ["Rock_01", "Rock_03", "Rock_05_cut", "Rock_03", "Rock_01_cut"]
@@ -336,6 +336,22 @@ H4_TOP_EXTRA = [
     {"id": "h4-klippa-a-top-09", "rock": "Rock_01", "e": 529578.20, "n": 6488099.97, "yawDeg": 160, "lengthM": 3.8, "topM": 0.6},
 ]
 
+# The stone field's stones Marcus moved in Unity (2026-10-15, read with golfmap.walls.capture): e/n of the pivot,
+# dy = pivot over the ground under it, Euler rotation, local scale. They override the photo's spots above.
+H4_STONE_POSES = {
+    "h4-stone-01": {"e": 529586.220, "n": 6488077.760, "dy": 0.351, "euler": [0, 270, 0], "scale": [2.6797, 2.6797, 2.6797]},
+    "h4-stone-02": {"e": 529590.630, "n": 6488075.750, "dy": 0.060, "euler": [0, 47, 0], "scale": [2.1797, 2.1797, 2.1797]},
+    "h4-stone-03": {"e": 529590.110, "n": 6488062.170, "dy": 0.183, "euler": [0, 274, 0], "scale": [1.6773, 1.6773, 1.6773]},
+    "h4-stone-04": {"e": 529593.330, "n": 6488063.020, "dy": 0.326, "euler": [0, 321, 0], "scale": [1.9488, 1.9488, 1.9488]},
+    "h4-stone-05": {"e": 529588.640, "n": 6488081.536, "dy": 0.196, "euler": [0, 98, 0], "scale": [2.187, 2.187, 2.187]},
+    "h4-stone-06": {"e": 529590.243, "n": 6488083.042, "dy": -0.125, "euler": [0, 235, 0], "scale": [0.6884, 0.6884, 0.6884]},
+    "h4-stone-07": {"e": 529589.880, "n": 6488081.010, "dy": -0.241, "euler": [0, 102, 0], "scale": [0.8663, 0.8663, 0.8663]},
+    "h4-stone-12": {"e": 529595.716, "n": 6488068.235, "dy": -0.131, "euler": [0, 67, 0], "scale": [0.5731, 0.5731, 0.5731]},
+    "h4-stone-14": {"e": 529594.980, "n": 6488069.940, "dy": -0.028, "euler": [0, 341, 0], "scale": [0.4687, 0.4687, 0.4687]},
+    "h4-stone-15": {"e": 529588.850, "n": 6488079.150, "dy": 0.103, "euler": [0, 28, 0], "scale": [0.5515, 0.5515, 0.5515]},
+    "h4-stone-16": {"e": 529592.430, "n": 6488072.870, "dy": -0.108, "euler": [0, 165, 0], "scale": [0.3472, 0.3472, 0.3472]},
+}
+
 
 def h4_placed():
     """Klippa A's extra top rocks and the stone field below it, placed whole."""
@@ -353,33 +369,18 @@ def h4_placed():
             entry.update({"asset": rounded[j % len(rounded)], "topM": round(size * 0.55, 2)})
         else:
             entry.update({"prefab": NM + "Rocks/Prefabs/prefab_%s.prefab" % angular[j % len(angular)], "tint": NM_TINT, "topM": round(size * 0.45, 2)})
+        pose = H4_STONE_POSES.get(entry["id"])
+        if pose:   # set by hand in Unity
+            entry.update(e=pose["e"], n=pose["n"], pose={"dy": pose["dy"], "euler": pose["euler"], "scale": pose["scale"]},
+                         note="set by hand in Unity 2026-10-15")
         out.append(entry)
     return out
 
 
 # centre: a point on the plateau the rays start from (the tee polygon's centroid in golf-map).
 # fromDeg/toDeg: the arc of the bank that is walled, clockwise, read off the 2025 ortho.
-# Pond-side klippa marked by Marcus, 2026-09-27. Screenshot registered to the
-# 2025 ortho (NCC 0.969, 0.144 m/screenshot pixel); west face traced from lidar.
-POND_KLIPPA = [
-    (530077.92, 6487323.55), (530077.78, 6487327.87), (530078.93, 6487332.62),
-    (530080.37, 6487336.66), (530081.09, 6487341.41), (530083.54, 6487345.01),
-    (530087.42, 6487347.17), (530090.16, 6487348.03), (530094.19, 6487346.45),
-    (530098.80, 6487348.61), (530104.42, 6487351.92), (530109.02, 6487353.22),
-    (530111.18, 6487352.64), (530112.77, 6487350.62), (530113.20, 6487347.31),
-    (530111.47, 6487343.71), (530109.02, 6487339.97), (530107.30, 6487334.50),
-    (530105.14, 6487330.46), (530103.41, 6487327.87), (530099.38, 6487325.71),
-    (530096.78, 6487323.12), (530093.33, 6487321.54), (530089.30, 6487321.39),
-    (530084.54, 6487322.26), (530081.09, 6487323.12), (530077.92, 6487323.55),
-]
-PLACED += [
-    {"id": "pond-klippa-slab-1", "asset": "klippa_slab_1", "e": 530090.0, "n": 6487332.0,
-     "yawDeg": 55, "lengthM": 7.0, "topM": 0.25},
-    {"id": "pond-klippa-slab-2", "asset": "klippa_slab_2", "e": 530095.0, "n": 6487338.0,
-     "yawDeg": 55, "lengthM": 5.5, "topM": 0.2},
-    {"id": "pond-klippa-slab-3", "asset": "klippa_slab_3", "e": 530098.0, "n": 6487328.5,
-     "yawDeg": 60, "lengthM": 4.0, "topM": 0.2},
-]
+# The pond-side klippa (Marcus, 2026-09-27) was three klippa_slab props here and a cliff wall below; since
+# 2026-10-15 it is a drawn rock slab (berghäll) cut out of the course meshes, like hole 12's (workflows.md 7).
 
 # Klippor standing alone west of the knoll with the rock slabs hall_194/195 (Marcus, 2026-10-09: "do them all as
 # klippor"). Grey rounded rocks with shadows in both the 2023 and 2025 ortho; the lidar ground model has filtered
@@ -483,17 +484,6 @@ PLACED += [{"id": "h13-ivy-boulder", "prefab": NM + "Rocks/Prefabs/prefab_Rock_0
             "pose": {"dy": -5.190, "euler": [0, 135, 0], "scale": [5.9415, 5.9415, 5.9415]}}]
 
 WALLS = [
-    {"id": "pond-klippa", "style": "cliff", "faceFromDeg": 220, "faceToDeg": 350,
-     "faceDeg": 65, "jitterDeg": 5, "roundTopM": 6.0, "paintInsetM": 1.8, "placeStones": False,
-     # Ground reshaping off (Marcus, 2026-09-29): the klippa stays the vanilla Blender-shaped mesh until the
-     # Blender shaping tools take it on; the settings above are kept for then.
-     "ground": False,
-     "grassPatches": [[530096.5, 6487342.5, 2.8, 3.2], [530103.5, 6487329.5, 2.1, 2.6],
-                      [530090.0, 6487326.5, 2.5, 1.8], [530085.5, 6487337.0, 2.0, 2.6],
-                      [530101.5, 6487336.0, 2.8, 2.0], [530108.0, 6487347.5, 1.8, 2.0]],
-     "outline": POND_KLIPPA,
-     "note": "Marcus's marked pond-side rock, 2026-09-27: exposed granite inside the traced 2025 ortho outline; "
-             "west-facing bank towards the fairway and pond, 2.2-5.7 m high in the edited lidar DEM."},
     {"id": "h13-front-tee", "centre": (529933.2, 6487506.9), "fromDeg": 252, "toDeg": 90,
      "note": "Hole 13 front tee: the whole downhill side, from the path (W) round the north to the NE; 1-2.5 m. "
              "Photo c219a56f shows three courses on the NE."},
@@ -662,8 +652,7 @@ def main():
         walls.append(entry)
     spec = {"format": "golfmap-walls-v1", "source": "docs/gspro/vreta/stone-walls.gen.py", "stonesFolder": STONES_FOLDER,
             "physicMaterial": PHYSIC_MATERIAL, "stoneSets": STONE_SETS, "defaults": DEFAULTS, "styles": STYLES, "walls": walls, "boulders": PLACED + h4_placed() + outcrops,
-            "placedColors": {key: [0.70, 0.75, 0.61] for key in
-                             ["pond-klippa", "pond-klippa-slab-1", "pond-klippa-slab-2", "pond-klippa-slab-3"]}}
+            "placedColors": {}}
     outs = [(os.path.join(HERE, "stone-walls.json"), spec), (os.path.join(HERE, "wall-stones.json"), stones_spec())]
     if a.out:
         outs.append((os.path.join(a.out, "stone-walls.json"), spec))

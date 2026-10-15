@@ -581,6 +581,83 @@ namespace GolfMap.Editor
             public float along, bankHeight, stoneHeight;
         }
 
+        // Where golfmap.walls.build puts a single boulder: a pose as captured (pivot dy over the ground under it, its
+        // rotation and local scale), else its top topM over the highest ground under any of its vertices.
+        static Placement BoulderPlacement(Boulder bd, out float groundMin, out float groundMax)
+        {
+            var st = bd.stone;
+            groundMin = float.MaxValue; groundMax = float.MinValue;
+            if (bd.hasPose)
+            {
+                var g0 = Ground(bd.at.x, bd.at.y);
+                if (g0 == null) throw new InvalidOperationException("Boulder " + bd.id + ": nothing to stand on.");
+                groundMin = groundMax = g0.Value;
+                return new Placement { stone = st, position = new Vector3(bd.at.x, g0.Value + bd.poseDy, bd.at.y), rotation = Quaternion.Euler(bd.poseEuler), scale = bd.poseScale, absoluteScale = true };
+            }
+            var scale = Vector3.one * (bd.lengthM / st.longM);
+            var rot = Quaternion.Euler(0f, bd.yawDeg + (st.longAlongZ ? 0f : -90f), 0f);
+            float ymax = float.MinValue;
+            foreach (var v in st.verts)
+            {
+                var p = rot * Vector3.Scale(v, scale);
+                ymax = Mathf.Max(ymax, p.y);
+                var g = Ground(bd.at.x + p.x, bd.at.y + p.z);
+                if (g == null) continue;
+                groundMax = Mathf.Max(groundMax, g.Value);
+                groundMin = Mathf.Min(groundMin, g.Value);
+            }
+            if (groundMax == float.MinValue) throw new InvalidOperationException("Boulder " + bd.id + ": nothing to stand on.");
+            return new Placement { stone = st, position = new Vector3(bd.at.x, groundMax + bd.topM - ymax, bd.at.y), rotation = rot, scale = scale };
+        }
+
+        [BridgeCommand("golfmap.walls.capture", "Changes nothing in the scene: the single boulders under 'GolfMap Walls' that were moved, turned or scaled by hand since golfmap.walls.build placed them, as the `pose` the generator needs to keep them (golfmap.walls.build, and every mesh refresh that rebuilds the boulders on changed ground, puts a boulder back where the spec says): e/n of the pivot (EPSG:3006), dy = pivot over the ground under it, Euler rotation, local scale; with how far each moved (m) and turned (deg). Paste them into docs/gspro/<course>/stone-walls.gen.py (a boulder's \"pose\", or the course's poses dict) and regenerate. Wall course stones have no identity and are not captured.",
+            args = "only (boulder ids or id prefixes, comma-separated; default all), all=false (list every boulder, not only the moved ones)")]
+        static object CaptureCommand(BridgeArgs a)
+        {
+            var only = a.Strings("only").SelectMany(s => s.Split(',')).Select(s => s.Trim()).Where(s => s.Length > 0).ToList();
+            bool all = a.Bool("all", false);
+            var course = GolfMapCourses.Require();
+            var courseFolder = GolfMapCourses.Folder(course);
+            var file = courseFolder + SpecFile;
+            if (!File.Exists(file)) throw new InvalidOperationException("No walls spec at " + file + ".");
+            double e0, n0; Vector3 origin;
+            GolfMapProps.Frame(course, out e0, out n0, out origin);
+            Dictionary<string, List<Stone>> stones; List<Wall> walls; List<Boulder> boulders;
+            Load(courseFolder, file, e0, n0, origin, out stones, out walls, out boulders);
+            var root = FindRoot();
+            if (root == null) throw new InvalidOperationException("No '" + RootName + "' in the scene.");
+            Physics.SyncTransforms();
+            var rows = new List<object>();
+            int checkedCount = 0;
+            foreach (var bd in boulders)
+            {
+                if (only.Count > 0 && !only.Any(o => bd.id.StartsWith(o, StringComparison.Ordinal))) continue;
+                var group = root.transform.Find(bd.id);
+                if (group == null || group.childCount == 0) continue;
+                var t = group.GetChild(0);
+                checkedCount++;
+                float gMin, gMax;
+                var want = BoulderPlacement(bd, out gMin, out gMax);
+                var wantScale = want.absoluteScale ? want.scale : Vector3.Scale(bd.stone.prefab.transform.localScale, want.scale);
+                float moved = Vector3.Distance(t.position, want.position);
+                float turned = Quaternion.Angle(t.rotation, want.rotation);
+                float scaled = Mathf.Abs(t.localScale.x / Mathf.Max(1e-6f, wantScale.x) - 1f);
+                bool hand = moved > 0.02f || turned > 0.5f || scaled > 0.005f;
+                if (!hand && !all) continue;
+                var g = Ground(t.position.x, t.position.z);
+                var eu = t.rotation.eulerAngles;
+                Func<float, double> r1 = v => Math.Round(v, 1);
+                rows.Add(new Dictionary<string, object> {
+                    { "id", bd.id }, { "model", bd.stone.name }, { "hand", hand }, { "hadPose", bd.hasPose },
+                    { "movedM", Math.Round(moved, 3) }, { "turnedDeg", Math.Round(turned, 1) }, { "scaledPct", Math.Round(scaled * 100, 1) },
+                    { "e", Math.Round(t.position.x - origin.x + e0, 3) }, { "n", Math.Round(t.position.z - origin.z + n0, 3) },
+                    { "dy", g == null ? (object)null : Math.Round(t.position.y - g.Value, 3) },
+                    { "euler", new[] { r1(eu.x), r1(eu.y), r1(eu.z) } },
+                    { "scale", new[] { Math.Round(t.localScale.x, 4), Math.Round(t.localScale.y, 4), Math.Round(t.localScale.z, 4) } } });
+            }
+            return new Dictionary<string, object> { { "spec", file }, { "checked", checkedCount }, { "boulders", rows } };
+        }
+
         public static Dictionary<string, object> Build(string file, HashSet<string> only, bool dryRun, int variant, string profile, bool runPaint = true)
         {
             var course = GolfMapCourses.Require();
@@ -671,11 +748,11 @@ namespace GolfMap.Editor
             {
                 if (only != null && !only.Contains(bd.id)) continue;
                 var st = bd.stone;
+                float groundMin, groundMax;
+                var place = BoulderPlacement(bd, out groundMin, out groundMax);
                 if (bd.hasPose)
                 {
-                    var g0 = Ground(bd.at.x, bd.at.y);
-                    if (g0 == null) throw new InvalidOperationException("Boulder " + bd.id + ": nothing to stand on.");
-                    var pp = new Vector3(bd.at.x, g0.Value + bd.poseDy, bd.at.y);
+                    var pp = place.position;
                     boulderRows.Add(new Dictionary<string, object> { { "id", bd.id }, { "model", st.name }, { "pose", true }, { "y", Math.Round(pp.y, 2) } });
                     sb.AppendLine(string.Format("{0}: {1} as set by hand, {2:F2} m over the ground  at {3:F2} {4:F2} {5:F2}", bd.id, st.name, bd.poseDy, pp.x, pp.y, pp.z));
                     if (dryRun) continue;
@@ -684,25 +761,11 @@ namespace GolfMap.Editor
                     var pg = new GameObject(bd.id);
                     Undo.RegisterCreatedObjectUndo(pg, "Build stone walls");
                     pg.transform.SetParent(root.transform, false);
-                    Instantiate(new Placement { stone = st, position = pp, rotation = Quaternion.Euler(bd.poseEuler), scale = bd.poseScale, absoluteScale = true }, pg.transform, st.name + "#0");
+                    Instantiate(place, pg.transform, st.name + "#0");
                     placed++;
                     continue;
                 }
-                var scale = Vector3.one * (bd.lengthM / st.longM);
-                var rot = Quaternion.Euler(0f, bd.yawDeg + (st.longAlongZ ? 0f : -90f), 0f);
-                // its top topM over the highest ground under it (the ground under every vertex)
-                float ymax = float.MinValue, groundMax = float.MinValue, groundMin = float.MaxValue;
-                foreach (var v in st.verts)
-                {
-                    var p = rot * Vector3.Scale(v, scale);
-                    ymax = Mathf.Max(ymax, p.y);
-                    var g = Ground(bd.at.x + p.x, bd.at.y + p.z);
-                    if (g == null) continue;
-                    groundMax = Mathf.Max(groundMax, g.Value);
-                    groundMin = Mathf.Min(groundMin, g.Value);
-                }
-                if (groundMax == float.MinValue) throw new InvalidOperationException("Boulder " + bd.id + ": nothing to stand on.");
-                var pos = new Vector3(bd.at.x, groundMax + bd.topM - ymax, bd.at.y);
+                var pos = place.position;
                 boulderRows.Add(new Dictionary<string, object> {
                     { "id", bd.id }, { "model", st.name }, { "top", Math.Round(groundMax + bd.topM, 2) }, { "groundUnder", new[] { Math.Round(groundMin, 2), Math.Round(groundMax, 2) } } });
                 sb.AppendLine(string.Format("{0}: {1} {2:F1} m, top {3:F2} (ground under it {4:F2}-{5:F2})  at {6:F2} {7:F2} {8:F2}", bd.id, st.name, bd.lengthM, groundMax + bd.topM, groundMin, groundMax, pos.x, pos.y, pos.z));
@@ -712,7 +775,7 @@ namespace GolfMap.Editor
                 var bg = new GameObject(bd.id);
                 Undo.RegisterCreatedObjectUndo(bg, "Build stone walls");
                 bg.transform.SetParent(root.transform, false);
-                Instantiate(new Placement { stone = st, position = pos, rotation = rot, scale = scale }, bg.transform, st.name + "#0");
+                Instantiate(place, bg.transform, st.name + "#0");
                 placed++;
             }
             if (!dryRun && only == null)

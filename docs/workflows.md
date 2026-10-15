@@ -126,7 +126,7 @@ Reading the transforms out of the scene by hand still works when `placed.json` i
 
 ### Walls: capture the stone as a pose
 
-Walls get no such record: a wall's stones are generated from its seed and have no identity in the spec, so there is nothing to key a hand move to. Capture a moved stone as `pose` (e/n of the pivot, `dy` over the ground under it, Euler, scale) in `stone-walls.gen.py`, run it with `--out "<Unity course folder>"`, then `golfmap.walls.build {only: "<wall id>", dryRun: true}`, then for real. A boulder with a `pose` is placed exactly so on every rebuild.
+Walls get no such record: a wall's stones are generated from its seed and have no identity in the spec, so there is nothing to key a hand move to. Single boulders (the spec's `boulders`) can: `golfmap.walls.capture {only: "<id prefix>"}` lists the ones moved, turned or scaled by hand since the last build, each with the `pose` to keep it (e/n of the pivot, `dy` over the ground under it, Euler, scale). Do it before any mesh refresh: a refresh rebuilds the boulders on changed ground. Write the poses into `stone-walls.gen.py` (`H4_POSES`, `H4_STONE_POSES` or a `pose` on the entry), run it with `--out "<Unity course folder>"`, then `golfmap.walls.build {only: "<wall id>", dryRun: true}`, then for real. A boulder with a `pose` is placed exactly so on every rebuild.
 
 ## 5. A path changed surface → Blender → Unity
 
