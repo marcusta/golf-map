@@ -113,6 +113,51 @@ Arborist or loads a course in it.
 
 `call.ts` also exports its discovery for other scripts: `players()`, `player(app?)`, `playerDir()`.
 
+## GreenKeeper
+
+GreenKeeper 4.1.0 (GSPro's course tool) is the same Unity 2018.2.8 Mono player, so the same bridge
+runs in it, installed 2026-10-14 at `D:\gspro\GreenKeeper_Launcher\Data\Application`: BepInEx copied
+from GSPro's folder (`winhttp.dll`, `doorstop_config.ini`, `.doorstop_version`, `BepInEx/core`,
+`patchers`, `config`), then `build.ps1 -App D:/gspro/GreenKeeper_Launcher/Data/Application -OutDir
+tree-export/greenkeeper-mod`. Pick it with `GOLFMAP_PLAYER=greenkeeper`. Its judge is the **Course
+Flyover Benchmark** (Tools, right-hand buttons; GreenKeeper asks for 1920x1080 or 3840x2160 Ultra).
+
+- Start: `GreenKeeper.exe` shows "GreenKeeper Configuration" (Enter = Play; the resolution and
+  quality are in `HKCU\Software\LipOutProductions\GreenKeeper`), then a "Load Course File" dialog:
+  `bun unity/ArboristMod/greenkeeper.ts load C:/GSProV1/Core/GSP/Courses/Vreta_lidar_scene/Vreta_lidar_scene.gspcrse`
+  (about 3 minutes).
+- **`bun unity/ArboristMod/greenkeeper.ts bench --label <name> [--veg <variant>] [--note <text>]`**
+  runs the flyover with the mod's frame recorder on and writes `tree-export/perf/greenkeeper/<stamp>-<label>/`:
+  `greenkeeper.json` (GreenKeeper's own AVG / MIN per hole and scores, read from `MainLogic`),
+  `frames.csv` (every frame: time, camera pose, hole, main-thread split), `report.md` (per hole,
+  and the 15 slowest places at least 60 m apart, with pose and split), `track.svg` (the flight path
+  coloured by frame rate), `benchmark.jpg` (GreenKeeper's result card). `report <folder>` writes
+  the report again. `--veg` = `all` (default), `none`, `stix`, `grass`, `stix-grass`, `grass-arborist`,
+  `grass-trees`, `stix-grass-arborist`, `stix-grass-trees`, `stix-grass-plants`, `arborist`, `trees`,
+  and one-left-out `no-stix`, `no-arborist`, `no-course-trees`, `no-course-grass` (`VEG` in the script).
+  Everything off goes through `veg.set` (spawn off, `stored=false`) and Stix through `scene.hide
+  component=GrassRenderer`, and is put back after the run (`--props off`, `--built off` likewise).
+- **Never switch a VegetationSystemPro component off in GreenKeeper** (`scene.hide component=VegetationSystemPro`):
+  the systems draw through the camera GreenKeeper hands them when its VSPRO toggle (Base panel,
+  labelled "ARBORIST ON/OFF") is ON; switched off and on again a system came back drawing nothing
+  or part, and with Arborist's system off the course's drew nothing either (2026-10-14). After a
+  restart and after every flyover the toggle is OFF and no vegetation draws at all: `bench` switches
+  it ON (Base panel and back to Tools) and refuses to run unless both systems then have the camera.
+  A freshly loaded course shows the Base panel; `bench` goes Base -> Tools itself (the dropdown
+  switches panels only on a change).
+- **Close Unity before a 4K run**: with the editor open (16 GB) GreenKeeper paged on 48 GB and
+  scored 24/100 (worst hole 11); closed, the same course file scored 98/91 (2026-10-15).
+- **GreenKeeper's MIN is a half-second mean**, not one frame (`StatsAndInfo.InfoGatherer`,
+  `updateInterval` 0.5 s): steady load sets it, single hitches hardly do. The report reads the
+  frames in the same half-second windows.
+- The frame recorder (`trace.start {hole}`, `trace.status`, `trace.stop {file}`; `Commands/TraceCommands.cs`)
+  works in every player; in GreenKeeper the hole is `MainLogic.CartOnHole`. Its split: `pre` (present /
+  wait for the GPU, early scripts), `scripts`, `late` (LateUpdate scripts after ours, Cinemachine,
+  VSP), `render` (the game camera's cull and draw), `after` (other cameras, post, UI).
+- Outside the benchmark GreenKeeper runs with vSync on (120 fps on a 120 Hz display; the reported
+  refresh rate says 60). Windowed and borderless at 1080p measured the same (2026-10-14, ~245 fps
+  looking down); exclusive full screen switched to the display's 3840x2160.
+
 ## Memory
 
 Arborist, Unity and GreenKeeper with the same course loaded do not fit in 48 GB together
