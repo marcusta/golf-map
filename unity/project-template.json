@@ -1,0 +1,52 @@
+{
+  "description": "What `bun run unity:new-project` carries from a finished GSPro course project into a fresh one (GSPro base project unzipped, OPCD folder beside it). Paths are relative to the project's Assets folder unless noted. packages: copied whole, missing and newer files only. projectFolders: the same, relative to the project root. skip: never copied (globs; course-specific or unused). defines: scripting define symbols the packages need (Standalone). coursePresets: files in the source course folder that seed the new course folder, with the source course name in asset paths rewritten.",
+  "packages": [
+    "AwesomeTechnologies",
+    "Oak Trees Package",
+    "Birch Trees Package",
+    "2018.2 Prefabs",
+    "RUSTIC Grass",
+    "StixGames",
+    "NatureManufacture Assets",
+    "CESimgolf 3D Assets",
+    "MacGyverGT Assets",
+    "Vehicles",
+    "Biomes and Masks",
+    "__MasksFromMeshLessPoints",
+    "__OrganizeMeshes",
+    "GolfMap/CTI",
+    "GolfMap/Runtime",
+    "Editor/GolfMap",
+    "Editor/GolfMapBridge"
+  ],
+  "projectFolders": [
+    "AutoUpdates/StixGames"
+  ],
+  "skip": [
+    "fbx/**",
+    "Terrain Backup/**",
+    "GolfMap/*/**",
+    "Editor/*LidarImport.cs",
+    "**/*.mdb",
+    "3D Haven/**",
+    "Fold Custom 3D/**",
+    "Golf bag/**",
+    "LuxWater/**",
+    "Resources/EULA/**",
+    "Resources/MeshPalette/**"
+  ],
+  "defines": [
+    "VEGETATION_STUDIO_PRO",
+    "TOUCH_REACT",
+    "STIX_GRASS_SHADER"
+  ],
+  "coursePresets": [
+    "palette.json",
+    "grass-palette.json",
+    "look.json",
+    "stix.json",
+    "paint.json",
+    "bunker-channels.json",
+    "Paths/path-surfaces.json"
+  ]
+}

@@ -91,3 +91,58 @@ def test_search_parses_items_from_stub(monkeypatch):
     assert len(items) == 1
     assert items[0].id == "647_53"
     assert items[0].data_href.endswith("m647_53.tif")
+
+
+def test_dropped_download_resumes_with_range(tmp_path: Path, monkeypatch):
+    """dl1 drops long lidar streams mid-file (IncompleteRead); the download
+    keeps the .part and asks for the rest with a Range request."""
+    import requests
+
+    monkeypatch.setenv("LANTMATERIET_USER", "someuser")
+    monkeypatch.setenv("LANTMATERIET_PASS", "somepass")
+    monkeypatch.setattr(stac.time, "sleep", lambda s: None)
+    body = b"0123456789" * 10
+
+    class _Resp:
+        def __init__(self, status, payload, drop_after=None):
+            self.status_code = status
+            self.headers = {"Content-Length": str(len(payload))}
+            self._payload = payload
+            self._drop_after = drop_after
+
+        def raise_for_status(self):
+            pass
+
+        def iter_content(self, chunk_size):
+            if self._drop_after is None:
+                yield self._payload
+                return
+            yield self._payload[: self._drop_after]
+            raise requests.exceptions.ChunkedEncodingError("Connection broken: IncompleteRead")
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *exc):
+            return False
+
+    class _DroppingSession:
+        def __init__(self):
+            self.ranges = []
+
+        def get(self, url, auth=None, stream=None, timeout=None, headers=None):
+            rng = (headers or {}).get("Range")
+            self.ranges.append(rng)
+            if rng is None:
+                return _Resp(200, body, drop_after=37)
+            start = int(rng.removeprefix("bytes=").rstrip("-"))
+            return _Resp(206, body[start:])
+
+    session = _DroppingSession()
+    dest = tmp_path / "tile.copc.laz"
+    stac.download_asset_with_progress("https://dl1.lantmateriet.se/x/tile.copc.laz", dest,
+                                      session=session, skip_if_present=False, progress=False)
+
+    assert dest.read_bytes() == body
+    assert session.ranges == [None, "bytes=37-"]
+    assert not (tmp_path / "tile.copc.laz.part").exists()

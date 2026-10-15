@@ -202,6 +202,7 @@ class _StubResponse:
     def __init__(self, payload):
         self._payload = payload
         self.headers = {}
+        self.status_code = 200
         if isinstance(payload, bytes):
             self.headers["Content-Length"] = str(len(payload))
 
@@ -228,7 +229,7 @@ class _StubSession:
         self.zip_bytes = zip_bytes
         self.calls = []
 
-    def get(self, url, params=None, auth=None, stream=None, timeout=None):
+    def get(self, url, params=None, auth=None, stream=None, timeout=None, headers=None):
         self.calls.append({"url": url, "auth": auth})
         if "search" in url:
             return _StubResponse({
@@ -294,7 +295,7 @@ def test_cmd_fetch_water_403_names_the_entitlement_gap(tmp_path: Path, monkeypat
             raise requests.HTTPError("403 Client Error", response=self)
 
     class _ForbiddenSession(_StubSession):
-        def get(self, url, params=None, auth=None, stream=None, timeout=None):
+        def get(self, url, params=None, auth=None, stream=None, timeout=None, headers=None):
             if "search" in url:
                 return super().get(url, params=params)
             return _Forbidden()

@@ -14,6 +14,7 @@ unit tests with a stubbed `requests` session rather than live network calls.
 from __future__ import annotations
 
 import os
+import time
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Iterable
@@ -38,6 +39,10 @@ MISSING_CREDENTIALS_MSG = (
     "Lantmateriet download requires a free account. "
     "Set LANTMATERIET_USER and LANTMATERIET_PASS environment variables."
 )
+
+
+# Times a dropped download is resumed before giving up.
+DOWNLOAD_RETRIES = 8
 
 
 class MissingCredentialsError(RuntimeError):
@@ -273,25 +278,50 @@ def download_asset_with_progress(
     dest.parent.mkdir(parents=True, exist_ok=True)
     tmp_dest = dest.with_suffix(dest.suffix + ".part")
 
-    with sess.get(href, auth=(user, password), stream=True, timeout=120) as resp:
-        resp.raise_for_status()
-        total = resp.headers.get("Content-Length")
-        total_bytes = int(total) if total is not None else None
-        written = 0
-        last_report = 0
-        with open(tmp_dest, "wb") as f:
-            for chunk in resp.iter_content(chunk_size=chunk_size):
-                if not chunk:
+    # dl1 drops long streams now and then (IncompleteRead after a few hundred
+    # MB). Keep the .part and resume it with a Range request — also across
+    # runs, so a re-run after a failure carries on where the last one stopped.
+    attempt = 0
+    while True:
+        written = tmp_dest.stat().st_size if tmp_dest.exists() else 0
+        headers = {"Range": f"bytes={written}-"} if written else None
+        try:
+            with sess.get(href, auth=(user, password), stream=True, timeout=120, headers=headers) as resp:
+                if resp.status_code == 416:
+                    # The .part already holds the whole file (or is bogus): start over.
+                    tmp_dest.unlink()
                     continue
-                f.write(chunk)
-                written += len(chunk)
-                if progress and written - last_report >= 50 * (1 << 20):
-                    last_report = written
-                    if total_bytes:
-                        pct = 100.0 * written / total_bytes
-                        print(f"  {dest.name}: {written / 1e6:,.0f} MB / {total_bytes / 1e6:,.0f} MB ({pct:.0f}%)")
-                    else:
-                        print(f"  {dest.name}: {written / 1e6:,.0f} MB")
+                resp.raise_for_status()
+                if written and resp.status_code != 206:
+                    written = 0  # server ignored the Range: full body follows
+                length = resp.headers.get("Content-Length")
+                total_bytes = written + int(length) if length is not None else None
+                if written and progress:
+                    print(f"  {dest.name}: resuming at {written / 1e6:,.0f} MB")
+                last_report = written
+                with open(tmp_dest, "ab" if written else "wb") as f:
+                    for chunk in resp.iter_content(chunk_size=chunk_size):
+                        if not chunk:
+                            continue
+                        f.write(chunk)
+                        written += len(chunk)
+                        if progress and written - last_report >= 50 * (1 << 20):
+                            last_report = written
+                            if total_bytes:
+                                pct = 100.0 * written / total_bytes
+                                print(f"  {dest.name}: {written / 1e6:,.0f} MB / {total_bytes / 1e6:,.0f} MB ({pct:.0f}%)")
+                            else:
+                                print(f"  {dest.name}: {written / 1e6:,.0f} MB")
+            if total_bytes is not None and written < total_bytes:
+                raise requests.ConnectionError(f"stream ended at {written:,} of {total_bytes:,} bytes")
+            break
+        except (requests.ConnectionError, requests.Timeout, requests.exceptions.ChunkedEncodingError) as exc:
+            attempt += 1
+            if attempt > DOWNLOAD_RETRIES:
+                raise
+            wait = min(60, 5 * attempt)
+            print(f"  {dest.name}: connection lost ({exc.__class__.__name__}); retry {attempt}/{DOWNLOAD_RETRIES} in {wait} s")
+            time.sleep(wait)
 
     tmp_dest.replace(dest)
     if progress:

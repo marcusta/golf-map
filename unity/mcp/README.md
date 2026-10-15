@@ -66,11 +66,19 @@ base (content hash per file as of the last sync) in `<project>/Library/GolfMapBr
 
 ## New course project
 
-1. `unity_sync` with `projectPath: "D:/gspro_courses/<project>"`, `mode: "push"` installs the bridge
-   and the GolfMap scripts while the editor is closed (or before the bridge is in it).
+1. Unzip the GSPro base project as `D:/gspro_courses/<name>_v4_<base date>` and make `<name>-opcd`
+   beside it. With the new project closed in Unity, carry everything over from a finished course:
+   `bun run unity:new-project -- --from vreta_v4_2025_12_02 --to <project> --course <Name> [--dry-run]`
+   (`scripts/unity-new-project.ts`; what it copies is listed in [`unity/project-template.json`](../project-template.json)):
+   the bought packages (VSP, Forst oaks/birches, NatureManufacture with RAM, RUSTIC, Stix, CESimgolf),
+   the source project's asset edits (OPCD material tuning, the source course's photo slots left out),
+   the define symbols, the bridge and GolfMap scripts (a forced `unity_sync` push), and
+   `Assets/GolfMap/<Name>/` with `Course.asset` and the presets (palette, grass palette, look, Stix,
+   paint, bunker channels, path surfaces). Re-running it is safe; it never touches an existing course folder.
 2. Open the project in Unity (or click into it once): it compiles and the bridge starts. From then
    on `unity_sync` / `unity_compile` recompile without focusing Unity.
-3. `unity_menu` `GolfMap/Course/New course for this scene` (or adopt), then `unity_command golfmap.course`.
+3. Make the course scene and set its name as Scene Name on `GolfMap/<Name>/Course.asset` (or, without
+   step 1, `unity_menu` `GolfMap/Course/New course for this scene`), then `unity_command golfmap.course`.
 
 ## Adding a command
 
