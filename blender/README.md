@@ -702,9 +702,13 @@ heights):
 - **Geometry** (per path piece): the blend faces whose inner edge lies on the piece's boundary (within 1 mm) are its
   strip; strip and piece are joined and welded; every edge that crosses the line `widthM + 0.1` m from the seam is cut
   exactly there (no triangle reaches from the strip band deep into the path: a coarse wedge would carry its membership
-  and paint across as a sawtooth), then every edge inside that zone is halved until it is at most `maxEdgeM`; the
+  and paint across as a sawtooth; an edge with both ends inside the zone that leaves it on the way - OPCD's rungs
+  straight across a narrow path, seam to seam - is first split where it is farthest out, so it crosses too: unsplit,
+  its halves put teeth to the path's middle, Vreta roads_141/143/145 until 2026-10-15, test
+  `shape_edgefade_rungs_test.py`), then every edge inside that zone is halved until it is at most `maxEdgeM`; the
   path faces whose centre is within the effective width of the seam move to the strip. The strip now reaches that far
-  (`widthM`, default 0.3 m, at most 60 % of the piece's half width, so a narrow path keeps a core; a piece with less
+  (`widthM`, default 0.3 m, at most 60 % of the piece's half width - measured at its vertices and edge midpoints, as a
+  path of rungs has every vertex on a seam - so a narrow path keeps a core; a piece with less
   than 0.1 m to give is left alone) into the path, its outer edge (welded to the rough / deep / fairway mesh beside it)
   does not move, and the path loses that much mesh. Faces grow with 1 / `maxEdgeM`^2: default 0.3 m; Vreta's whole
   `roads_124` gravel (8 pieces, 3 blends, ~6 km of strip edge) takes ~40 s and ~0.4 M faces, at 0.2 m ~1.1 M. Raise

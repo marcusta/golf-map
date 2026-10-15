@@ -4256,7 +4256,10 @@ def edge_fade_core(pieces, blends, width, max_edge, amplitude, seed, weld=True, 
                 d = dist[v] = sk.find(v.co)[2]
             return d
 
-        half = max((d_of(v) for f in bm.faces if f[owner] == 0 for v in f.verts), default=0.0)   # the path's half width
+        # the path's half width: at the vertices and the edge midpoints (a path of rungs has every vertex on a seam)
+        path_edges = {e for f in bm.faces if f[owner] == 0 for e in f.edges}
+        half = max([d_of(v) for e in path_edges for v in e.verts]
+                   + [sk.find((e.verts[0].co + e.verts[1].co) / 2)[2] for e in path_edges], default=0.0)
         eff = min(width, 0.6 * half)
         if eff < EDGE_FADE_MIN_WIDTH_M:
             bm.free()
@@ -4269,11 +4272,30 @@ def edge_fade_core(pieces, blends, width, max_edge, amplitude, seed, weld=True, 
                 B[bi]["claimed"] |= m
                 B[bi]["pieces"].append(P.name)
         zone = eff + EDGE_FADE_ZONE_MARGIN_M
+        touched = set()
+        # 0. an edge with both ends inside the zone can still leave it: OPCD's narrow paths are rungs straight across,
+        #    seam to seam (both ends at distance 0). Unsplit, step 2 halved such a rung at the path's middle, the
+        #    triangle seam-seam-middle had its centre inside the width and moved to the strip: teeth to the middle
+        #    (Vreta roads_145, 2026-10-15). Split them where they are farthest out, so step 1 sees them crossing.
+        for _ in range(4):
+            leaving = []
+            for e in bm.edges:
+                v0, v1 = e.verts
+                if d_of(v0) >= zone or d_of(v1) >= zone or (v0.co - v1.co).length <= zone:
+                    continue
+                t, d = max(((t, sk.find(v0.co.lerp(v1.co, t))[2]) for t in (0.25, 0.5, 0.75)), key=lambda td: td[1])
+                if d >= zone:
+                    leaving.append((e, t, d))
+            if not leaving:
+                break
+            for e, t, d in leaving:
+                _ne, nv = bmesh.utils.edge_split(e, e.verts[0], t)
+                dist[nv] = d
+                touched.update(nv.link_faces)
         # 1. every edge that crosses the zone boundary gets a vertex exactly there (distance interpolated along the edge):
         #    no triangle reaches from the strip band deep into the path (a coarse wedge would carry its membership and
         #    its paint across as a sawtooth), and the part outside the zone stays coarse
         crossing = [e for e in bm.edges if (d_of(e.verts[0]) < zone) != (d_of(e.verts[1]) < zone)]
-        touched = set()
         for e in crossing:
             v0, v1 = e.verts
             d0, d1 = d_of(v0), d_of(v1)
