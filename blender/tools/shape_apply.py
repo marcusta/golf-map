@@ -1857,9 +1857,10 @@ def plan_units(ctx, op):
                               extra=extra))
         return units, problems
     if kind == "golfmap.cut_out":
-        # one unit, named by the op; reads = every Spline mesh the cut or its weld can reach (the outline's box + 1 m;
-        # with `rise`, + its apron, which it lifts)
-        # with rise mode dem, the DEM it samples keys the cache too (a new DEM re-runs the op)
+        # one unit, named by the op; reads = every Spline mesh the cut can reach (the outline's box + 1 m; with
+        # `rise`, + its apron, which it refines and moves) and every mesh within 1 m of their boxes: the welds run on
+        # the whole boundary of those meshes and split their neighbours' edges (Omberg hall-58: a lake bed and a
+        # gravel path 20 m off the apron). With rise mode dem, the DEM it samples keys the cache too.
         box = sl.polygon_bbox(cut_out_poly(ctx, op))
         reach = 1.0 + (rise_params(op["rise"])["apronM"] if op.get("rise") else 0.0)
         extra = ""
@@ -1868,9 +1869,9 @@ def plan_units(ctx, op):
                 extra = json.dumps({"dem": course_dem_sha(ctx)})
             except OSError as e:          # cut_out reports it and cuts nothing
                 extra = json.dumps({"dem": None, "error": str(e)})
-        return [Unit(op["name"], [], None, lambda margin=0.0: {
+        return [Unit(op["name"], [], None, lambda margin=0.0: near_boxes(ctx, [
             o.name for o in spline_meshes() if ctx.box(o.name)
-            and sl.bbox_distance(box, ctx.box(o.name)) <= reach + margin}, extra=extra)], []
+            and sl.bbox_distance(box, ctx.box(o.name)) <= reach + margin], 1.0 + margin), extra=extra)], []
     if kind == "golfmap.weld_tjunctions":
         recs, problems = sl.select(op["select"], ctx.index)
         names = [r["name"] for r in recs]
@@ -3855,7 +3856,17 @@ def cut_out(ctx, op):
             return dict(run, result=["CANCELLED"], error=f"rise mode dem: {e}")
     box = sl.polygon_bbox(poly)
     protect = set(op.get("protect", sl.DEFAULT_PROTECT))
-    protected = {r["name"]: r["type"] for r in ctx.index if r["type"] in protect}
+    lake_ok = set()
+    rise = op.get("rise") or {}
+    if rise.get("mode") == "dem" and rise.get("waterM") is not None:
+        # a cliff into a lake: the outline may run out over that lake's own meshes, which give the rock the bed
+        # faces it covers (the rock face goes on down to the dug bed instead of a lake-bed band standing above the
+        # water); tees, and every other water (ponds, creeks), stay protected
+        if "protect" not in op:
+            protect.add("tee")
+        lake_ok = dem_lake_meshes(ctx, poly, rise_params(rise)["apronM"])
+        run["lake"] = sorted(lake_ok)
+    protected = {r["name"]: r["type"] for r in ctx.index if r["type"] in protect and r["name"] not in lake_ok}
     object_mode()
     cands, overlap = [], set()
     for o in sorted(spline_meshes(), key=lambda o: o.name):
@@ -3917,7 +3928,11 @@ def cut_out(ctx, op):
                         "facesOut": len(inside), "areaOutM2": round(a_in, 3), "cut": cut[o.name]})
     if not parts:
         return dict(run, result=["CANCELLED"], error="no Spline mesh face lies inside the outline")
-    first = bpy.data.objects[sources[0]["name"]]
+    # the new object's material and collections from the first source that is no lake bed
+    first = bpy.data.objects[next((s["name"] for s in sources if s["name"] not in lake_ok), sources[0]["name"])]
+    if first.name != sources[0]["name"]:
+        k = [s["name"] for s in sources].index(first.name)
+        parts.insert(0, parts.pop(k))
     new_me = parts[0]
     jb = bmesh.new()
     for part in parts:
@@ -4169,7 +4184,9 @@ def dem_sampler(ctx, box):
     win = windows[wk]
     off = fr["py"] - fr["minM"]          # z = H - minM + py (shape_coords.height_to_blend)
 
-    def sample(xy):
+    def sample(xy, grid=None):
+        """grid: an array the window's shape (e.g. the window blurred) to sample instead of the DEM."""
+        win = windows[wk] if grid is None else grid
         xy = np.asarray(xy, dtype=np.float64)
         fc, frw = to_col(xy[:, 0]) - c0, to_row(xy[:, 1]) - r0
         i = np.clip(np.floor(fc).astype(np.int64), 0, win.shape[1] - 2)
@@ -4182,12 +4199,16 @@ def dem_sampler(ctx, box):
                              "(nodata, or outside its square)")
         return h + off
 
+    sample.window, sample.res = win, (lay["sx"], lay["sy"])
     info = {"dem": os.path.basename(path), "demSha": sha, "window": [r0, r1, c0, c1]}
     return sample, info
 
 
-def _poly_signed_distance(pts, poly):
-    """Signed XY distance of each point to the closed polygon: > 0 inside, < 0 outside."""
+def _poly_signed_distance(pts, poly, chunk=8192):
+    """Signed XY distance of each point to the closed polygon: > 0 inside, < 0 outside. In chunks of points: the
+    pairs are points x polygon edges (Omberg hall-58: 277 000 x 381 would be 1.7 GB an array)."""
+    if len(pts) > chunk:
+        return np.concatenate([_poly_signed_distance(pts[i:i + chunk], poly, chunk) for i in range(0, len(pts), chunk)])
     a = np.asarray(poly, dtype=np.float64)
     b = np.roll(a, -1, axis=0)
     ab = b - a
@@ -4334,6 +4355,28 @@ def _rise_sink_into_lake(ctx, slab, poly, near, water, apron):
             bpy.ops.mesh.customdata_custom_splitnormals_clear()
     me.update()
     return {"lake": lake.name, "moved": moved, "underWater": under, "seeds": seeds}
+
+
+def dem_lake_meshes(ctx, poly, apron):
+    """The lake a dem slab's water join targets (the water mesh with the most vertices within the apron, as
+    _rise_sink_into_lake picks it) and every object of the same drawn shape (its pieces and blends)."""
+    pbox = sl.polygon_bbox(poly)
+    best, count = None, 0
+    for r in ctx.index:
+        o = bpy.data.objects.get(r["name"])
+        if r["type"] not in LAKE_TYPES or o is None or not o.visible_get():
+            continue
+        b = ctx.box(r["name"])
+        if not b or sl.bbox_distance(pbox, b) > apron:
+            continue
+        n = int((_poly_signed_distance(positions(o), poly) > -apron).sum())
+        if n > count:
+            best, count = r, n
+    if best is None:
+        return set()
+    if not best.get("svgId"):
+        return {best["name"]}
+    return {r["name"] for r in ctx.index if r.get("svgId") == best["svgId"] and r["type"] in LAKE_TYPES}
 
 
 def _rise_refine(ctx, slab, poly, apron, max_edge, single_edge=False):
@@ -4516,6 +4559,287 @@ def slab_seam_check(objs, tol_xy=SEAM_XY, tol_z=SEAM_DZ):
     return {"points": int((count > 1).sum()), "open": int((spread > tol_z).sum()), "maxDz": round(float(spread.max()), 6)}
 
 
+# ---------------------------------------------------------------- dem rise: granite shaping
+#
+# The DEM alone reads as rounded dough in game: 0.5 m cells, mostly interpolated across the faces. Swedish granite is
+# blocky, in layered ledges, broken facets and crisp edges. After the slab took the DEM's heights, its interior (not
+# the outline: a smooth falloff from 0 on the outline to 1 at `falloffM` in, so no step at the seam; every vertex a
+# mesh shares stays as it is) is shaped in four seeded steps, each off with a strength of 0:
+#   1. sharpen: unsharp mask of the DEM, z + sharpen * (z - blur(z)), Gaussian sigma = sharpenRadiusM / 2 on the
+#      DEM's own grid: steeper faces, crisper crests;
+#   2. facets: Voronoi cells (~facetM, jittered seeds); each cell's heights blend `facets` toward the least-squares
+#      plane of its (sharpened) DEM heights: planar blocks, broken edges where cells meet;
+#   3. terrace: ledges - z pulled `terrace` toward a stepped profile (terraceStepM a step, flat tread, soft riser in
+#      the last 35 %, the levels offset per facet so no ledge is one contour) where the sharpened DEM is under
+#      terraceMaxDeg (fading over the 10 degrees below), so the big faces stay faces. After the facets, which would
+#      flatten the ledges again;
+#   4. relief: where the sharpened DEM is over reliefMinDeg (fading in over 5 degrees either side), the vertices
+#      move horizontally along the face's outward normal by 3-octave value noise in 3D (3 / 1.2 / 0.5 m, reliefM
+#      at most) so a wall is not smooth; a face that would flip has its vertices' move halved (6 rounds), and what
+#      still flips is reported;
+# then (5.) the rock's normals are split by angle (`hardEdgeDeg`: sharp edges, smooth faces, no custom normals), so
+# the facets light as crisp edges; the FBX exporter writes the split corner normals.
+
+RISE_DEM_SHAPE = {"sharpen": 0.8, "sharpenRadiusM": 2.0, "facets": 0.6, "facetM": 2.5, "terrace": 0.5,
+                  "terraceStepM": 1.0, "terraceMaxDeg": 60.0, "reliefM": 0.35, "reliefMinDeg": 55.0,
+                  "hardEdgeDeg": 35.0, "falloffM": 1.5}
+RISE_DEM_DEFAULTS.update(RISE_DEM_SHAPE)
+TERRACE_RISER = 0.35        # the share of a step that is riser
+_U64_A, _U64_B = np.uint64(0xBF58476D1CE4E5B9), np.uint64(0x94D049BB133111EB)
+
+
+def _mix64(h):
+    h = (h ^ (h >> np.uint64(30))) * _U64_A
+    h = (h ^ (h >> np.uint64(27))) * _U64_B
+    return h ^ (h >> np.uint64(31))
+
+
+def hash01(seed, *keys):
+    """Uniform [0, 1) per integer key tuple (vectorised splitmix64): the same keys give the same value whatever
+    the vertex order."""
+    keys = np.broadcast_arrays(*[np.asarray(k, dtype=np.int64) for k in keys])
+    h = np.full(keys[0].shape, (int(seed) & 0xFFFFFFFF) + 0x9E3779B97F4A7C15, dtype=np.uint64)
+    with np.errstate(over="ignore"):
+        for k in keys:
+            h = _mix64(h ^ k.astype(np.uint64))
+    return (h >> np.uint64(11)).astype(np.float64) / float(1 << 53)
+
+
+def value_noise3(x, y, z, seed):
+    """Smooth value noise in 3D, [-1, 1], lattice 1 unit, vectorised."""
+    ix, iy, iz = np.floor(x), np.floor(y), np.floor(z)
+    fx, fy, fz = x - ix, y - iy, z - iz
+    sx, sy, sz = fx * fx * (3 - 2 * fx), fy * fy * (3 - 2 * fy), fz * fz * (3 - 2 * fz)
+    ix, iy, iz = ix.astype(np.int64), iy.astype(np.int64), iz.astype(np.int64)
+    c = lambda a, b, d: hash01(seed, ix + a, iy + b, iz + d) * 2 - 1
+    x00 = c(0, 0, 0) + (c(1, 0, 0) - c(0, 0, 0)) * sx
+    x10 = c(0, 1, 0) + (c(1, 1, 0) - c(0, 1, 0)) * sx
+    x01 = c(0, 0, 1) + (c(1, 0, 1) - c(0, 0, 1)) * sx
+    x11 = c(0, 1, 1) + (c(1, 1, 1) - c(0, 1, 1)) * sx
+    y0, y1 = x00 + (x10 - x00) * sy, x01 + (x11 - x01) * sy
+    return y0 + (y1 - y0) * sz
+
+
+def gauss_blur(grid, sigma_px):
+    """Separable Gaussian blur, edges extended."""
+    if sigma_px <= 0:
+        return grid.copy()
+    r = int(math.ceil(3 * sigma_px))
+    k = np.exp(-0.5 * (np.arange(-r, r + 1) / sigma_px) ** 2)
+    k /= k.sum()
+    out = grid
+    for axis in (0, 1):
+        pad = [(0, 0), (0, 0)]
+        pad[axis] = (r, r)
+        g = np.pad(out, pad, mode="edge")
+        n = out.shape[axis]
+        acc = np.zeros_like(out, dtype=np.float64)
+        for i, w in enumerate(k):
+            acc += w * (g[i:i + n, :] if axis == 0 else g[:, i:i + n])
+        out = acc
+    return out
+
+
+def voronoi_cells(xy, cell, seed):
+    """Nearest of one jittered seed per `cell` grid square (the 3 x 3 squares round each point). Returns (cell index
+    per point, the cells' grid keys (n, 2), the cells' seed points (n, 2))."""
+    g = np.floor(xy / cell).astype(np.int64)
+    best = np.full(len(xy), np.inf)
+    kx, ky = g[:, 0].copy(), g[:, 1].copy()
+    px, py = np.zeros(len(xy)), np.zeros(len(xy))
+    for dx in (-1, 0, 1):
+        for dy in (-1, 0, 1):
+            cx, cy = g[:, 0] + dx, g[:, 1] + dy
+            sx = (cx + 0.1 + 0.8 * hash01(seed, cx, cy, 1)) * cell
+            sy = (cy + 0.1 + 0.8 * hash01(seed, cx, cy, 2)) * cell
+            d = (xy[:, 0] - sx) ** 2 + (xy[:, 1] - sy) ** 2
+            take = d < best
+            best[take], kx[take], ky[take], px[take], py[take] = d[take], cx[take], cy[take], sx[take], sy[take]
+    keys, ids = np.unique(np.stack([kx, ky], 1), axis=0, return_inverse=True)
+    ids = ids.reshape(-1)
+    seeds = np.zeros((len(keys), 2))
+    seeds[ids] = np.stack([px, py], 1)
+    return ids, keys, seeds
+
+
+def cell_planes(ids, seeds, x, y, z):
+    """The least-squares plane z = a x + b y + c of each cell's points, evaluated at the points (a cell of fewer
+    than 3 points, or of points on a line, gives its mean)."""
+    n = int(ids.max()) + 1 if len(ids) else 0
+    X, Y = x - seeds[ids, 0], y - seeds[ids, 1]
+    s = lambda w: np.bincount(ids, weights=w, minlength=n)
+    sxx, sxy, syy, sx, sy, sn = s(X * X), s(X * Y), s(Y * Y), s(X), s(Y), s(np.ones_like(X))
+    sxz, syz, sz = s(X * z), s(Y * z), s(z)
+    A = np.stack([np.stack([sxx, sxy, sx], 1), np.stack([sxy, syy, sy], 1), np.stack([sx, sy, sn], 1)], 1)
+    b = np.stack([sxz, syz, sz], 1)
+    det = np.linalg.det(A)
+    ok = (sn >= 3) & (np.abs(det) > 1e-9 * np.maximum(sn, 1) ** 3)
+    coef = np.zeros((n, 3))
+    coef[:, 2] = sz / np.maximum(sn, 1)
+    if ok.any():
+        coef[ok] = np.linalg.solve(A[ok], b[ok][..., None])[..., 0]
+    c = coef[ids]
+    return c[:, 0] * X + c[:, 1] * Y + c[:, 2]
+
+
+def _tri_normals(co, tri):
+    n = np.cross(co[tri[:, 1]] - co[tri[:, 0]], co[tri[:, 2]] - co[tri[:, 0]])
+    return n
+
+
+def slope_stats(co, tri, steep=RISE_STEEP_DEG):
+    """Area-weighted mean slope (degrees) and the area share of faces at least `steep`."""
+    n = _tri_normals(co, tri)
+    ln = np.linalg.norm(n, axis=1)
+    a = ln / 2
+    sl_ = np.degrees(np.arccos(np.clip(np.abs(n[:, 2]) / np.maximum(ln, 1e-12), 0.0, 1.0)))
+    tot = max(float(a.sum()), 1e-12)
+    return {"meanSlopeDeg": round(float((sl_ * a).sum() / tot), 2),
+            "steepShare": round(float(a[sl_ >= steep].sum() / tot), 4)}
+
+
+def _triangles(me):
+    tot = np.empty(len(me.polygons), dtype=np.int64)
+    me.polygons.foreach_get("loop_total", tot)
+    if len(tot) and (tot != 3).any():
+        import bmesh
+        bm = bmesh.new()
+        bm.from_mesh(me)
+        bmesh.ops.triangulate(bm, faces=[f for f in bm.faces if len(f.verts) > 3])
+        bm.to_mesh(me)
+        bm.free()
+        me.update()
+    tri = np.empty(len(me.polygons) * 3, dtype=np.int64)
+    me.polygons.foreach_get("vertices", tri)
+    return tri.reshape(-1, 3)
+
+
+def _boundary_mask(me):
+    ev = np.empty(len(me.edges) * 2, dtype=np.int64)
+    me.edges.foreach_get("vertices", ev)
+    le = np.empty(len(me.loops), dtype=np.int64)
+    me.loops.foreach_get("edge_index", le)
+    faces = np.bincount(le, minlength=len(me.edges))
+    m = np.zeros(len(me.vertices), dtype=bool)
+    m[ev.reshape(-1, 2)[faces == 1].reshape(-1)] = True
+    return m
+
+
+def _smooth01(t):
+    t = np.clip(t, 0.0, 1.0)
+    return t * t * (3 - 2 * t)
+
+
+def dem_granite(slab, poly, p, seed, sample):
+    """Steps 1-4 above on the slab's interior. Returns the report {falloffM, vertices, steps{...}, before, after}."""
+    t0 = time.time()
+    me = slab.data
+    tri = _triangles(me)
+    co = positions(slab).astype(np.float64)
+    s = _poly_signed_distance(co, poly)
+    f = _smooth01(s / max(p["falloffM"], 1e-6))
+    f[(s < 1e-4) | _boundary_mask(me)] = 0.0
+    act = f > 0
+    rep = {"falloffM": p["falloffM"], "vertices": int(act.sum()), "steps": {}, "before": slope_stats(co, tri)}
+    if not act.any():
+        rep["after"] = rep["before"]
+        return rep
+    xy = co[:, :2]
+    win = sample.window
+    grid = win
+    if p["sharpen"] > 0:
+        blur = gauss_blur(win, p["sharpenRadiusM"] / 2.0 / sample.res[0])
+        grid = win + p["sharpen"] * (win - blur)
+    h = 0.25
+    gx = (sample(xy + [h, 0], grid) - sample(xy - [h, 0], grid)) / (2 * h)
+    gy = (sample(xy + [0, h], grid) - sample(xy - [0, h], grid)) / (2 * h)
+    gslope = np.degrees(np.arctan(np.hypot(gx, gy)))
+
+    def step(name, new_z=None, new_xy=None, **extra):
+        nonlocal co
+        before = slope_stats(co, tri)
+        old = co.copy()
+        if new_z is not None:
+            co[:, 2] = np.where(act, new_z, co[:, 2])
+        if new_xy is not None:
+            co[:, :2] = np.where(act[:, None], new_xy, co[:, :2])
+        d = np.abs(co - old)
+        rep["steps"][name] = dict(maxDz=round(float(d[:, 2].max()), 3), maxDxy=round(float(np.hypot(d[:, 0], d[:, 1]).max()), 3),
+                                  meanSlopeDeg=[before["meanSlopeDeg"], slope_stats(co, tri)["meanSlopeDeg"]],
+                                  steepShare=[before["steepShare"], slope_stats(co, tri)["steepShare"]], **extra)
+
+    z = co[:, 2]
+    if p["sharpen"] > 0:
+        step("sharpen", z + f * (sample(xy, grid) - sample(xy)))
+    cells = None
+    if p["facetM"] > 0 and (p["facets"] > 0 or p["terrace"] > 0):
+        ids, keys, seeds = voronoi_cells(xy, p["facetM"], seed)
+        cells = (ids, keys)
+        if p["facets"] > 0:
+            z = co[:, 2]
+            plane = cell_planes(ids[act], seeds, co[act, 0], co[act, 1], z[act])
+            nz = z.copy()
+            nz[act] = z[act] + f[act] * p["facets"] * (plane - z[act])
+            step("facets", nz, cells=int(len(np.unique(ids[act]))))
+    if p["terrace"] > 0 and p["terraceStepM"] > 0:
+        z = co[:, 2]
+        S = p["terraceStepM"]
+        if cells is not None:
+            off = hash01(seed, cells[1][cells[0], 0], cells[1][cells[0], 1], 3) * S
+        else:
+            off = np.zeros(len(z))
+        u = (z - off) / S
+        k = np.floor(u)
+        q = u - k
+        stepped = off + S * (k + _smooth01((q - (1 - TERRACE_RISER)) / TERRACE_RISER))
+        gate = 1.0 - _smooth01((gslope - (p["terraceMaxDeg"] - 10.0)) / 10.0)
+        step("terrace", z + f * gate * p["terrace"] * (stepped - z),
+             share=round(float((gate[act] > 0.5).mean()), 3))
+    if p["reliefM"] > 0:
+        w = _smooth01((gslope - (p["reliefMinDeg"] - 5.0)) / 10.0) * f
+        g = np.hypot(gx, gy)
+        nh = -np.stack([gx, gy], 1) / np.maximum(g, 1e-9)[:, None]      # downhill: out of the face
+        x, y, zz = co[:, 0], co[:, 1], co[:, 2]
+        noise = sum(wt * value_noise3(x / sc, y / sc, zz / sc, seed + 17 * i)
+                    for i, (wt, sc) in enumerate(((0.55, 3.0), (0.3, 1.2), (0.15, 0.5))))
+        disp = (p["reliefM"] * noise * w)[:, None] * nh
+        n0 = _tri_normals(co, tri)
+        scale = np.ones(len(co))
+        flips = 0
+        for _ in range(7):
+            moved = co.copy()
+            moved[:, :2] += disp * scale[:, None]
+            bad = (np.einsum("ij,ij->i", n0, _tri_normals(moved, tri)) <= 0) & (np.linalg.norm(n0, axis=1) > 1e-12)
+            flips = int(bad.sum())
+            if not flips:
+                break
+            scale[np.unique(tri[bad].reshape(-1))] *= 0.5
+        step("relief", new_xy=co[:, :2] + disp * scale[:, None], flips=flips, faces=int((w > 0.5).sum()))
+        if flips:
+            rep["steps"]["relief"]["warning"] = f"{flips} face(s) still flip after 6 halvings"
+    me.vertices.foreach_set("co", co.astype(np.float32).reshape(-1))
+    me.update()
+    rep["after"] = slope_stats(co, tri)
+    rep["seconds"] = round(time.time() - t0, 2)
+    return rep
+
+
+def hard_edges(me, deg):
+    """Split the rock's normals by angle: sharp edges over `deg`, faces smooth, the custom normals dropped."""
+    if me.attributes.get("custom_normal") is not None:
+        me.attributes.remove(me.attributes["custom_normal"])
+    me.polygons.foreach_set("use_smooth", [True] * len(me.polygons))
+    me.set_sharp_from_angle(angle=math.radians(deg))
+    a = me.attributes.get("sharp_edge")
+    sharp = 0
+    if a is not None and len(me.edges):
+        v = np.empty(len(me.edges), dtype=bool)
+        a.data.foreach_get("value", v)
+        sharp = int(v.sum())
+    me.update()
+    return {"angleDeg": deg, "sharpEdges": sharp, "edges": len(me.edges)}
+
+
 def _rock_rise_dem(ctx, op, slab, poly, p):
     t0 = time.time()
     apron, max_edge = p["apronM"], p["maxEdgeM"]
@@ -4569,9 +4893,17 @@ def _rock_rise_dem(ctx, op, slab, poly, p):
         up, down = max(up, float(d.max())), min(down, float(d.min()))
         _rise_set_z(o, co, new_z, moved, slab)
         moved_n[o.name] = int(moved.sum())
+    # the granite: sharpen, facets, terrace, relief on the slab's interior
+    granite = None
+    if any(p[k] > 0 for k in ("sharpen", "facets", "terrace", "reliefM")):
+        granite = dem_granite(slab, poly, p, seed, sample)
     water = p.get("waterM")
     sunk = _rise_sink_into_lake(ctx, slab, poly, near, water, apron) if water is not None else None
     _rise_uvs(op, slab)
+    if p["hardEdgeDeg"] > 0:
+        granite = dict(granite or {}, hardEdges=hard_edges(slab.data, p["hardEdgeDeg"]))
+    elif granite:
+        hard_edges(slab.data, 180.0)     # moved again: smooth normals from the new shape
     # how steep the slab came out, and the seams between everything the rise touched or borders
     fn = np.empty(len(slab.data.polygons) * 3, dtype=np.float32)
     slab.data.polygons.foreach_get("normal", fn)
@@ -4584,7 +4916,9 @@ def _rock_rise_dem(ctx, op, slab, poly, p):
                inradiusM=round(s_max, 2), refinePasses=passes, weld=weld, moved=moved_n, lifted=moved_n,
                maxUpM=round(up, 3), maxDownM=round(down, 3), pinned=pinned,
                steepFaces=int((slope >= RISE_STEEP_DEG).sum()), maxSlopeDeg=round(float(slope.max()), 1),
-               seams=seams, sunk=sunk, seconds=round(time.time() - t0, 2))
+               seams=seams, sunk=sunk, granite=granite, seconds=round(time.time() - t0, 2))
+    if granite and (granite.get("steps", {}).get("relief") or {}).get("warning"):
+        out["warning"] = granite["steps"]["relief"]["warning"]
     print(f"[shape_apply] cut_out {slab.name} rise dem: slab {out['slabZ'][0]:.2f}-{out['slabZ'][1]:.2f}, "
           f"up {up:.2f} / down {down:.2f}, {out['steepFaces']} faces >= {RISE_STEEP_DEG:g} deg, "
           f"seams {seams['open']} open of {seams['points']}, moved {moved_n}")

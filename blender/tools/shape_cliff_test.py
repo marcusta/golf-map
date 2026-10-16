@@ -140,31 +140,36 @@ def region(cx, cy):
 
 
 verts = [(X0 + i * STEP, Y0 + j * STEP) for j in range(K + 1) for i in range(K + 1)]
-faces = {"rough": [], "semi": [], "green": []}
-for j in range(K):
-    for i in range(K):
-        a = j * (K + 1) + i
-        cx, cy = verts[a][0] + STEP / 2, verts[a][1] + STEP / 2
-        faces[region(cx, cy)] += [(a, a + 1, a + K + 2), (a, a + K + 2, a + K + 1)]
 names = {"rough": "Spline_t2_Rough_-_Mesh", "semi": "Spline_t2_Rough_Semi_-_Mesh", "green": "Spline_t2_Green_-_Mesh"}
+SCENE = {"rough": (names["rough"], "rough", "s_rough", (1, 0, 0, 1)), "semi": (names["semi"], "rough", "s_semi", (1, 0, 0, 1)),
+         "green": (names["green"], "green", "s_green", (0, 1, 0, 1))}
 
 
-def build():
+def build(region=region, scene=SCENE):
+    """The meshes of `scene` {key: (name, type, svgId, paint)} over the grid, each face to region(cx, cy); every mesh
+    gets its own material. Returns a ctx for shape_apply."""
     for o in list(bpy.data.objects):
         bpy.data.objects.remove(o)
+    faces = {k: [] for k in scene}
+    for j in range(K):
+        for i in range(K):
+            a = j * (K + 1) + i
+            cx, cy = verts[a][0] + STEP / 2, verts[a][1] + STEP / 2
+            faces[region(cx, cy)] += [(a, a + 1, a + K + 2), (a, a + K + 2, a + K + 1)]
     for k, fs in faces.items():
+        name, _, _, paint = scene[k]
         used = sorted({v for f in fs for v in f})
         remap = {v: n for n, v in enumerate(used)}
-        me = bpy.data.meshes.new(names[k])
+        me = bpy.data.meshes.new(name)
         me.from_pydata([(verts[v][0], verts[v][1], plane(*verts[v])) for v in used], [], [[remap[v] for v in f] for f in fs])
         col = me.color_attributes.new(name="Col", type="BYTE_COLOR", domain="CORNER")
         for c in col.data:
-            c.color_srgb = (1, 0, 0, 1)
-        o = bpy.data.objects.new(names[k], me)
+            c.color_srgb = paint
+        me.materials.append(bpy.data.materials.get("mat_" + k) or bpy.data.materials.new("mat_" + k))
+        o = bpy.data.objects.new(name, me)
         bpy.context.collection.objects.link(o)
         o["opcd_kind"] = "mesh"
-    index = [{"name": names["rough"], "type": "rough"}, {"name": names["semi"], "type": "rough"},
-             {"name": names["green"], "type": "green"}]
+    index = [{"name": n, "type": t, "svgId": s} for n, t, s, _ in scene.values()]
     ctx = types.SimpleNamespace(index=index, by_name={r["name"]: r for r in index}, frame=FRAME,
                                 dem_sidecar=tif + ".json")
     ctx.box = lambda n: sa.bbox_xy(bpy.data.objects[n]) if n in bpy.data.objects else None
@@ -175,8 +180,10 @@ RECT = (-36.0, -36.0, -24.0, -24.0)  # the outline (blend), crossing the cliff l
 APRON, UV_M = 3.0, 4.0
 outline = [list(shape_coords.from_blend(x, y, FRAME)) for x, y in
            ((RECT[0], RECT[1]), (RECT[2], RECT[1]), (RECT[2], RECT[3]), (RECT[0], RECT[3]))]
+# the DEM's own shape first: the granite shaping (on by default) off
+PLAIN = {"sharpen": 0.0, "facets": 0.0, "terrace": 0.0, "reliefM": 0.0, "hardEdgeDeg": 0.0}
 op = {"id": "cliff", "op": "golfmap.cut_out", "name": "cliff_t2", "outline3006": outline, "uv": "box", "uvM": UV_M,
-      "rise": {"mode": "dem", "apronM": APRON}}
+      "rise": dict({"mode": "dem", "apronM": APRON}, **PLAIN)}
 
 # 2. validation: dem needs no topM and takes none; dome still needs it; uv is planar or box
 assert sl.validate_op(op) == [], sl.validate_op(op)
@@ -186,6 +193,8 @@ assert "needs topM" in bad(rise={"apronM": 3.0}) and "needs topM" in bad(rise={"
 assert "rise.mode must be" in bad(rise={"mode": "cliff"})
 assert "uv must be" in bad(uv="cube")
 assert sl.validate_op(dict(op, rise={"topM": 0.9, "waterM": 9.4})) == []
+assert "dem slab only" in bad(rise={"topM": 0.9, "sharpen": 0.5})
+assert ">= 0" in bad(rise={"mode": "dem", "facets": -1.0}) and "0-90" in bad(rise={"mode": "dem", "hardEdgeDeg": 120.0})
 
 ctx = build()
 t0 = time.time()
@@ -291,7 +300,110 @@ wv = [d.uv[1] for d in me.uv_layers[0].data]
 wu = [d.uv[0] for d in me.uv_layers[0].data]
 assert abs(max(wv) - min(wv) - 10 / UV_M) < 1e-6 and abs(max(wu) - min(wu) - 2 / UV_M) < 1e-6, (wu, wv)
 
-# 8. the op cache keys on the DEM's content: the cut-out unit's extra carries its hash, a changed DEM another
+# 8. the granite (defaults on): sharpen, facets, terrace, relief, hard edges - only the slab's interior moves; the
+# outline ring, every other mesh and the seams are those of the plain run to the bit; the slab got steeper; the
+# normals are split; the same run twice is the same
+SLAB = sa.cut_out_name(op)
+
+
+def state():
+    out = {o.name: sa.positions(o).astype(np.float64) for o in sa.spline_meshes()}
+    out["ring"] = np.unique(sa.boundary_points(bpy.data.objects[SLAB]).round(6), axis=0)
+    return out
+
+
+plain = state()
+op_g = dict(op, rise={"mode": "dem", "apronM": APRON})
+assert sl.validate_op(op_g) == []
+ctx = build()
+t0 = time.time()
+run_g = sa.cut_out(ctx, op_g)
+took_g = time.time() - t0
+assert run_g["result"] == ["FINISHED"], run_g
+gr = run_g["rise"]["granite"]
+print("granite", json.dumps(gr))
+got = state()
+for n, a in plain.items():
+    if n == SLAB:
+        continue
+    assert a.shape == got[n].shape and np.abs(a - got[n]).max() == 0.0, f"{n} differs from the plain run"
+gslab = bpy.data.objects[SLAB]
+gco = sa.positions(gslab).astype(np.float64)
+assert np.abs(gco - plain[SLAB]).max() > 0.2, "the granite moved nothing"
+assert run_g["border"]["unmatched"] == 0 and run_g["rise"]["seams"]["open"] == 0, (run_g["border"], run_g["rise"]["seams"])
+assert sa.slab_seam_check(sa.spline_meshes())["open"] == 0
+for k in ("sharpen", "facets", "terrace", "relief"):
+    assert k in gr["steps"] and gr["steps"][k]["maxDz" if k != "relief" else "maxDxy"] > 0.01, (k, gr["steps"].get(k))
+assert gr["after"]["steepShare"] > gr["before"]["steepShare"], gr
+assert gr["after"]["meanSlopeDeg"] > gr["before"]["meanSlopeDeg"], gr
+assert gr["steps"]["relief"]["flips"] == 0, gr["steps"]["relief"]
+for poly_ in gslab.data.polygons:
+    assert poly_.area > 1e-7, f"face {poly_.index} collapsed"
+# hard edges: sharp edges marked, no custom normals, vertices with two or more corner normals
+he = gr["hardEdges"]
+assert he["sharpEdges"] > 100 and not gslab.data.has_custom_normals, he
+cn = np.empty(len(gslab.data.loops) * 3, dtype=np.float32)
+gslab.data.corner_normals.foreach_get("vector", cn)
+lv = np.empty(len(gslab.data.loops), dtype=np.int64)
+gslab.data.loops.foreach_get("vertex_index", lv)
+split = len({(int(v), tuple(np.round(n, 3))) for v, n in zip(lv.tolist(), cn.reshape(-1, 3).tolist())}) - len(set(lv.tolist()))
+assert split > 100, f"only {split} split corner normals"
+# deterministic: the same op on a fresh scene gives the same slab
+gco32 = sa.positions(gslab).copy()
+sa.cut_out(build(), op_g)
+assert np.array_equal(sa.positions(bpy.data.objects[SLAB]), gco32), "two runs of the granite differ"
+
+# 9. a cliff into a lake: with waterM the outline may cover the lake's own meshes (their bed faces go to the rock);
+# a pond (other water) stays protected
+LAKE = {"rough": (names["rough"], "rough", "s_rough", (1, 0, 0, 1)),
+        "lake": ("Spline_t3_Water_Base_Lake_-_Mesh", "water", "s_lake", (0, 0.2, 0.6, 1)),
+        "lakeb": ("Spline_t3_B_Water_Base_Lake_-_Blend", "water", "s_lake", (0, 0.2, 0.6, 1)),
+        "pond": ("Spline_t4_Water_Base_Pond_-_Mesh", "water", "s_pond", (0, 0.3, 0.5, 1))}
+
+
+def lake_region(cx, cy):
+    if cx > -29.6:                       # the lake east of the cliff foot, its blend a strip along its shore
+        return "lakeb" if cx < -28.4 else "lake"
+    if cx < -44.0 and cy < -44.0:
+        return "pond"
+    return "rough"
+
+
+WATER = 21.0                             # the DEM's low side (about 19 m) lies under it, the meshes (about 23 m) above
+op_l = {"id": "cliff-lake", "op": "golfmap.cut_out", "name": "cliff_t3", "outline3006": outline, "uv": "box",
+        "rise": {"mode": "dem", "apronM": APRON, "waterM": WATER}}
+assert sl.validate_op(op_l) == []
+ctx = build(lake_region, LAKE)
+lake = bpy.data.objects[LAKE["lake"][0]]
+inside_lake = sum(1 for p_ in lake.data.polygons
+                  if RECT[0] < p_.center.x < RECT[2] and RECT[1] < p_.center.y < RECT[3])
+assert inside_lake > 20
+run_l = sa.cut_out(ctx, op_l)
+assert run_l["result"] == ["FINISHED"], run_l
+print("lake", {k: run_l[k] for k in ("lake", "border", "faces")}, run_l["rise"]["seams"], run_l["rise"]["sunk"])
+assert set(run_l["lake"]) == {LAKE["lake"][0], LAKE["lakeb"][0]}, run_l["lake"]
+rock = bpy.data.objects[sa.cut_out_name(op_l)]
+srcs = rock["golfmap_cut_from"].split(",")
+assert LAKE["lake"][0] in srcs and rock.data.materials[0].name == "mat_rough", (srcs, rock.data.materials[0].name)
+assert run_l["border"]["unmatched"] == 0 and run_l["rise"]["seams"]["open"] == 0, (run_l["border"], run_l["rise"]["seams"])
+assert sa.slab_seam_check(sa.spline_meshes())["open"] == 0
+# the lake faces inside the outline are rock now; the lake keeps its name, material and paint
+assert not any(RECT[0] + 0.01 < p_.center.x < RECT[2] - 0.01 and RECT[1] + 0.01 < p_.center.y < RECT[3] - 0.01
+               for p_ in lake.data.polygons), "a lake face inside the outline stayed lake"
+assert lake.name == LAKE["lake"][0] and lake.data.materials[0].name == "mat_lake"
+lc = np.empty(len(lake.data.color_attributes["Col"].data) * 4, dtype=np.float32)
+lake.data.color_attributes["Col"].data.foreach_get("color_srgb", lc)
+assert np.abs(lc.reshape(-1, 4) - np.array([0, 0.2, 0.6, 1], dtype=np.float32)).max() < 0.01, "the lake's paint changed"
+rz = sa.positions(rock)[:, 2]
+assert rz.min() < WATER - 1.0, f"the rock does not go on down under the water ({rz.min():.2f})"
+# a pond under the outline still cancels it (the lake the outline also reaches is the target, the pond other water)
+PR = (-46.0, -46.0, -27.0, -41.0)
+op_p = dict(op_l, name="cliff_t4", outline3006=[list(shape_coords.from_blend(x, y, FRAME)) for x, y in
+                                                 ((PR[0], PR[1]), (PR[2], PR[1]), (PR[2], PR[3]), (PR[0], PR[3]))])
+run_p = sa.cut_out(build(lake_region, LAKE), op_p)
+assert run_p["result"] == ["CANCELLED"] and "Pond" in run_p.get("skipped", ""), run_p
+
+# 10. the op cache keys on the DEM's content: the cut-out unit's extra carries its hash, a changed DEM another
 units, _ = sa.plan_units(ctx, op)
 key1 = units[0].extra
 assert json.loads(key1)["dem"] == sa._file_sha(tif)
@@ -303,4 +415,6 @@ assert sa.plan_units(ctx, dict(op, rise={"topM": 1.0}))[0][0].extra == "", "a do
 
 print(f"cliff test passed: slab {sco[:, 2].min():.2f}-{sco[:, 2].max():.2f} m, DEM error {err * 1000:.2f} mm, "
       f"{steep} steep faces (max {rise['maxSlopeDeg']} deg, {on_ramp} on the ramp), {checked} apron vertices checked, {rise['pinned']} pinned, "
-      f"seams {allseams}, {checked_uv} steep faces' box UVs, cut_out + rise {took:.2f} s")
+      f"seams {allseams}, {checked_uv} steep faces' box UVs, cut_out + rise {took:.2f} s; granite: steep share "
+      f"{gr['before']['steepShare']:.3f} -> {gr['after']['steepShare']:.3f}, mean slope {gr['before']['meanSlopeDeg']} -> "
+      f"{gr['after']['meanSlopeDeg']} deg, {he['sharpEdges']} sharp edges, {took_g:.2f} s; lake: {inside_lake} bed faces to the rock")

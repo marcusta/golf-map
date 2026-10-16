@@ -77,7 +77,10 @@ CUT_OUT_UV_MODES = ("planar", "box")
 # golfmap.cut_out `rise`: mode dome (a rounded klippa from topM / footM, the default) or dem (the slab and its apron
 # go to the course DEM: a cliff; topM / footM mean nothing there)
 RISE_MODES = ("dome", "dem")
-RISE_NUMBERS = {"waterM", "topM", "footM", "apronM", "noiseM", "maxEdgeM", "seed"}
+# the granite shaping of a dem slab (shape_apply dem_granite; each a strength or size, 0 turns it off)
+RISE_DEM_SHAPE = {"sharpen", "sharpenRadiusM", "facets", "facetM", "terrace", "terraceStepM", "terraceMaxDeg",
+                  "reliefM", "reliefMinDeg", "hardEdgeDeg", "falloffM"}
+RISE_NUMBERS = {"waterM", "topM", "footM", "apronM", "noiseM", "maxEdgeM", "seed"} | RISE_DEM_SHAPE
 
 
 def _rise_errors(rise):
@@ -91,6 +94,12 @@ def _rise_errors(rise):
         return ["rise needs topM > 0 (mode dome)"]
     if mode == "dem" and ({"topM", "footM"} & set(rise)):
         return ["rise mode dem takes no topM / footM (the DEM is the shape)"]
+    if mode == "dome" and (RISE_DEM_SHAPE & set(rise)):
+        return ["rise " + ", ".join(sorted(RISE_DEM_SHAPE & set(rise))) + " shape a dem slab only (mode dem)"]
+    if any(rise[k] < 0 for k in RISE_DEM_SHAPE & set(rise)):
+        return ["rise " + ", ".join(sorted(RISE_DEM_SHAPE)) + " must be >= 0"]
+    if any(rise.get(k, 0) > 90 for k in ("terraceMaxDeg", "reliefMinDeg", "hardEdgeDeg")):
+        return ["rise terraceMaxDeg, reliefMinDeg and hardEdgeDeg are angles of 0-90 degrees"]
     if any(rise.get(k, 0) < 0 for k in ("footM", "apronM", "noiseM", "maxEdgeM")):
         return ["rise footM, apronM, noiseM and maxEdgeM must be >= 0"]
     if "maxEdgeM" in rise and rise["maxEdgeM"] < 0.1:

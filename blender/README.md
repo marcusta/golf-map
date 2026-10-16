@@ -658,7 +658,10 @@ course meshes and lifts the inside out as one new object. Hand layer, one op per
   class off the name, and a rock must come out as Other (vegetation keeps off it).
 - **Keep the outline off other meshes' edges**: a corner that pokes 1 cm into the next mesh takes a sliver of it
   (report `sources[]` with a tiny `areaOutM2`). Move the corner.
-- **Reach** (`plan_units`): one unit per op; reads = every Spline mesh within 1 m of the outline's box.
+- **Reach** (`plan_units`): one unit per op; reads = every Spline mesh within 1 m of the outline's box (with `rise`,
+  1 m + `apronM`) and every mesh within 1 m of those meshes' boxes: the welds run on the whole boundary of the meshes
+  they are given and split their neighbours' edges anywhere along it (Omberg hall-58 escaped its reads into lake-bed
+  pieces and a gravel path ~20 m off the apron, so it was never cached).
 - **Time**: 2-7 s a slab (Vreta's 37: 184 s uncached, 5.0 s each), most of it still `weld_tjunctions` and the
   cut's two `insert_polyline` passes over the meshes under the box. It was 10-20 s before the weld's neighbour
   filters (README "Speed shims of our own ops"), and 260 s a slab before the 2 m segment grid
@@ -717,6 +720,41 @@ course meshes and lifts the inside out as one new object. Hand layer, one op per
   `seams.open` > 0 is a warning. Test: `blender/tools/shape_cliff_test.py` (a 10 m step in a synthetic DEM across
   an outline over a plane of 1.2 m triangles; 0.5 s). On Omberg (a 20 x 8 m outline on a 52° bank of hole 1's
   rough, 164 m²): 11 199 faces, cut 4.0 s + rise 4.5 s, 0 unmatched border vertices, 0 open seams over the course.
+- **Granite shaping of a dem slab** (on by default; `rise` keys, each 0 = off): the DEM alone read as rounded dough
+  in Unity (0.5 m cells, mostly interpolated across the faces), and granite is blocky, in ledges, broken facets and
+  crisp edges. Only the slab's interior moves, with a smooth falloff from 0 on the outline to 1 at `falloffM` (1.5) in:
+  the outline ring, the apron and every vertex another mesh shares stay exactly as the plain dem rise leaves them.
+  Seeded by `seed` (default from the name), deterministic, in this order:
+  1. `sharpen` 0.8, `sharpenRadiusM` 2: unsharp mask of the DEM on its own grid, z + 0.8 (z - blur(z)), Gaussian
+     sigma = radius / 2: steeper faces, crisper crests (it overshoots a perfect step: 3.2 m on the test's 10 m step);
+  2. `facets` 0.6, `facetM` 2.5: Voronoi cells (one jittered seed per 2.5 m square), each cell's heights pulled 60 %
+     toward the least-squares plane of its sharpened DEM heights: planar blocks, broken edges where cells meet;
+  3. `terrace` 0.5, `terraceStepM` 1, `terraceMaxDeg` 60: ledges, z pulled halfway toward a stepped profile (flat
+     tread, soft riser in the last 35 % of a step, the levels offset per facet so no ledge is one contour) where the
+     sharpened DEM is under 60° (fading over the 10° below), so the big faces stay faces. After the facets, which
+     would flatten the ledges again;
+  4. `reliefM` 0.35, `reliefMinDeg` 55: on the faces (the sharpened DEM over 55°, fading in over 50-60°) the vertices
+     move horizontally along the face's outward normal by 3-octave 3D value noise (3 / 1.2 / 0.5 m), so a wall is not
+     smooth; a face that would flip has its vertices' move halved, up to 6 times, and what still flips is reported
+     (and warned);
+  5. `hardEdgeDeg` 35: the rock's normals split by angle (sharp edges, smooth faces, no custom normals), so the facets
+     light as crisp edges; the FBX exporter writes the split corner normals (Unity must import normals, not
+     calculate them).
+  Report `rise.granite` = `{vertices, before / after {meanSlopeDeg, steepShare}, steps {sharpen, facets, terrace,
+  relief: {maxDz, maxDxy, meanSlopeDeg [before, after], steepShare [before, after], flips ...}}, hardEdges
+  {sharpEdges}, seconds}` (mean slope area-weighted, steepShare = the area share of faces >= 55°). Omberg hall-58
+  (the 14th green's cliff and rock shore, 8134 m², 547 513 faces, 271 273 interior vertices): mean slope 24.4° ->
+  27.3 (sharpen) -> 27.5 (facets) -> 29.8 (terrace) -> 29.9° (relief), steep share 8.6 % -> 14.0 -> 12.3 -> 21.9 ->
+  21.4 %, max dz 0.96 / 1.08 / 0.33 m, relief 0.25 m sideways at most, 0 flips, 1357 cells, 56 099 sharp edges, 0
+  open seams; the op 90 s (cut 11 s, rise 70 s, most of it the refinement and welds).
+- **A cliff into a lake** (`waterM` with mode dem): the outline may run out over the meshes of the lake the water
+  join targets (the water mesh with the most vertices within the apron, and every object of its drawn shape: its
+  pieces and blends). The rock takes the bed faces it covers, which go to the dug DEM, so the face runs on down
+  under the water instead of a band of lake bed standing above it (the dark jagged line Omberg's 14th green showed
+  at the waterline); the lake keeps its name, material and paint and meets the rock along an ordinary cut seam.
+  Tees join the protected types for such a slab (when the op sets no `protect`), and every other water - ponds,
+  creeks - still cancels it. The slab's material and collections come from its first source that is no lake bed.
+  Report `lake` = the lake's objects.
 - **`uv` `box`** (feature attribute `uvMode: 'box'`, default `planar`): every face of the slab projected on the
   plane of its dominant normal axis (top faces XY, steep faces YZ or XZ), `uvM` metres a tile, so a cliff's faces
   carry the rock texture unstretched instead of a top-down smear. The seams between projections do not show on rock.
