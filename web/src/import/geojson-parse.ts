@@ -236,12 +236,16 @@ const CLOSE_EPS_M = 1e-6;
 // generalized — sparse, angular vertices sampled off a smooth shoreline —
 // so the fit is deliberately looser than the freehand trace's 0.75 m: the
 // spline should smooth THROUGH the corners, not reproduce them. Tuned on
-// the Vreta Hydrografi Direkt export (docs/reports/T52-report.md):
-// 1.5 m keeps every pond within ~1.3 m of the source vertices while
-// rounding the generalization corners away.
-export const IMPORT_FIT_TOLERANCE_M = 1.5;
+// the Vreta Hydrografi Direkt export (docs/reports/T52-report.md) at
+// 1.5 m and one control per 10 m; tightened 2026-10-16 to 0.5 m and one per
+// 4 m (Omberg's pond 18: 12 controls and 0.77 m off its 27 Hydrografi
+// vertices became 40 and 0.43 m). The source's own error (a vertex every
+// ~8 m, the reed line or the top of the bank, metres off at cliffs) is the
+// bigger one: "Fit pond edges" in the terrain editor (water:edge) moves a
+// pond to the water's edge on the photo afterwards.
+export const IMPORT_FIT_TOLERANCE_M = 0.5;
 /** One spline control per this many metres of ring perimeter. */
-export const IMPORT_METERS_PER_CONTROL = 10;
+export const IMPORT_METERS_PER_CONTROL = 4;
 /** Perimeter-scaled control cap, clamped: floor = the fitter's base 8; the
  * ceiling covers ~2.6 km creek ribbons (at 64 they deviate 5.6 m; ~10 m per
  * control converges to the ribbons' ~1 m half-width rounding floor). */

@@ -465,6 +465,24 @@ A run re-digs every feature of that kind on the course, as the button does.
 `--feature` takes the shape name, the feature number or its id. `--no-dig`
 leaves a feature out, and `--reset` drops its dig settings.
 
+**Pond edges** (`golfpipe/water_edge.py`, server `PondEdgeService`): neither
+the lidar nor a drawn or Hydrografi outline is the water's edge. The lidar's
+0.5 m grid smears a steep bank a metre or two out over the water; the outline
+follows the visible shore, often the top of the bank or the reed line. Each
+outline point walks in along its normal, from 1 m outside the drawn line to the
+lidar's open water, and stops where the orthophoto turns from land to water.
+The photo is read through a two-class model taught on this pond (water inside
+the lidar's sheet, land in a ring outside the outline), and the summer and
+leaf-off photos vote. Where neither shows a clear turn (reeds, lily pads,
+shade) the drawn line stays, and those stretches are reported. In the web:
+Terrain edit > **Fit pond edges (lidar + photo)**, or **Fit edge to water** in a
+pond dig's form. The proposal shows on the map (red, with the lidar's water
+yellow), and Accept stores it as a B-spline (Undo puts the old one back). From
+the command line, on the same service:
+
+    bun run water:edge -- "Ombergs Golfklubb" --all --dry-run
+    bun run water:edge -- "Ombergs Golfklubb" --feature hole_14_53 --image check.png
+
 A pond dug with `bankAboveDeg` (`--bank-above`) has its outline at the water's
 edge, so OPCD's lake mesh rim ends on the dug bank below the water. apply-dem-edits
 writes each such dig's level next to the edited DEM

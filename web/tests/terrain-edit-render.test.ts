@@ -11,6 +11,7 @@ import {
     TERRAIN_EDIT_OVERLAY_ID,
     resetTerrainEditProjectionCount,
     terrainEditProjectionCount,
+    terrainEditLiveGeojson,
     type GlyphMarkerFactory,
 } from '../src/terrain-edit/terrain-edit-render';
 
@@ -314,4 +315,16 @@ describe('rubber band', () => {
         r.render(m.svc, view([], [], { x: X0 + 40, y: Y0 }));
         expect(lastDraftData(m)!.features).toHaveLength(0);
     });
+});
+
+test('a pond edge proposal draws as two lines on the live overlay: the proposed edge and the lidar water', () => {
+    const ring = [{ x: 530000, y: 6487000 }, { x: 530020, y: 6487000 }, { x: 530020, y: 6487020 }, { x: 530000, y: 6487020 }];
+    const lidar = ring.map(p => ({ x: p.x + (p.x > 530010 ? -2 : 2), y: p.y + (p.y > 6487010 ? -2 : 2) }));
+    const v = { ...view([], []), pondEdge: { proposed: ring, lidar } };
+    const fc = terrainEditLiveGeojson(v, null);
+    const roles = fc.features.map(f => [f.properties?.role, f.geometry.type]);
+    expect(roles).toEqual([['pond-lidar', 'LineString'], ['pond-proposed', 'LineString']]);
+    const proposed = fc.features[1]!.geometry as { coordinates: number[][] };
+    expect(proposed.coordinates[0]).toEqual(proposed.coordinates[proposed.coordinates.length - 1]);   // closed
+    expect(terrainEditLiveGeojson({ ...v, pondEdge: null }, null).features).toEqual([]);
 });

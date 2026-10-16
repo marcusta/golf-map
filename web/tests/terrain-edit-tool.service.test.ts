@@ -1,3 +1,4 @@
+import type { PondEdgeApi, PondEdgeProposal } from '../../shared/api/pond-edge.gen';
 import { afterEach, describe, expect, test } from 'bun:test';
 import { di, Signal, Computed } from '@basics/core/client/core';
 import type { ToolContext } from '../src/editor/tool';
@@ -205,7 +206,8 @@ interface FakeFeature {
     holeId?: string | null;
     attributes: Record<string, string | number | boolean> | null;
     no?: number | null;
-    geometry?: { crs: string; rings: Array<{ points: Array<{ x: number; y: number }> }> };
+    geometry?: { crs: string; curveType?: string; rings: Array<{ points: Array<{ x: number; y: number }> }> };
+    version?: number;
 }
 
 interface FakeFeatures {
@@ -215,8 +217,8 @@ interface FakeFeatures {
     effectiveHiddenTypes: Signal<ReadonlySet<string>>;
     hiddenIds: Signal<ReadonlySet<string>>;
     hiddenSources: Signal<ReadonlySet<string>>;
-    updates: Array<{ id: string; patch: { attributes?: Record<string, string | number | boolean> | null } }>;
-    update(id: string, patch: { attributes?: Record<string, string | number | boolean> | null }): Promise<unknown>;
+    updates: Array<{ id: string; patch: { attributes?: Record<string, string | number | boolean> | null; geometry?: unknown } }>;
+    update(id: string, patch: { attributes?: Record<string, string | number | boolean> | null; geometry?: unknown }): Promise<unknown>;
 }
 
 function fakeFeatures(items: FakeFeature[] = []): FakeFeatures {
@@ -230,7 +232,12 @@ function fakeFeatures(items: FakeFeature[] = []): FakeFeatures {
         updates: [],
         async update(id, patch) {
             f.updates.push({ id, patch });
-            const next = f.store.items.peek().map(x => (x.id === id ? { ...x, attributes: patch.attributes ?? null } : x));
+            const next = f.store.items.peek().map(x => (x.id !== id ? x : {
+                ...x,
+                ...(patch.attributes !== undefined ? { attributes: patch.attributes } : {}),
+                ...(patch.geometry !== undefined ? { geometry: patch.geometry as FakeFeature['geometry'] } : {}),
+                version: (x.version ?? 1) + 1,
+            }));
             f.store.items.set(next);
             return next.find(x => x.id === id);
         },
@@ -287,6 +294,8 @@ async function harness(opts: {
     /** Non-null stands in for a live MaplibreMap. */
     rawMap?: object | null;
     renderer?: TerrainEditRenderer;
+    /** "Fit edge to water" stand-in (PondEdgeService). */
+    pondEdge?: PondEdgeApi;
 } = {}): Promise<Harness> {
     const api = fakeApi(opts.listResult ?? []);
     const mapBuild = fakeMapBuild();
@@ -302,7 +311,8 @@ async function harness(opts: {
             return { id: input.id, ...course } as unknown as Course;
         },
     };
-    const svc = new TerrainEditToolService(api, mapBuild, 0 /* pollMs: no real waits */, generators, new ShapingService(shaping, 0), coursesApi);
+    const svc = new TerrainEditToolService(api, mapBuild, 0 /* pollMs: no real waits */, generators, new ShapingService(shaping, 0), coursesApi,
+        opts.pondEdge ?? { propose: async () => { throw new Error('unused'); }, proposeAll: async () => { throw new Error('unused'); } });
 
     const ready = new Signal(true);
     const interactionMode = new Signal<string>(TERRAIN_EDIT_TOOL_ID);
@@ -1358,5 +1368,90 @@ describe('rubber band', () => {
             perClick.push(terrainEditProjectionCount() - before);
         }
         expect(perClick).toEqual([1, 1, 1, 1, 1, 1]);
+    });
+});
+
+describe('fit edge to water', () => {
+    const square = (x0: number, y0: number, side: number, step = 0.25) => {
+        const pts: Array<{ x: number; y: number }> = [];
+        for (let t = 0; t < 4 * side; t += step) {
+            const k = Math.floor(t / side), u = t - k * side;
+            pts.push(k === 0 ? { x: x0 + u, y: y0 } : k === 1 ? { x: x0 + side, y: y0 + u } : k === 2 ? { x: x0 + side - u, y: y0 + side } : { x: x0, y: y0 + side - u });
+        }
+        return pts;
+    };
+    const drawn = { crs: 'EPSG:3006', curveType: 'bspline', rings: [{ points: [{ x: 0, y: 0 }, { x: 22, y: 0 }, { x: 22, y: 22 }, { x: 0, y: 22 }] }] };
+    const proposal = (featureId: string, shape: string, moved: number, version = 1): PondEdgeProposal => ({
+        featureId, shape, version, ring: square(1, 1, 20), lidarRing: square(2, 2, 18), level: 103.43,
+        areaM2: { drawn: 484, lidar: 324, new: 400 }, outsideLidarM: { p50: 2, p90: 2, max: 3 },
+        movedM: { p50: 1, p90: 1, max: moved }, kept: [{ fromM: 0, toM: 4, why: 'no clear water edge on the photo (reeds, shade?)' }],
+        photos: [{ separation: 4 }], toward: null, image: null,
+    });
+    const ponds = () => fakeFeatures([
+        { id: 'p1', type: 'water', attributes: null, geometry: drawn, version: 1 },
+        { id: 'p2', type: 'water', attributes: null, geometry: drawn, version: 1 },
+    ]);
+
+    test('a proposal shows on the map; Accept stores it as a B-spline, Undo puts the old outline back', async () => {
+        const calls: unknown[] = [];
+        const pondEdge: PondEdgeApi = {
+            propose: async (input) => { calls.push(input); return proposal('p1', 'hole_14_53', 1.2); },
+            proposeAll: async () => { throw new Error('unused'); },
+        };
+        const h = await harness({ features: ponds(), pondEdge });
+        expect(await h.svc.proposeEdge('p1')).toBe(true);
+        expect(calls).toEqual([{ courseId: 'course-1', featureId: 'p1' }]);
+        const review = h.svc.pondEdge.get()!;
+        expect(review.proposal.shape).toBe('hole_14_53');
+        expect(review.controls.length).toBeGreaterThanOrEqual(8);
+        expect(review.deviation).toBeLessThan(0.2);
+        expect(h.svc.view.get().pondEdge?.proposed).toBe(review.proposal.ring);
+        expect(h.features.updates).toEqual([]);                       // nothing stored yet
+
+        expect(await h.svc.acceptEdge()).toBe(true);
+        const stored = h.features.updates[0]!;
+        expect(stored.id).toBe('p1');
+        const geometry = stored.patch.geometry as typeof drawn;
+        expect(geometry.curveType).toBe('bspline');
+        expect(geometry.rings[0]!.points).toEqual(review.controls);
+        expect(h.svc.pondEdge.get()).toBeNull();
+        expect(h.svc.view.get().pondEdge).toBeNull();
+        expect(h.svc.notice.get()).toContain('Dig ponds again');
+
+        expect(await h.svc.undoEdge()).toBe(true);
+        expect(h.features.updates[1]).toEqual({ id: 'p1', patch: { geometry: drawn } });
+        expect(h.svc.edgeUndo.get()).toBeNull();
+    });
+
+    test('all ponds: biggest change first, Skip moves on, failures are told; a pond changed since is not stored', async () => {
+        const pondEdge: PondEdgeApi = {
+            propose: async () => { throw new Error('unused'); },
+            proposeAll: async () => ({
+                proposals: [proposal('p1', 'hole_1_4d', 0.4), proposal('p2', 'others_12', 3.1, 7)],
+                failed: [{ featureId: 'v', shape: 'others_15', error: 'no orthophoto tells this pond' }],
+            }),
+        };
+        const h = await harness({ features: ponds(), pondEdge });
+        expect(await h.svc.proposeAllEdges()).toBe(true);
+        expect(h.svc.pondEdge.get()!.proposal.shape).toBe('others_12');
+        expect(h.svc.pondEdge.get()!.queue.map((p) => p.shape)).toEqual(['hole_1_4d']);
+        expect(h.svc.pondEdge.get()!.failed).toEqual([{ shape: 'others_15', error: 'no orthophoto tells this pond' }]);
+
+        // others_12 was proposed from version 7 but the store holds version 1: not stored, on to the next.
+        expect(await h.svc.acceptEdge()).toBe(false);
+        expect(h.svc.notice.get()).toContain('changed since the proposal');
+        expect(h.svc.pondEdge.get()!.proposal.shape).toBe('hole_1_4d');
+        h.svc.discardEdge();
+        expect(h.svc.pondEdge.get()).toBeNull();
+        expect(h.features.updates).toEqual([]);
+    });
+
+    test("a pond dig's form carries the bank above the water: read from and saved on the feature", async () => {
+        const pondDig = makeEdit({ id: 'd1', op: 'dig', origin: 'water-digs', originRef: 'feature:p1', params: { featherM: 0, reference: 'level', depthM: 1, bankSlopeDeg: 32 } });
+        const h = await harness({ listResult: [pondDig], features: fakeFeatures([{ id: 'p1', type: 'water', attributes: { digPreset: 'deep_water', digBankAboveDeg: 45 } }]) });
+        expect(h.svc.digSettings(pondDig)).toEqual({ preset: 'deep_water', bankAboveDeg: 45 });
+        expect(h.svc.pondOf(pondDig)).toBe('p1');
+        await h.svc.saveDigSettings('d1', { preset: 'deep_water', bankAboveDeg: 40 });
+        expect(h.features.updates[0]).toEqual({ id: 'p1', patch: { attributes: { digPreset: 'deep_water', digBankAboveDeg: 40 } } });
     });
 });

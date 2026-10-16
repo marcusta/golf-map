@@ -232,9 +232,9 @@ describe('polygonToGeometry (T52: fitted b-splines)', () => {
     });
 
     test('importControlCap scales with perimeter, clamped', () => {
-        expect(importControlCap(50)).toBe(IMPORT_MIN_CONTROLS);
-        expect(importControlCap(100)).toBe(10);
-        expect(importControlCap(1000)).toBe(100);
+        expect(importControlCap(20)).toBe(IMPORT_MIN_CONTROLS);
+        expect(importControlCap(100)).toBe(25);   // one per IMPORT_METERS_PER_CONTROL (4 m)
+        expect(importControlCap(1000)).toBe(250);
         expect(importControlCap(1e6)).toBe(IMPORT_MAX_CONTROLS);
     });
 

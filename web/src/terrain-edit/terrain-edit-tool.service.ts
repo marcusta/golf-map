@@ -27,6 +27,8 @@ import type { CourseFeature } from '../../../shared/api/course-features.gen';
 import type { TerrainEdit, TerrainEditsApi } from '../../../shared/api/terrain-edits.gen';
 import type { MapBuildApi, MapBuildJob } from '../../../shared/api/map-build.gen';
 import type { TerrainGeneratorsApi } from '../../../shared/api/terrain-generators.gen';
+import type { PondEdgeApi, PondEdgeProposal } from '../../../shared/api/pond-edge.gen';
+import { fitPondEdge } from './pond-edge-fit';
 
 /** The terrain generators the panel offers (server origins of the edits they write). */
 export type TerrainGeneratorKind = 'building-pads' | 'road-grades' | 'water-digs' | 'bunker-digs' | 'creek-digs';
@@ -204,6 +206,30 @@ export interface DigSettings {
     bankSlopeDeg?: number;
     /** Bunkers only: the face towards the green. */
     faceSlopeDeg?: number;
+    /** Ponds only: the outline is the water's edge, the bank outside rises from it at this angle (°). */
+    bankAboveDeg?: number;
+}
+
+/**
+ * "Fit edge to water": the proposal under review (PondEdgeService), fitted as
+ * the B-spline Accept would store, and the ponds still to look at when all
+ * were proposed at once.
+ */
+export interface PondEdgeReview {
+    proposal: PondEdgeProposal;
+    /** The B-spline controls Accept stores. */
+    controls: { x: number; y: number }[];
+    /** How far the fit strays from the proposed edge (m). */
+    deviation: number;
+    /** The ponds after this one (all at once), and the ones the photos or lidar could not read. */
+    queue: PondEdgeProposal[];
+    failed: { shape: string; error: string }[];
+}
+
+/** What the map draws for a proposal: the proposed edge and the lidar's open water. */
+export interface PondEdgeMark {
+    proposed: { x: number; y: number }[];
+    lidar: { x: number; y: number }[];
 }
 
 /** A hand-drawn edit's form values (radiusM is smooth's, flat is plane's). */
@@ -234,6 +260,8 @@ export interface TerrainEditView {
      * point. Null while no draft is open or while a mouse button is held.
      */
     cursor: Point | null;
+    /** "Fit edge to water": the proposal under review, null when none. */
+    pondEdge?: PondEdgeMark | null;
 }
 
 /**
@@ -339,6 +367,13 @@ export class TerrainEditToolService {
         return marks;
     });
 
+    /** "Fit edge to water": the proposal under review, null when none (declared before `view`, which reads it). */
+    readonly pondEdge = new Signal<PondEdgeReview | null>(null);
+    /** True while the server reads the photos. */
+    readonly proposingEdge = new Signal(false);
+    /** The outline the last Accept replaced: Undo puts it back. */
+    readonly edgeUndo = new Signal<{ featureId: string; shape: string; geometry: CourseFeature['geometry'] } | null>(null);
+
     /** Pointer position for the rubber band (see TerrainEditView.cursor). */
     readonly cursor = new Signal<Point | null>(null);
 
@@ -352,6 +387,7 @@ export class TerrainEditToolService {
             labels: this.labels.get(),
             recipes: this.recipeMarks.get(),
             selection: this.selectedFeatures.get().map(featureRings),
+            pondEdge: this.pondEdgeMark(),
         };
     });
 
@@ -390,6 +426,8 @@ export class TerrainEditToolService {
         readonly shaping: ShapingService = di.get(ShapingService),
         /** Course GET for the post-apply manifest (new tile version). */
         private coursesApi: Pick<CoursesApi, 'get'> = api.courses,
+        /** "Fit edge to water" (PondEdgeService). */
+        private pondEdgeApi: PondEdgeApi = api.pondEdge,
     ) {}
 
     // ─────────────────────────────────────────────────────────────────────────
@@ -449,6 +487,7 @@ export class TerrainEditToolService {
         if (num('digDepthM') !== undefined) settings.depthM = num('digDepthM');
         if (num('digBankSlopeDeg') !== undefined) settings.bankSlopeDeg = num('digBankSlopeDeg');
         if (num('digFaceSlopeDeg') !== undefined) settings.faceSlopeDeg = num('digFaceSlopeDeg');
+        if (num('digBankAboveDeg') !== undefined) settings.bankAboveDeg = num('digBankAboveDeg');
         return settings;
     }
 
@@ -467,7 +506,123 @@ export class TerrainEditToolService {
         if (settings.depthM !== undefined) next.digDepthM = settings.depthM;
         if (settings.bankSlopeDeg !== undefined) next.digBankSlopeDeg = settings.bankSlopeDeg;
         if (settings.faceSlopeDeg !== undefined) next.digFaceSlopeDeg = settings.faceSlopeDeg;
+        if (settings.bankAboveDeg !== undefined) next.digBankAboveDeg = settings.bankAboveDeg;
         return this.redig(edit, next, 'Saved on the feature');
+    }
+
+    // ─────────────────────────────────────────────────────────────────────────
+    // "Fit edge to water" (PondEdgeService, also `bun run water:edge`): a
+    // pond's edge found on the orthophoto between the lidar's open water and
+    // the drawn line. The proposal shows on the map with the lidar's water;
+    // Accept stores it on the feature as a B-spline (the old outline is kept
+    // for Undo), Discard drops it. Nothing changes until Accept.
+    // ─────────────────────────────────────────────────────────────────────────
+
+    /** The pond a generated pond dig was made from, for its row's "Fit edge to water". */
+    pondOf(edit: TerrainEdit): string | null {
+        return edit.origin === 'water-digs' ? digFeatureId(edit) : null;
+    }
+
+    /** Proposes one pond's water edge (the feature id of a `water` feature). */
+    async proposeEdge(featureId: string): Promise<boolean> {
+        const ctx = this.ctx;
+        if (!ctx || this.proposingEdge.peek()) return false;
+        this.proposingEdge.set(true);
+        try {
+            const proposal = await this.pondEdgeApi.propose({ courseId: ctx.courseId, featureId });
+            this.review(proposal, [], []);
+            return true;
+        } catch (e) {
+            this.notice.set(`Fit edge to water failed: ${message(e)}`);
+            return false;
+        } finally {
+            this.proposingEdge.set(false);
+        }
+    }
+
+    /** Proposes every pond's edge and shows them one at a time, the biggest moves first. */
+    async proposeAllEdges(): Promise<boolean> {
+        const ctx = this.ctx;
+        if (!ctx || this.proposingEdge.peek()) return false;
+        this.proposingEdge.set(true);
+        try {
+            const all = await this.pondEdgeApi.proposeAll({ courseId: ctx.courseId });
+            const queue = [...all.proposals].sort((a, b) => b.movedM.max - a.movedM.max);
+            const failed = all.failed.map((f) => ({ shape: f.shape, error: f.error }));
+            if (queue.length === 0) {
+                this.pondEdge.set(null);
+                this.notice.set(failed.length ? `No pond edge proposed: ${failed.map((f) => `${f.shape} — ${f.error}`).join('; ')}` : 'No ponds on this course.');
+                return false;
+            }
+            this.review(queue[0], queue.slice(1), failed);
+            return true;
+        } catch (e) {
+            this.notice.set(`Fit pond edges failed: ${message(e)}`);
+            return false;
+        } finally {
+            this.proposingEdge.set(false);
+        }
+    }
+
+    /** Stores the proposal on its pond as a B-spline, then shows the next one (if any). */
+    async acceptEdge(): Promise<boolean> {
+        const review = this.pondEdge.peek();
+        const features = this.ctx?.features;
+        if (!review || !features) return false;
+        const p = review.proposal;
+        const feature = features.store.items.peek().find((f) => f.id === p.featureId);
+        if (!feature) { this.notice.set(`${p.shape} is not loaded on this course.`); return false; }
+        if (feature.version !== p.version) {
+            this.notice.set(`${p.shape} changed since the proposal: fit it again.`);
+            this.next();
+            return false;
+        }
+        const geometry = feature.geometry;
+        const rings = [{ ...geometry.rings[0], points: review.controls }, ...geometry.rings.slice(1)];
+        this.saving.set(true);
+        try {
+            const stored = await features.update(p.featureId, { geometry: { ...geometry, curveType: 'bspline', rings } as CourseFeature['geometry'] });
+            if (stored === undefined) { this.notice.set('Saving the pond failed.'); return false; }
+        } finally {
+            this.saving.set(false);
+        }
+        this.edgeUndo.set({ featureId: p.featureId, shape: p.shape, geometry });
+        this.notice.set(`${p.shape}: edge stored. Dig ponds again, then Apply to terrain (and update the meshes: the SVG carries the new shape).`);
+        this.next();
+        return true;
+    }
+
+    /** Drops the proposal and shows the next one (if any). */
+    discardEdge(): void {
+        this.next();
+    }
+
+    /** Puts back the outline the last Accept replaced. */
+    async undoEdge(): Promise<boolean> {
+        const undo = this.edgeUndo.peek();
+        const features = this.ctx?.features;
+        if (!undo || !features) return false;
+        const stored = await features.update(undo.featureId, { geometry: undo.geometry });
+        if (stored === undefined) { this.notice.set('Putting the old outline back failed.'); return false; }
+        this.edgeUndo.set(null);
+        this.notice.set(`${undo.shape}: the previous outline is back.`);
+        return true;
+    }
+
+    private pondEdgeMark(): PondEdgeMark | null {
+        const review = this.pondEdge.get();
+        return review ? { proposed: review.proposal.ring, lidar: review.proposal.lidarRing } : null;
+    }
+
+    private review(proposal: PondEdgeProposal, queue: PondEdgeProposal[], failed: { shape: string; error: string }[]): void {
+        const fit = fitPondEdge(proposal.ring);
+        this.pondEdge.set({ proposal, controls: fit.controls, deviation: fit.maxDeviation, queue, failed });
+    }
+
+    private next(): void {
+        const review = this.pondEdge.peek();
+        if (review && review.queue.length > 0) this.review(review.queue[0], review.queue.slice(1), review.failed);
+        else this.pondEdge.set(null);
     }
 
     /** Saves a hand-drawn edit's op and params in place. */

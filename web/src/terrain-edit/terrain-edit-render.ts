@@ -56,6 +56,9 @@ export const TERRAIN_EDIT_DRAFT_OVERLAY_ID = 'terrain-edit-draft';
 /** Violet, outside the course-feature palette on purpose. */
 const EDIT_COLOR = '#b653e6';
 const DRAFT_COLOR = '#e879f9';
+/** "Fit edge to water": the proposed edge, and the lidar's open water inside the drawn line. */
+const POND_EDGE_COLOR = '#ef4444';
+const POND_LIDAR_COLOR = '#facc15';
 const GLYPH_BG = 'rgba(38, 16, 46, 0.82)';
 
 /** Outline simplification for display, metres: invisible at any editor zoom, ~20x fewer vertices. */
@@ -150,6 +153,12 @@ function terrainEditMarkGeojson(view: TerrainEditView): Feature[] {
             properties: { role: 'selection' },
             geometry: { type: 'Polygon', coordinates: rings.map(ringLngLat) },
         });
+    }
+    if (view.pondEdge) {
+        for (const [role, ring] of [['pond-lidar', view.pondEdge.lidar], ['pond-proposed', view.pondEdge.proposed]] as const) {
+            if (ring.length < 3) continue;
+            features.push({ type: 'Feature', properties: { role }, geometry: { type: 'LineString', coordinates: ringLngLat(ring) } });
+        }
     }
     return features;
 }
@@ -272,6 +281,20 @@ function draftLayers(): OverlayLayerSpec[] {
             paint: { 'line-color': '#ffffff', 'line-width': 4, 'line-opacity': 0.95 },
         },
         {
+            // "Fit edge to water": the lidar's open water (the inner bound) ...
+            id: 'terrain-edit-pond-lidar',
+            type: 'line',
+            filter: role('pond-lidar'),
+            paint: { 'line-color': POND_LIDAR_COLOR, 'line-width': 2, 'line-dasharray': [2, 1.5], 'line-opacity': 0.9 },
+        },
+        {
+            // ... and the proposed edge (the drawn line is the pond itself, under it).
+            id: 'terrain-edit-pond-proposed',
+            type: 'line',
+            filter: role('pond-proposed'),
+            paint: { 'line-color': POND_EDGE_COLOR, 'line-width': 3, 'line-opacity': 0.95 },
+        },
+        {
             // The features selected for "Shape in Blender" (draw mode's selection yellow).
             id: 'terrain-edit-draft-selection',
             type: 'line',
@@ -377,6 +400,7 @@ export class TerrainEditOverlayRenderer implements TerrainEditRenderer {
     private lastHighlightId: string | null = null;
     private lastLabels: TerrainEditView['labels'] | null = null;
     private lastSelection: TerrainEditView['selection'] | null = null;
+    private lastPondEdge: TerrainEditView['pondEdge'] = null;
     private lastRecipes: TerrainEditView['recipes'] | null = null;
     private glyphs = new Map<string, GlyphEntry>();
     /** The last view drawn, for the glyph refresh after a camera move. */
@@ -430,6 +454,7 @@ export class TerrainEditOverlayRenderer implements TerrainEditRenderer {
             this.draftAdded = true;
         } else if (view.draft !== this.lastDraft || cursor !== this.lastCursor
             || view.highlightId !== this.lastHighlightId || view.selection !== this.lastSelection
+            || (view.pondEdge ?? null) !== this.lastPondEdge
             || (view.highlightId !== null && (view.edits !== this.lastEdits || view.recipes !== this.lastRecipes))) {
             map.updateOverlayData(TERRAIN_EDIT_DRAFT_OVERLAY_ID, terrainEditLiveGeojson(view, cursor));
         }
@@ -439,6 +464,7 @@ export class TerrainEditOverlayRenderer implements TerrainEditRenderer {
         this.lastHighlightId = view.highlightId;
         this.lastLabels = view.labels;
         this.lastSelection = view.selection;
+        this.lastPondEdge = view.pondEdge ?? null;
         this.lastRecipes = view.recipes;
     }
 
@@ -465,6 +491,7 @@ export class TerrainEditOverlayRenderer implements TerrainEditRenderer {
         this.lastHighlightId = null;
         this.lastLabels = null;
         this.lastSelection = null;
+        this.lastPondEdge = null;
         this.lastRecipes = null;
         this.lastView = null;
         this.watching?.stop();

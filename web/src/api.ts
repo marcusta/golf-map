@@ -20,6 +20,7 @@ import { createHydroClient } from '../../shared/api/hydro.gen';
 import { createOsmClient } from '../../shared/api/osm.gen';
 import { createTerrainEditsClient } from '../../shared/api/terrain-edits.gen';
 import { createTerrainGeneratorsClient } from '../../shared/api/terrain-generators.gen';
+import { createPondEdgeClient } from '../../shared/api/pond-edge.gen';
 import { createPublishClient } from '../../shared/api/publish.gen';
 import { createGsproExportClient } from '../../shared/api/gspro-export.gen';
 import { createGsproSyncClient } from '../../shared/api/gspro-sync.gen';
@@ -61,6 +62,7 @@ export const api = {
     osm: createOsmClient(API_BASE),
     terrainEdits: createTerrainEditsClient(API_BASE),
     terrainGenerators: createTerrainGeneratorsClient(API_BASE),
+    pondEdge: createPondEdgeClient(API_BASE),
     publish: createPublishClient(API_BASE),
     gsproExport: createGsproExportClient(API_BASE),
     gsproSync: createGsproSyncClient(API_BASE),

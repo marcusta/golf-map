@@ -16,6 +16,7 @@ import {
     paramsSummary,
     recipeParams,
     type DigSettings,
+    type PondEdgeReview,
     type EditGroup,
     type TerrainEditOp,
 } from './terrain-edit-tool.service';
@@ -68,13 +69,24 @@ const tpl = template(`
             <button bind="genPadsBtn" type="button" class="gen-btn" data-testid="terrain-edit-gen-pads"></button>
             <button bind="genRoadsBtn" type="button" class="gen-btn" data-testid="terrain-edit-gen-roads"></button>
             <button bind="genPondsBtn" type="button" class="gen-btn" data-testid="terrain-edit-gen-ponds"></button>
+            <button bind="fitEdgesBtn" type="button" class="gen-btn" data-testid="terrain-edit-fit-edges"></button>
             <button bind="genBunkersBtn" type="button" class="gen-btn" data-testid="terrain-edit-gen-bunkers"></button>
             <button bind="genCreeksBtn" type="button" class="gen-btn" data-testid="terrain-edit-gen-creeks"></button>
             <div class="hint">Building pads: every OSM building footprint in the map area, measured on the lidar, gets a flat pad. Road grades: every OSM road, smoothed along and levelled across. Each run replaces its own previous edits only — yours stay. Then Apply to terrain.</div>
             <div class="hint">Bunkers, ponds and creeks under the course meshes are shaped in Blender by their recipe (the course default unless you pick one — click the feature). The DEM digs here still shape the terrain around and outside the meshes.</div>
         </div>
+        <div bind="pondEdgeSection" class="section hidden" data-testid="terrain-edit-pond-edge">
+            <h4 bind="pondEdgeTitle" class="section-title"></h4>
+            <div bind="pondEdgeSummary" class="hint" data-testid="terrain-edit-pond-edge-summary"></div>
+            <div class="hint">Red: the proposed edge, found on the photo between the lidar's open water (yellow, dashed) and the drawn line. Accept stores it on the pond as a B-spline.</div>
+            <div class="edit-form__actions">
+                <button bind="pondEdgeDiscardBtn" type="button" data-testid="terrain-edit-pond-edge-discard"></button>
+                <button bind="pondEdgeAcceptBtn" type="button" data-testid="terrain-edit-pond-edge-accept">Accept</button>
+            </div>
+        </div>
         <div bind="savingLine" class="busy-line">Saving…</div>
         <div bind="notice" class="notice" data-testid="terrain-edit-notice"></div>
+        <button bind="pondEdgeUndoBtn" type="button" class="gen-btn hidden" data-testid="terrain-edit-pond-edge-undo"></button>
         <div class="section">
             <h4 class="section-title">Edits on this site</h4>
             <div bind="list" class="edit-list" data-testid="terrain-edit-list"></div>
@@ -417,6 +429,43 @@ export class TerrainEditPanelComponent extends Component {
                 textContent: () => this.tool.generating.get() === 'water-digs' ? 'Digging ponds…' : 'Dig ponds (DEM)',
                 title: 'DEM digs: each water feature dug below its water level (its dig preset, default Natural Pond); the shoreline stays at the level. Creeks are left alone. Replaces the previous pond digs. Under the course meshes the pond is shaped in Blender by its recipe instead (the course default lake recipe unless you pick one), so this matters outside the meshes',
                 onclick: () => void this.tool.generate('water-digs'),
+            },
+            fitEdgesBtn: {
+                disabled: () => this.tool.proposingEdge.get() || this.tool.generating.get() !== null || this.tool.applying.get(),
+                textContent: () => this.tool.proposingEdge.get() ? 'Reading the photos…' : 'Fit pond edges (lidar + photo)',
+                title: "Each pond's edge found on the orthophoto between the lidar's open water and the drawn line (the lidar smears a steep bank over the water; a drawn or Hydrografi line follows the shore or reed line). Shown one pond at a time on the map, biggest change first: Accept stores it, Discard skips it. Where the photo shows no clear edge (reeds, shade) the drawn line stays. Same as `bun run water:edge`",
+                onclick: () => void this.tool.proposeAllEdges(),
+            },
+            pondEdgeSection: {
+                className: () => this.tool.pondEdge.get() ? 'section pond-edge' : 'section pond-edge hidden',
+            },
+            pondEdgeTitle: {
+                textContent: () => {
+                    const r = this.tool.pondEdge.get();
+                    return r ? `Water edge — ${r.proposal.shape}` : '';
+                },
+            },
+            pondEdgeSummary: {
+                textContent: () => {
+                    const r = this.tool.pondEdge.get();
+                    return r ? pondEdgeSummary(r) : '';
+                },
+            },
+            pondEdgeAcceptBtn: {
+                disabled: () => this.tool.saving.get(),
+                onclick: () => void this.tool.acceptEdge(),
+            },
+            pondEdgeDiscardBtn: {
+                textContent: () => (this.tool.pondEdge.get()?.queue.length ?? 0) > 0 ? 'Skip' : 'Discard',
+                onclick: () => this.tool.discardEdge(),
+            },
+            pondEdgeUndoBtn: {
+                className: () => this.tool.edgeUndo.get() ? 'gen-btn' : 'gen-btn hidden',
+                textContent: () => {
+                    const u = this.tool.edgeUndo.get();
+                    return u ? `Undo the edge fit (${u.shape})` : '';
+                },
+                onclick: () => void this.tool.undoEdge(),
             },
             genBunkersBtn: {
                 disabled: () => this.tool.generating.get() !== null || this.tool.applying.get(),
@@ -988,11 +1037,27 @@ export class TerrainEditPanelComponent extends Component {
         placeholders();
         out.push(field('Depth (m)', depth), field(edit.origin === 'bunker-digs' ? 'Entry slope (°)' : 'Bank slope (°)', bank));
         if (edit.origin === 'bunker-digs') out.push(field('Face slope (°)', face));
+        const above = optionalNumber(current.bankAboveDeg, 1, 1);
+        above.placeholder = 'off';
+        above.setAttribute('data-testid', 'terrain-edit-dig-bank-above');
+        if (edit.origin === 'water-digs') {
+            out.push(field('Bank above water (°)', above),
+                hint('Set: the outline is the water\'s edge — the bank outside comes down to the water there at this angle (45 is a steep pond bank), and the water plane stands at the dig\'s level. Empty: the bank tapers in under the water.'));
+            const featureId = this.tool.pondOf(edit);
+            if (featureId) {
+                const fit = button('Fit edge to water (lidar + photo)', () => void this.tool.proposeEdge(featureId));
+                fit.className = 'gen-btn';
+                fit.setAttribute('data-testid', 'terrain-edit-fit-edge');
+                fit.title = "This pond's edge found on the orthophoto between the lidar's open water and the drawn line; shown on the map to Accept or Discard";
+                out.push(fit);
+            }
+        }
         out.push(hint(`Saved on this ${noun}; an empty box uses the preset. Re-digs every ${noun}.`));
         const read = (el: HTMLInputElement) => (el.value.trim() === '' || !Number.isFinite(Number(el.value)) ? undefined : Number(el.value));
         const save = () => {
             const settings: DigSettings = { preset: preset?.value || undefined, depthM: read(depth), bankSlopeDeg: read(bank) };
             if (edit.origin === 'bunker-digs') settings.faceSlopeDeg = read(face);
+            if (edit.origin === 'water-digs') settings.bankAboveDeg = read(above);
             return this.tool.saveDigSettings(edit.id, settings);
         };
         out.push(this.actions(save));
@@ -1016,6 +1081,20 @@ export class TerrainEditPanelComponent extends Component {
         row.append(cancel, ok);
         return row;
     }
+}
+
+/** What a pond edge proposal changes, in a line or two. */
+function pondEdgeSummary(r: PondEdgeReview): string {
+    const p = r.proposal;
+    const kept = p.kept.reduce((sum, k) => sum + (k.toM - k.fromM), 0);
+    const parts = [
+        `Moves the line ${p.movedM.p50} m (median), up to ${p.movedM.max} m; area ${p.areaM2.drawn} → ${p.areaM2.new} m² (lidar's open water ${p.areaM2.lidar} m²).`,
+        kept > 0 ? `Keeps the drawn line on ${Math.round(kept)} m where the photo shows no clear edge (reeds, shade).` : '',
+        `${r.controls.length} control points.`,
+        r.queue.length ? `${r.queue.length} more pond(s) after this one.` : '',
+        r.failed.length ? `Not proposed: ${r.failed.map((f) => `${f.shape} (${f.error})`).join('; ')}.` : '',
+    ];
+    return parts.filter(Boolean).join(' ');
 }
 
 /** A saved `overrides` object's numeric entries (the only kind the form edits). */
