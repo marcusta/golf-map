@@ -129,7 +129,7 @@ namespace GolfMap.Editor
             {
                 var geo = Flatten(lake, outset, below, parent != null ? parent.transform : null, slabs);
                 var mine = planes.FirstOrDefault(p => p.name == lake.planeName && ours(p));
-                var others = planes.Where(p => p.activeInHierarchy && !ours(p) && Covers(p, lake.bounds)).ToList();
+                var others = planes.Where(p => p.activeInHierarchy && !ours(p) && Covers(p, lake.bounds, geo.rimMin)).ToList();
                 float lift = liftArg ?? (mine != null ? mine.transform.localPosition.y : 0.3f);
                 float fixedSurface = 0f;
                 bool isFixed = liftArg == null && levels.TryGetValue(lake.planeName, out fixedSurface);
@@ -545,12 +545,17 @@ namespace GolfMap.Editor
             return existing;
         }
 
-        // Another plane covers a lake when their XZ bounds share most of the lake's.
-        static bool Covers(GameObject plane, Bounds lake)
+        // Another plane covers a lake when their XZ bounds share most of the lake's and it is not below the lake's
+        // edge (its lowest rim point, give or take CoverLevelM; over the whole rim, the lake is under its water): a
+        // big lake's plane (Omberg's Vattern, 4 km) also spans the ponds on the land above it, 15 m higher. Without
+        // the rim: the lake mesh's lowest point.
+        const float CoverLevelM = 1f;
+        static bool Covers(GameObject plane, Bounds lake, float rimLow = float.NaN)
         {
             var r = plane.GetComponent<Renderer>();
             if (r == null) return false;
             var b = r.bounds;
+            if (b.max.y < (float.IsNaN(rimLow) ? lake.min.y : rimLow) - CoverLevelM) return false;
             float w = Mathf.Min(b.max.x, lake.max.x) - Mathf.Max(b.min.x, lake.min.x);
             float d = Mathf.Min(b.max.z, lake.max.z) - Mathf.Max(b.min.z, lake.min.z);
             return w > 0 && d > 0 && w * d >= 0.5f * Mathf.Max(1e-3f, lake.size.x * lake.size.z);
