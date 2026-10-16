@@ -1,0 +1,171 @@
+{
+ "format": "golfmap-props-spec-v1",
+ "source": "docs/gspro/ombergs-golfklubb/stone-walls.gen.py",
+ "origin": [
+  0,
+  0
+ ],
+ "assets": {
+  "boulder_1": {
+   "category": "prop",
+   "collider": "mesh",
+   "parts": [
+    {
+     "kind": "boulder",
+     "sx": 1.0,
+     "sy": 0.82,
+     "sz": 0.72,
+     "seed": 41,
+     "mat": "granite_boulder",
+     "moss": 0.84,
+     "mossMat": "granite_moss"
+    }
+   ]
+  },
+  "boulder_2": {
+   "category": "prop",
+   "collider": "mesh",
+   "parts": [
+    {
+     "kind": "boulder",
+     "sx": 1.0,
+     "sy": 0.9,
+     "sz": 0.8,
+     "seed": 42,
+     "mat": "granite_boulder",
+     "moss": 0.84,
+     "mossMat": "granite_moss"
+    }
+   ]
+  },
+  "boulder_3": {
+   "category": "prop",
+   "collider": "mesh",
+   "parts": [
+    {
+     "kind": "boulder",
+     "sx": 1.0,
+     "sy": 0.62,
+     "sz": 0.52,
+     "seed": 43,
+     "mat": "granite_boulder",
+     "moss": 0.84,
+     "mossMat": "granite_moss"
+    }
+   ]
+  },
+  "boulder_4": {
+   "category": "prop",
+   "collider": "mesh",
+   "parts": [
+    {
+     "kind": "boulder",
+     "sx": 1.0,
+     "sy": 0.95,
+     "sz": 0.88,
+     "seed": 44,
+     "mat": "granite_boulder",
+     "moss": 0.84,
+     "mossMat": "granite_moss"
+    }
+   ]
+  },
+  "boulder_5": {
+   "category": "prop",
+   "collider": "mesh",
+   "parts": [
+    {
+     "kind": "boulder",
+     "sx": 1.0,
+     "sy": 0.78,
+     "sz": 0.6,
+     "seed": 45,
+     "mat": "granite_boulder",
+     "moss": 0.84,
+     "mossMat": "granite_moss"
+    }
+   ]
+  },
+  "boulder_6": {
+   "category": "prop",
+   "collider": "mesh",
+   "parts": [
+    {
+     "kind": "boulder",
+     "sx": 1.0,
+     "sy": 0.86,
+     "sz": 0.76,
+     "seed": 46,
+     "mat": "granite_boulder",
+     "moss": 0.84,
+     "mossMat": "granite_moss"
+    }
+   ]
+  },
+  "boulder_7": {
+   "category": "prop",
+   "collider": "mesh",
+   "parts": [
+    {
+     "kind": "boulder",
+     "sx": 1.0,
+     "sy": 0.66,
+     "sz": 0.66,
+     "seed": 47,
+     "mat": "granite_boulder",
+     "moss": 0.84,
+     "mossMat": "granite_moss"
+    }
+   ]
+  },
+  "boulder_8": {
+   "category": "prop",
+   "collider": "mesh",
+   "parts": [
+    {
+     "kind": "boulder",
+     "sx": 1.0,
+     "sy": 0.92,
+     "sz": 0.62,
+     "seed": 48,
+     "mat": "granite_boulder",
+     "moss": 0.84,
+     "mossMat": "granite_moss"
+    }
+   ]
+  },
+  "boulder_9": {
+   "category": "prop",
+   "collider": "mesh",
+   "parts": [
+    {
+     "kind": "boulder",
+     "sx": 1.0,
+     "sy": 0.8,
+     "sz": 0.84,
+     "seed": 49,
+     "mat": "granite_boulder",
+     "moss": 0.84,
+     "mossMat": "granite_moss"
+    }
+   ]
+  },
+  "boulder_10": {
+   "category": "prop",
+   "collider": "mesh",
+   "parts": [
+    {
+     "kind": "boulder",
+     "sx": 1.0,
+     "sy": 0.58,
+     "sz": 0.5,
+     "seed": 50,
+     "mat": "granite_boulder",
+     "moss": 0.84,
+     "mossMat": "granite_moss"
+    }
+   ]
+  }
+ },
+ "instances": []
+}
