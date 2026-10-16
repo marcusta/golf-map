@@ -86,3 +86,17 @@ def test_read_shore_takes_the_dte5_edit_and_its_level(tmp_path):
     shore, level = lake_plane.read_shore(path)
     assert level == 88.762
     assert abs(shore.area - poly.area) < 1.0
+
+
+def test_shore_distance_grid_measures_from_land_islands_included():
+    import base64
+    lake = box(0, 0, 100, 100).difference(box(60, 40, 70, 50))   # a 10 m island
+    g = lake_plane.shore_distance_grid(lake, box(-50, -50, 150, 150), (0, 0))
+    q = np.frombuffer(base64.b64decode(g["data"]), np.uint8).reshape(g["height"], g["width"]) * g["stepM"]
+    def at(x, z):
+        return q[int((z - g["z0"]) / g["cellM"]), int((x - g["x0"]) / g["cellM"])]
+    assert at(-0.5, 50) == 0                      # outside the lake: land
+    assert 9 <= at(10.5, 50) <= 11.5              # 10 m in from the west shore
+    assert at(65, 45) == 0                        # on the island
+    assert 4 <= at(75.5, 45) <= 6                 # 5 m off the island
+    assert at(50, 98.5) < 2.5                     # the north shore

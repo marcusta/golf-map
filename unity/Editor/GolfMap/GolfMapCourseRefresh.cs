@@ -120,6 +120,7 @@ namespace GolfMap.Editor
             var courseName = GolfMapCourses.Name(course);
             var reportPath = dryRun ? GolfMapCourses.ReportPath(course, DryRunSuffix) : courseFolder + ReportFile;
             var creeksExport = GolfMapCourses.ExportFile(course, "inner", "creeks");
+            var lakePlane = GolfMapCourses.ExportFile(course, "inner", "lake-plane");
             var exportPrefix = course.exportPrefix;
             course = null;
             var started = DateTime.Now;
@@ -193,6 +194,12 @@ namespace GolfMap.Editor
             // lift); lakes without one are listed, not given a plane
             run("waterplanes.build", "Lake water planes (every lake; ours rebuilt keeping their lift)", () => Waterplanes(dryRun), planned);
 
+            // 6b. a big lake's light shallows (golfmap.lake.bed): the FBX sync and OPCD's default materials undo them
+            if (string.IsNullOrEmpty(lakePlane) || !File.Exists(lakePlane))
+                steps.Add(new Step { id = "lake.bed", label = "Big lake bed shallows", status = "skipped", note = "no lake plane at " + (lakePlane ?? "(no export folder)") });
+            else
+                run("lake.bed", "Big lake bed shallows", () => GolfMapLake.Bed(dryRun), planned);
+
             // 7. creeks refitted to the new banks
             if (string.IsNullOrEmpty(creeksExport) || !File.Exists(creeksExport))
                 steps.Add(new Step { id = "creeks.import", label = "Creeks refit (R.A.M.)", status = "skipped", note = "no creeks export at " + (creeksExport ?? "(no export folder)") });
@@ -262,6 +269,7 @@ namespace GolfMap.Editor
             var courseName = GolfMapCourses.Name(course);
             var reportPath = dryRun ? GolfMapCourses.ReportPath(course, DryRunSuffix) : courseFolder + ReportFile;
             var creeksExport = GolfMapCourses.ExportFile(course, "inner", "creeks");
+            var lakePlane = GolfMapCourses.ExportFile(course, "inner", "lake-plane");
             var exportPrefix = course.exportPrefix;
             var meshFolder = "Assets/" + (a.String("folder") ?? course.meshFolder).Trim('/', '\\').Replace('\\', '/');
             course = null;   // OPCD's Set Default Materials unloads it (see RefreshAll)
@@ -371,6 +379,11 @@ namespace GolfMap.Editor
             var lakes = only.Where(n => n.EndsWith(LakeSuffix, StringComparison.Ordinal)).ToList();
             if (lakes.Count == 0) notNeeded("waterplanes.build", "Lake water planes", "no lake among them");
             else run("waterplanes.build", "Lake water planes (named lakes)", () => Waterplanes(dryRun, lakes), planned);
+
+            // 6b. the big lake's light shallows, when one of its bed meshes is among them
+            if (lakes.Count == 0) notNeeded("lake.bed", "Big lake bed shallows", "no lake among them");
+            else if (string.IsNullOrEmpty(lakePlane) || !File.Exists(lakePlane)) notNeeded("lake.bed", "Big lake bed shallows", "no lake plane at " + (lakePlane ?? "(no export folder)"));
+            else run("lake.bed", "Big lake bed shallows", () => GolfMapLake.Bed(dryRun), planned);
 
             // 7. creeks: those crossing a named creek mesh
             var creekMeshes = only.Where(IsCreekMesh).ToList();

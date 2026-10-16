@@ -1308,6 +1308,14 @@ pipeline cuts it from the lake's outline instead (`golfpipe lake-plane`, pipelin
   there before (more than 1 m under the surface) are switched off.
 - `golfmap.lake.material {which, floats, colors, vectors, on, off}` tunes those materials from the
   bridge and recomputes Lux's derived Gerstner values (the inspector does the same).
+- `golfmap.lake.bed [bandM=25] [fadeM=5] [resetMaterial] [dryRun] [save]`: the bright shallows. The lake's
+  OPCD bed meshes (`*_Water_Base_Lake_-_Mesh` under the water) get `<course>/Lake/<name> bed.mat` - OPCD's
+  lake material with OPCD's bunker sand (detail slice 12 of the same arrays) copied into red, satellite and
+  base blend off so it shows from afar, light beige - and red paint within bandM of the shore, fading over
+  fadeM, from the lake-plane file's shore distance grid (islands count as shore). Copies in
+  `<course>/Lake/Bed/`, painted from the FBX colours each run; bandM/fadeM kept in `<name> bed.json`.
+  `golfmap.course.refresh` runs it after the water planes (step `lake.bed`). Colour: `golfmap.lake.material
+  which=bed` (`_RedDetailColorTint`, `_RedOverallColorStrength`).
 
 What Omberg needed (2026-10-16): Lux's crest foam (`_FoamCaps`) whitens all the water once the
 Gerstner keyword `_GERSTNERDISPLACEMENT` is on (the demo has it off), so it is 0; caustics with

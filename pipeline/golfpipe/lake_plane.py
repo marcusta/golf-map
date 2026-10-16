@@ -26,6 +26,7 @@ heightmap export puts the inner terrain in). Triangles wind clockwise seen from 
 
 from __future__ import annotations
 
+import base64
 import json
 import math
 from pathlib import Path
@@ -45,6 +46,8 @@ DEFAULT_OUTER_CELL_M = 10.0
 DEFAULT_FAR_CELL_M = 25.0
 DEFAULT_COLLIDER_CELL_M = 5.0
 PROBE_ABOVE_M = 15.0
+SHORE_GRID_CELL_M = 1.0
+SHORE_GRID_STEP_M = 0.2      # uint8 steps: distances up to 51 m
 
 
 class LakePlaneError(RuntimeError):
@@ -185,6 +188,31 @@ def probe_spot(water: Polygon, inner_box: Polygon, frame: tuple[float, float], s
     return {"x": round(p.x - frame[0], 2), "y": round(surface_y + PROBE_ABOVE_M, 2), "z": round(p.y - frame[1], 2)}
 
 
+def shore_distance_grid(water, near_box: Polygon, frame: tuple[float, float], cell_m: float = SHORE_GRID_CELL_M,
+                        step_m: float = SHORE_GRID_STEP_M) -> dict | None:
+    """Distance from the shore (m) over the lake's near part, for golfmap.lake.bed's band of light
+    bed: 0 on land (islands and skerries too), growing out over the water; the grid's own edges
+    are open water, not shore. Cells of `cell_m` (row 0 at the south, as Unity's z grows), uint8
+    in `step_m` steps, base64."""
+    from scipy.ndimage import distance_transform_edt
+    near_water = water.intersection(near_box)
+    if near_water.is_empty:
+        return None
+    w0, s0, e1, n1 = near_water.bounds
+    w0, s0 = math.floor(w0 / cell_m) * cell_m - cell_m, math.floor(s0 / cell_m) * cell_m - cell_m
+    nx, nz = int(math.ceil((e1 - w0) / cell_m)) + 1, int(math.ceil((n1 - s0) / cell_m)) + 1
+    north = s0 + nz * cell_m
+    wet = rasterio.features.rasterize(
+        [(mapping(water), 1)], out_shape=(nz, nx), transform=from_origin(w0, north, cell_m, cell_m),
+        fill=0, dtype="uint8").astype(bool)
+    d = distance_transform_edt(wet) * cell_m
+    q = np.clip(np.round(d / step_m), 0, 255).astype(np.uint8)[::-1]   # south row first
+    return {
+        "x0": round(w0 - frame[0], 3), "z0": round(s0 - frame[1], 3), "cellM": cell_m, "stepM": step_m,
+        "width": nx, "height": nz, "data": base64.b64encode(q.tobytes()).decode("ascii"),
+    }
+
+
 def build_lake_plane(shore: Polygon, hydro_lake: Polygon | None, inner: dict, outer: dict | None, level_m: float,
                      name: str = "Lake", radius_m: float = DEFAULT_RADIUS_M, under_bank_m: float = DEFAULT_UNDER_BANK_M,
                      near_margin_m: float = DEFAULT_NEAR_MARGIN_M, near_cell_m: float = DEFAULT_NEAR_CELL_M,
@@ -246,4 +274,5 @@ def build_lake_plane(shore: Polygon, hydro_lake: Polygon | None, inner: dict, ou
         "meshes": meshes,
         "collider": _mesh_doc(f"{name}_WaterPlane_Collider", "collider", collider_cell_m, cv, ct) if cc else None,
         "probe": probe_spot(water, inner_box, frame, surface_y),
+        "shoreDistance": shore_distance_grid(water, near_box, frame),
     }
