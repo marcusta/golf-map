@@ -1574,7 +1574,7 @@ function vegetationRunner(zones: Record<string, Record<string, unknown>[]>) {
         }
         const out = args[args.indexOf('--out') + 1]!;
         const script = path.basename(args[0]!);
-        const sources: Record<string, string> = { 'grass_zones.py': 'tall-grass', 'woodland_floor_zones.py': 'woodland-floor', 'creek_bank_zones.py': 'creek-bank' };
+        const sources: Record<string, string> = { 'grass_zones.py': 'tall-grass', 'woodland_floor_zones.py': 'woodland-floor', 'rock_shore_zones.py': 'rock-shore', 'creek_bank_zones.py': 'creek-bank' };
         if (script in sources) {
             const source = sources[script]!;
             zones[script] ??= [];   // a generator the test says nothing about finds nothing to plant
@@ -1647,20 +1647,20 @@ test('vegetation: every generator in stack order, replacing only its own zones, 
                 expect(report.at(-3)).toBe(NOT_ARBORIST);
                 expect(report.at(-2)).toBe('Save the scene in Unity to keep it.');
                 // Where the time went: every step, then the whole.
-                expect(report.at(-1)).toMatch(/^Time: tall rough \d+\.\d s, woodland floor \d+\.\d s, creek banks \d+\.\d s, zones export \d+\.\d s, Unity import \+ apply \d+\.\d s, Arborist \d+\.\d s - \d+\.\d s in all$/);
+                expect(report.at(-1)).toMatch(/^Time: tall rough \d+\.\d s, woodland floor \d+\.\d s, rock shore \d+\.\d s, creek banks \d+\.\d s, zones export \d+\.\d s, Unity import \+ apply \d+\.\d s, Arborist \d+\.\d s - \d+\.\d s in all$/);
             } else {
                 // Nothing they read changed: no generator runs, the zones stay as they were, and so do the masks.
                 const report = done.result!.report;
                 expect(report).toContainEqual(expect.stringMatching(/^tall rough: not run - nothing it reads changed since its last run \(.+\); its 2 zones stay$/));
                 expect(report).toContainEqual(expect.stringMatching(/^creek banks: not run - .*; its 1 zones stay$/));
                 expect(report).toContain('inner: no patch - no zone changed since linkan-inner-zones.json');
-                expect(report.at(-1)).toMatch(/^Time: tall rough unchanged, woodland floor unchanged, creek banks unchanged, zones export/);
+                expect(report.at(-1)).toMatch(/^Time: tall rough unchanged, woodland floor unchanged, rock shore unchanged, creek banks unchanged, zones export/);
             }
         }
         // Generators in stack order, then the zones export; each gets the course's inputs. The second
         // round runs nothing: the generators' inputs and the zones are as the first left them.
         expect(runs.map(a => path.basename(a[0]!) + (a[1] === 'zones' ? ' zones' : ''))).toEqual([
-            'grass_zones.py', 'woodland_floor_zones.py', 'creek_bank_zones.py', 'gspro.py zones',
+            'grass_zones.py', 'woodland_floor_zones.py', 'rock_shore_zones.py', 'creek_bank_zones.py', 'gspro.py zones',
         ]);
         expect(flag(runs[0]!, '--surfaces')).toBe(path.join(exportDir, 'linkan-inner-surfaces.json'));
         expect(flag(runs[0]!, '--buildings')).toBe(path.join(sources, 'buildings.geojson'));
@@ -1690,6 +1690,7 @@ test('vegetation after a few zone edits: no generator whose inputs are unchanged
     const planted: Record<string, Record<string, unknown>[]> = {
         'grass_zones.py': [{ zoneType: 'rough_tall' }, { zoneType: 'rough_tall', weight: 0.5 }],
         'woodland_floor_zones.py': [{ zoneType: 'woodland_floor' }],
+        'rock_shore_zones.py': [{ zoneType: 'rock_shore', zoneVariant: 'scrub' }],
         'creek_bank_zones.py': [{ zoneType: 'creek_bank', zoneVariant: 'lush' }],
     };
     const { runs, runner } = vegetationRunner(planted);
@@ -1718,7 +1719,7 @@ test('vegetation after a few zone edits: no generator whose inputs are unchanged
         const intoUnity = () => calls.map(c => c.command).filter(c => c !== 'golfmap.course');
         // The first planting: everything, the whole masks, the whole import.
         await plant();
-        expect(ran()).toEqual(['grass_zones.py', 'woodland_floor_zones.py', 'creek_bank_zones.py', 'gspro.py zones']);
+        expect(ran()).toEqual(['grass_zones.py', 'woodland_floor_zones.py', 'rock_shore_zones.py', 'creek_bank_zones.py', 'gspro.py zones']);
         expect(intoUnity()).toEqual(['golfmap.zones.import', 'golfmap.grass.apply']);
 
         // A drawn tall rough zone reshaped: no generator reads it, and only it is patched.
@@ -1734,7 +1735,7 @@ test('vegetation after a few zone edits: no generator whose inputs are unchanged
         expect(report).toContain('inner: 1 zone(s) edited, 0 new, 0 removed since linkan-inner-zones.json - patched instead of rasterizing every mask');
         expect(report).toContain('Unity (linkan_v4): Patched 1 mask texture(s) for 1 zone(s), respawned 20 x 20 m in 300 ms. Save the scene.');
         expect(report.at(-2)).toBe('Save the scene in Unity to keep it.');
-        expect(report.at(-1)).toMatch(/^Time: tall rough unchanged, woodland floor unchanged, creek banks unchanged, zones patch \d+\.\d s, Unity patch \d+\.\d s, Arborist \d+\.\d s - \d+\.\d s in all$/);
+        expect(report.at(-1)).toMatch(/^Time: tall rough unchanged, woodland floor unchanged, rock shore unchanged, creek banks unchanged, zones patch \d+\.\d s, Unity patch \d+\.\d s, Arborist \d+\.\d s - \d+\.\d s in all$/);
 
         // Switched to a creek section: the tall rough and the creek banks read those, the woodland
         // floor does not. The banks come out different; the tall rough the same, under new ids.
@@ -1743,11 +1744,12 @@ test('vegetation after a few zone edits: no generator whose inputs are unchanged
         report = await plant();
         expect(ran()).toEqual(['grass_zones.py', 'creek_bank_zones.py', 'gspro.py zones-patch']);
         expect(report).toContainEqual(expect.stringMatching(/^woodland floor: not run - nothing it reads changed since its last run/));
-        // The skipped woodland floor went back above the new tall rough: the stack is as a full run leaves it.
+        expect(report).toContainEqual(expect.stringMatching(/^rock shore: not run - nothing it reads changed since its last run/));
+        // The skipped woodland floor and rock shore went back above the new tall rough: the stack is as a full run leaves it.
         const generated = (await features.listByCourse(TEST_COURSE_ID)).filter(f => f.generated).sort((a, b) => a.sortOrder - b.sortOrder);
-        expect(generated.map(f => f.source)).toEqual(['tall-grass', 'tall-grass', 'woodland-floor', 'creek-bank']);
+        expect(generated.map(f => f.source)).toEqual(['tall-grass', 'tall-grass', 'woodland-floor', 'rock-shore', 'creek-bank']);
         // Patched: the drawn zone and the new banks; the tall rough the patch matches by content itself.
-        expect(flag(runs[2]!, '--ids')!.split(',').sort()).toEqual([drawn.id, generated[3]!.id].sort());
+        expect(flag(runs[2]!, '--ids')!.split(',').sort()).toEqual([drawn.id, generated[4]!.id].sort());
         expect(report).toContain('inner: 1 zone(s) edited, 1 new, 1 removed since linkan-inner-zones.json - patched instead of rasterizing every mask');
         expect(intoUnity()).toEqual(['golfmap.zones.patch']);
 
@@ -1852,7 +1854,7 @@ test("vegetation: the course's own rules file gives its generators their flags, 
 
     await writeFile(rules, JSON.stringify({ format: 'golfmap-vegetation-rules-v1', generators: { 'tall-gras': { 'far-start': 8 } } }));
     await expect(t.svc.plantVegetation(TEST_COURSE_ID, 'inner', { exportZones: false }))
-        .rejects.toThrow(`${rules}: no vegetation generator 'tall-gras' (have: tall-grass, woodland-floor, creek-bank)`);
+        .rejects.toThrow(`${rules}: no vegetation generator 'tall-gras' (have: tall-grass, woodland-floor, rock-shore, creek-bank)`);
 });
 
 test('the zones against the masks: changed by content whatever the id, an edit under its own id, removed ones, and the stack order', () => {
@@ -1870,10 +1872,11 @@ test('the zones against the masks: changed by content whatever the id, an edit u
 });
 
 test('vegetation generators: a run from one generator re-runs every one after it (the zone stack order holds)', () => {
-    expect(generatorsFrom(undefined).map(g => g.source)).toEqual(['tall-grass', 'woodland-floor', 'creek-bank']);
-    expect(generatorsFrom('woodland-floor').map(g => g.source)).toEqual(['woodland-floor', 'creek-bank']);
+    expect(generatorsFrom(undefined).map(g => g.source)).toEqual(['tall-grass', 'woodland-floor', 'rock-shore', 'creek-bank']);
+    expect(generatorsFrom('woodland-floor').map(g => g.source)).toEqual(['woodland-floor', 'rock-shore', 'creek-bank']);
+    expect(generatorsFrom('rock-shore').map(g => g.source)).toEqual(['rock-shore', 'creek-bank']);
     expect(generatorsFrom('creek-bank').map(g => g.source)).toEqual(['creek-bank']);
-    expect(() => generatorsFrom('ferns')).toThrow("No vegetation generator 'ferns' (have: tall-grass, woodland-floor, creek-bank)");
+    expect(() => generatorsFrom('ferns')).toThrow("No vegetation generator 'ferns' (have: tall-grass, woodland-floor, rock-shore, creek-bank)");
 });
 
 

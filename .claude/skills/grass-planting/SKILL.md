@@ -26,7 +26,7 @@ Every step is a CLI or a bridge command; the `unity` MCP server drives Unity
    **Update vegetation** (or `bun run gspro:update -- <course> vegetation`). It
    runs every vegetation generator (`server/services/vegetation-generators.ts`: tall rough
    `pipeline/grass_zones.py` source `tall-grass`, then the woodland floor `pipeline/woodland_floor_zones.py`
-   source `woodland-floor`, then creek/pond banks `pipeline/creek_bank_zones.py` source `creek-bank`), replaces each one's generated zones (hand-drawn zones are never touched),
+   source `woodland-floor`, then the rocky lake shore `pipeline/rock_shore_zones.py` source `rock-shore`, then creek/pond banks `pipeline/creek_bank_zones.py` source `creek-bank`), replaces each one's generated zones (hand-drawn zones are never touched),
    exports `zones:inner`, and in the course's open Unity project runs `golfmap.zones.import` +
    `golfmap.grass.apply` (export job kind `vegetation`, `GsproExportService.plantVegetation`), then
    writes the Arborist file GSPro draws the bushes, the woodland floor's prefab plants and most trees
@@ -452,6 +452,28 @@ module doc; in short:
   20 ha of floor). Now 3 ha at more than half weight; judge it at its densest spots (the mask's item
   channel, or `golfmap.vegpalette.spots`), a random forest view may hold none.
 - Open: nothing is tuned against the ground by measurement yet; frame cost not compared before/after.
+
+## Rocky lake shore (`rock_shore/<variant>` zones, pipeline/rock_shore_zones.py)
+
+Bare rock with grass in its cracks, scrub hugging it, heath on the thin soil, where a course meets a big
+lake over granite (Omberg's 14th green on the cliffs along Vättern, 2026-10-16). Runs after the woodland
+floor and before the creek banks; `--only rock-shore`. Only on the shore: within 40 m of the largest water
+body (2 ha or more) and on or within 10 m of a rock slab cut into its own mesh (surface class Slab); a rock
+in the woods gets nothing. Slope from the DEM at 0.5 m (ledges are a metre or two). Rules and constants in
+the module doc; tuning flags `--lake-reach --slab-reach --crack-cover --heath-cover --scrub-band --shore-band`
+(or the course's vegetation-rules.json, key `rock-shore`).
+
+- `crack` (mix): VSP texture grass and moss on ~35 % of the slab, favouring ledges, none on faces over 70°,
+  plus a ragged fringe in over its edge and a skirt beside it. `grass` (mix): under and between the scrub.
+  Both at about 1.75x the tall rough's texture density.
+- `heath`: sparse patches on the ledges and 3 m out. Heather and lingonberry are `prefabItemsInVsp` on
+  Omberg, so the course's VSP draws them, not Arborist.
+- `scrub` (replace): Arborist bushes 0.5-8 m out from the slab (full to 2.5 m, 0.3 at 8 m) and along the
+  lake within 25 m, in clumps that close up against the rock.
+- Omberg's palettes `rock_shore/crack|heath|scrub|grass` in its grass-palette.json, bound with
+  `zones -- bind <course> rock_shore --variant <v> --palette docs/gspro/<course>/grass-palette.json`.
+- The trees export keeps every lidar stem on a `riseMode: dem` slab (its scrub and low pines); other slabs
+  still drop stems under 6 m as rocks.
 
 ## Patched fields (hand-drawn variant zones inside a deep rough field)
 

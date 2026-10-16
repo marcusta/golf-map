@@ -39,6 +39,19 @@ generator in the stack (`server/services/vegetation-generators.ts`), run by `bun
 the module docs and `.claude/skills/grass-planting/SKILL.md`; tests `tests/test_woodland_floor_zones.py`,
 `tests/test_terrain_fields.py`.
 
+## `rock_shore_zones.py` — the rocky lake shore by rule
+
+`vegetation_zone` features of type `rock_shore`, source `rock-shore`, from the surface map and the DEM next to
+it: only within 40 m of the big lake (the largest water body, at least 2 ha) and on or within 10 m of a
+`Slab` (12) cell. Variants `crack` (texture grass and moss on the slab: noise patches favouring ledges under
+30-45°, none on faces over 70°, ~35 % plus the edge fringe; mix), `heath` (sparse patches on ledges and within
+3 m outside), `scrub` (bushes on land 0.5-8 m out from the slab, densest at the rock, and within 25 m of the
+lake; replace, so it takes the ground from the tall rough and the floor) and `grass` (under and between the
+scrub; mix). Play clearances from `grass_zones.CLEARANCES` without water and rock; paths and roads cut out.
+Third in the generator stack (after the woodland floor, before the creek banks). Rules: the module doc;
+tests `tests/test_rock_shore_zones.py`. The trees export keeps every stem on a `riseMode: dem` slab (a cliff
+keeps its lidar scrub and low pines; `gspro.py` `_load_tree_rock_slabs`).
+
 ## `gspro.py` — GSPro/OPCD assets (not part of the tile pipeline)
 
 Standalone CLI the server's GSPro export shells out to. Full reference: [docs/gspro/export.md](../docs/gspro/export.md).

@@ -36,9 +36,10 @@ def _make_db(path, areas, other=()):
         conn.execute("INSERT INTO course_features VALUES (?, ?, ?, ?, ?, ?, ?)",
                      (fid, COURSE, f"h{hole}" if hole else None, "tree_area",
                       json.dumps({"crs": "EPSG:3006", "curveType": "bezier", "rings": rings}), order, json.dumps(attrs)))
-    for fid, kind, rings in other:
+    for fid, kind, rings, *attrs in other:   # (id, type, rings[, attributes])
         conn.execute("INSERT INTO course_features VALUES (?, ?, ?, ?, ?, ?, ?)",
-                     (fid, COURSE, None, kind, json.dumps({"crs": "EPSG:3006", "rings": rings}), 0, json.dumps({"zoneType": "shrub"})))
+                     (fid, COURSE, None, kind, json.dumps({"crs": "EPSG:3006", "rings": rings}), 0,
+                      json.dumps(attrs[0] if attrs else {"zoneType": "shrub"})))
     conn.commit()
     conn.close()
 
@@ -192,3 +193,25 @@ def test_low_stems_on_rocks_and_every_stem_in_a_power_line_corridor_are_left_out
     assert (as_rock, as_wire) == (2, 2)
     # nothing to keep out: the list comes back as it is
     assert gspro._drop_stems_on_rocks_and_power_lines(trees, [], [], 0.0, 0.0) == (trees, 0, 0)
+
+
+def test_low_stems_on_a_rock_slab_are_left_out_but_a_cliff_from_the_dem_keeps_its_scrub(tmp_path, capsys):
+    """A rock slab drawn over a boulder field drops the low stems on it; a slab with riseMode dem (a cliff or
+    shore rock whose mesh is the course DEM) keeps every stem: the lidar's scrub and low pines grow there."""
+    def stems(path, points):   # 3 m bushes
+        rows = [[E0 + x, N0 + y, 3.0, 1.5, 50.0, 0] for x, y in points]
+        path.write_text(json.dumps({"version": 2, "crs": "EPSG:3006", "fields": ["x", "y", "heightM", "crownRadiusM", "groundM", "kind"], "trees": rows}))
+        return path
+
+    db = tmp_path / "app.sqlite"
+    _make_db(db, [], other=[
+        ("slab", "rock_slab", [_rect(10, 10, 30, 30)], {"marginM": 1.5}),
+        ("cliff", "rock_slab", [_rect(100, 100, 140, 140)], {"riseMode": "dem", "riseWaterM": 8}),
+        ("dome", "rock_slab", [_rect(150, 10, 170, 30)], {"riseMode": "dome", "riseTopM": 1}),
+    ])
+    out = tmp_path / "x-inner-trees.json"
+    gspro.cmd_trees(None, stems(tmp_path / "stems.json", [(20, 20), (160, 20), (120, 120), (130, 105), (60, 60)]),
+                    _sidecar(tmp_path / "x.tif.json"), out, extent=EXTENT, db_path=db, course=COURSE)
+    kept = [(t["x"], t["z"]) for t in json.loads(out.read_text())["trees"]]
+    assert kept == [(120.0, 120.0), (130.0, 105.0), (60.0, 60.0)]
+    assert "left out: 2 stem(s) under 6 m on a rock slab or placed rock" in capsys.readouterr().out

@@ -1169,7 +1169,9 @@ def _move_stems_off_paths(trees: list[dict], paths: list, e0: float, n0: float,
 #   stem inside the corridor is dropped, whatever its height (the wires hang over cleared ground).
 # - `rock_slab` features and the course's placed rocks (`--rocks`: a golfmap-walls-v1 stone-walls.json,
 #   its `boulders` with e/n/lengthM): stems under TREE_ROCK_MAX_HEIGHT_M standing on one are dropped.
-#   A taller one is a real tree beside or over the rock and stays.
+#   A taller one is a real tree beside or over the rock and stays. A slab with riseMode `dem` (a cliff or
+#   the shore rock, its mesh the course DEM) keeps every stem: the scrub and low wind-shaped trees the
+#   lidar sees on a cliff stand in its cracks and on its ledges (Omberg's 14th, along Vättern).
 POWER_LINE_FEATURE_TYPE = "power_line"
 # The corridor is drawn about as wide as the wires hang (8 m by default); the keep-out reaches this far
 # beyond it on both sides, so no crown is planted into the outer wires.
@@ -1189,6 +1191,29 @@ def _load_feature_geometries(db_path: Path, course_ident: str, feature_type: str
     conn.close()
     geoms = (_zone_geometry_m(json.loads(r["geometry_json"])) for r in rows)
     return [make_valid(g) for g in geoms if g is not None and not g.is_empty]
+
+
+def _load_tree_rock_slabs(db_path: Path, course_ident: str) -> list:
+    """The course's `rock_slab` features that keep the stems off them, as valid shapely geometries in EPSG:3006
+    metres: every slab but the riseMode `dem` ones (see above)."""
+    from shapely import make_valid
+    conn = _open_course_db(db_path)
+    course = _resolve_course(conn, course_ident)
+    rows = conn.execute("SELECT geometry_json, attributes_json FROM course_features WHERE course_id = ? AND type = ?",
+                        (course["id"], ROCK_SLAB_TYPE)).fetchall()
+    conn.close()
+    out = []
+    for r in rows:
+        try:
+            attrs = json.loads(r["attributes_json"]) if r["attributes_json"] else {}
+        except ValueError:
+            attrs = {}
+        if isinstance(attrs, dict) and attrs.get(SHAPING_SLAB_RISE_MODE_ATTRIBUTE) == "dem":
+            continue
+        g = _zone_geometry_m(json.loads(r["geometry_json"]))
+        if g is not None and not g.is_empty:
+            out.append(make_valid(g))
+    return out
 
 
 def _load_placed_rocks(rocks_path: Path) -> list:
@@ -1313,7 +1338,7 @@ def cmd_trees(bbox, stems_path: Path, sidecar_path: Path, out: Path, terrain: st
     wires = []
     if course is not None:
         rocks += [g.buffer(TREE_ROCK_SLAB_MARGIN_M, quad_segs=4)
-                  for g in _load_feature_geometries(db_path or DEFAULT_DB, course, ROCK_SLAB_TYPE)]
+                  for g in _load_tree_rock_slabs(db_path or DEFAULT_DB, course)]
         wires = [g.buffer(TREE_POWER_LINE_CLEARANCE_M, quad_segs=4)
                  for g in _load_feature_geometries(db_path or DEFAULT_DB, course, POWER_LINE_FEATURE_TYPE)]
     trees, as_rock, as_wire = _drop_stems_on_rocks_and_power_lines(trees, rocks, wires, e0, n0)

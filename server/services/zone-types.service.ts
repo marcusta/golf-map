@@ -40,6 +40,9 @@ export const DEFAULT_ZONE_TYPES: readonly {
     // Links-style deep rough: a rough-height floor with thin, longer wisps over it
     // (3D grass on the mesh; hand-drawn, on top of the tall rough it replaces).
     { key: 'rough_wispy', name: 'Wispy rough', color: '#c9b46a', textureIndex: 1, channel: 2 },
+    // The rocky lake shore (generated, source `rock-shore`, pipeline/rock_shore_zones.py): variants
+    // crack (grass and moss on the rock), heath, scrub (bushes against the rock) and grass (under them).
+    { key: 'rock_shore', name: 'Rock shore', color: '#8a8470', textureIndex: 1, channel: 3 },
 ];
 
 // --- Output types ---

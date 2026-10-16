@@ -164,8 +164,34 @@ export const WOODLAND_FLOOR: VegetationGenerator = {
     },
 };
 
+/**
+ * The rocky lake shore (pipeline/rock_shore_zones.py): grass in the cracks of the rock slabs by a big
+ * lake, heath on their ledges and thin soil, scrub hugging the rock and along the water, grass under it.
+ * Above the woodland floor and the tall rough, whose ground its scrub and heath take, and below the
+ * creek banks. A course without a slab near a lake gets no zones.
+ */
+export const ROCK_SHORE: VegetationGenerator = {
+    source: 'rock-shore',
+    label: 'rock shore',
+    script: 'rock_shore_zones.py',
+    zoneTypes: ['rock_shore'],
+    command(inputs) {
+        // The slabs, the lake and the DEM all come from the surface map and what sits next to it.
+        if (!inputs.surfaces) return { skip: NO_SURFACE_MAP };
+        const { args, notes } = clearanceArgs(inputs);
+        return { args: ['--surfaces', inputs.surfaces, ...args], notes };
+    },
+    reads(inputs) {
+        // The paths only from the course (cut out of the zones); the rest is the surface map and its DEM.
+        return {
+            features: ['path'], drawnZones: [], zoneTypes: [],
+            files: demFiles(inputs), scripts: [...GENERATOR_SCRIPTS, 'rock_shore_zones.py'],
+        };
+    },
+};
+
 /** Every generator, in zone-stack order (later = on top). */
-export const VEGETATION_GENERATORS: readonly VegetationGenerator[] = [TALL_GRASS, WOODLAND_FLOOR, CREEK_BANKS];
+export const VEGETATION_GENERATORS: readonly VegetationGenerator[] = [TALL_GRASS, WOODLAND_FLOOR, ROCK_SHORE, CREEK_BANKS];
 
 /** The generators a run from `from` (a source) covers: it and every one after it, which keeps the stack order. */
 export function generatorsFrom(from: string | undefined, all: readonly VegetationGenerator[] = VEGETATION_GENERATORS): VegetationGenerator[] {
