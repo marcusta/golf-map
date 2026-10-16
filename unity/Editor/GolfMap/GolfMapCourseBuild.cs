@@ -69,7 +69,7 @@ namespace GolfMap.Editor
         }
 
         [BridgeCommand("golfmap.course.build", "Build the open scene into the GSPro course file, as GSP > Build Course's Build button does (OPCD's builder; takes minutes and the editor does not answer meanwhile, so call with a long timeout and expect the call to return late). The open scene is saved first: the bundle is built from the file on disk. Returns the course file with its size and time.",
-            args = "dir (courses folder; default the one saved in the build window), saveBefore=true (save the open scene before building - the bundle is built from the file on disk; false refuses to build a dirty scene rather than saving it. NOT the other commands' save=..., which saves AFTER a command succeeded), terrainCollider=false, outerCollider=false, foliageCollider=false, grassesCollider=false (true keeps that terrain's collider in the bundle; the window's default switches all four off)")]
+            args = "dir (courses folder; default the one saved in the build window), saveBefore=true (save the open scene before building - the bundle is built from the file on disk; false refuses to build a dirty scene rather than saving it. NOT the other commands' save=..., which saves AFTER a command succeeded), terrainCollider=false, outerCollider=false, foliageCollider=false, grassesCollider=false (true keeps that terrain's collider in the bundle; the window's default switches all four off), allowAuditFindings=false (the build first fills emptied satellite slots with the course photo and refuses while golfmap.materials.audit finds course meshes that would draw white; true builds anyway)")]
         static object Build(BridgeArgs a)
         {
             var file = StatusFile();
@@ -83,6 +83,25 @@ namespace GolfMap.Editor
             }
         }
 
+        // Audit findings that do not draw white: they are reported, not refused.
+        static readonly string[] HarmlessFindings = { "renderer and collider meshes differ", "OPCD channel store on a material without the MAHS channels" };
+
+        static void CheckMaterials(bool allowFindings)
+        {
+            GolfMapTerrainImporter.SatelliteAssignCommand(new BridgeArgs(new Dictionary<string, object> { { "only", "empty" } }));
+            AssetDatabase.SaveAssets();
+            var audit = GolfMapCourseMeshes.AuditMaterials(new BridgeArgs(new Dictionary<string, object> { { "under", "/Meshes" } })) as Dictionary<string, object>;
+            var findings = audit != null ? audit["findings"] as Dictionary<string, object> : null;
+            if (findings == null) return;
+            var white = findings.Keys.Where(k => !HarmlessFindings.Any(h => k.StartsWith(h, StringComparison.Ordinal))).ToList();
+            if (white.Count == 0 || allowFindings) return;
+            throw new BridgeError("Refused: the course meshes would draw white in GSPro - " + string.Join("; ", white.Select(k =>
+            {
+                var f = findings[k] as Dictionary<string, object>;
+                return k + " (" + (f != null && f.ContainsKey("objects") ? f["objects"] : "?") + " objects)";
+            }).ToArray()) + ". Look with golfmap.materials.audit {under: \"/Meshes\"}, or build anyway with allowAuditFindings=true.");
+        }
+
         static object Run(BridgeArgs a, string statusFile, DateTime begun, object previous)
         {
             WriteStatus(statusFile, true, begun, "starting", previous);
@@ -90,6 +109,11 @@ namespace GolfMap.Editor
             if (builder == null) throw new BridgeError("OPCD's course builder (BuildCourseDLL) is not in this project.");
             var scene = SceneManager.GetActiveScene();
             if (string.IsNullOrEmpty(scene.path)) throw new BridgeError("The open scene has never been saved.");
+            // No course leaves with white meshes (Omberg 2026-10-16: a refresh had left OPCD's satellite materials with an
+            // empty _Satellite and the build carried them): the course photo goes into emptied satellite slots, then the
+            // white-mesh audit over the course meshes must come back clean, or the build is refused.
+            WriteStatus(statusFile, true, begun, "checking-materials", previous);
+            CheckMaterials(a.Bool("allowAuditFindings", false));
             if (scene.isDirty)
             {
                 // `saveBefore`, not `save`: this one saves BEFORE the work (the bundle comes from the

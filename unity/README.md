@@ -1527,6 +1527,13 @@ VSP systems back after it. Output: `<courses dir>/<scene>/<scene>.gspcrse` (`dir
 build window). It takes about 12 minutes, inside which the editor's main thread is OPCD's: no bridge command is
 answered, and the call itself usually comes back as "still running".
 
+**No white meshes leave in a build.** Before it builds, the command fills every emptied satellite slot with the course
+photo (`golfmap.satellite.assign only=empty`: OPCD's Set Default Materials empties them on each refresh) and runs
+`golfmap.materials.audit` over `/Meshes`; any finding that draws white (all but "renderer and collider meshes
+differ" and "OPCD channel store ...") refuses the build with the list. `allowAuditFindings=true` builds anyway.
+Omberg 2026-10-16: a refresh had left 162 meshes on satellite materials with no photo, and a build carried them
+to GreenKeeper as white ground under the grass.
+
 **Progress while it runs: `golfmap.course.build.status`.** The build writes
 `GolfMapSpelunk/<Course>_build-status.json` before it starts and at every milestone it can observe -
 `{ running, pid, startedAt, seconds, phase, written, scene, lastResult }`, phases `starting`, `saving-scene`, `preparing`,

@@ -79,7 +79,7 @@ namespace GolfMap.Editor
         // different shapes before GolfMapVertexPaint.Overwrite). Findings are grouped by material: objects per material.
         [BridgeCommand("golfmap.materials.audit", "Read-only: active renderers that may draw white/untextured - no mesh or material, Unity's default material, error shader, material without any texture, Standard without _MainTex, OPCD MAHS without satellite/arrays, ortho material on a mesh without UVs, renderer and collider meshes that differ in vertex count.",
             args = "under (object path prefix; default the whole scene), limit=40 (objects listed per finding)")]
-        static object AuditMaterials(BridgeArgs a)
+        internal static object AuditMaterials(BridgeArgs a)
         {
             string under = a.String("under");
             int limit = (int)a.Number("limit", 40);
