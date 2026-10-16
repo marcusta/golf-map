@@ -133,7 +133,16 @@ namespace GolfMap.Editor
                 float lift = liftArg ?? (mine != null ? mine.transform.localPosition.y : 0.3f);
                 float fixedSurface = 0f;
                 bool isFixed = liftArg == null && levels.TryGetValue(lake.planeName, out fixedSurface);
-                if (isFixed) lift = fixedSurface - geo.level;
+                if (isFixed)
+                {
+                    // The mesh is flattened just under the set surface and lifted the usual FixedLiftM, never lifted
+                    // far off its mesh: AQUAS draws a plane lifted a metre over the banks and stones it should
+                    // meet (Omberg's hole 14 pond, whose lake mesh rim lies on its dug bank 0.7 m under the water).
+                    float shift = fixedSurface - FixedLiftM - geo.level;
+                    for (int v = 0; v < geo.vertices.Count; v++) geo.vertices[v] += new Vector3(0f, shift, 0f);
+                    geo.level += shift;
+                    lift = FixedLiftM;
+                }
                 var entry = new Dictionary<string, object>
                 {
                     { "lake", lake.go.name },
@@ -364,10 +373,12 @@ namespace GolfMap.Editor
         }
 
         // <course>/water-levels.json (golfmap-water-levels-v1): {"planes": {"<plane name>": {"surfaceM": 9.553}}} - a
-        // water surface set by hand (world Y): the build gives that plane the lift that puts it there, whatever its
-        // level comes to, so a hand-tuned lake keeps its water through a rebuild and a fresh plane (a new .blend).
+        // water surface set by hand (world Y): the build flattens that plane's mesh FixedLiftM under it and lifts it
+        // FixedLiftM, whatever the lake mesh's rim comes to, so a hand-tuned lake keeps its water through a rebuild
+        // and a fresh plane (a new .blend).
         // An explicit liftM still wins. The repo keeps the copy at docs/gspro/<course>/water-levels.json.
         public const string LevelsFile = "water-levels.json";
+        const float FixedLiftM = 0.3f;  // a set surface: the plane this far over its flattened mesh
         const string LevelsFormat = "golfmap-water-levels-v1";
 
         static Dictionary<string, float> FixedLevels(GolfMapCourse course)
