@@ -23,6 +23,7 @@ import copy
 import json
 import math
 import os
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -819,6 +820,18 @@ def init(args) -> None:
     write_dat(doc, out, key)
     (out.parent / "arboristversion.dat").write_text(str(doc.get("catalogVersion", CATALOG_VERSION)), encoding="ascii")
     print(f"wrote {out}: no packages, terrains {[t.get('Name') for t in settings.get('terrains', [])]}, terrainSize {args.inner_side}")
+    # GSPro takes an Arborist course's post-processing from this file (see `post`), so the course gets one
+    # from the start: the source course's, with this course's look.json written in when given.
+    pp = out.parent / "arborist_postprocess.dat"
+    source_pp = Path(args.source).parent / pp.name
+    if not pp.exists():
+        if not source_pp.exists():
+            print(f"no {pp.name} beside {args.source}: copy another course's into {out.parent}, then run `post`")
+            return
+        shutil.copyfile(source_pp, pp)
+        print(f"copied {source_pp} -> {pp}")
+    if args.look:
+        post(argparse.Namespace(course_dir=str(out.parent), look=args.look, out_dir=None, key_file=args.key_file))
 
 
 def post(args) -> None:
@@ -844,9 +857,12 @@ def post(args) -> None:
 
     if "saturation" in look:
         put(grading, "saturation", look["saturation"])
-    for name in ("postExposure", "temperature"):
+    for name in ("postExposure", "temperature", "contrast"):
         if name in look:
             put(grading, name, look[name])
+    for name in ("lift", "gamma", "gain"):  # trackballs, [x, y, z, w] in look.json
+        if name in look:
+            put(grading, name, dict(zip("xyzw", look[name])))
     if "liftW" in look:
         put(grading, "lift", dict(grading["lift"], w=look["liftW"]))
     if "aoColor" in look:
@@ -913,6 +929,7 @@ def main() -> None:
     p.add_argument("--inner-side", type=float, required=True, help="the inner terrain's side in metres (terrainSize)")
     p.add_argument("--camera", nargs=3, type=float, metavar=("X", "Y", "Z"), help="where Arborist opens the view")
     p.add_argument("--force", action="store_true", help="replace an existing arboristdata.dat")
+    p.add_argument("--look", help="the course's look.json: its post values into the arborist_postprocess.dat copied from beside --source")
     p.add_argument("--key-file")
     for name in ("decode", "encode"):
         p = sub.add_parser(name)

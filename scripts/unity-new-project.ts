@@ -30,6 +30,10 @@
 //                      names, the presets (palette, grass palette, look, Stix,
 //                      paint, bunker channels, path surfaces) and the course-folder
 //                      assets they point at, paths rewritten to the new course
+//   6. course docs     docs/gspro/<prefix>/look.json from the source course's,
+//                      when missing. Then golfmap.course.scene in Unity makes the
+//                      scene with that look, and `arborist.py init --look` gives
+//                      GSPro the same post-processing.
 //
 // Course-specific things stay behind: the FBX meshes, terrains, backups, the
 // scene, walls, props, trees and zones. The pipeline makes those for the new
@@ -330,7 +334,21 @@ function main() {
         console.log(`   Course.asset (scene: any, export ../../${lower}-opcd), ${courseUsed.length} preset files and the assets they use`);
     }
 
-    console.log(`\nNext: open ${dst} in Unity 2018.2.8f1 (the first import of the packages takes a while), make the course scene, then set its name as Scene Name on GolfMap/${course}/Course.asset.`);
+    // 6. The repo's course docs: the look (sun, sky, post-processing) that golfmap.course.scene puts on the
+    // new scene and `arborist.py init --look` / `post` write into GSPro's arborist_postprocess.dat.
+    const prefix = typeof args.prefix === 'string' ? args.prefix : course.toLowerCase();
+    const srcPrefix = /exportPrefix: (.*)/.exec(courseAsset)?.[1].trim() || srcCourse.toLowerCase();
+    const docsTo = join(REPO, 'docs/gspro', prefix, 'look.json');
+    const docsFrom = [join(REPO, 'docs/gspro', srcPrefix, 'look.json'), `${srcAssets}/${srcCourseDir}/look.json`].find(f => existsSync(f));
+    console.log(`\n6. docs/gspro/${prefix}/look.json`);
+    if (existsSync(docsTo)) console.log('   already there, left alone');
+    else if (!docsFrom) console.log('   the source course has no look.json');
+    else {
+        copy(docsFrom, docsTo, dryRun);
+        console.log(`   from ${docsFrom}`);
+    }
+
+    console.log(`\nNext: open ${dst} in Unity 2018.2.8f1 (the first import of the packages takes a while), then make the course scene with its look: unity_command golfmap.course.scene (OPCD's ImportTerrain scene copied to Terrain Backup/${prefix}/, named on Course.asset, look.json applied, saved).`);
 }
 
 main();

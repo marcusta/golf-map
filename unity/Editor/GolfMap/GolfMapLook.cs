@@ -84,7 +84,7 @@ namespace GolfMap.Editor
 
         [BridgeCommand("golfmap.look.apply", "Write <course>/look.json (golfmap-look-v1) into the open scene: trilight ambient colours, the sun's shadow strength / intensity / direction and TimeAdjust clock, the skybox (a project material by name, on a course-local copy) with its exposure and the reflection intensity, OPCD's gradient fog (start / end / intensity), and on a course-local copy of the scene's post-processing profile the colour grading saturation / post exposure / temperature / contrast / lift / gamma / gain (trackballs as [x, y, z, w]) / lift offset, the ambient occlusion colour / intensity and the bloom threshold / intensity / colour. Keys left out are left alone. GSPro takes the post-processing from the course folder's arborist_postprocess.dat when there is one: export it again after a change under post. Without a look.json: reports the scene's current values. Marks the scene dirty; a course build saves it.",
             args = "dryRun=false")]
-        static object Apply(BridgeArgs a)
+        internal static object Apply(BridgeArgs a)
         {
             var course = GolfMapCourses.Require();
             string folder = GolfMapCourses.Folder(course), path = folder + "look.json";

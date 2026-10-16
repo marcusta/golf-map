@@ -55,9 +55,11 @@ Unity, so the Arborist vegetation follows the zones without a shell (`ArboristSe
   (`--no-arborist` leaves it), and so does the shaping run's replant after a rock slab.
 - A new course's first `arboristdata.dat` (golf-map only replaces its own packages in an existing
   file): `bun run py arborist.py init --course-dir <GSPro course folder> --source <another course's
-  arboristdata.dat> --inner-side <m> [--camera x y z]` (Omberg, 2026-10-16). `terrainSize` must be an
-  integer: `1510.0` made GreenKeeper's parser throw (`JsonParsingException ... actual '.'`) and load no
-  Arborist vegetation at all. `post` needs an `arborist_postprocess.dat` to edit: copy another course's.
+  arboristdata.dat> --inner-side <m> [--camera x y z] --look docs/gspro/<slug>/look.json` (Omberg, 2026-10-16).
+  `terrainSize` must be an integer: `1510.0` made GreenKeeper's parser throw (`JsonParsingException ... actual '.'`)
+  and load no Arborist vegetation at all. It also copies the `arborist_postprocess.dat` beside `--source` into
+  the new folder (when there is none) and, with `--look`, writes the look's post values into it (what `post` does),
+  so GSPro grades the new course like the one it came from.
   Then load the course in GreenKeeper, switch ARBORIST ON and SAVE (overwrite): that writes
   `coursedetails.txt`, which GSPro's course list reads (without it every hole shows "500 yards, par 0"
   and the round refuses to start), and `IsArborist: true` in the GKD. GreenKeeper refuses to save
@@ -436,6 +438,9 @@ Features we do not write yet:
   vegetation of that type. A pattern starting with `/` now has to match the path's start; a pattern
   without one still matches any part. Pick a system by its root (`/VegetationStudioPro` = the course's,
   `/MainGameObjects` = Arborist's).
-- The look is `docs/gspro/<course>/look.json` -> Unity `golfmap.look.apply` (ambient, colour
-  grading saturation and exposure, AO colour); try values live in GSPro first with `set` on
+- The look is `docs/gspro/<course>/look.json` -> Unity `golfmap.look.apply` (ambient, sun intensity /
+  direction / TimeAdjust clock, skybox and reflections, fog, colour grading saturation / exposure /
+  temperature / contrast / lift / gamma / gain, AO, bloom) and `arborist.py post` (the post values into
+  GSPro's `arborist_postprocess.dat`); a new course gets both from `golfmap.course.scene` and
+  `arborist.py init --look`. Try values live in GSPro first with `set` on
   `UnityEngine.RenderSettings` and the `/PostProcessingVolume` profile.
