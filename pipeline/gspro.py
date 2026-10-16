@@ -794,14 +794,20 @@ def _dem_from_lidar(bbox, tmp: Path, resolution: float) -> Path:
 
 def _fill_voids(dem: np.ndarray) -> np.ndarray:
     """Fill nodata-ish cells (NaN, or a nodata sentinel like -9999 that
-    slipped through untagged) with the mean so nothing cliffs at holes — in
-    a hillshade or a heightmap. Swedish ground is never below -1000 m."""
+    slipped through untagged) with the nearest valid cell's height, so nothing
+    cliffs at holes — in a hillshade or a heightmap. Swedish ground is never
+    below -1000 m. Not the mean: the lidar sees no ground on open water, and a
+    hole out on Vättern filled with the square's mean (~98 m at Omberg) stood
+    as a 10 m black block above the lake in GSPro; filled from its edges it
+    is lake bed again."""
+    from scipy.ndimage import distance_transform_edt
     finite = np.isfinite(dem) & (dem > -1000)
     if finite.all():
         return dem
-    dem = dem.copy()
-    dem[~finite] = float(np.nanmean(dem[finite])) if finite.any() else 0.0
-    return dem
+    if not finite.any():
+        return np.zeros_like(dem)
+    _, (rows, cols) = distance_transform_edt(~finite, return_indices=True)
+    return dem[rows, cols]
 
 
 def cmd_hillshade(bbox, out: Path, size: int, dem_path: Path | None,

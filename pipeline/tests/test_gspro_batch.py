@@ -587,3 +587,15 @@ def test_a_job_that_reads_sys_stdout_encoding_runs(tmp_path, monkeypatch):
     job = json.loads(result.read_text(encoding="utf-8"))["jobs"][0]
     assert job["ok"] and job["report"] == ["a line through the library's stdout"]
     assert "[lib] a line through the library's stdout" in (tmp_path / "batch.log").read_text(encoding="utf-8")
+
+
+def test_fill_voids_takes_the_nearest_ground_not_the_mean():
+    """A hole out on a lake (no lidar ground on open water) is lake bed again, not the square's mean height."""
+    import gspro
+    dem = np.full((40, 40), 98.0)          # land all round ...
+    dem[10:30, 10:30] = 80.0               # ... a lake bed 18 m below it
+    dem[18:22, 18:22] = -9999.0            # and a hole in the middle of the lake
+    filled = gspro._fill_voids(dem)
+    assert np.all(filled[18:22, 18:22] == 80.0)
+    assert np.array_equal(filled[dem > -1000], dem[dem > -1000])
+    assert gspro._fill_voids(np.full((3, 3), np.nan)).tolist() == [[0.0] * 3] * 3
