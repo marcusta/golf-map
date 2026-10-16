@@ -1051,6 +1051,84 @@ def cmd_detect_water(
     return out
 
 
+def cmd_shore_edits(
+    hydro_path: Path,
+    inner_dem: Path,
+    inner_lidar: Path,
+    outer_dem: Path,
+    outer_lidar: Path,
+    out: Path,
+    *,
+    out_3006: Path | None = None,
+    level: float | None = None,
+    min_area_m2: float | None = None,
+    profile: dict[str, float] | None = None,
+) -> Path:
+    """A big lake's true shoreline as ONE `shore` terrain edit (D-TE5 edits
+    GeoJSON, WGS84): the largest `water` polygon of a fetch-hydro file,
+    corrected on each terrain's own DEM grid with that terrain's lidar
+    ground hits (golfpipe/shore.py has the rule), the inner square's detail
+    inside it, the outer's outside it and the hydro lake beyond the outer
+    square. `level` defaults to the median inner DEM over the lake shrunk
+    by 20 m. `out_3006` also writes the polygon in EPSG:3006 for QGIS.
+    """
+    import time
+    from datetime import datetime, timezone
+
+    from golfpipe import shore as shore_mod
+
+    t_start = time.perf_counter()
+    lake = shore_mod.read_lake(hydro_path, shore_mod.DEFAULT_MIN_LAKE_AREA_M2 if min_area_m2 is None else min_area_m2)
+    print(f"Lake: {lake.area / 1e6:,.2f} km² in {hydro_path.name} ({len(lake.interiors)} island hole(s) in the hydro polygon)")
+
+    if level is None:
+        level = shore_mod.level_from_dem(inner_dem, lake)
+        source = "inner DEM"
+        if level is None:
+            level = shore_mod.level_from_dem(outer_dem, lake)
+            source = "outer DEM (no lake 20 m from the shore on the inner)"
+        if level is None:
+            raise shore_mod.ShoreError("no DEM cell 20 m inside the lake on either terrain: pass --level")
+        print(f"Level: {level:.2f} m (median {source} over the lake shrunk by {shore_mod.LEVEL_ERODE_M:g} m)")
+    else:
+        print(f"Level: {level:.2f} m (--level)")
+
+    terrains = []
+    for name, dem_path, lidar_dir in (("inner", inner_dem, inner_lidar), ("outer", outer_dem, outer_lidar)):
+        files = shore_mod.lidar_files(lidar_dir)
+        t = shore_mod.shore_for_terrain(name, dem_path, files, lake, level)
+        terrains.append(t)
+        holes = sum(len(p.interiors) for p in shore_mod.polygon_parts(t.polygon))
+        print(f"{name}: {t.cell_size:g} m cells, hydro {t.hydro_m2:,.0f} m²; cut from hydro as land "
+              f"{t.cut_m2:,.0f} m² ({t.cut_cells:,} cells), added {t.added_m2:,.0f} m² ({t.added_cells:,} cells); "
+              f"{holes} hole(s); lidar {t.hits.files_read} file(s) read, {t.hits.files_skipped} skipped, "
+              f"{t.hits.points_read:,} points, {t.hits.hits:,} ground hits above level+{shore_mod.LAND_ABOVE_M:g} m; "
+              f"{t.seconds_read:.1f} s read, {t.seconds_rule:.1f} s rule")
+    inner, outer = terrains
+
+    for warning in shore_mod.open_lake_warnings(lake, outer.square):
+        print(f"warning: {warning}")
+    merged = shore_mod.merge_shore_polygons(lake, outer.polygon, outer.square, inner.polygon, inner.square)
+    if merged.dropped_m2:
+        print(f"warning: the merged lake has {len(merged.dropped_m2)} more part(s) than the main one, dropped: "
+              + ", ".join(f"{a:,.1f} m²" for a in sorted(merged.dropped_m2, reverse=True)[:12])
+              + (" …" if len(merged.dropped_m2) > 12 else ""))
+    polygon = merged.polygon
+
+    stamp = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+    collection = shore_mod.shore_edit_collection(polygon, level, profile, created_at=stamp)
+    water_mod.write_geojson(collection, out)
+    if out_3006 is not None:
+        water_mod.write_geojson(shore_mod.inspection_collection(polygon, level), out_3006)
+    holes = sorted((shore_mod.Polygon(r).area for r in polygon.interiors), reverse=True)
+    print(f"Shore polygon: {polygon.area / 1e6:,.3f} km², {len(holes)} hole(s) (islands/skerries"
+          + (", largest " + ", ".join(f"{a:,.0f}" for a in holes[:8]) + " m²" if holes else "")
+          + f"), {shore_mod.vertex_count(polygon):,} vertices")
+    print(f"Total {time.perf_counter() - t_start:.1f} s")
+    print(f"Wrote {out}" + (f" and {out_3006}" if out_3006 is not None else ""))
+    return out
+
+
 def default_clean_out_path(ortho_path: Path) -> Path:
     """ortho-orto-l2-2025.tif -> ortho-orto-l2-2025.clean.tif, alongside the
     source (the source is never overwritten)."""

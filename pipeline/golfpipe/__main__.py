@@ -16,6 +16,7 @@ Commands:
   dem-analysis      Publishable analysis DEM: 0.5 m greens + 1 m background mosaic
   detect-trees      Lidar nDSM tree-canopy polygons -> typed GeoJSON (trees)
   detect-water      Lidar class-9 presence polygons -> typed GeoJSON (water)
+  shore-edits       Hydro lake + both terrains' lidar ground hits -> the true shoreline as one 'shore' terrain edit (D-TE5)
   clean-ortho       LaMa-inpaint canopy+shadows out of the playable corridor (+ --woodland: forest floor) -> .clean.tif
   cleaned-init      Ortho GeoTIFF -> the site's cleaned photo: one square 8192 px RGB GeoTIFF on the inner terrain square
   cleaned-replace   Any image of the cleaned photo's pixel size (or an undo snapshot) -> the cleaned photo + retile under what changed
@@ -58,6 +59,7 @@ from golfpipe import trees_stems
 from golfpipe import osm
 from golfpipe import patches
 from golfpipe import roads
+from golfpipe import shore
 from golfpipe import trees_features
 from golfpipe import lowveg_features
 from golfpipe import woodland_features
@@ -281,6 +283,19 @@ def build_parser() -> argparse.ArgumentParser:
         ),
     )
     p.add_argument("--out", required=True, help="output GeoJSON path (importable by the web GeoJSON import wizard)")
+
+    p = sub.add_parser("shore-edits", help="A big lake's true shoreline (hydro lake corrected by each terrain's lidar ground hits) -> ONE 'shore' terrain edit (D-TE5 edits GeoJSON, WGS84)")
+    p.add_argument("--hydro", required=True, help="fetch-hydro GeoJSON (EPSG:3006) for the outer square plus a margin (>= 300 m of open lake past it)")
+    p.add_argument("--inner-dem", dest="inner_dem", required=True, help="inner terrain's raw lidar DEM GeoTIFF (sources/dem.tif)")
+    p.add_argument("--inner-lidar", dest="inner_lidar", required=True, help="folder of the inner terrain's .laz/.copc.laz (or one file)")
+    p.add_argument("--outer-dem", dest="outer_dem", required=True, help="outer terrain's DEM GeoTIFF (sources/outer-dem.tif)")
+    p.add_argument("--outer-lidar", dest="outer_lidar", required=True, help="folder of the outer terrain's .laz/.copc.laz (or one file)")
+    p.add_argument("--level", type=float, help="lake level in metres (default: median inner DEM over the lake shrunk by 20 m)")
+    p.add_argument("--min-area-m2", dest="min_area_m2", type=float, default=shore.DEFAULT_MIN_LAKE_AREA_M2, help=f"refuse when the largest water polygon is smaller (default {shore.DEFAULT_MIN_LAKE_AREA_M2:g})")
+    p.add_argument("--out", help="output edits GeoJSON (WGS84, op shore, origin shore-edits; default shore-edits.geojson next to --hydro)")
+    p.add_argument("--out-3006", dest="out_3006", help="also write the polygon as EPSG:3006 GeoJSON for inspection")
+    for key, default in shore.PROFILE_DEFAULTS.items():
+        p.add_argument(f"--{shore.profile_flag(key)}", dest=f"profile_{key}", type=float, default=default, metavar="N", help=f"shore profile {key} (default {default:g})")
 
     p = sub.add_parser(
         "clean-ortho",
@@ -842,6 +857,16 @@ def main(argv: list[str] | None = None) -> int:
                 flatness_spread_m=args.flatness_spread,
             )
 
+        elif args.command == "shore-edits":
+            hydro_path = Path(args.hydro)
+            commands.cmd_shore_edits(
+                hydro_path, Path(args.inner_dem), Path(args.inner_lidar), Path(args.outer_dem), Path(args.outer_lidar),
+                Path(args.out) if args.out else hydro_path.with_name("shore-edits.geojson"),
+                out_3006=Path(args.out_3006) if args.out_3006 else None,
+                level=args.level, min_area_m2=args.min_area_m2,
+                profile={key: getattr(args, f"profile_{key}") for key in shore.PROFILE_DEFAULTS},
+            )
+
         elif args.command == "clean-ortho":
             corridor_types = tuple(t.strip() for t in args.corridor_types.split(",") if t.strip())
             if not corridor_types:
@@ -1068,6 +1093,9 @@ def main(argv: list[str] | None = None) -> int:
         print(f"error: {exc}", file=sys.stderr)
         return 1
     except hydro.HydroError as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return 1
+    except shore.ShoreError as exc:
         print(f"error: {exc}", file=sys.stderr)
         return 1
     except osm.OsmError as exc:
