@@ -60,14 +60,15 @@ describe('the .blend the build downloads', () => {
         expect(nextBlendName(vreta, 'vreta', 'VRETA_SVG_1988.BLEND')).toBe('vreta_svg_1989.blend');
     });
 
-    test('the prefix is the course slug with underscores, as OPCD writes it', async () => {
+    test('the prefix is the course slug, the SVG stem OPCD names its build after', async () => {
         expect(blendPrefix('Vreta')).toBe('vreta');
-        expect(blendPrefix('Vreta Kloster GK')).toBe('vreta_kloster_gk');
+        expect(blendPrefix('Ombergs Golfklubb')).toBe('ombergs-golfklubb');
+        expect(nextBlendName([], blendPrefix('Ombergs Golfklubb'), 'ombergs-golfklubb_svg_90.blend')).toBe('ombergs-golfklubb_svg_90.blend');
         // The script writes the rule out rather than importing `courseSlug` (that module is
         // Bun-only, and the browser half must not need it), so pin that they stay the same rule.
         const { courseSlug } = await import('../server/services/gspro-export.service');
         for (const name of ['Vreta', 'Vreta Kloster GK', 'Längbro Ängar', '  ', 'A/B 2']) {
-            expect(blendPrefix(name)).toBe(courseSlug(name).replace(/-/g, '_'));
+            expect(blendPrefix(name)).toBe(courseSlug(name));
         }
     });
 });

@@ -158,15 +158,16 @@ export function nextBlendName(existing: string[], prefix: string, suggested?: st
 }
 
 /**
- * `Vreta Kloster GK` -> `vreta_kloster_gk`: the course's slug with
- * underscores, as OPCD's build names have it. Written out rather than taken
- * from `courseSlug` so this half of the script imports nothing of the server's
- * (which is Bun-only, through `bun:sqlite`); `courseSlug` is the same rule and
- * the test pins both spellings.
+ * `Vreta Kloster GK` -> `vreta-kloster-gk`: the course's slug, the stem of the
+ * SVG `gspro:export` writes (`<slug>.svg`), which OPCD names its build after
+ * (`ombergs-golfklubb.svg` -> `ombergs-golfklubb_svg_90.blend`; Vreta's has no
+ * hyphen to tell). Written out rather than taken from `courseSlug` so this half
+ * of the script imports nothing of the server's (which is Bun-only, through
+ * `bun:sqlite`); the test pins it to `courseSlug`.
  */
 export const blendPrefix = (courseName: string) => (courseName
     .normalize('NFD').replace(/[̀-ͯ]/g, '')
-    .toLowerCase().replace(/[^a-z0-9]+/g, '_').replace(/^_+|_+$/g, '') || 'course');
+    .toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '') || 'course');
 
 // ──────────────────────────────── the CLI ────────────────────────────────
 
@@ -835,8 +836,10 @@ export function jobFromCells(index: number, cells: string[], buttons: string[]):
 
 /** The job table as it stands. Newest first, as OPCD lists it. */
 export async function readJobs(page: Page): Promise<SvgJob[]> {
-    const rows = await page.locator('tr').all();
-    const candidates = rows.length ? rows : await page.getByRole('row').all();
+    // Visible rows only: ZK keeps every tab it ever opened in the page, hidden, and an earlier
+    // look's table (its jobs still 'Processing') must not be read as this one.
+    const rows = await page.locator('tr').filter({ visible: true }).all();
+    const candidates = rows.length ? rows : await page.getByRole('row').filter({ visible: true }).all();
     const jobs: SvgJob[] = [];
     for (const row of candidates) {
         const cells = await rowCells(row);
@@ -917,6 +920,9 @@ export async function waitForBuild(
 
 /** One look at the job table: the walk through the menu, then the table. What `waitForBuild` polls. */
 export const svgJobsLook = (page: Page, opcdName: string, deps: BuildDeps) => async (): Promise<SvgJob[]> => {
+    // A fresh page for every look: walking the menu again opens one more "Course Workflow" tab
+    // each time (eight after a 20-minute wait), and the SVG Jobs click then lands on the wrong one.
+    await page.reload({ waitUntil: 'domcontentloaded' });
     await openSvgJobsTab(page, opcdName, deps);
     return readJobs(page);
 };
