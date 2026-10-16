@@ -414,6 +414,12 @@ def apply_look(item: dict, rules: list[dict], also: str = "") -> None:
     # first tee 2026-10-12), so they must end before it.
     if "renderDistance" in look:
         item["RenderDistanceFactor"] = look["renderDistance"]
+    # Thinning instead of a line: from this share of the item's render distance on, fewer and fewer of its
+    # instances are drawn, so the planting fades out rather than ending in a visible edge (null = off).
+    if "falloffStart" in look:
+        item["UseDistanceFalloff"] = look["falloffStart"] is not None
+        if look["falloffStart"] is not None:
+            item["DistanceFalloffStartDistance"] = look["falloffStart"]
     # x the item's own size range: a stand-in model is seldom the size of the prefab it replaces.
     if "scale" in look:
         item["MinScale"], item["MaxScale"] = item["MinScale"] * look["scale"], item["MaxScale"] * look["scale"]

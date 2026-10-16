@@ -25,9 +25,9 @@
     "outsideOob": 80,
     "fromPlay": 80
   },
-  "vegeSettings_comment": "Written into the file's VSProSettings.vegeSettings, which GSPro's Arborist system runs with (only keys the file has). PlantDistance (Marcus 2026-10-14): 350 -> 250 m saved 0.6 ms a frame at tee 1 (live in GSPro, main-thread CPU: the system culls fewer cells) with no visible difference from tee 1, the hole 4 tee and hole 6; trees stay full models to PlantDistance + AdditionalTreeMeshDistance (563 m).",
+  "vegeSettings_comment": "Written into the file's VSProSettings.vegeSettings, which GSPro's Arborist system runs with (only keys the file has). PlantDistance (Marcus 2026-10-14): 350 -> 250 m saved 0.6 ms a frame at tee 1 (live in GSPro, main-thread CPU: the system culls fewer cells) with no visible difference from tee 1, the hole 4 tee and hole 6; trees stay full models to PlantDistance + AdditionalTreeMeshDistance (563 m). Omberg 2026-10-16 (Marcus): the course is open and one sees further, so PlantDistance 300: the bushes draw to all of it (renderDistance 1), the small ground plants to 0.5 of it (150 m), and everything thins out from 40 % of its distance (falloffStart) instead of ending in a line.",
   "vegeSettings": {
-    "PlantDistance": 250
+    "PlantDistance": 300
   },
   "forstRing_comment": "SWITCHED OFF 2026-10-13 (the key is renamed forstRing_off; rename it back to use it): no radius gave a frame-time gain, the birch swap shows, and Marcus finds the Forst oaks better lit in the course's VSP than as Arborist's Oak__ items. The ring rule of arborist.py trees --surfaces (ForstRing; Marcus 2026-10-13): the course's own full-model trees (the 'vsp' prefabs, Forst's CTI oaks and birches, the most expensive thing on the course) stand only on the playing field (rough, semi, fairway, green, tee, bunker; not deep rough) and within playM metres of it. Further out, and still inside the far rule, the same tree at the same position, rotation and height is a full model drawn by Arborist: the species 'replace' names for its prefab (keys are prefab file names or parts of them, the whole name wins, then the longest part; values as in 'trees'). minM widens the ring per prefab (part of a prefab name -> metres): Arborist has no birch but the SpeedTree S7_European_White_Birch, which Marcus accepts only from about 30 m from the play, so the birch ring is max(playM, 30). The oaks become Arborist's Oak__* items, which are the very same Forst meshes (identical first-LOD sizes and triangle counts) under Arborist's DEC shader with one leaf tint (treeSettings, match Oak__: #a0acc4, measured against the Forst oaks in GSPro to within 2 %, lodFactor 1 as the course's items); there is no bare-crowned Oak__, so tall_bare becomes the slimmer Oak__medium. Positions that leave the course's VSP go to data/arborist/<course>-vsp-far.json: Unity golfmap.vsp.trees.trim restore=true, then file=<that>. Remove this key and the behaviour is the plain far rule. Variants built and measured 2026-10-13 (playM 15, 30, 45): docs/gspro/arborist.md.",
   "forstRing_off": {
@@ -564,7 +564,8 @@
       "barkCap": 0.7,
       "even": true,
       "smoothness": 0,
-      "renderDistance": 0.55
+      "renderDistance": 1.0,
+      "falloffStart": 0.4
     },
     {
       "comment": "Hazel's leaf texture is dark: under the common tint it drew near black in GSPro from every side (2026-10-13). Tried live with veg.material.",
@@ -581,7 +582,8 @@
         "heath",
         "fern"
       ],
-      "renderDistance": 0.3
+      "renderDistance": 0.5,
+      "falloffStart": 0.4
     },
     {
       "match": [
