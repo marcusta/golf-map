@@ -4007,14 +4007,15 @@ def cut_out(ctx, op):
 # within reach goes to max(z, target(x, y)): inside the outline a rounded rise from the foot (`footM` under
 # `waterM`) to the top (`topM` over `waterM`, or over the highest ground on the outline when there is no water) with
 # lumpy noise (`noiseM`), outside it a shoal / apron falling from the foot to the lowest ground within the apron.
-# Lift only and one height per XY: vertices two meshes share move alike, so no seam opens. Green, bunker and tee
-# meshes are left alone. Moved vertices get fresh normals, the others keep theirs.
+# Lift only and one height per XY: vertices two meshes share move alike, so no seam opens. Green, bunker, tee and
+# path meshes are left alone (a road or path refined and pulled toward the DEM by an apron got steep faces and
+# shading faults: dark smudges in GSPro, Omberg 2026-10-17). Moved vertices get fresh normals, the others keep theirs.
 
 RISE_DEFAULTS = {"footM": 0.35, "apronM": 3.0, "noiseM": 0.22, "maxEdgeM": 0.35, "seed": 0.0}
 # `mode` dem (a cliff: the slab and its apron go to the course's DEM, see _rock_rise_dem): lidar is the shape, so no
 # noise, and a finer slab - the DEM's cells are 0.5 m
 RISE_DEM_DEFAULTS = {"apronM": 3.0, "noiseM": 0.0, "maxEdgeM": 0.3, "seed": 0.0}
-RISE_KEEP = ("green", "bunker", "tee")
+RISE_KEEP = ("green", "bunker", "tee", "path")
 RISE_STEEP_DEG = 55.0       # report: the slab's faces at least this steep (the 14th green's cliff on 0.5 m cells)
 
 
@@ -4381,7 +4382,7 @@ def dem_lake_meshes(ctx, poly, apron):
 
 def _rise_refine(ctx, slab, poly, apron, max_edge, single_edge=False):
     """Step 1 of a rise: the slab refined all over to max_edge, the ground of the meshes within the apron (not green,
-    bunker, tee) to twice that, T-junctions closed. Returns (near meshes, passes, weld)."""
+    bunker, tee, path) to twice that, T-junctions closed. Returns (near meshes, passes, weld)."""
     box = sl.polygon_bbox(poly, apron)
     keep = {r["name"] for r in ctx.index if r["type"] in RISE_KEEP}
     near = [o for o in spline_meshes() if o.name != slab.name and o.visible_get() and o.name not in keep

@@ -681,7 +681,7 @@ course meshes and lifts the inside out as one new object. Hand layer, one op per
 - **`rise`** (a klippa instead of a flat slab; from the feature's `rise*` attributes, shared/features/rock-slab.ts):
   `{topM, waterM?, footM 0.35, apronM 3, noiseM 0.22, maxEdgeM 0.35, seed}`. After the cut the slab is refined to
   `maxEdgeM` (the cut keeps OPCD's ~1.2 m triangles) and the ground within `apronM` to twice that, T-junctions
-  closed, then every vertex of the slab and of the meshes within reach (not green, bunker, tee) goes to
+  closed, then every vertex of the slab and of the meshes within reach (not green, bunker, tee, path) goes to
   `max(z, target(x, y))`: inside the outline a rounded rise (`1 - (1 - t)^2.4` of the distance in, over the
   inradius) from the foot (`footM` under `waterM`) to the top (`topM` over `waterM`, or over the highest ground on
   the outline without water) plus lumpy noise (2.2 / 0.9 / 0.35 m) of `noiseM`; outside a shoal / apron falling from
@@ -704,9 +704,11 @@ course meshes and lifts the inside out as one new object. Hand layer, one op per
   the OPCD meshes over it are smoother still. After the same refinement as a dome (the slab to `maxEdgeM`, the apron ring to twice that, T-junctions
   closed; here with bmesh's `use_single_edge`, so no zero-area sliver is left to stand up as a vertical face) every
   vertex of the slab goes to the DEM's height at its XY, up or down, and the vertices of the meshes within `apronM`
-  outside the outline (not green, bunker, tee) blend from the DEM at the outline to their own height at `apronM`
-  (smoothstep). One height per XY, so shared vertices move alike; a vertex shared with a green, bunker or tee keeps
-  its height (`pinned`). `waterM` joins the faces left under the water to the lake, as above. The DEM is the inner
+  outside the outline (not green, bunker, tee, path) blend from the DEM at the outline to their own height at `apronM`
+  (smoothstep). One height per XY, so shared vertices move alike; a vertex shared with a green, bunker, tee or path
+  keeps its height (`pinned`). Paths joined the kept types on 2026-10-17: 33 of Omberg's shore and outcrop slabs had
+  their 3 m apron over the gravel road, which came out refined and pulled toward the DEM with 851 steep faces and
+  4773 shading faults (the `pathSurface` check; dark smudges in GSPro). `waterM` joins the faces left under the water to the lake, as above. The DEM is the inner
   heightmap export next to the .blend, `<prefix>-inner-dem-<side>m.tif` (the `--sidecar`'s `.tif`; the edited DEM, so
   a lake bed is already dug), bilinear between pixel centres, z = H - `minM` + `unity.position.y`
   (`shape_coords`); on Omberg's conformed terrain that frame puts the DEM within 1.7 cm (p90, median 1 mm) of

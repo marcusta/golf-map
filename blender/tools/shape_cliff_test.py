@@ -129,20 +129,25 @@ def dem_expected(x, y):
 
 
 # --- the course: x -50..-14, y -50..-14 in 1.2 m squares split in two triangles; rough north of y = -30.4, semi south,
-# a green patch in the apron east of the outline (its vertices shared with the rough)
+# a green patch in the apron east of the outline and a gravel path strip west of it (their vertices shared with the
+# rough)
 X0, Y0, K, STEP = -50.0, -50.0, 30, 1.2
 
 
 def region(cx, cy):
     if -23.6 < cx < -21.2 and -29.6 < cy < -27.2:     # 0.4 m east of the outline
         return "green"
+    if -38.8 < cx < -36.4 and -33.2 < cy < -26.0:     # 0.4 m west of the outline
+        return "path"
     return "rough" if cy > -30.4 else "semi"
 
 
 verts = [(X0 + i * STEP, Y0 + j * STEP) for j in range(K + 1) for i in range(K + 1)]
-names = {"rough": "Spline_t2_Rough_-_Mesh", "semi": "Spline_t2_Rough_Semi_-_Mesh", "green": "Spline_t2_Green_-_Mesh"}
+names = {"rough": "Spline_t2_Rough_-_Mesh", "semi": "Spline_t2_Rough_Semi_-_Mesh", "green": "Spline_t2_Green_-_Mesh",
+         "path": "Spline_t2_gravel_Concrete_-_Mesh"}
 SCENE = {"rough": (names["rough"], "rough", "s_rough", (1, 0, 0, 1)), "semi": (names["semi"], "rough", "s_semi", (1, 0, 0, 1)),
-         "green": (names["green"], "green", "s_green", (0, 1, 0, 1))}
+         "green": (names["green"], "green", "s_green", (0, 1, 0, 1)),
+         "path": (names["path"], "path", "s_path", (0, 0, 0, 1))}
 
 
 def build(region=region, scene=SCENE):
@@ -197,6 +202,7 @@ assert "dem slab only" in bad(rise={"topM": 0.9, "sharpen": 0.5})
 assert ">= 0" in bad(rise={"mode": "dem", "facets": -1.0}) and "0-90" in bad(rise={"mode": "dem", "hardEdgeDeg": 120.0})
 
 ctx = build()
+path_faces = len(bpy.data.objects[names["path"]].data.polygons)
 t0 = time.time()
 run = sa.cut_out(ctx, op)
 took = time.time() - t0
@@ -239,7 +245,8 @@ for p in slab.data.polygons:
 assert steep >= (RECT[3] - RECT[1]) / 0.3 and rise["steepFaces"] == steep and rise["maxSlopeDeg"] > 80, (steep, rise)
 
 # 5. the apron: from the DEM at the outline to the mesh's own height at apronM (smoothstep); beyond it untouched;
-# the green's vertices (and the semi's shared with it) keep their heights
+# the green's and the path's vertices (and the rough's and semi's shared with them) keep their heights, and the path
+# is not refined (a road pulled toward the DEM and refined got steep faces and shading faults, Omberg 2026-10-17)
 
 
 def outside_dist(x, y):
@@ -248,12 +255,14 @@ def outside_dist(x, y):
 
 
 checked = 0
-green_xy = {(round(c[0], 3), round(c[1], 3)) for c in sa.positions(bpy.data.objects[names["green"]]).tolist()}
-for k in ("rough", "semi", "green"):
+green_xy = {(round(c[0], 3), round(c[1], 3)) for k in ("green", "path")
+            for c in sa.positions(bpy.data.objects[names[k]]).tolist()}
+assert len(bpy.data.objects[names["path"]].data.polygons) == path_faces, "the path in the apron was refined"
+for k in ("rough", "semi", "green", "path"):
     for x, y, z in sa.positions(bpy.data.objects[names[k]]).astype(np.float64).tolist():
         d = outside_dist(x, y)
         own = plane(x, y)
-        if k == "green" or (round(x, 3), round(y, 3)) in green_xy or d >= APRON:
+        if k in ("green", "path") or (round(x, 3), round(y, 3)) in green_xy or d >= APRON:
             assert abs(z - own) < 1e-4, f"{k} moved at ({x:.2f}, {y:.2f}) d {d:.2f}: {own:.3f} -> {z:.3f}"
             continue
         if d <= 1e-6:
