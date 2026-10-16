@@ -640,7 +640,7 @@ course meshes and lifts the inside out as one new object. Hand layer, one op per
   joined into `Spline_<name>_<surface>_-_Mesh` (`surface` default `Rock`), welded along the old mesh borders inside
   the outline. Props: `opcd_kind` mesh, `opcd_shape_id` = `name`, `golfmap_surface`, `golfmap_cut_from`. The new
   object carries the first source's material until Unity gives it its own.
-- **UVs**: the new object gets planar UVs, one tile per `uvM` metres (default 4): OPCD's meshes have none, and
+- **UVs**: the new object gets planar UVs (or box UVs, `uv` below), one tile per `uvM` metres (default 4): OPCD's meshes have none, and
   the rock material Unity puts on a slab needs them. Unity: `golfmap.slabs.materials` (`GolfMapRockSlabs.cs`) gives
   every `*_Rock_-_Mesh` the material and physics material of `<course>/rock-slabs.json`; `golfmap.course.refresh`
   runs it after the mesh sync (step `slabs.materials`), so a re-synced slab keeps its rock look and `GSPstone`.
@@ -691,6 +691,36 @@ course meshes and lifts the inside out as one new object. Hand layer, one op per
   level (unity/README.md "Water planes"). Vreta hall_247 (hole 15's lake, 2026-10-15): the slab lay on the dug lake
   bed in a notch of the shore and the plane followed it down to 7.91 m; with `rise` {waterM 9.43, topM 0.9} the rock
   stands 9.08-10.40 m, 3126 faces of the rough ring and channel round it joined the lake, 0 seam gaps.
+- **`rise.mode` `dem`** (a cliff; feature attribute `riseMode: 'dem'`, default `dome` = the klippa above):
+  `{mode: "dem", waterM?, apronM 3, noiseM 0, maxEdgeM 0.3, seed}`, no `topM` / `footM` (validation refuses them;
+  the generator leaves them out with a warning). Why: Omberg's 14th green stands on a granite cliff that drops ~13 m
+  almost straight into Vättern. The lidar DEM (0.5 m) has it, the course meshes lose it: Blender's terrain is the
+  half-resolution heightmap (0.737 m grid), OPCD's Terrain Smooth rounds it, the meshes have ~1.2 m triangles. On
+  Omberg's biggest shore cliff (36 x 113 m box, 22 m drop) the DEM has 1979 cells of >= 55° (steepest 80°), the
+  conformed terrain 730 faces (steepest 67°), its heights on the cliff above the water 0.3-0.5 m off the DEM (p95);
+  the OPCD meshes over it are smoother still. After the same refinement as a dome (the slab to `maxEdgeM`, the apron ring to twice that, T-junctions
+  closed; here with bmesh's `use_single_edge`, so no zero-area sliver is left to stand up as a vertical face) every
+  vertex of the slab goes to the DEM's height at its XY, up or down, and the vertices of the meshes within `apronM`
+  outside the outline (not green, bunker, tee) blend from the DEM at the outline to their own height at `apronM`
+  (smoothstep). One height per XY, so shared vertices move alike; a vertex shared with a green, bunker or tee keeps
+  its height (`pinned`). `waterM` joins the faces left under the water to the lake, as above. The DEM is the inner
+  heightmap export next to the .blend, `<prefix>-inner-dem-<side>m.tif` (the `--sidecar`'s `.tif`; the edited DEM, so
+  a lake bed is already dug), bilinear between pixel centres, z = H - `minM` + `unity.position.y`
+  (`shape_coords`); on Omberg's conformed terrain that frame puts the DEM within 1.7 cm (p90, median 1 mm) of
+  terrain.obj's vertices, and a half-pixel shift either way fits worse. It is read in Blender's own Python (numpy +
+  zlib: classic TIFF, strips or tiles, deflate, predictor 1 or 3, the file the pipeline writes; bit-exact against
+  rasterio, the whole 3020² band in 0.2 s) because the worker may run where there is no pipeline venv; only the
+  blocks under the op's window are read, the window is cached per DEM content, and the op cache keys on the DEM's
+  sha1, so a new DEM re-runs every dem slab. A terrain.obj older than the DEM (a lake dug since) shows as the slab
+  standing below or above its neighbours: re-prepare first. Report `rise` = `{mode, dem, demSha, window, slabZ,
+  maxUpM, maxDownM, moved, pinned, steepFaces (>= 55°), maxSlopeDeg, seams {points, open, maxDz}, sunk, ...}`;
+  `seams.open` > 0 is a warning. Test: `blender/tools/shape_cliff_test.py` (a 10 m step in a synthetic DEM across
+  an outline over a plane of 1.2 m triangles; 0.5 s). On Omberg (a 20 x 8 m outline on a 52° bank of hole 1's
+  rough, 164 m²): 11 199 faces, cut 4.0 s + rise 4.5 s, 0 unmatched border vertices, 0 open seams over the course.
+- **`uv` `box`** (feature attribute `uvMode: 'box'`, default `planar`): every face of the slab projected on the
+  plane of its dominant normal axis (top faces XY, steep faces YZ or XZ), `uvM` metres a tile, so a cliff's faces
+  carry the rock texture unstretched instead of a top-down smear. The seams between projections do not show on rock.
+  Set again after a rise, on the refined mesh.
 - **Vreta** (`vreta_svg_1985`, two slabs east of hole 11's green, out of `Spline_Outer_Deep_Sat_3_5_piece2_-_Mesh`):
   41.6 m² / 92 faces and 54.2 m² / 115 faces, border 57 and 61 vertices with 0 unmatched, 0 new seam gaps and 0
   T-junctions over the course, 1.9 s each, op-cache replay 0.1 s with the fresh apply's all-mesh hash. The op only

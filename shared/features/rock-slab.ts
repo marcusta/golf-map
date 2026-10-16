@@ -29,11 +29,29 @@ export const DEFAULT_ROCK_SLAB_TILE_M = 4;
  * within `riseApronM` is lifted into a shoal/apron that meets the foot; with water, the faces around it that end up
  * under the water join the lake. Lift only, one height per position, so the seams stay closed. `riseTopM` turns
  * it on; the rest is optional (`riseNoiseM` lumps, `riseMaxEdgeM` mesh size, `riseSeed`).
+ * `riseMode` 'dem' (default 'dome') makes it a cliff instead: the slab goes to the course's lidar DEM, up or down,
+ * and the ground within `riseApronM` blends from the DEM at the outline to its own height (Omberg's 14th green on
+ * its granite cliff, which the course meshes round away). It needs no `riseTopM`; `riseTopM` / `riseFootM` mean
+ * nothing there (the generator leaves them out, with a warning); `riseWaterM`, `riseApronM`, `riseNoiseM` (default
+ * 0 there), `riseMaxEdgeM` (0.3) and `riseSeed` apply.
  */
 export const ROCK_SLAB_RISE_ATTRIBUTES = {
     riseWaterM: 'waterM', riseTopM: 'topM', riseFootM: 'footM', riseApronM: 'apronM',
     riseNoiseM: 'noiseM', riseMaxEdgeM: 'maxEdgeM', riseSeed: 'seed',
 } as const;
+
+/** `rise` shape (the cut-out's `rise.mode`): a rounded klippa from riseTopM, or the course DEM (a cliff). */
+export const ROCK_SLAB_RISE_MODE_ATTRIBUTE = 'riseMode';
+export const ROCK_SLAB_RISE_MODES = ['dome', 'dem'] as const;
+export type RockSlabRiseMode = (typeof ROCK_SLAB_RISE_MODES)[number];
+
+/**
+ * How the slab's texture is laid on (the cut-out's `uv`): 'planar' (default) from above, or 'box' - each face
+ * projected on the plane its normal faces most, so a cliff's faces carry the rock unstretched.
+ */
+export const ROCK_SLAB_UV_MODE_ATTRIBUTE = 'uvMode';
+export const ROCK_SLAB_UV_MODES = ['planar', 'box'] as const;
+export type RockSlabUvMode = (typeof ROCK_SLAB_UV_MODES)[number];
 
 /** The slab's margin, the default when unset. */
 export function rockSlabMarginOf(attributes: object | null | undefined): number {
@@ -58,6 +76,14 @@ export function rockSlabProblem(attributes: object | null | undefined): string |
     const tile = a[ROCK_SLAB_TILE_ATTRIBUTE];
     if (tile !== undefined && (typeof tile !== 'number' || !Number.isFinite(tile) || tile <= 0)) {
         return `attributes.${ROCK_SLAB_TILE_ATTRIBUTE} must be a number above 0 (metres)`;
+    }
+    const mode = a[ROCK_SLAB_RISE_MODE_ATTRIBUTE];
+    if (mode !== undefined && !(ROCK_SLAB_RISE_MODES as readonly unknown[]).includes(mode)) {
+        return `attributes.${ROCK_SLAB_RISE_MODE_ATTRIBUTE} must be one of ${ROCK_SLAB_RISE_MODES.join(', ')}`;
+    }
+    const uvMode = a[ROCK_SLAB_UV_MODE_ATTRIBUTE];
+    if (uvMode !== undefined && !(ROCK_SLAB_UV_MODES as readonly unknown[]).includes(uvMode)) {
+        return `attributes.${ROCK_SLAB_UV_MODE_ATTRIBUTE} must be one of ${ROCK_SLAB_UV_MODES.join(', ')}`;
     }
     for (const key of Object.keys(ROCK_SLAB_RISE_ATTRIBUTES)) {
         const value = a[key];

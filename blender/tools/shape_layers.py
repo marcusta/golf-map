@@ -67,12 +67,35 @@ OPS = {
     # Spline_<name>_<surface>_-_Mesh (shape_apply "golfmap.cut_out"): a rock slab that is no drawn feature.
     "golfmap.cut_out": {
         "params": {},
-        "keys": {"name", "outline3006", "surface", "sliverM", "weld", "protect", "uvM", "rise"},
+        "keys": {"name", "outline3006", "surface", "sliverM", "weld", "protect", "uvM", "uv", "rise"},
         "required": {"name", "outline3006"},
         "noSelect": True,
     },
 }
 CUT_OUT_NAME = re.compile(r"^[a-z0-9]+(_[a-z0-9]+)*$")
+CUT_OUT_UV_MODES = ("planar", "box")
+# golfmap.cut_out `rise`: mode dome (a rounded klippa from topM / footM, the default) or dem (the slab and its apron
+# go to the course DEM: a cliff; topM / footM mean nothing there)
+RISE_MODES = ("dome", "dem")
+RISE_NUMBERS = {"waterM", "topM", "footM", "apronM", "noiseM", "maxEdgeM", "seed"}
+
+
+def _rise_errors(rise):
+    if not isinstance(rise, dict) or set(rise) - RISE_NUMBERS - {"mode"} or not all(
+            _is_type(v, float) for k, v in rise.items() if k != "mode"):
+        return ["rise must be an object of numbers (" + ", ".join(sorted(RISE_NUMBERS)) + ") and a mode"]
+    mode = rise.get("mode", "dome")
+    if mode not in RISE_MODES:
+        return ["rise.mode must be one of " + ", ".join(RISE_MODES)]
+    if mode == "dome" and not (rise.get("topM", 0) > 0):
+        return ["rise needs topM > 0 (mode dome)"]
+    if mode == "dem" and ({"topM", "footM"} & set(rise)):
+        return ["rise mode dem takes no topM / footM (the DEM is the shape)"]
+    if any(rise.get(k, 0) < 0 for k in ("footM", "apronM", "noiseM", "maxEdgeM")):
+        return ["rise footM, apronM, noiseM and maxEdgeM must be >= 0"]
+    if "maxEdgeM" in rise and rise["maxEdgeM"] < 0.1:
+        return ["rise.maxEdgeM must be >= 0.1 (the slab's faces grow with 1 / maxEdgeM^2)"]
+    return []
 CUT_OUT_SURFACE = re.compile(r"^[A-Z][A-Za-z]*$")
 # A cut-out's name or surface may not read as a golf surface: Unity classes course meshes by these words in the name.
 SURFACE_WORDS = ("water", "creek", "lake", "deep", "semi", "rough", "fairway", "green", "tee", "bunker")
@@ -225,20 +248,15 @@ def validate_op(op):
             errors.append("sliverM must be a number >= 0")
         if "uvM" in op and not (_is_type(op["uvM"], float) and op["uvM"] > 0):
             errors.append("uvM must be a number > 0")
+        if op.get("uv", "planar") not in CUT_OUT_UV_MODES:
+            errors.append("uv must be one of " + ", ".join(CUT_OUT_UV_MODES))
         if "weld" in op and not isinstance(op["weld"], bool):
             errors.append("weld must be true/false")
         pr = op.get("protect", [])
         if not (isinstance(pr, list) and all(isinstance(t, str) for t in pr)):
             errors.append("protect must be a list of golf-map types")
         if "rise" in op:
-            rise = op["rise"]
-            rise_keys = {"waterM", "topM", "footM", "apronM", "noiseM", "maxEdgeM", "seed"}
-            if not isinstance(rise, dict) or set(rise) - rise_keys or not all(_is_type(v, float) for v in rise.values()):
-                errors.append("rise must be an object of numbers: " + ", ".join(sorted(rise_keys)))
-            elif not (rise.get("topM", 0) > 0) or any(rise.get(k, 0) < 0 for k in ("footM", "apronM", "noiseM", "maxEdgeM")):
-                errors.append("rise needs topM > 0; footM, apronM, noiseM and maxEdgeM >= 0")
-            elif "maxEdgeM" in rise and rise["maxEdgeM"] < 0.1:
-                errors.append("rise.maxEdgeM must be >= 0.1 (the slab's faces grow with 1 / maxEdgeM^2)")
+            errors.extend(_rise_errors(op["rise"]))
     if name == "golfmap.split_surfaces":
         for k, lo in (("fadeM", 0.0), ("minPartM2", 0.0), ("sliverM", 0.0), ("slitM", 0.0)):
             if k in op and not (_is_type(op[k], float) and op[k] >= lo):

@@ -1859,11 +1859,18 @@ def plan_units(ctx, op):
     if kind == "golfmap.cut_out":
         # one unit, named by the op; reads = every Spline mesh the cut or its weld can reach (the outline's box + 1 m;
         # with `rise`, + its apron, which it lifts)
+        # with rise mode dem, the DEM it samples keys the cache too (a new DEM re-runs the op)
         box = sl.polygon_bbox(cut_out_poly(ctx, op))
         reach = 1.0 + (rise_params(op["rise"])["apronM"] if op.get("rise") else 0.0)
+        extra = ""
+        if (op.get("rise") or {}).get("mode") == "dem":
+            try:
+                extra = json.dumps({"dem": course_dem_sha(ctx)})
+            except OSError as e:          # cut_out reports it and cuts nothing
+                extra = json.dumps({"dem": None, "error": str(e)})
         return [Unit(op["name"], [], None, lambda margin=0.0: {
             o.name for o in spline_meshes() if ctx.box(o.name)
-            and sl.bbox_distance(box, ctx.box(o.name)) <= reach + margin})], []
+            and sl.bbox_distance(box, ctx.box(o.name)) <= reach + margin}, extra=extra)], []
     if kind == "golfmap.weld_tjunctions":
         recs, problems = sl.select(op["select"], ctx.index)
         names = [r["name"] for r in recs]
@@ -3841,6 +3848,11 @@ def cut_out(ctx, op):
     if name in bpy.data.objects:
         return dict(run, result=["CANCELLED"], error=f"{name} exists already")
     poly = cut_out_poly(ctx, op)
+    if (op.get("rise") or {}).get("mode") == "dem":
+        try:
+            dem_sampler(ctx, sl.polygon_bbox(poly, rise_params(op["rise"])["apronM"] + 1.0))
+        except (OSError, ValueError, KeyError) as e:
+            return dict(run, result=["CANCELLED"], error=f"rise mode dem: {e}")
     box = sl.polygon_bbox(poly)
     protect = set(op.get("protect", sl.DEFAULT_PROTECT))
     protected = {r["name"]: r["type"] for r in ctx.index if r["type"] in protect}
@@ -3927,6 +3939,9 @@ def cut_out(ctx, op):
     for part in parts[1:]:
         bpy.data.meshes.remove(part)
     _drop_cut_attrs(new_me)
+    if op.get("uv", "planar") == "box":
+        # box UVs (per face the plane of its dominant normal axis): a steep slab's faces carry the texture unstretched
+        box_uvs(new_me, uv_m)
     new_me.name = name
     new = bpy.data.objects.new(name, new_me)
     for col in first.users_collection:
@@ -3981,13 +3996,194 @@ def cut_out(ctx, op):
 # meshes are left alone. Moved vertices get fresh normals, the others keep theirs.
 
 RISE_DEFAULTS = {"footM": 0.35, "apronM": 3.0, "noiseM": 0.22, "maxEdgeM": 0.35, "seed": 0.0}
+# `mode` dem (a cliff: the slab and its apron go to the course's DEM, see _rock_rise_dem): lidar is the shape, so no
+# noise, and a finer slab - the DEM's cells are 0.5 m
+RISE_DEM_DEFAULTS = {"apronM": 3.0, "noiseM": 0.0, "maxEdgeM": 0.3, "seed": 0.0}
 RISE_KEEP = ("green", "bunker", "tee")
+RISE_STEEP_DEG = 55.0       # report: the slab's faces at least this steep (the 14th green's cliff on 0.5 m cells)
 
 
 def rise_params(rise):
-    p = dict(RISE_DEFAULTS)
-    p.update({k: float(v) for k, v in (rise or {}).items()})
+    rise = rise or {}
+    mode = rise.get("mode", "dome")
+    p = dict(RISE_DEM_DEFAULTS if mode == "dem" else RISE_DEFAULTS)
+    p.update({k: float(v) for k, v in rise.items() if k != "mode"})
+    p["mode"] = mode
     return p
+
+
+# ---------------------------------------------------------------- the course DEM (`rise.mode` dem)
+#
+# The inner heightmap export next to the .blend, `<prefix>-inner-dem-<side>m.tif` (float32, EPSG:3006, metres above
+# sea; the edited DEM, so a lake bed is already dug) with its sidecar (the frame, `minM`). Read here with numpy + zlib,
+# not rasterio: Blender's Python has no rasterio, and the shaping worker can run on a machine without the pipeline
+# venv (README "A worker on another machine"). The file is the kind the pipeline writes (gspro.py: GTiff, tiled
+# 256, deflate, predictor 3); read are classic TIFF, strips or tiles, none / deflate, predictor 1 or 3, one float32
+# / float64 band, either byte order - anything else raises. Only the blocks under the window asked for are read.
+# A pixel is an area (GDAL's default; PixelIsPoint shifts the tiepoint half a pixel): bilinear between centres.
+
+DEM_PAD_PX = 2
+_TIFF_DTYPES = {1: "u1", 3: "u2", 4: "u4", 5: "u4", 6: "i1", 8: "i2", 9: "i4", 10: "i4", 11: "f4", 12: "f8", 16: "u8"}
+_TIFF_SIZES = {1: 1, 2: 1, 3: 2, 4: 4, 5: 8, 6: 1, 7: 1, 8: 2, 9: 4, 10: 8, 11: 4, 12: 8, 16: 8}
+
+
+def tiff_layout(path):
+    """The first image of a GeoTIFF: size, blocks, coding and the pixel grid in the file's CRS
+    ({width, height, blockW, blockH, offsets, counts, compression, predictor, bytes, order, x0, y0, sx, sy, nodata})."""
+    import struct
+    with open(path, "rb") as f:
+        head = f.read(8)
+        bo = {b"II": "<", b"MM": ">"}.get(head[:2])
+        if bo is None or struct.unpack(bo + "H", head[2:4])[0] != 42:
+            raise ValueError(f"{path}: not a classic TIFF (BigTIFF is not read)")
+        f.seek(struct.unpack(bo + "I", head[4:8])[0])
+        (n,) = struct.unpack(bo + "H", f.read(2))
+        entries = [struct.unpack(bo + "HHII", f.read(12)) for _ in range(n)]
+        tags = {}
+        for tag, typ, count, value in entries:
+            size = _TIFF_SIZES.get(typ)
+            if size is None:
+                continue
+            nbytes = size * count
+            if nbytes <= 4:
+                raw = struct.pack(bo + "I", value)[:nbytes]
+            else:
+                f.seek(value)
+                raw = f.read(nbytes)
+            if typ in (2, 7):
+                tags[tag] = raw
+            else:
+                v = np.frombuffer(raw, dtype=bo + _TIFF_DTYPES[typ])
+                tags[tag] = (v[0::2] / np.maximum(v[1::2], 1)) if typ in (5, 10) else v
+    one = lambda t, d=None: (int(tags[t][0]) if t in tags else d)
+    width, height = one(256), one(257)
+    bps, spp, fmt = one(258, 1), one(277, 1), one(339, 1)
+    if spp != 1 or fmt != 3 or bps not in (32, 64):
+        raise ValueError(f"{path}: one float32/float64 band expected (samples {spp}, format {fmt}, bits {bps})")
+    comp, pred = one(259, 1), one(317, 1)
+    if comp not in (1, 8, 32946) or pred not in (1, 3):
+        raise ValueError(f"{path}: compression {comp} / predictor {pred} is not read (none or deflate, predictor 1 or 3)")
+    if 322 in tags:
+        bw, bh, offs, cnts = one(322), one(323), tags[324], tags[325]
+    else:
+        bw, bh, offs, cnts = width, one(278, height), tags[273], tags[279]
+    if 34264 in tags:
+        m = tags[34264]
+        if abs(m[1]) > 1e-12 or abs(m[4]) > 1e-12:
+            raise ValueError(f"{path}: a rotated raster is not read")
+        sx, sy, x0, y0 = float(m[0]), float(-m[5]), float(m[3]), float(m[7])
+    else:
+        sc, tp = tags[33550], tags[33922]
+        sx, sy = float(sc[0]), float(sc[1])
+        x0, y0 = float(tp[3] - tp[0] * sx), float(tp[4] + tp[1] * sy)
+    keys = tags.get(34735)
+    if keys is not None:
+        for i in range(4, len(keys) - 3, 4):
+            if int(keys[i]) == 1025 and int(keys[i + 3]) == 2:   # GTRasterTypeGeoKey = RasterPixelIsPoint
+                x0, y0 = x0 - sx / 2, y0 + sy / 2
+    nodata = None
+    if 42113 in tags:
+        try:
+            nodata = float(tags[42113].rstrip(b"\0").decode("ascii"))
+        except ValueError:
+            pass
+    return {"width": width, "height": height, "blockW": bw, "blockH": bh, "offsets": [int(v) for v in offs],
+            "counts": [int(v) for v in cnts], "compression": comp, "predictor": pred, "bytes": bps // 8, "order": bo,
+            "x0": x0, "y0": y0, "sx": sx, "sy": sy, "nodata": nodata}
+
+
+def _tiff_block(data, lay):
+    import zlib
+    buf = zlib.decompress(data) if lay["compression"] != 1 else data
+    nb, bw = lay["bytes"], lay["blockW"]
+    b = np.frombuffer(buf, dtype=np.uint8)
+    rows = b.size // (bw * nb)
+    b = b[:rows * bw * nb].reshape(rows, bw * nb)
+    if lay["predictor"] == 3:
+        # floating-point predictor: the row's bytes are differenced, and stored as byte planes, most significant first
+        b = np.cumsum(b, axis=1, dtype=np.uint8)
+        return np.ascontiguousarray(b.reshape(rows, nb, bw).transpose(0, 2, 1)).view(">f%d" % nb).reshape(rows, bw)
+    return np.ascontiguousarray(b).view(lay["order"] + "f%d" % nb).reshape(rows, bw)
+
+
+def tiff_window(path, lay, r0, r1, c0, c1):
+    """Rows r0..r1-1, columns c0..c1-1 of the band as float64 (inside the image)."""
+    bw, bh = lay["blockW"], lay["blockH"]
+    across = -(-lay["width"] // bw)
+    out = np.full((r1 - r0, c1 - c0), np.nan)
+    with open(path, "rb") as f:
+        for br in range(r0 // bh, (r1 - 1) // bh + 1):
+            for bc in range(c0 // bw, (c1 - 1) // bw + 1):
+                k = br * across + bc
+                f.seek(lay["offsets"][k])
+                blk = _tiff_block(f.read(lay["counts"][k]), lay)
+                ra, rb = max(r0, br * bh), min(r1, br * bh + blk.shape[0])
+                ca, cb = max(c0, bc * bw), min(c1, bc * bw + bw)
+                if ra < rb and ca < cb:
+                    out[ra - r0:rb - r0, ca - c0:cb - c0] = blk[ra - br * bh:rb - br * bh, ca - bc * bw:cb - bc * bw]
+    if lay["nodata"] is not None:
+        out[out == lay["nodata"]] = np.nan
+    return out
+
+
+def course_dem_path(ctx):
+    """The course DEM GeoTIFF: ctx.dem_path, else the inner heightmap sidecar's .tif (the Applier's --sidecar)."""
+    path = getattr(ctx, "dem_path", None)
+    if path:
+        return path
+    sidecar = getattr(ctx, "dem_sidecar", None)
+    if not sidecar:
+        raise FileNotFoundError("no inner DEM sidecar known (rise mode dem samples <prefix>-inner-dem-<side>m.tif)")
+    return sidecar[:-len(".json")] if sidecar.endswith(".json") else sidecar
+
+
+def course_dem_sha(ctx):
+    """Content hash of the course DEM, cached per path, size and mtime (it keys a dem rise's op cache)."""
+    path = course_dem_path(ctx)
+    st = os.stat(path)
+    memo = ctx.__dict__.setdefault("_dem_sha", {})
+    k = (path, st.st_size, st.st_mtime_ns)
+    if k not in memo:
+        memo[k] = _file_sha(path)
+    return memo[k]
+
+
+def dem_sampler(ctx, box):
+    """Bilinear height of the course DEM in the .blend's frame for the XY box (x0, y0, x1, y1) and DEM_PAD_PX
+    round it: returns (sample(xy) -> z array, info). The window is cached per DEM content and window."""
+    path, sha, fr = course_dem_path(ctx), course_dem_sha(ctx), ctx.frame
+    layouts = ctx.__dict__.setdefault("_dem_layouts", {})
+    lay = layouts.get(sha) or layouts.setdefault(sha, tiff_layout(path))
+    # .blend x, y -> E, N (shape_coords.from_blend), then the pixel grid (centres at x0 + (c + 0.5) sx)
+    to_col = lambda x: ((fr["e0"] - fr["px"] - x) - lay["x0"]) / lay["sx"] - 0.5
+    to_row = lambda y: (lay["y0"] - (fr["n0"] - fr["pz"] - y)) / lay["sy"] - 0.5
+    cs, rs = sorted((to_col(box[0]), to_col(box[2]))), sorted((to_row(box[1]), to_row(box[3])))
+    c0, c1 = max(0, int(math.floor(cs[0])) - DEM_PAD_PX), min(lay["width"], int(math.ceil(cs[1])) + DEM_PAD_PX + 1)
+    r0, r1 = max(0, int(math.floor(rs[0])) - DEM_PAD_PX), min(lay["height"], int(math.ceil(rs[1])) + DEM_PAD_PX + 1)
+    if c1 - c0 < 2 or r1 - r0 < 2:
+        raise ValueError(f"the box {box} lies outside the DEM {os.path.basename(path)}")
+    windows = ctx.__dict__.setdefault("_dem_windows", {})
+    wk = (sha, r0, r1, c0, c1)
+    if wk not in windows:
+        windows[wk] = tiff_window(path, lay, r0, r1, c0, c1)
+    win = windows[wk]
+    off = fr["py"] - fr["minM"]          # z = H - minM + py (shape_coords.height_to_blend)
+
+    def sample(xy):
+        xy = np.asarray(xy, dtype=np.float64)
+        fc, frw = to_col(xy[:, 0]) - c0, to_row(xy[:, 1]) - r0
+        i = np.clip(np.floor(fc).astype(np.int64), 0, win.shape[1] - 2)
+        j = np.clip(np.floor(frw).astype(np.int64), 0, win.shape[0] - 2)
+        t, u = np.clip(fc - i, 0.0, 1.0), np.clip(frw - j, 0.0, 1.0)
+        h = ((1 - t) * (1 - u) * win[j, i] + t * (1 - u) * win[j, i + 1] + (1 - t) * u * win[j + 1, i]
+             + t * u * win[j + 1, i + 1])
+        if np.isnan(h).any():
+            raise ValueError(f"the DEM {os.path.basename(path)} has no height at {int(np.isnan(h).sum())} vertices "
+                             "(nodata, or outside its square)")
+        return h + off
+
+    info = {"dem": os.path.basename(path), "demSha": sha, "window": [r0, r1, c0, c1]}
+    return sample, info
 
 
 def _poly_signed_distance(pts, poly):
@@ -4014,9 +4210,11 @@ def _rock_noise(x, y, seed):
             + 0.1 * ef.value_noise(x / 0.35, y / 0.35, s + 13))
 
 
-def _refine(obj, max_edge, keep=None):
+def _refine(obj, max_edge, keep=None, single_edge=False):
     """Halve the edges longer than max_edge (of the faces `keep` selects, all when None) until none is; triangulated.
-    Returns the number of passes."""
+    `single_edge`: a face with one cut edge is split too (bmesh's use_single_edge). Without it such a face keeps the
+    new vertex as a straight corner and the triangulation can leave a zero-area triangle on it, which the next pass
+    splits again (the dome's refinement does that, kept as it is; mode dem splits). Returns the number of passes."""
     import bmesh
     bm = bmesh.new()
     bm.from_mesh(obj.data)
@@ -4026,7 +4224,7 @@ def _refine(obj, max_edge, keep=None):
         long_edges = list({e for f in faces for e in f.edges if e.calc_length() > max_edge})
         if not long_edges:
             break
-        bmesh.ops.subdivide_edges(bm, edges=long_edges, cuts=1, use_grid_fill=True)
+        bmesh.ops.subdivide_edges(bm, edges=long_edges, cuts=1, use_grid_fill=True, use_single_edge=single_edge)
         bmesh.ops.triangulate(bm, faces=[f for f in bm.faces if len(f.verts) > 3])
         passes += 1
     bm.to_mesh(obj.data)
@@ -4138,16 +4336,14 @@ def _rise_sink_into_lake(ctx, slab, poly, near, water, apron):
     return {"lake": lake.name, "moved": moved, "underWater": under, "seeds": seeds}
 
 
-def rock_rise(ctx, op, slab, poly):
-    p = rise_params(op["rise"])
-    t0 = time.time()
-    apron, max_edge = p["apronM"], p["maxEdgeM"]
+def _rise_refine(ctx, slab, poly, apron, max_edge, single_edge=False):
+    """Step 1 of a rise: the slab refined all over to max_edge, the ground of the meshes within the apron (not green,
+    bunker, tee) to twice that, T-junctions closed. Returns (near meshes, passes, weld)."""
     box = sl.polygon_bbox(poly, apron)
     keep = {r["name"] for r in ctx.index if r["type"] in RISE_KEEP}
     near = [o for o in spline_meshes() if o.name != slab.name and o.visible_get() and o.name not in keep
             and (b := bbox_xy(o)) and sl.bbox_distance(sl.polygon_bbox(poly), b) <= apron]
-    # 1. refine: the slab all over, the ground within the apron
-    passes = {slab.name: _refine(slab, max_edge)}
+    passes = {slab.name: _refine(slab, max_edge, single_edge=single_edge)}
     poly_np = np.asarray(poly)
     for o in near:
         def in_apron(f, o=o):
@@ -4155,8 +4351,101 @@ def rock_rise(ctx, op, slab, poly):
             if not (box[0] <= c.x <= box[2] and box[1] <= c.y <= box[3]):
                 return False
             return _poly_signed_distance(np.array([[c.x, c.y]]), poly_np)[0] > -apron
-        passes[o.name] = _refine(o, 2 * max_edge, in_apron)
+        passes[o.name] = _refine(o, 2 * max_edge, in_apron, single_edge=single_edge)
     weld = weld_tjunctions([slab.name] + [o.name for o in near])
+    return near, passes, weld
+
+
+def _rise_set_z(o, co, new_z, moved, slab):
+    """Write the new heights; moved vertices (and their ring) take the new geometry's normals, the rest keep their
+    custom ones (a slab without custom normals is shaded smooth)."""
+    me = o.data
+    old_vn = None
+    if me.has_custom_normals:
+        cn = np.empty(len(me.loops) * 3, dtype=np.float32)
+        me.corner_normals.foreach_get("vector", cn)
+        vi = np.empty(len(me.loops), dtype=np.int64)
+        me.loops.foreach_get("vertex_index", vi)
+        old_vn = np.zeros((len(me.vertices), 3))
+        np.add.at(old_vn, vi, cn.reshape(-1, 3))
+    co = co.copy()
+    co[:, 2] = new_z
+    me.vertices.foreach_set("co", co.reshape(-1).astype(np.float32))
+    me.update()
+    if old_vn is not None:
+        vn = np.empty(len(me.vertices) * 3, dtype=np.float32)
+        me.vertex_normals.foreach_get("vector", vn)   # the geometry's own, not the custom ones
+        vn = vn.reshape(-1, 3)
+        ring = moved.copy()
+        ev = np.empty(len(me.edges) * 2, dtype=np.int64)
+        me.edges.foreach_get("vertices", ev)
+        ev = ev.reshape(-1, 2)
+        ring[ev[moved[ev[:, 0]], 1]] = True
+        ring[ev[moved[ev[:, 1]], 0]] = True
+        keep_vn = old_vn / np.maximum(np.linalg.norm(old_vn, axis=1, keepdims=True), 1e-9)
+        final = np.where(ring[:, None], vn, keep_vn)
+        me.normals_split_custom_set_from_vertices([tuple(v) for v in final.tolist()])
+    elif o is slab:
+        me.polygons.foreach_set("use_smooth", [True] * len(me.polygons))
+    me.update()
+
+
+def box_uvs(me, uv_m):
+    """`uv` box: every face projected onto the plane of its dominant normal axis (top faces XY, steep faces XZ or YZ),
+    one tile per uv_m metres, so a cliff's faces carry the texture unstretched (seams between the projections)."""
+    if not me.uv_layers:
+        me.uv_layers.new(name="UVMap")
+    nl = len(me.loops)
+    if not nl:
+        return
+    fn = np.empty(len(me.polygons) * 3, dtype=np.float32)
+    me.polygons.foreach_get("normal", fn)
+    fn = np.abs(fn.reshape(-1, 3))
+    tot = np.empty(len(me.polygons), dtype=np.int64)
+    me.polygons.foreach_get("loop_total", tot)
+    start = np.empty(len(me.polygons), dtype=np.int64)
+    me.polygons.foreach_get("loop_start", start)
+    face = np.empty(nl, dtype=np.int64)
+    face[np.concatenate([np.arange(s, s + t) for s, t in zip(start.tolist(), tot.tolist())])] = np.repeat(np.arange(len(tot)), tot)
+    vi = np.empty(nl, dtype=np.int64)
+    me.loops.foreach_get("vertex_index", vi)
+    co = positions_of(me)[vi].astype(np.float64)
+    n = fn[face]
+    top = (n[:, 2] >= n[:, 0]) & (n[:, 2] >= n[:, 1])
+    side_x = ~top & (n[:, 0] >= n[:, 1])            # facing +-X: the YZ plane
+    u = np.where(top, co[:, 0], np.where(side_x, co[:, 1], co[:, 0]))
+    v = np.where(top, co[:, 1], co[:, 2])
+    uv = np.stack([u, v], axis=1) / uv_m
+    me.uv_layers[0].data.foreach_set("uv", uv.astype(np.float32).reshape(-1))
+
+
+def positions_of(me):
+    co = np.empty(len(me.vertices) * 3, dtype=np.float32)
+    me.vertices.foreach_get("co", co)
+    return co.reshape(-1, 3)
+
+
+def _rise_uvs(op, slab):
+    """The slab's UVs again, on the refined (and moved) mesh: planar (x, y) / uvM, or box."""
+    uv_m = float(op.get("uvM", CUT_OUT_UV_M))
+    if op.get("uv", "planar") == "box":
+        box_uvs(slab.data, uv_m)
+    elif slab.data.uv_layers:
+        uvl = slab.data.uv_layers[0].data
+        vi = np.empty(len(slab.data.loops), dtype=np.int64)
+        slab.data.loops.foreach_get("vertex_index", vi)
+        xy = positions(slab)[vi, :2] / uv_m
+        uvl.foreach_set("uv", xy.astype(np.float32).reshape(-1))
+
+
+def rock_rise(ctx, op, slab, poly):
+    p = rise_params(op["rise"])
+    if p["mode"] == "dem":
+        return _rock_rise_dem(ctx, op, slab, poly, p)
+    t0 = time.time()
+    apron, max_edge = p["apronM"], p["maxEdgeM"]
+    # 1. refine: the slab all over, the ground within the apron
+    near, passes, weld = _rise_refine(ctx, slab, poly, apron, max_edge)
     # 2. the target heights
     objs = [slab] + near
     cos = {o.name: positions(o) for o in objs}
@@ -4187,50 +4476,120 @@ def rock_rise(ctx, op, slab, poly):
         if not moved.any():
             continue
         max_lift = max(max_lift, float((new_z - co[:, 2])[moved].max()))
-        me = o.data
-        old_vn = None
-        if me.has_custom_normals:
-            cn = np.empty(len(me.loops) * 3, dtype=np.float32)
-            me.corner_normals.foreach_get("vector", cn)
-            vi = np.empty(len(me.loops), dtype=np.int64)
-            me.loops.foreach_get("vertex_index", vi)
-            old_vn = np.zeros((len(me.vertices), 3))
-            np.add.at(old_vn, vi, cn.reshape(-1, 3))
-        co = co.copy()
-        co[:, 2] = new_z
-        me.vertices.foreach_set("co", co.reshape(-1).astype(np.float32))
-        me.update()
-        if old_vn is not None:
-            # moved vertices (and their ring) take the new geometry's normals, the rest keep the custom ones
-            vn = np.empty(len(me.vertices) * 3, dtype=np.float32)
-            me.vertex_normals.foreach_get("vector", vn)   # the geometry's own, not the custom ones
-            vn = vn.reshape(-1, 3)
-            ring = moved.copy()
-            ev = np.empty(len(me.edges) * 2, dtype=np.int64)
-            me.edges.foreach_get("vertices", ev)
-            ev = ev.reshape(-1, 2)
-            ring[ev[moved[ev[:, 0]], 1]] = True
-            ring[ev[moved[ev[:, 1]], 0]] = True
-            keep_vn = old_vn / np.maximum(np.linalg.norm(old_vn, axis=1, keepdims=True), 1e-9)
-            final = np.where(ring[:, None], vn, keep_vn)
-            me.normals_split_custom_set_from_vertices([tuple(v) for v in final.tolist()])
-        elif o is slab:
-            me.polygons.foreach_set("use_smooth", [True] * len(me.polygons))
-        me.update()
+        _rise_set_z(o, co, new_z, moved, slab)
         lifted[o.name] = int(moved.sum())
     sunk = _rise_sink_into_lake(ctx, slab, poly, near, water, apron) if water is not None else None
-    # the slab's planar UVs again, on the refined mesh
-    uv_m = float(op.get("uvM", CUT_OUT_UV_M))
-    if slab.data.uv_layers:
-        uvl = slab.data.uv_layers[0].data
-        vi = np.empty(len(slab.data.loops), dtype=np.int64)
-        slab.data.loops.foreach_get("vertex_index", vi)
-        xy = positions(slab)[vi, :2] / uv_m
-        uvl.foreach_set("uv", xy.astype(np.float32).reshape(-1))
+    _rise_uvs(op, slab)
     out = {"waterM": water, "topZ": round(top, 3), "footZ": round(foot, 3), "bedZ": round(bed, 3), "inradiusM": round(s_max, 2),
            "refinePasses": passes, "weld": weld, "lifted": lifted, "maxLiftM": round(max_lift, 3), "sunk": sunk,
            "seconds": round(time.time() - t0, 2)}
     print(f"[shape_apply] cut_out {slab.name} rise: top {top:.2f}, foot {foot:.2f}, bed {bed:.2f}, lifted {lifted}")
+    return out
+
+
+# `mode` dem: a cliff (Omberg's 14th green on its granite cliff over Vattern). The lidar DEM has it, the course meshes
+# lose it (terrain.obj is the half-resolution heightmap, OPCD's Terrain Smooth rounds it, ~1.2 m triangles). After
+# the same refinement as a dome, every vertex of the slab goes to the DEM's height at its XY (bilinear, up or down,
+# plus `noiseM` lumps inside, default 0), and the vertices of the meshes within `apronM` outside the outline blend
+# from the DEM at the outline to their own height at apronM (smoothstep). One height per XY: the vertices two meshes
+# share move alike, and a vertex shared with a green, bunker or tee (left alone) keeps its height. The water join
+# (`waterM`) is the dome's.
+
+def seam_check(objs, tol_xy=SEAM_XY, tol_z=SEAM_DZ):
+    """Boundary points the objects share in XY with different heights: {points, open, maxDz}."""
+    pts = [boundary_points(o) for o in objs]
+    pts = np.concatenate([p for p in pts if len(p)] or [np.zeros((0, 3))])
+    if not len(pts):
+        return {"points": 0, "open": 0, "maxDz": 0.0}
+    k = np.round(pts[:, :2] / tol_xy).astype(np.int64)
+    order = np.lexsort((k[:, 1], k[:, 0]))
+    k, z = k[order], pts[order, 2]
+    new = np.ones(len(k), dtype=bool)
+    new[1:] = (k[1:] != k[:-1]).any(1)
+    gid = np.cumsum(new) - 1
+    lo = np.full(gid[-1] + 1, np.inf)
+    hi = np.full(gid[-1] + 1, -np.inf)
+    np.minimum.at(lo, gid, z)
+    np.maximum.at(hi, gid, z)
+    count = np.bincount(gid)
+    spread = np.where(count > 1, hi - lo, 0.0)
+    return {"points": int((count > 1).sum()), "open": int((spread > tol_z).sum()), "maxDz": round(float(spread.max()), 6)}
+
+
+def _rock_rise_dem(ctx, op, slab, poly, p):
+    t0 = time.time()
+    apron, max_edge = p["apronM"], p["maxEdgeM"]
+    near, passes, weld = _rise_refine(ctx, slab, poly, apron, max_edge, single_edge=True)
+    objs = [slab] + near
+    cos = {o.name: positions(o) for o in objs}
+    box = sl.polygon_bbox(poly, apron + 1.0)
+    sample, info = dem_sampler(ctx, box)
+    # the XY of the kept meshes' vertices within reach: a vertex there keeps its height (the seam to them stays)
+    key = lambda c: (np.round(c[:, 0] / SEAM_XY).astype(np.int64), np.round(c[:, 1] / SEAM_XY).astype(np.int64))
+    keep_names = {r["name"] for r in ctx.index if r["type"] in RISE_KEEP}
+    pinned_keys = set()
+    for o in spline_meshes():
+        if o.name in keep_names and (b := bbox_xy(o)) and sl.bbox_distance(box, b) <= 0:
+            kx, ky = key(positions(o))
+            pinned_keys.update(zip(kx.tolist(), ky.tolist()))
+    s_slab = _poly_signed_distance(cos[slab.name], poly)
+    s_max = max(float(s_slab.max()), 0.5)
+    seed = int(p["seed"]) or (sum(map(ord, op["name"])) & 0xFFFF)
+    moved_n, up, down, pinned = {}, 0.0, 0.0, 0
+    for o in objs:
+        co = cos[o.name]
+        s = s_slab if o is slab else _poly_signed_distance(co, poly)
+        reach = s > -apron
+        if not reach.any():
+            continue
+        z = co[:, 2].astype(np.float64)
+        new_z = z.copy()
+        idx = np.nonzero(reach)[0]
+        dem = sample(co[idx, :2])
+        si = s[idx]
+        w = np.clip(-si / apron, 0.0, 1.0)
+        w = w * w * (3 - 2 * w)                    # 0 on the outline (and inside), 1 at apronM
+        target = dem * (1 - w) + z[idx] * w
+        if p["noiseM"] > 0:
+            ins = si > 0
+            if ins.any():
+                t = np.clip(si[ins] / s_max, 0.0, 1.0)
+                noise = np.array([_rock_noise(x, y, seed) for x, y in co[idx[ins], :2].tolist()])
+                target[ins] += noise * p["noiseM"] * np.sqrt(t)
+        if pinned_keys:
+            kx, ky = key(co[idx])
+            pin = np.array([k in pinned_keys for k in zip(kx.tolist(), ky.tolist())], dtype=bool)
+            target[pin] = z[idx][pin]
+            pinned += int(pin.sum())
+        new_z[idx] = target
+        moved = np.abs(new_z - z) > 1e-6
+        if not moved.any():
+            continue
+        d = (new_z - z)[moved]
+        up, down = max(up, float(d.max())), min(down, float(d.min()))
+        _rise_set_z(o, co, new_z, moved, slab)
+        moved_n[o.name] = int(moved.sum())
+    water = p.get("waterM")
+    sunk = _rise_sink_into_lake(ctx, slab, poly, near, water, apron) if water is not None else None
+    _rise_uvs(op, slab)
+    # how steep the slab came out, and the seams between everything the rise touched or borders
+    fn = np.empty(len(slab.data.polygons) * 3, dtype=np.float32)
+    slab.data.polygons.foreach_get("normal", fn)
+    nz = np.abs(fn.reshape(-1, 3)[:, 2]) if len(fn) else np.ones(1)
+    slope = np.degrees(np.arccos(np.clip(nz, 0.0, 1.0)))
+    sz = positions(slab)[:, 2]
+    bordering = [o for o in spline_meshes() if (b := bbox_xy(o)) and sl.bbox_distance(box, b) <= 0]
+    seams = seam_check(bordering)
+    out = dict(info, mode="dem", waterM=water, slabZ=[round(float(sz.min()), 3), round(float(sz.max()), 3)],
+               inradiusM=round(s_max, 2), refinePasses=passes, weld=weld, moved=moved_n, lifted=moved_n,
+               maxUpM=round(up, 3), maxDownM=round(down, 3), pinned=pinned,
+               steepFaces=int((slope >= RISE_STEEP_DEG).sum()), maxSlopeDeg=round(float(slope.max()), 1),
+               seams=seams, sunk=sunk, seconds=round(time.time() - t0, 2))
+    print(f"[shape_apply] cut_out {slab.name} rise dem: slab {out['slabZ'][0]:.2f}-{out['slabZ'][1]:.2f}, "
+          f"up {up:.2f} / down {down:.2f}, {out['steepFaces']} faces >= {RISE_STEEP_DEG:g} deg, "
+          f"seams {seams['open']} open of {seams['points']}, moved {moved_n}")
+    if seams["open"]:
+        out["warning"] = f"{seams['open']} seam point(s) open after the dem rise (seams.maxDz {seams['maxDz']} m)"
     return out
 
 
@@ -5007,8 +5366,10 @@ class Applier:
         self.folder = os.path.dirname(self.blend)
         self.staging = os.path.join(self.folder, "shaping-staging")
         self.svg_path, self.svg_paths, self.score, self.ranked = find_svg(self.blend, svg)
-        self.frame = shape_coords.load_frame(sidecar or shape_coords.find_sidecar(self.folder))
+        sidecar = sidecar or shape_coords.find_sidecar(self.folder)
+        self.frame = shape_coords.load_frame(sidecar)
         self.ctx = build_ctx(self.svg_paths, self.frame)
+        self.ctx.dem_sidecar = sidecar if isinstance(sidecar, str) else None   # rise mode dem samples its .tif
         self.ctx.svg_file = self.svg_path  # golfmap.split_surfaces reads <svg stem>-paths.json next to it
         self.cache_dir = cache_dir or os.path.join(self.staging, "cache")
         self.runner = UnitRunner(OpCache(self.cache_dir) if cache else None, history)

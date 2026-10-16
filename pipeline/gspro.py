@@ -3603,6 +3603,10 @@ SHAPING_SLAB_MARGIN_ATTRIBUTE, SHAPING_SLAB_TILE_ATTRIBUTE = "marginM", "uvM"
 # shared/features/rock-slab.ts ROCK_SLAB_RISE_ATTRIBUTES: feature attribute -> the cut-out's `rise` key
 SHAPING_SLAB_RISE_ATTRIBUTES = {"riseWaterM": "waterM", "riseTopM": "topM", "riseFootM": "footM", "riseApronM": "apronM",
                                 "riseNoiseM": "noiseM", "riseMaxEdgeM": "maxEdgeM", "riseSeed": "seed"}
+# rock-slab.ts ROCK_SLAB_RISE_MODE_ATTRIBUTE / ROCK_SLAB_UV_MODE_ATTRIBUTE: the cut-out's `rise.mode` and `uv`
+SHAPING_SLAB_RISE_MODE_ATTRIBUTE, SHAPING_SLAB_RISE_MODES = "riseMode", ("dome", "dem")
+SHAPING_SLAB_UV_MODE_ATTRIBUTE, SHAPING_SLAB_UV_MODES = "uvMode", ("planar", "box")
+SHAPING_SLAB_DEM_UNUSED = ("topM", "footM")  # a dem rise (a cliff from the course DEM) has no top or foot
 SHAPING_SLAB_MARGIN_M = 1.5                # the default margin; attribute marginM takes 0..5
 SHAPING_SLAB_MARGIN_MAX_M = 5.0
 SHAPING_SLAB_UV_M = 4.0                    # shape_apply CUT_OUT_UV_M: written only when a slab differs
@@ -3626,6 +3630,18 @@ def _slab_number(attrs: dict, key: str, default: float, valid, rule: str, name: 
         warnings.append(f"rock slab {name}: {key} {value!r} is not {rule}; the default {default:g} is used")
         return default
     return float(value)
+
+
+def _slab_choice(attrs: dict, key: str, choices: tuple, name: str, warnings: list[str]) -> str:
+    """A slab's string attribute out of `choices`, the first when unset; an invalid one (the server refuses those)
+    also falls back, with a warning."""
+    value = attrs.get(key)
+    if value is None:
+        return choices[0]
+    if value not in choices:
+        warnings.append(f"rock slab {name}: {key} {value!r} is not one of {', '.join(choices)}; {choices[0]} is used")
+        return choices[0]
+    return value
 
 
 def _slab_names(slabs: list) -> dict[str, str]:
@@ -3704,11 +3720,22 @@ def _rock_slab_ops(rows: list) -> tuple[list[dict], dict]:
                       + (f", trimmed to keep {SHAPING_SLAB_GAP_M:g} m off the slab before it" if cut else "")}
         if uv != SHAPING_SLAB_UV_M:
             op["uvM"] = uv
+        uv_mode = _slab_choice(attrs, SHAPING_SLAB_UV_MODE_ATTRIBUTE, SHAPING_SLAB_UV_MODES, name, warnings)
+        if uv_mode != SHAPING_SLAB_UV_MODES[0]:
+            op["uv"] = uv_mode
         # A rock rising out of the ground or the water (shared/features/rock-slab.ts `rise`): passed to the cut-out
-        # as is, Blender refines and lifts the slab after the cut (blender/README.md "Shaping: cut-outs").
+        # as is, Blender refines and lifts the slab after the cut (blender/README.md "Shaping: cut-outs"). Mode dem
+        # (a cliff: the slab and its apron go to the course DEM) needs no riseTopM and has no use for riseFootM.
         rise = {k: float(attrs[a]) for a, k in SHAPING_SLAB_RISE_ATTRIBUTES.items()
                 if isinstance(attrs.get(a), (int, float)) and not isinstance(attrs.get(a), bool)}
-        if rise.get("topM", 0) > 0:
+        mode = _slab_choice(attrs, SHAPING_SLAB_RISE_MODE_ATTRIBUTE, SHAPING_SLAB_RISE_MODES, name, warnings)
+        if mode == "dem":
+            unused = [k for k in SHAPING_SLAB_DEM_UNUSED if k in rise]
+            if unused:
+                warnings.append(f"rock slab {name} ({r['id']}): riseMode dem takes its heights from the DEM; "
+                                + ", ".join("rise" + k[0].upper() + k[1:] for k in unused) + " left out")
+            op["rise"] = dict(sorted({k: v for k, v in rise.items() if k not in unused}.items()), mode="dem")
+        elif rise.get("topM", 0) > 0:
             op["rise"] = dict(sorted(rise.items()))
         elif rise:
             warnings.append(f"rock slab {name} ({r['id']}): rise* attributes without a riseTopM above 0; left flat")

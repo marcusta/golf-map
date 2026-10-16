@@ -552,6 +552,33 @@ def test_a_slab_with_rise_attributes_gets_a_rise_the_engine_accepts(tmp_path, ca
     assert any("riseTopM" in w for w in stats["rock_slab_warnings"])
 
 
+def test_a_cliff_slab_gets_a_dem_rise_and_box_uvs_the_engine_accepts(tmp_path):
+    """riseMode dem (a cliff from the course DEM, Omberg's 14th green) turns the rise on without riseTopM and leaves
+    riseTopM / riseFootM out with a warning; uvMode box comes along as the cut-out's `uv`; the defaults write
+    nothing, and an unknown mode falls back with a warning (shared/features/rock-slab.ts)."""
+    sl = _shape_layers()
+    attrs = {"riseMode": "dem", "riseApronM": 4, "riseMaxEdgeM": 0.25, "riseWaterM": 88.1, "uvMode": "box"}
+    op = _only_slab(tmp_path, _slab("rock-c", 200, 0, 208, 6, 0x2e, attrs=attrs))
+    assert op["rise"] == {"mode": "dem", "apronM": 4.0, "maxEdgeM": 0.25, "waterM": 88.1}
+    assert op["uv"] == "box"
+    assert sl.validate_op(op) == []
+    doc, stats = _layer(tmp_path, features=[_slab("rock-d", 200, 0, 208, 6, 0x2f, attrs={
+        "riseMode": "dem", "riseTopM": 0.9, "riseFootM": 0.3})], edits=[], name="dem-top.sqlite")
+    op = _slab_ops(doc)[0]
+    assert op["rise"] == {"mode": "dem"} and "uv" not in op
+    assert sl.validate_op(op) == []
+    assert any("riseTopM, riseFootM left out" in w for w in stats["rock_slab_warnings"])
+    doc, stats = _layer(tmp_path, features=[_slab("rock-e", 200, 0, 208, 6, 0x30, attrs={
+        "riseMode": "dome", "riseTopM": 0.9, "uvMode": "planar"})], edits=[], name="dome.sqlite")
+    op = _slab_ops(doc)[0]
+    assert op["rise"] == {"topM": 0.9} and "uv" not in op and stats["rock_slab_warnings"] == []
+    doc, stats = _layer(tmp_path, features=[_slab("rock-g", 200, 0, 208, 6, 0x31, attrs={
+        "riseMode": "cliff", "uvMode": "cube"})], edits=[], name="bad.sqlite")
+    op = _slab_ops(doc)[0]
+    assert "rise" not in op and "uv" not in op
+    assert sum("is not one of" in w for w in stats["rock_slab_warnings"]) == 2
+
+
 def test_the_slab_names_pass_the_engines_validation_whatever_the_feature_id(tmp_path):
     """Named from the feature number in hex, never from its id (an id may spell a golf surface word); an
     unnumbered slab takes a hash of its id."""
