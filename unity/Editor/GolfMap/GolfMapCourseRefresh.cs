@@ -334,12 +334,13 @@ namespace GolfMap.Editor
             var grown = boxes.Select(b => Rect.MinMaxRect(b.min.x - featherM, b.min.z - featherM, b.max.x + featherM, b.max.z + featherM)).ToList();
             var paintBoxes = boxes.Select(b => { var g = b; g.Expand(new Vector3(2 * featherM, 0, 2 * featherM)); return g; }).ToList();
 
+            // OPCD's Set Default Materials leaves its satellite materials' _Satellite empty again: the course photo back in
+            run("satellite.fill", "Course photo into emptied satellite slots", () => GolfMapTerrainImporter.SatelliteAssignCommand(new BridgeArgs(new Dictionary<string, object> { { "only", "empty" }, { "dryRun", dryRun } })), planned);
+
             // 3. the bunker convention on the sets they belong to
             if (!only.Any(n => GolfMapBunkerMaterials.SetKey(n) != null))
                 notNeeded("bunkers.materials", "Bunker Materials convention", "no bunker or bunker blend among them");
             else
-                // OPCD's Set Default Materials leaves its satellite materials' _Satellite empty again: the course photo back in
-                run("satellite.fill", "Course photo into emptied satellite slots", () => GolfMapTerrainImporter.SatelliteAssignCommand(new BridgeArgs(new Dictionary<string, object> { { "only", "empty" }, { "dryRun", dryRun } })), planned);
                 run("bunkers.materials", "Bunker Materials convention (their bunker sets)", () =>
                     GolfMapBunkerMaterials.ApplyConvention(a.String("conventionFile"), a.String("convention"), dryRun, only), planned);
 
