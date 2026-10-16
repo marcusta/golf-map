@@ -85,6 +85,8 @@ export interface TerrainEditParams {
     shelfDepthM?: number;
     reference?: DigReference;
     rimM?: number;
+    /** dig, reference level: the outline is the water's edge and the bank outside rises from it at this angle (degrees). */
+    bankAboveDeg?: number;
     variation?: number;
     seed?: number;
     /**
@@ -132,7 +134,7 @@ export type TerrainEditParamsInput = Omit<TerrainEditParams, 'featherM'> & { fea
 
 /** The dig params, in the order they go into the pipeline handoff. */
 export const DIG_PARAM_KEYS = [
-    'depthM', 'bankSlopeDeg', 'faceSlopeDeg', 'faceBearingDeg', 'shelfM', 'shelfDepthM', 'reference', 'rimM', 'variation', 'seed',
+    'depthM', 'bankSlopeDeg', 'faceSlopeDeg', 'faceBearingDeg', 'shelfM', 'shelfDepthM', 'reference', 'rimM', 'bankAboveDeg', 'variation', 'seed',
 ] as const;
 
 /** The shore params (all numbers), in the order they go into the pipeline handoff; `depthM` is shared with dig. */
@@ -384,7 +386,7 @@ function assertOpParams(op: TerrainEditOp, params: TerrainEditParams): void {
 function assertDigParams(p: TerrainEditParams): void {
     const finite = (v: unknown) => typeof v === 'number' && Number.isFinite(v);
     if (!finite(p.depthM) || p.depthM! <= 0) throw new InvalidTerrainEditError('A dig edit needs depthM > 0');
-    for (const key of ['bankSlopeDeg', 'faceSlopeDeg'] as const) {
+    for (const key of ['bankSlopeDeg', 'faceSlopeDeg', 'bankAboveDeg'] as const) {
         const v = p[key];
         if (v !== undefined && (!finite(v) || v <= 0 || v >= 90)) throw new InvalidTerrainEditError(`${key} must be between 0 and 90 degrees`);
     }
@@ -400,6 +402,9 @@ function assertDigParams(p: TerrainEditParams): void {
         throw new InvalidTerrainEditError(`reference must be one of ${DIG_REFERENCES.join(', ')}`);
     }
     if (p.rimM !== undefined && (!finite(p.rimM) || p.rimM <= 0)) throw new InvalidTerrainEditError('rimM must be > 0');
+    if (p.bankAboveDeg !== undefined && (p.reference ?? 'level') !== 'level') {
+        throw new InvalidTerrainEditError("bankAboveDeg is for reference 'level' (a pond's water's edge)");
+    }
     if (p.variation !== undefined && (!finite(p.variation) || p.variation < 0 || p.variation > 1)) {
         throw new InvalidTerrainEditError('variation must be in [0, 1]');
     }

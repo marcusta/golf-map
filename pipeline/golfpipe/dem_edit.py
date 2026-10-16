@@ -47,7 +47,12 @@ Operations (D-TE3, two only in v1):
   in-polygon cells within ``rimM`` of the edge (a pond: lidar sees its
   surface, which then stays the water level OPCD's water plane is put at);
   bank the outline takes in above that level tapers down to it across the
-  same ``rimM`` band rather than being cut to it at the shore;
+  same ``rimM`` band rather than being cut to it at the shore. With
+  ``bankAboveDeg`` the outline is the water's edge instead (the ortho's,
+  where the lidar's 0.5 m grid smears a steep bank a metre or two out over
+  the water): everything inside goes below the level, no taper, and outside
+  it the bank comes down to the level at the outline, rising from there at
+  that angle until it meets the ground (only lowering, within ``rimM``);
   ``reference: plane`` fits a plane to the ground in a ``rimM`` band outside
   the polygon (a bunker: the lidar has already smoothed the hollow itself).
   ``reference: stream`` is a creek's water surface, falling downstream
@@ -209,6 +214,7 @@ class DemEdit:
     shelf_depth_m: float = 0.0
     reference: str = "level"
     rim_m: float = DEFAULT_DIG_RIM_M
+    bank_above_deg: float | None = None
     variation: float = 0.0
     seed: int = 0
     # delta only: the GeoTIFF of metres to add.
@@ -392,6 +398,11 @@ def _dig_params(props: dict) -> dict:
     variation = num("variation", 0.0)
     if rim <= 0 or not 0 <= variation <= 1:
         raise ValueError("rimM must be > 0 and variation in [0, 1]")
+    above = num("bankAboveDeg")
+    if above is not None and not 0 < above < 90:
+        raise ValueError("bankAboveDeg must be between 0 and 90 degrees")
+    if above is not None and reference != "level":
+        raise ValueError("bankAboveDeg is for reference level (a pond's water's edge)")
     try:
         seed = int(props.get("seed", 0))
     except (TypeError, ValueError):
@@ -399,7 +410,7 @@ def _dig_params(props: dict) -> dict:
     return dict(
         depth_m=depth, bank_slope_deg=bank, face_slope_deg=face, face_bearing_deg=bearing,
         shelf_m=shelf, shelf_depth_m=shelf_depth, reference=reference, rim_m=rim,
-        variation=variation, seed=seed,
+        bank_above_deg=above, variation=variation, seed=seed,
     )
 
 
@@ -836,6 +847,9 @@ def _dig_target(
         if not rim.any():
             rim = inside
         level = float(np.percentile(cur_win[rim], DIG_LEVEL_PERCENTILE))
+        if edit.bank_above_deg is not None:
+            return _water_edge_target(cur_win, mask_win, valid_win, rows, cols, d, cell, cell_x, cell_y, level,
+                                      slope, shelf, edit)
         # An outline drawn a little generously takes in bank above the water:
         # those cells come down to the level over the rim band instead of being
         # cut to it at the outline (a wall at the shore).
@@ -863,6 +877,35 @@ def _dig_target(
     drop = dig_drop(dist, edit.depth_m, slope, shelf, edit.shelf_depth_m)
     target = cur_win.copy()
     target[rows, cols] = np.minimum(cur_win[rows, cols], reference - drop)
+    return target
+
+
+def _water_edge_target(
+    cur_win: np.ndarray,
+    mask_win: np.ndarray,
+    valid_win: np.ndarray,
+    rows: np.ndarray,
+    cols: np.ndarray,
+    d: np.ndarray,
+    cell: float,
+    cell_x: float,
+    cell_y: float,
+    level: float,
+    slope: np.ndarray,
+    shelf: np.ndarray,
+    edit: DemEdit,
+) -> np.ndarray:
+    """A pond whose outline is the water's edge (`bankAboveDeg`): inside, the
+    bed below `level` from the outline in; outside, within `rimM`, the bank
+    comes down to the level at the outline and rises from it at
+    `bankAboveDeg` until it meets the ground (only ever lowering)."""
+    target = cur_win.copy()
+    drop = dig_drop(d[rows, cols], edit.depth_m, slope, shelf, edit.shelf_depth_m)
+    target[rows, cols] = np.minimum(cur_win[rows, cols], level - drop)
+    dout = np.maximum(distance_transform_edt(~mask_win, sampling=(cell_y, cell_x)) - cell / 2.0, 0.0)
+    band = ~mask_win & valid_win & (dout <= edit.rim_m)
+    bank = level + dout[band] * np.tan(np.radians(edit.bank_above_deg))
+    target[band] = np.minimum(cur_win[band], bank)
     return target
 
 

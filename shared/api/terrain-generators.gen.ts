@@ -16,6 +16,7 @@ export interface TerrainGenerateResult {
     imported: number;
     skipped: string[];
     report: string[];
+    planned?: TerrainEditInput[];
 }
 
 export interface RoadsFetchResult {
@@ -25,11 +26,66 @@ export interface RoadsFetchResult {
     report: string[];
 }
 
+export interface TerrainEditInput {
+    op: 'corridor' | 'plane' | 'smooth' | 'dig' | 'shore' | 'delta' | 'recipe';
+    params: TerrainEditParams;
+    rings: { x: number; y: number }[][];
+    originRef?: null | string;
+    enabled?: boolean;
+}
+
 export interface BboxWgs84 {
     west: number;
     south: number;
     east: number;
     north: number;
+}
+
+export interface TerrainEditParams {
+    featherM: number;
+    radiusM?: number;
+    flat?: boolean;
+    centerline?: { x: number; y: number }[];
+    smoothM?: number;
+    widthM?: number;
+    depthM?: number;
+    bankSlopeDeg?: number;
+    faceSlopeDeg?: number;
+    faceBearingDeg?: number;
+    shelfM?: number;
+    shelfDepthM?: number;
+    reference?: 'plane' | 'level' | 'stream';
+    rimM?: number;
+    bankAboveDeg?: number;
+    variation?: number;
+    seed?: number;
+    levelM?: number;
+    edgeSlope?: number;
+    edgeM?: number;
+    edgeEaseM?: number;
+    shelfSlope?: number;
+    shelfEndM?: number;
+    shelfEaseM?: number;
+    slope?: number;
+    floorRoundM?: number;
+    channelDepthM?: number;
+    channelRatio?: number;
+    channelFullM?: number;
+    channelGoneM?: number;
+    cliffRunM?: number;
+    cliffRiseLowM?: number;
+    cliffRiseHighM?: number;
+    cliffSlope?: number;
+    cliffDepthM?: number;
+    cliffHoldM?: number;
+    cliffFadeM?: number;
+    cliffSmoothM?: number;
+    raster?: string;
+    changedM2?: number;
+    maxRaiseM?: number;
+    maxLowerM?: number;
+    recipe?: string;
+    overrides?: Record<string, unknown>;
 }
 
 export interface TerrainGeneratorsApi {

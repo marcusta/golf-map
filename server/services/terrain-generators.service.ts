@@ -306,6 +306,9 @@ export class TerrainGeneratorsService {
                     shelfM: p.shelfM, shelfDepthM: Math.min(p.shelfDepthM, depthM / 2),
                     variation: p.variation, seed: seedOf(f.id),
                 };
+                // digBankAboveDeg: the outline is the water's edge, the bank outside rises from it at that angle.
+                const above = num('digBankAboveDeg');
+                if (above !== undefined) params.bankAboveDeg = above;
             } else {
                 params = {
                     featherM: 0, reference: 'plane', rimM: BUNKER_DIG.rimM,

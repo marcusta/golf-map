@@ -607,6 +607,33 @@ def test_dig_level_tapers_bank_inside_the_outline_down_to_the_water_instead_of_a
     assert out[40, 40] == pytest.approx(9.0, abs=0.01)     # the level is still the water's
 
 
+def test_dig_level_with_bank_above_makes_the_outline_the_waters_edge():
+    dem = pond_dem()
+    # The lidar smears the east bank 4 m out over the water: 0.8 m above it inside the outline.
+    dem[rect_mask(56, 60, 20, 60)] = 10.8
+    edit = edit_3006("dig", rect_3006(20, 60, 20, 60), feather_m=0.0, depth_m=1.0, bank_slope_deg=30.0,
+                     reference="level", rim_m=2.0, bank_above_deg=45.0)
+    out = apply_edits(dem, TRANSFORM, NODATA, [edit], log=lambda *_: None)
+    assert np.all(out <= dem + 1e-6)                            # only lowers
+    inside = rect_mask(20, 60, 20, 60)
+    assert float(out[inside].max()) <= 10.0 + 1e-6              # everything inside under the water
+    # Outside, the bank rises from the level at the outline at 45 deg (cell centres 0.5 and 1.5 m out) ...
+    assert out[40, 60] == pytest.approx(10.5, abs=0.01)
+    assert out[40, 61] == pytest.approx(11.5, abs=0.01)
+    # ... until it meets the ground, and nothing past rimM moves.
+    assert out[40, 62] == pytest.approx(12.0, abs=1e-6)
+    assert np.array_equal(out[~rect_mask(17, 63, 17, 63)], dem[~rect_mask(17, 63, 17, 63)])
+    assert out[40, 40] == pytest.approx(9.0, abs=0.01)
+
+
+def test_dig_bank_above_is_for_a_level_dig():
+    with pytest.raises(ValueError, match="bankAboveDeg"):
+        dem_edit._dig_params({"depthM": 1.0, "reference": "plane", "bankAboveDeg": 45})
+    with pytest.raises(ValueError, match="bankAboveDeg"):
+        dem_edit._dig_params({"depthM": 1.0, "bankAboveDeg": 95})
+    assert dem_edit._dig_params({"depthM": 1.0, "bankAboveDeg": 45})["bank_above_deg"] == 45.0
+
+
 def test_dig_stream_digs_a_creek_bed_below_its_falling_surface():
     # A creek along row 40 falling 2 m west to east, 1 m below grassy banks.
     x, y = cell_coords()
