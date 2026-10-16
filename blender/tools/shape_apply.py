@@ -4495,7 +4495,7 @@ def rock_rise(ctx, op, slab, poly):
 # share move alike, and a vertex shared with a green, bunker or tee (left alone) keeps its height. The water join
 # (`waterM`) is the dome's.
 
-def seam_check(objs, tol_xy=SEAM_XY, tol_z=SEAM_DZ):
+def slab_seam_check(objs, tol_xy=SEAM_XY, tol_z=SEAM_DZ):
     """Boundary points the objects share in XY with different heights: {points, open, maxDz}."""
     pts = [boundary_points(o) for o in objs]
     pts = np.concatenate([p for p in pts if len(p)] or [np.zeros((0, 3))])
@@ -4579,7 +4579,7 @@ def _rock_rise_dem(ctx, op, slab, poly, p):
     slope = np.degrees(np.arccos(np.clip(nz, 0.0, 1.0)))
     sz = positions(slab)[:, 2]
     bordering = [o for o in spline_meshes() if (b := bbox_xy(o)) and sl.bbox_distance(box, b) <= 0]
-    seams = seam_check(bordering)
+    seams = slab_seam_check(bordering)
     out = dict(info, mode="dem", waterM=water, slabZ=[round(float(sz.min()), 3), round(float(sz.max()), 3)],
                inradiusM=round(s_max, 2), refinePasses=passes, weld=weld, moved=moved_n, lifted=moved_n,
                maxUpM=round(up, 3), maxDownM=round(down, 3), pinned=pinned,

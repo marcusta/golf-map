@@ -261,7 +261,7 @@ assert rise["pinned"] > 0, "the green's vertices in the apron were not pinned"
 # 6. the seams: the slab's border all matched, no shared point with two heights anywhere
 assert run["border"]["unmatched"] == 0 and run["border"]["maxAbsDz"] < 1e-4, run["border"]
 assert rise["seams"]["open"] == 0, rise["seams"]
-allseams = sa.seam_check(sa.spline_meshes())
+allseams = sa.slab_seam_check(sa.spline_meshes())
 assert allseams["open"] == 0 and allseams["points"] > 0, allseams
 
 # 7. box UVs: a steep face's UVs span its height / uvM along v (a planar UV would give ~0)
