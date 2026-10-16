@@ -2428,6 +2428,7 @@ def cmd_lake_plane(
 
     started = _time.perf_counter()
     shore_poly, edit_level = lake_plane.read_shore(shore_path)
+    edit_props = lake_plane.read_shore_props(shore_path)
     level_m = level if level is not None else edit_level
     if level_m is None:
         raise lake_plane.LakePlaneError(f"{shore_path} carries no levelM: pass --level")
@@ -2451,7 +2452,10 @@ def cmd_lake_plane(
             lows.append(low)
     doc = lake_plane.build_lake_plane(
         shore_poly, hydro_lake, inner, outer, level_m, name=name, radius_m=radius_m, under_bank_m=under_bank_m,
-        near_cell_m=near_cell_m, outer_cell_m=outer_cell_m, far_cell_m=far_cell_m, low=_union(lows) if lows else None)
+        near_cell_m=near_cell_m, outer_cell_m=outer_cell_m, far_cell_m=far_cell_m, low=_union(lows) if lows else None,
+        inner_dem=Path(str(inner_sidecar)[: -len(".json")]) if str(inner_sidecar).endswith(".tif.json") else None,
+        cliff={"runM": float(edit_props.get("cliffRunM", 4.0)), "riseLowM": float(edit_props.get("cliffRiseLowM", 1.5)),
+               "riseHighM": float(edit_props.get("cliffRiseHighM", 3.5)), "smoothM": float(edit_props.get("cliffSmoothM", 6.0))})
     out = Path(out)
     out.parent.mkdir(parents=True, exist_ok=True)
     out.write_text(_json.dumps(doc, separators=(",", ":")), encoding="utf-8")

@@ -90,6 +90,14 @@ PROFILE_DEFAULTS: dict[str, float] = {
     "channelRatio": 0.2,
     "channelFullM": 10.0,
     "channelGoneM": 15.0,
+    "cliffRunM": 4.0,
+    "cliffRiseLowM": 1.5,
+    "cliffRiseHighM": 3.5,
+    "cliffSlope": 1.5,
+    "cliffDepthM": 6.0,
+    "cliffHoldM": 15.0,
+    "cliffFadeM": 45.0,
+    "cliffSmoothM": 6.0,
 }
 
 _STRUCT_3x3 = np.ones((3, 3), dtype=bool)

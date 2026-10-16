@@ -118,7 +118,7 @@ from scipy.ndimage import distance_transform_edt, generic_filter, median_filter
 __all__ = [
     "DemEditError", "DemEdit", "PlaneFit",
     "OPS", "DEFAULT_FEATHER_M", "DEFAULT_SMOOTH_RADIUS_M", "DEFAULT_CORRIDOR_SMOOTH_M",
-    "DIG_REFERENCES", "dig_drop", "SHORE_PARAMS", "shore_drop",
+    "DIG_REFERENCES", "dig_drop", "SHORE_PARAMS", "shore_drop", "shore_cliffness",
     "MIN_PLANE_CELLS", "OUTLIER_SIGMA", "OUTLIER_ROUNDS",
     "load_edits", "reproject_edits", "fit_plane", "apply_edits",
 ]
@@ -162,6 +162,17 @@ SHORE_PARAMS = (
     ("channelRatio", "channel_ratio", 0.2),
     ("channelFullM", "channel_full_m", 10.0),
     ("channelGoneM", "channel_gone_m", 15.0),
+    # Cliffs: where the land rises cliffRiseHighM within cliffRunM of the water (Omberg's 14th green: 13 m), the
+    # rock goes on down under it at cliffSlope to cliffDepthM, held to cliffHoldM out, gone to the profile by
+    # cliffHoldM + cliffFadeM; cliffRiseLowM and less is a gentle shore. cliffDepthM 0 turns it off.
+    ("cliffRunM", "cliff_run_m", 4.0),
+    ("cliffRiseLowM", "cliff_rise_low_m", 1.5),
+    ("cliffRiseHighM", "cliff_rise_high_m", 3.5),
+    ("cliffSlope", "cliff_slope", 1.5),
+    ("cliffDepthM", "cliff_depth_m", 6.0),
+    ("cliffHoldM", "cliff_hold_m", 15.0),
+    ("cliffFadeM", "cliff_fade_m", 45.0),
+    ("cliffSmoothM", "cliff_smooth_m", 6.0),
 )
 _SHORE_PROFILE_DEFAULTS = {field: default for _, field, default in SHORE_PARAMS[:9]}
 # A plane fit over fewer valid cells than this is meaningless noise — skip.
@@ -216,6 +227,14 @@ class DemEdit:
     channel_ratio: float = 0.2
     channel_full_m: float = 10.0
     channel_gone_m: float = 15.0
+    cliff_run_m: float = 4.0
+    cliff_rise_low_m: float = 1.5
+    cliff_rise_high_m: float = 3.5
+    cliff_slope: float = 1.5
+    cliff_depth_m: float = 6.0
+    cliff_hold_m: float = 15.0
+    cliff_fade_m: float = 45.0
+    cliff_smooth_m: float = 6.0
 
 
 def load_edits(path: Path, log=print) -> list[DemEdit]:
@@ -413,6 +432,11 @@ def _shore_params(props: dict) -> dict:
         raise ValueError("shelfEndM must be >= edgeM + edgeEaseM")
     if out["channel_gone_m"] <= out["channel_full_m"]:
         raise ValueError("channelGoneM must be > channelFullM")
+    if out["cliff_depth_m"] > 0:
+        if out["cliff_run_m"] <= 0 or out["cliff_slope"] <= 0:
+            raise ValueError("cliffRunM and cliffSlope must be > 0 (or cliffDepthM 0)")
+        if out["cliff_rise_high_m"] <= out["cliff_rise_low_m"]:
+            raise ValueError("cliffRiseHighM must be > cliffRiseLowM")
     return out
 
 
@@ -1090,10 +1114,15 @@ def _shore_target(
         all_touched=False,
         dtype="uint8",
     ).astype(bool)
+    nearest = None
     if water.all():
         d = np.full(water.shape, np.inf)
     else:
-        d = distance_transform_edt(water, sampling=sampling)
+        if edit.cliff_depth_m > 0:
+            nearest = np.empty((2,) + water.shape, dtype=np.int32)
+            d = distance_transform_edt(water, sampling=sampling, return_indices=True, indices=nearest)
+        else:
+            d = distance_transform_edt(water, sampling=sampling)
         d -= cell / 2.0
         np.maximum(d, 0.0, out=d)
     inner = np.s_[pad:pad + h, pad:pad + w]
@@ -1109,9 +1138,44 @@ def _shore_target(
         channel = np.minimum(edit.channel_depth_m, edit.channel_ratio * rn) \
             * np.sin(np.pi / 2.0 * np.minimum(dn / np.maximum(rn, 1e-9), 1.0))
         drop[narrow] = np.maximum(drop[narrow], weight[narrow] * channel)
+    if nearest is not None:
+        # Land heights only where the DEM has them: the ring past it counts as land, not as a cliff.
+        land_z = np.full(water.shape, np.nan)
+        land_z[inner] = np.where(valid_win, cur_win, np.nan)
+        c = shore_cliffness(water, land_z, edit.level_m, cell, edit.cliff_run_m, edit.cliff_rise_low_m,
+                            edit.cliff_rise_high_m, edit.cliff_smooth_m, nearest=nearest)[inner][inside]
+        fade = np.clip(1.0 - (dist - edit.cliff_hold_m) / max(edit.cliff_fade_m, 1e-9), 0.0, 1.0)
+        cliff = c * fade * np.minimum(edit.cliff_depth_m, edit.cliff_slope * dist)
+        drop = np.maximum(drop, cliff)
     target = cur_win.copy()
     target[inside] = np.minimum(cur_win[inside], edit.level_m - drop)
     return target
+
+
+def shore_cliffness(water: np.ndarray, land_z: np.ndarray, level_m: float, cell: float, run_m: float,
+                    rise_low_m: float, rise_high_m: float, smooth_m: float, nearest: np.ndarray | None = None,
+                    ) -> np.ndarray:
+    """How much of a cliff each water cell's nearest shore is, 0-1: the land's rise over the water within
+    `run_m` of the shore cell (the highest ground in that disk), `rise_low_m` and under 0, `rise_high_m` and
+    over 1, smoothed along the shore over `smooth_m`. `land_z` is NaN where the ground is unknown (no cliff
+    there). `nearest` (distance_transform_edt's indices of the nearest land cell, int32) is reused when given.
+    0 on land. The `shore` dig steepens under cliffs with it; lake_plane keeps the sand band off them."""
+    from scipy.ndimage import gaussian_filter, maximum_filter
+    land = ~water & np.isfinite(land_z)
+    r = max(1, int(round(run_m / cell)))
+    yy, xx = np.ogrid[-r:r + 1, -r:r + 1]
+    z = np.where(land, land_z, -np.inf)
+    rise = maximum_filter(z, footprint=(xx * xx + yy * yy) <= r * r, mode="constant", cval=-np.inf) - level_m
+    c_land = np.where(land, np.clip((rise - rise_low_m) / (rise_high_m - rise_low_m), 0.0, 1.0), 0.0)
+    if nearest is None:
+        nearest = np.empty((2,) + water.shape, dtype=np.int32)
+        distance_transform_edt(water, return_distances=False, return_indices=True, indices=nearest)
+    c = np.where(water, c_land[nearest[0], nearest[1]], 0.0)
+    if smooth_m > 0:
+        sigma = smooth_m / cell
+        weight = gaussian_filter(water.astype(np.float64), sigma)
+        c = np.where(water, gaussian_filter(c, sigma) / np.maximum(weight, 1e-6), 0.0)
+    return np.clip(c, 0.0, 1.0)
 
 
 def _shore_half_width(

@@ -113,7 +113,7 @@ def test_an_island_stays_untouched_and_the_bed_rises_towards_it():
     dem = np.full((SIZE, SIZE), LEVEL, dtype=np.float32)
     dem[55:65, 55:65] = 91.0
     island = ring(55.0, 65.0, 55.0, 65.0)[::-1]
-    out = apply(dem, shore_edit([ring(-FAR, FAR, -FAR, FAR), island]))
+    out = apply(dem, shore_edit([ring(-FAR, FAR, -FAR, FAR), island], cliff_depth_m=0.0))   # a low island, no cliff rule
 
     assert np.array_equal(out[55:65, 55:65], dem[55:65, 55:65])
     # East of the island the bed falls away from it along the profile.
@@ -201,3 +201,35 @@ def test_load_edits_reads_a_shore_and_skips_bad_ones(tmp_path: Path):
     assert out[60, 70] == pytest.approx(
         LEVEL - shore_drop(np.array([20.5]), depth_m=6.0, shelf_end_m=80.0)[0], abs=0.02)
     assert np.array_equal(out[:, :49], dem[:, :49])
+
+
+def test_under_a_cliff_the_rock_goes_on_down_and_a_low_shore_keeps_the_shelf():
+    from golfpipe.dem_edit import shore_cliffness
+    dem = lake_dem(LEVEL + 1.0)                  # a low shore to the north ...
+    dem[:, 60:] = LEVEL + 13.0                   # ... and a 13 m cliff on the east half
+    dem[60:] = LEVEL                             # the lake: south of row 60
+    lake = ring(-FAR, FAR, 60.0, FAR)             # the lake: 60 m south of the north edge and on (rows 60..)
+    edit = shore_edit([lake], cliff_smooth_m=0.0)
+    out = apply(dem, edit)
+    under_cliff = LEVEL - out[60:, 90].astype(np.float64)   # south from the cliff foot, x far from the corner
+    under_low = LEVEL - out[60:, 10].astype(np.float64)
+    d = np.arange(60, SIZE) - 60 + 0.5
+    # The low shore follows the profile; under the cliff the bed falls at cliffSlope to cliffDepthM.
+    assert under_low == pytest.approx(shore_drop(d), abs=1e-4)
+    assert under_cliff[0] == pytest.approx(min(6.0, 1.5 * d[0]), abs=1e-3)
+    assert under_cliff[3] == pytest.approx(min(6.0, 1.5 * d[3]), abs=1e-3)      # 3.5 m out: 5.25 m deep
+    assert under_cliff[10] == pytest.approx(6.0, abs=1e-3)
+    assert np.all(under_cliff >= under_low - 1e-9)
+    # The cliffness itself: 1 off the cliff, 0 off the low shore.
+    water = np.zeros(dem.shape, bool); water[60:] = True
+    c = shore_cliffness(water, np.where(water, np.nan, dem), LEVEL, 1.0, 4.0, 1.5, 3.5, 0.0)
+    assert c[61, 90] == 1.0 and c[61, 10] == 0.0
+
+
+def test_cliff_depth_zero_turns_the_cliff_rule_off():
+    dem = lake_dem(LEVEL + 13.0)
+    dem[60:] = LEVEL
+    lake = ring(-FAR, FAR, 60.0, FAR)
+    out = apply(dem, shore_edit([lake], cliff_depth_m=0.0))
+    d = np.arange(60, SIZE) - 60 + 0.5
+    assert (LEVEL - out[60:, 50].astype(np.float64)) == pytest.approx(shore_drop(d), abs=1e-4)

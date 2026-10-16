@@ -108,6 +108,15 @@ export interface TerrainEditParams {
     channelRatio?: number;
     channelFullM?: number;
     channelGoneM?: number;
+    /** shore cliffs: the rise within cliffRunM that makes a cliff (low..high), its underwater slope and depth, held/faded out, smoothed along the shore. */
+    cliffRunM?: number;
+    cliffRiseLowM?: number;
+    cliffRiseHighM?: number;
+    cliffSlope?: number;
+    cliffDepthM?: number;
+    cliffHoldM?: number;
+    cliffFadeM?: number;
+    cliffSmoothM?: number;
     /** delta: the sculpt GeoTIFF's file name in `sources/<siteId>/terrain-sculpt/`, and what it holds (for the panel). */
     raster?: string;
     changedM2?: number;
@@ -130,6 +139,7 @@ export const DIG_PARAM_KEYS = [
 export const SHORE_PARAM_KEYS = [
     'levelM', 'edgeSlope', 'edgeM', 'edgeEaseM', 'shelfSlope', 'shelfEndM', 'shelfEaseM', 'slope', 'depthM', 'floorRoundM',
     'channelDepthM', 'channelRatio', 'channelFullM', 'channelGoneM',
+    'cliffRunM', 'cliffRiseLowM', 'cliffRiseHighM', 'cliffSlope', 'cliffDepthM', 'cliffHoldM', 'cliffFadeM', 'cliffSmoothM',
 ] as const;
 
 export interface TerrainEdit {

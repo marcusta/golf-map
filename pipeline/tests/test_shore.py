@@ -168,7 +168,8 @@ def test_output_is_one_d_te5_shore_edit_in_wgs84():
     assert {k: props[k] for k in shore.PROFILE_DEFAULTS} == expected
     assert list(shore.PROFILE_DEFAULTS) == [
         "edgeSlope", "edgeM", "edgeEaseM", "shelfSlope", "shelfEndM", "shelfEaseM", "slope",
-        "depthM", "floorRoundM", "channelDepthM", "channelRatio", "channelFullM", "channelGoneM"]
+        "depthM", "floorRoundM", "channelDepthM", "channelRatio", "channelFullM", "channelGoneM",
+        "cliffRunM", "cliffRiseLowM", "cliffRiseHighM", "cliffSlope", "cliffDepthM", "cliffHoldM", "cliffFadeM", "cliffSmoothM"]
     assert props["origin"] == "shore-edits" and props["createdAt"] == "2026-10-16T00:00:00Z"
     geometry = feature["geometry"]
     assert geometry["type"] == "Polygon" and len(geometry["coordinates"]) == 2

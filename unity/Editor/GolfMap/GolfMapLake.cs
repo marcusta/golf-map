@@ -53,7 +53,7 @@ namespace GolfMap.Editor
         sealed class ProbeDoc { public float x, y, z; }
 
         [Serializable]
-        sealed class ShoreGrid { public float x0, z0, cellM, stepM; public int width, height; public string data = ""; }
+        sealed class ShoreGrid { public float x0, z0, cellM, stepM; public int width, height; public string data = "", cliff = ""; }
 
         [Serializable]
         sealed class PlaneDoc
@@ -353,7 +353,7 @@ namespace GolfMap.Editor
         [Serializable]
         sealed class Originals { public List<Original> entries = new List<Original>(); }
 
-        [BridgeCommand("golfmap.lake.bed", "Lighten a big lake's bed near the shore: its OPCD lake meshes (*" + BedSuffix + " under the water, in the lake-plane file's shore distance grid) get <course>/Lake/<name> bed.mat - their OPCD material with OPCD's bunker sand copied into the red channel, satellite and base blend off, tinted light beige - and red vertex paint within bandM of the shore, fading out over fadeM (islands and skerries are shore too). Painted mesh copies go to <course>/Lake/Bed/ (computed from the FBX colours every run). bandM/fadeM are kept in <course>/Lake/<name> bed.json for golfmap.course.refresh, which runs this after the water planes. Tune the colour with golfmap.lake.material which=bed.",
+        [BridgeCommand("golfmap.lake.bed", "Lighten a big lake's bed near the shore: its OPCD lake meshes (*" + BedSuffix + " under the water, in the lake-plane file's shore distance grid) get <course>/Lake/<name> bed.mat - their OPCD material with OPCD's bunker sand copied into the red channel, satellite and base blend off, tinted light beige - and red vertex paint within bandM of the shore, fading out over fadeM (islands and skerries are shore too), none at the foot of a cliff (the file's cliff grid). Painted mesh copies go to <course>/Lake/Bed/ (computed from the FBX colours every run). bandM/fadeM are kept in <course>/Lake/<name> bed.json for golfmap.course.refresh, which runs this after the water planes. Tune the colour with golfmap.lake.material which=bed.",
             args = "bandM (default 25, or the kept value), fadeM (default 20, or the kept value), resetMaterial=false (make bed.mat again), dryRun=false, " + GolfMapSceneSave.Arg)]
         static object BedCommand(BridgeArgs a)
         {
@@ -379,6 +379,10 @@ namespace GolfMap.Editor
             if (a != null && a.Has("fadeM")) settings.fadeM = Mathf.Max(0.01f, (float)a.Number("fadeM", 20));
             var dist = Convert.FromBase64String(grid.data);
             if (dist.Length != grid.width * grid.height) throw new BridgeError(file + ": the shore grid's data is not width x height.");
+            // How much of a cliff the shore is (0-255): no sand at the foot of a cliff, the rock goes on down there.
+            var cliff = string.IsNullOrEmpty(grid.cliff) ? null : Convert.FromBase64String(grid.cliff);
+            if (cliff != null && cliff.Length != dist.Length) throw new BridgeError(file + ": the shore grid's cliff is not width x height.");
+            var cliffGrid = new ShoreGrid { x0 = grid.x0, z0 = grid.z0, cellM = grid.cellM, stepM = 1f / 255f, width = grid.width, height = grid.height };
             float gx1 = grid.x0 + grid.width * grid.cellM, gz1 = grid.z0 + grid.height * grid.cellM;
 
             var scene = EditorSceneManager.GetActiveScene();
@@ -419,6 +423,7 @@ namespace GolfMap.Editor
                     if (w.y > doc.surfaceY + AboveWaterKeepM) continue;
                     float d = Sample(grid, dist, w.x, w.z);
                     float k = d <= settings.bandM ? 1f : Mathf.Clamp01(1f - (d - settings.bandM) / settings.fadeM);
+                    if (cliff != null) { float cl = Sample(cliffGrid, cliff, w.x, w.z); if (cl < float.MaxValue) k *= 1f - Mathf.Clamp01(cl); }
                     if (k <= 0f) continue;
                     c[i] = Color.Lerp(c[i], new Color(1f, 0f, 0f, c[i].a), k);
                     painted++;

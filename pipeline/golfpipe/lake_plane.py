@@ -89,6 +89,16 @@ def read_shore(path: Path) -> tuple[Polygon, float | None]:
     return max(polys, key=lambda p: p.area).buffer(0), level
 
 
+def read_shore_props(path: Path) -> dict:
+    """The shore edit's properties (its cliff settings, for the sand band), {} for a plain GeoJSON."""
+    doc = json.loads(Path(path).read_text(encoding="utf-8"))
+    for f in doc.get("features", []) if doc.get("type") == "FeatureCollection" else []:
+        props = f.get("properties") or {}
+        if props.get("op") == "shore":
+            return props
+    return {}
+
+
 def read_hydro_lake(path: Path, near: Polygon) -> Polygon:
     """The fetch-hydro `water` polygon that overlaps `near` (the shore polygon) most."""
     doc = json.loads(Path(path).read_text(encoding="utf-8"))
@@ -189,7 +199,8 @@ def probe_spot(water: Polygon, inner_box: Polygon, frame: tuple[float, float], s
 
 
 def shore_distance_grid(water, near_box: Polygon, frame: tuple[float, float], cell_m: float = SHORE_GRID_CELL_M,
-                        step_m: float = SHORE_GRID_STEP_M) -> dict | None:
+                        step_m: float = SHORE_GRID_STEP_M, dem_path: Path | None = None, level_m: float | None = None,
+                        cliff: dict | None = None) -> dict | None:
     """Distance from the shore (m) over the lake's near part, for golfmap.lake.bed's band of light
     bed: 0 on land (islands and skerries too), growing out over the water; the grid's own edges
     are open water, not shore. Cells of `cell_m` (row 0 at the south, as Unity's z grows), uint8
@@ -207,10 +218,24 @@ def shore_distance_grid(water, near_box: Polygon, frame: tuple[float, float], ce
         fill=0, dtype="uint8").astype(bool)
     d = distance_transform_edt(wet) * cell_m
     q = np.clip(np.round(d / step_m), 0, 255).astype(np.uint8)[::-1]   # south row first
-    return {
+    out = {
         "x0": round(w0 - frame[0], 3), "z0": round(s0 - frame[1], 3), "cellM": cell_m, "stepM": step_m,
         "width": nx, "height": nz, "data": base64.b64encode(q.tobytes()).decode("ascii"),
     }
+    if dem_path is not None and level_m is not None:
+        # How much of a cliff each water cell's shore is (the shore dig's own measure, dem_edit.shore_cliffness):
+        # golfmap.lake.bed keeps the sand off the foot of the cliffs, where the rock goes on down.
+        from rasterio.enums import Resampling
+        from rasterio.windows import from_bounds
+        from golfpipe.dem_edit import shore_cliffness
+        with rasterio.open(dem_path) as r:
+            z = r.read(1, window=from_bounds(w0, s0, w0 + nx * cell_m, north, r.transform), out_shape=(nz, nx),
+                       boundless=True, fill_value=np.nan, resampling=Resampling.average).astype(np.float64)
+        k = dict(cliff or {})
+        c = shore_cliffness(wet, np.where(wet, np.nan, z), level_m, cell_m, k.get("runM", 4.0), k.get("riseLowM", 1.5),
+                            k.get("riseHighM", 3.5), k.get("smoothM", 6.0))
+        out["cliff"] = base64.b64encode(np.round(c * 255).astype(np.uint8)[::-1].tobytes()).decode("ascii")
+    return out
 
 
 def low_ground(dem_path: Path, level_m: float, water, sink_m: float = 0.0, skip_box: Polygon | None = None,
@@ -243,7 +268,8 @@ def build_lake_plane(shore: Polygon, hydro_lake: Polygon | None, inner: dict, ou
                      name: str = "Lake", radius_m: float = DEFAULT_RADIUS_M, under_bank_m: float = DEFAULT_UNDER_BANK_M,
                      near_margin_m: float = DEFAULT_NEAR_MARGIN_M, near_cell_m: float = DEFAULT_NEAR_CELL_M,
                      outer_cell_m: float = DEFAULT_OUTER_CELL_M, far_cell_m: float = DEFAULT_FAR_CELL_M,
-                     collider_cell_m: float = DEFAULT_COLLIDER_CELL_M, low=None, log=print) -> dict:
+                     collider_cell_m: float = DEFAULT_COLLIDER_CELL_M, low=None, inner_dem: Path | None = None,
+                     cliff: dict | None = None, log=print) -> dict:
     iw, isth, ie, inn = inner["square"]
     frame = (iw, isth)
     centre = ((iw + ie) / 2, (isth + inn) / 2)
@@ -301,5 +327,5 @@ def build_lake_plane(shore: Polygon, hydro_lake: Polygon | None, inner: dict, ou
         "meshes": meshes,
         "collider": _mesh_doc(f"{name}_WaterPlane_Collider", "collider", collider_cell_m, cv, ct) if cc else None,
         "probe": probe_spot(water, inner_box, frame, surface_y),
-        "shoreDistance": shore_distance_grid(water, near_box, frame),
+        "shoreDistance": shore_distance_grid(water, near_box, frame, dem_path=inner_dem, level_m=level_m, cliff=cliff),
     }
