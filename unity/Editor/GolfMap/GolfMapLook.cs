@@ -55,7 +55,34 @@ namespace GolfMap.Editor
             if (o.Has(key) && p != null && p.propertyType == SerializedPropertyType.Float) p.floatValue = (float)o.Number(key, p.floatValue);
         }
 
-        [BridgeCommand("golfmap.look.apply", "Write <course>/look.json (golfmap-look-v1) into the open scene: trilight ambient colours, the sun's shadow strength, OPCD's gradient fog (start / end / intensity), and on a course-local copy of the scene's post-processing profile the colour grading saturation / post exposure / lift offset, the ambient occlusion colour / intensity and the bloom threshold / intensity / colour. Keys left out are left alone. GSPro takes the post-processing from the course folder's arborist_postprocess.dat when there is one: export it again after a change under post. Without a look.json: reports the scene's current values. Marks the scene dirty; a course build saves it.",
+        // The course folder's look folder as it is spelled on disk ("look" or "Look"): AssetDatabase paths
+        // are case-sensitive while the file system is not, so a second spelling would copy nothing.
+        static string LookDir(string folder)
+        {
+            string root = folder.TrimEnd('/');
+            var found = AssetDatabase.GetSubFolders(root).FirstOrDefault(d => string.Equals(Path.GetFileName(d), "Look", System.StringComparison.OrdinalIgnoreCase));
+            if (found != null) return found;
+            AssetDatabase.CreateFolder(root, "Look");
+            return root + "/Look";
+        }
+
+        static bool Under(string assetPath, string dir)
+        {
+            return assetPath.StartsWith(dir + "/", System.StringComparison.OrdinalIgnoreCase);
+        }
+
+        // [x, y, z, w] -> a colour grading trackball (lift / gamma / gain)
+        static Vector4 Ball(GolfMapJsonObject o, string key, Vector4 fallback)
+        {
+            var a = o.Array(key);
+            if (a == null || a.Count != 4) return fallback;
+            var n = a.Select(v => v as GolfMapJsonNumber).ToArray();
+            return n.Any(v => v == null) ? fallback : new Vector4((float)n[0].Value, (float)n[1].Value, (float)n[2].Value, (float)n[3].Value);
+        }
+
+        static float[] Ball(Vector4 v) { return new[] { v.x, v.y, v.z, v.w }; }
+
+        [BridgeCommand("golfmap.look.apply", "Write <course>/look.json (golfmap-look-v1) into the open scene: trilight ambient colours, the sun's shadow strength / intensity / direction and TimeAdjust clock, the skybox (a project material by name, on a course-local copy) with its exposure and the reflection intensity, OPCD's gradient fog (start / end / intensity), and on a course-local copy of the scene's post-processing profile the colour grading saturation / post exposure / temperature / contrast / lift / gamma / gain (trackballs as [x, y, z, w]) / lift offset, the ambient occlusion colour / intensity and the bloom threshold / intensity / colour. Keys left out are left alone. GSPro takes the post-processing from the course folder's arborist_postprocess.dat when there is one: export it again after a change under post. Without a look.json: reports the scene's current values. Marks the scene dirty; a course build saves it.",
             args = "dryRun=false")]
         static object Apply(BridgeArgs a)
         {
@@ -84,6 +111,23 @@ namespace GolfMap.Editor
                     Undo.RecordObject(sun, "GolfMap look");
                     sun.shadowStrength = (float)sunDoc.Number("shadowStrength", sun.shadowStrength);
                     sun.intensity = (float)sunDoc.Number("intensity", sun.intensity);
+                    // "hh:mm" on OPCD's TimeAdjust: what its Hour/minutes say when someone turns it back on
+                    var clockText = sunDoc.String("clock");
+                    if (clockText != null)
+                    {
+                        var parts = clockText.Split(':');
+                        int hour, minutes;
+                        if (parts.Length != 2 || !int.TryParse(parts[0], out hour) || !int.TryParse(parts[1], out minutes)) throw new BridgeError("sun.clock wants \"hh:mm\", got " + clockText + ".");
+                        foreach (var clock in sun.GetComponents<Behaviour>().Where(c => c && c.GetType().Name == "TimeAdjust"))
+                        {
+                            var so = new SerializedObject(clock);
+                            var h = so.FindProperty("Hour");
+                            var m = so.FindProperty("minutes");
+                            if (h != null) h.intValue = hour;
+                            if (m != null) m.intValue = minutes;
+                            so.ApplyModifiedProperties();
+                        }
+                    }
                     // elevation = degrees over the horizon, azimuth = the compass bearing the sun stands at (z is north)
                     if (sunDoc.Has("elevation") && sunDoc.Has("azimuth"))
                     {
@@ -101,12 +145,29 @@ namespace GolfMap.Editor
                     log.Add("sun set");
                 }
                 var sky = doc.Object("sky");
+                if (sky != null && sky.String("material") != null)
+                {
+                    // a skybox of the project by name (OPCD's Assets/Skyboxes/Material/<name>.mat), never a course's copy
+                    string name = sky.String("material");
+                    var source = AssetDatabase.FindAssets(name + " t:Material").Select(AssetDatabase.GUIDToAssetPath)
+                        .Where(p => Path.GetFileNameWithoutExtension(p) == name && !p.StartsWith("Assets/GolfMap/")).OrderBy(p => p.Length).FirstOrDefault();
+                    if (source == null) throw new BridgeError("sky.material: no material called " + name + " outside Assets/GolfMap.");
+                    if (!RenderSettings.skybox || RenderSettings.skybox.name != name)
+                    {
+                        RenderSettings.skybox = AssetDatabase.LoadAssetAtPath<Material>(source);
+                        log.Add("skybox " + source);
+                    }
+                }
+                if (sky != null && sky.Has("reflectionIntensity"))
+                {
+                    RenderSettings.reflectionIntensity = (float)sky.Number("reflectionIntensity", RenderSettings.reflectionIntensity);
+                    log.Add("reflection intensity set");
+                }
                 if (sky != null && RenderSettings.skybox && RenderSettings.skybox.HasProperty("_Exposure"))
                 {
                     // on a course-local copy: the skybox material is shared with other course projects' scenes
-                    string dir = folder + "Look", copy = dir + "/" + RenderSettings.skybox.name + ".mat";
-                    if (!AssetDatabase.IsValidFolder(dir)) AssetDatabase.CreateFolder(folder.TrimEnd('/'), "Look");
-                    if (AssetDatabase.GetAssetPath(RenderSettings.skybox) != copy)
+                    string dir = LookDir(folder), copy = dir + "/" + RenderSettings.skybox.name + ".mat";
+                    if (!Under(AssetDatabase.GetAssetPath(RenderSettings.skybox), dir))
                     {
                         if (!File.Exists(copy) && !AssetDatabase.CopyAsset(AssetDatabase.GetAssetPath(RenderSettings.skybox), copy)) throw new BridgeError("Could not copy the skybox to " + copy + ".");
                         RenderSettings.skybox = AssetDatabase.LoadAssetAtPath<Material>(copy);
@@ -137,10 +198,9 @@ namespace GolfMap.Editor
                 var post = doc.Object("post");
                 if (post != null && volume)
                 {
-                    string dir = folder + "Look";
-                    if (!AssetDatabase.IsValidFolder(dir)) AssetDatabase.CreateFolder(folder.TrimEnd('/'), "Look");
+                    string dir = LookDir(folder);
                     var profile = volume.sharedProfile;
-                    if (!AssetDatabase.GetAssetPath(profile).StartsWith(dir))
+                    if (!Under(AssetDatabase.GetAssetPath(profile), dir))
                     {
                         string copy = dir + "/" + profile.name + ".asset";
                         if (!File.Exists(copy) && !AssetDatabase.CopyAsset(AssetDatabase.GetAssetPath(profile), copy)) throw new BridgeError("Could not copy the profile to " + copy + ".");
@@ -155,6 +215,10 @@ namespace GolfMap.Editor
                         if (post.Has("saturation")) grading.saturation.Override((float)post.Number("saturation", 0));
                         if (post.Has("postExposure")) grading.postExposure.Override((float)post.Number("postExposure", 0));
                         if (post.Has("temperature")) grading.temperature.Override((float)post.Number("temperature", 0));
+                        if (post.Has("contrast")) grading.contrast.Override((float)post.Number("contrast", 0));
+                        if (post.Has("lift")) grading.lift.Override(Ball(post, "lift", grading.lift.value));
+                        if (post.Has("gamma")) grading.gamma.Override(Ball(post, "gamma", grading.gamma.value));
+                        if (post.Has("gain")) grading.gain.Override(Ball(post, "gain", grading.gain.value));
                         // The lift trackball's offset (w) alone: -0.2 crushes the forest floor to black, -0.03 keeps it.
                         if (post.Has("liftW")) { var lift = grading.lift.value; lift.w = (float)post.Number("liftW", lift.w); grading.lift.Override(lift); }
                         EditorUtility.SetDirty(grading);
@@ -186,9 +250,10 @@ namespace GolfMap.Editor
             {
                 { "file", File.Exists(path) ? path : "(none)" }, { "log", log },
                 { "ambient", new Dictionary<string, object> { { "sky", "#" + ColorUtility.ToHtmlStringRGB(RenderSettings.ambientSkyColor) }, { "equator", "#" + ColorUtility.ToHtmlStringRGB(RenderSettings.ambientEquatorColor) }, { "ground", "#" + ColorUtility.ToHtmlStringRGB(RenderSettings.ambientGroundColor) } } },
-                { "sun", sun ? (object)new Dictionary<string, object> { { "shadowStrength", sun.shadowStrength }, { "intensity", sun.intensity } } : null },
+                { "sun", sun ? (object)new Dictionary<string, object> { { "shadowStrength", sun.shadowStrength }, { "intensity", sun.intensity }, { "euler", new[] { sun.transform.eulerAngles.x, sun.transform.eulerAngles.y, sun.transform.eulerAngles.z } } } : null },
+                { "sky", new Dictionary<string, object> { { "material", RenderSettings.skybox ? AssetDatabase.GetAssetPath(RenderSettings.skybox) : null }, { "exposure", RenderSettings.skybox && RenderSettings.skybox.HasProperty("_Exposure") ? (object)RenderSettings.skybox.GetFloat("_Exposure") : null }, { "reflectionIntensity", RenderSettings.reflectionIntensity } } },
                 { "profile", volume ? AssetDatabase.GetAssetPath(volume.sharedProfile) : "(no global volume)" },
-                { "post", g ? (object)new Dictionary<string, object> { { "saturation", g.saturation.value }, { "postExposure", g.postExposure.value }, { "temperature", g.temperature.value }, { "aoColor", ao ? "#" + ColorUtility.ToHtmlStringRGB(ao.color.value) : null }, { "aoIntensity", ao ? (object)ao.intensity.value : null }, { "liftW", g.lift.value.w } } : null },
+                { "post", g ? (object)new Dictionary<string, object> { { "saturation", g.saturation.value }, { "postExposure", g.postExposure.value }, { "temperature", g.temperature.value }, { "aoColor", ao ? "#" + ColorUtility.ToHtmlStringRGB(ao.color.value) : null }, { "aoIntensity", ao ? (object)ao.intensity.value : null }, { "liftW", g.lift.value.w }, { "contrast", g.contrast.value }, { "lift", Ball(g.lift.value) }, { "gamma", Ball(g.gamma.value) }, { "gain", Ball(g.gain.value) } } : null },
                 { "bloom", b ? (object)new Dictionary<string, object> { { "threshold", b.threshold.value }, { "intensity", b.intensity.value }, { "color", "#" + ColorUtility.ToHtmlStringRGB(b.color.value) } } : null },
                 { "fog", fogNow ? (object)new Dictionary<string, object> { { "start", FogValue(fogNow, "fogStart") }, { "end", FogValue(fogNow, "fogEnd") }, { "intensity", FogValue(fogNow, "fogIntensity") } } : null },
             };
