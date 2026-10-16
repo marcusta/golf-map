@@ -106,7 +106,9 @@ try {
         const backup = path.join(backups, `${f.id}-${new Date().toISOString().replace(/[:.]/g, '-')}.json`);
         await writeFile(backup, JSON.stringify({ featureId: f.id, version: f.version, geometry: f.geometry }, null, 1));
         const rings = [{ ...f.geometry.rings[0], points: fit.controls }, ...f.geometry.rings.slice(1)];
-        await features.update(f.id, f.version, { geometry: { ...f.geometry, curveType: 'bspline', rings } });
+        // Marked as fitted (the Terrain editor's Ponds checklist counts it, and knows a dig older than this is stale).
+        const attributes = { ...(f.attributes ?? {}), waterEdge: p.toward !== null ? 'lidar' : 'photo', waterEdgeAt: new Date().toISOString() };
+        await features.update(f.id, f.version, { geometry: { ...f.geometry, curveType: 'bspline', rings }, attributes });
         console.log(`  stored; the old outline is in ${backup}`);
     }
     if (dryRun) console.log('dry run, nothing stored');

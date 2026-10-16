@@ -226,6 +226,23 @@ export interface PondEdgeReview {
     failed: { shape: string; error: string }[];
 }
 
+/**
+ * The Ponds checklist: how far the course's ponds (water features, not
+ * generated, not `dig: false`) are through fit edges -> steep bank -> dig.
+ * `stale`: dug before its edge was last fitted (re-dig).
+ */
+export interface PondProgress {
+    total: number;
+    fitted: number;
+    steep: number;
+    dug: number;
+    stale: number;
+}
+
+/** A pond's edge fitted to the water (Accept, `water:edge`): how, and when (ISO), on the feature. */
+export const WATER_EDGE_ATTR = 'waterEdge';
+export const WATER_EDGE_AT_ATTR = 'waterEdgeAt';
+
 /** What the map draws for a proposal: the proposed edge and the lidar's open water. */
 export interface PondEdgeMark {
     proposed: { x: number; y: number }[];
@@ -367,12 +384,33 @@ export class TerrainEditToolService {
         return marks;
     });
 
+    /** The Ponds checklist's counts (see PondProgress). */
+    readonly pondProgress = new Computed<PondProgress>(() => {
+        const features = this.ctxSignal.get()?.features?.store.items.get() ?? [];
+        const ponds = features.filter((f) => f.type === 'water' && !(f as { generated?: boolean }).generated
+            && (f.attributes as Attributes | null)?.dig !== false);
+        const digs = new Map(this.edits.get().filter((e) => e.origin === 'water-digs' && e.originRef).map((e) => [e.originRef!, e]));
+        const progress: PondProgress = { total: ponds.length, fitted: 0, steep: 0, dug: 0, stale: 0 };
+        for (const f of ponds) {
+            const attrs = (f.attributes ?? {}) as Attributes;
+            const fittedAt = typeof attrs[WATER_EDGE_AT_ATTR] === 'string' ? attrs[WATER_EDGE_AT_ATTR] as string : null;
+            if (attrs[WATER_EDGE_ATTR]) progress.fitted++;
+            if (typeof attrs.digBankAboveDeg === 'number') progress.steep++;
+            const dig = digs.get(`feature:${f.id}`);
+            if (dig) {
+                progress.dug++;
+                if (fittedAt && Date.parse(dig.updatedAt.replace(' ', 'T') + (dig.updatedAt.endsWith('Z') ? '' : 'Z')) < Date.parse(fittedAt)) progress.stale++;
+            }
+        }
+        return progress;
+    });
+
     /** "Fit edge to water": the proposal under review, null when none (declared before `view`, which reads it). */
     readonly pondEdge = new Signal<PondEdgeReview | null>(null);
     /** True while the server reads the photos. */
     readonly proposingEdge = new Signal(false);
     /** The outline the last Accept replaced: Undo puts it back. */
-    readonly edgeUndo = new Signal<{ featureId: string; shape: string; geometry: CourseFeature['geometry'] } | null>(null);
+    readonly edgeUndo = new Signal<{ featureId: string; shape: string; geometry: CourseFeature['geometry']; attributes: Attributes | null } | null>(null);
 
     /** Pointer position for the rubber band (see TerrainEditView.cursor). */
     readonly cursor = new Signal<Point | null>(null);
@@ -579,14 +617,16 @@ export class TerrainEditToolService {
         }
         const geometry = feature.geometry;
         const rings = [{ ...geometry.rings[0], points: review.controls }, ...geometry.rings.slice(1)];
+        const attributes: Attributes = { ...((feature.attributes ?? {}) as Attributes),
+            [WATER_EDGE_ATTR]: p.toward !== null ? 'lidar' : 'photo', [WATER_EDGE_AT_ATTR]: new Date().toISOString() };
         this.saving.set(true);
         try {
-            const stored = await features.update(p.featureId, { geometry: { ...geometry, curveType: 'bspline', rings } as CourseFeature['geometry'] });
+            const stored = await features.update(p.featureId, { geometry: { ...geometry, curveType: 'bspline', rings } as CourseFeature['geometry'], attributes });
             if (stored === undefined) { this.notice.set('Saving the pond failed.'); return false; }
         } finally {
             this.saving.set(false);
         }
-        this.edgeUndo.set({ featureId: p.featureId, shape: p.shape, geometry });
+        this.edgeUndo.set({ featureId: p.featureId, shape: p.shape, geometry, attributes: feature.attributes as Attributes | null });
         this.notice.set(`${p.shape}: edge stored. Dig ponds again, then Apply to terrain (and update the meshes: the SVG carries the new shape).`);
         this.next();
         return true;
@@ -602,11 +642,49 @@ export class TerrainEditToolService {
         const undo = this.edgeUndo.peek();
         const features = this.ctx?.features;
         if (!undo || !features) return false;
-        const stored = await features.update(undo.featureId, { geometry: undo.geometry });
+        const stored = await features.update(undo.featureId, { geometry: undo.geometry, attributes: undo.attributes });
         if (stored === undefined) { this.notice.set('Putting the old outline back failed.'); return false; }
         this.edgeUndo.set(null);
         this.notice.set(`${undo.shape}: the previous outline is back.`);
         return true;
+    }
+
+    /** Steep banks on every pond that has none yet (digBankAboveDeg), then one re-dig. */
+    async steepAllPonds(deg = 45): Promise<boolean> {
+        const features = this.ctx?.features;
+        if (!features) return false;
+        const ponds = features.store.items.peek().filter((f) => f.type === 'water' && !(f as { generated?: boolean }).generated
+            && (f.attributes as Attributes | null)?.dig !== false && typeof (f.attributes as Attributes | null)?.digBankAboveDeg !== 'number');
+        if (ponds.length === 0) { this.notice.set('Every pond has a steep bank already.'); return false; }
+        this.saving.set(true);
+        try {
+            for (const f of ponds) {
+                if (await features.update(f.id, { attributes: { ...((f.attributes ?? {}) as Attributes), digBankAboveDeg: deg } }) === undefined) {
+                    this.notice.set('Saving the ponds failed.');
+                    return false;
+                }
+            }
+        } finally {
+            this.saving.set(false);
+        }
+        const result = await this.runGenerator('water-digs');
+        if (result) this.notice.set(`${ponds.length} pond(s): bank ${deg}° at the water; ponds re-dug.`);
+        return result !== null;
+    }
+
+    /** After a water import: open the Ponds checklist and propose the edges once the tool is up. */
+    requestPondFit(): void {
+        this.pondFitRequested = true;
+        this.pondsOpen.set(true);
+        if (this.ctx) { this.pondFitRequested = false; void this.proposeAllEdges(); }
+    }
+    private pondFitRequested = false;
+    /** The Ponds checklist is unfolded (one line when folded). */
+    readonly pondsOpen = new Signal(false);
+
+    /** The course the tool works on (the panel's GSPro update buttons). */
+    courseId(): string | null {
+        return this.ctx?.courseId ?? null;
     }
 
     private pondEdgeMark(): PondEdgeMark | null {
@@ -853,6 +931,10 @@ export class TerrainEditToolService {
         this.ctxSignal.set(ctx);
         this.renderer = renderer;
         this.notice.set(null);
+        if (this.pondFitRequested) {
+            this.pondFitRequested = false;
+            queueMicrotask(() => void this.proposeAllEdges());
+        }
 
         ctx.track(ctx.map.onClick(e => this.onClick(e)));
         ctx.track(ctx.map.onMouseMove(e => this.onMouseMove(e)));

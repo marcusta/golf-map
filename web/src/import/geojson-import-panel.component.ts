@@ -6,6 +6,9 @@
 // from `svc.built`. No georeference section — files are EPSG:3006 already
 // (the service rejects anything else).
 
+import { TerrainEditToolService } from '../terrain-edit/terrain-edit-tool.service';
+import { terrainEditTool } from '../terrain-edit/terrain-edit-tool';
+import { EditorModeService } from '../editor/editor-mode.service';
 import { Component, effect, template } from '@basics/core/client/core';
 import type { Feature, FeatureCollection } from 'geojson';
 import { t } from '../theme';
@@ -61,6 +64,10 @@ const tpl = template(`
         <div bind="summarySection" class="geojson-import__section">
             <h4 class="section-title">Result</h4>
             <div bind="summaryText" class="summary"></div>
+            <div bind="pondsNext" class="ponds-next hidden" data-testid="geojson-import-ponds-next">
+                <span bind="pondsNextText"></span>
+                <button bind="pondsNextBtn" type="button" data-testid="geojson-import-fit-edges">Fit edges</button>
+            </div>
             <div bind="warnings" class="warnings"></div>
         </div>
 
@@ -221,6 +228,7 @@ export class GeojsonImportPanelComponent extends Component {
             }
 
             & .summary { font-size: 0.75rem; white-space: pre-line; }
+            & .ponds-next { display: flex; align-items: center; justify-content: space-between; gap: 8px; font-size: 0.75rem; &.hidden { display: none; } }
             & .warnings { font-size: 0.7rem; color: ${t('color-text-secondary')}; white-space: pre-line; }
         }
     `;
@@ -229,6 +237,8 @@ export class GeojsonImportPanelComponent extends Component {
     private mapSvc = this.inject(MapService);
     private features = this.inject(FeaturesService);
     private confirmDialog = this.inject(ConfirmService);
+    private terrainEdit = this.inject(TerrainEditToolService);
+    private editorMode = this.inject(EditorModeService);
     /** True while the dashed preview overlay is on the live map. */
     private previewAdded = false;
 
@@ -325,6 +335,17 @@ export class GeojsonImportPanelComponent extends Component {
                 let text = `Created ${total} features\n${lines.join('\n')}`;
                 if (summary.error) text += `\nFAILED: ${summary.error} (import stopped — already-created features kept)`;
                 return text;
+            },
+            // Water came in: one line pointing at the next step (Terrain edit › Ponds), and the button that takes it.
+            pondsNext: { className: () => (this.svc.summary.get()?.created.water ?? 0) > 0 ? 'ponds-next' : 'ponds-next hidden' },
+            pondsNextText: { textContent: () => `${this.svc.summary.get()?.created.water ?? 0} pond(s) in. Next: fit their edges to the water.` },
+            pondsNextBtn: {
+                title: "Opens Terrain edit › Ponds and shows each pond's edge found on the photo between the lidar's water and the imported line, to Accept or Skip",
+                onclick: () => {
+                    this.svc.close();
+                    this.terrainEdit.requestPondFit();
+                    this.editorMode.activate(terrainEditTool);
+                },
             },
             importedSection: { className: () => this.svc.imported.get().length > 0 ? 'geojson-import__section' : 'geojson-import__section hidden' },
             clearError: () => this.svc.clearError.get() ?? '',

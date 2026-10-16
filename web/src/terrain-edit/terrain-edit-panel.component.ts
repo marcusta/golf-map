@@ -5,6 +5,7 @@ import { dockBody, sectionTitle, panelInput, busyAndNotice, hintsFooter } from '
 import { icon } from '../ui/icons';
 import { SELECTION_COLOR } from '../draw/feature-palette';
 import { ConfirmService } from '../app/confirm-dialog.component';
+import { GsproSyncService } from '../export/gspro-sync.service';
 import {
     NO_RECIPE, SEED, inapplicable, overridesToSave, surfaceOf, type RecipeParam, type ShapingRecipe,
 } from './shaping.service';
@@ -17,6 +18,7 @@ import {
     recipeParams,
     type DigSettings,
     type PondEdgeReview,
+    type PondProgress,
     type EditGroup,
     type TerrainEditOp,
 } from './terrain-edit-tool.service';
@@ -45,6 +47,24 @@ const tpl = template(`
             <div class="hint" data-testid="terrain-shape-apply-hint">Save the recipe, then <b>Update meshes (this feature)</b> in the command bar.</div>
             <div bind="shapeJob" class="shape-job" data-testid="terrain-shape-job"></div>
         </div>
+        <div bind="pondsSection" class="section ponds hidden" data-testid="terrain-ponds">
+            <button bind="pondsHead" type="button" class="ponds__head" data-testid="terrain-ponds-head"></button>
+            <div bind="pondsBody" class="ponds__steps hidden" data-testid="terrain-ponds-steps">
+                <div class="ponds__step"><span bind="stepEdges"></span><button bind="stepEdgesBtn" type="button" data-testid="terrain-ponds-fit">Fit</button></div>
+                <div class="ponds__step"><span bind="stepSteep"></span><button bind="stepSteepBtn" type="button" data-testid="terrain-ponds-steep">45° all</button></div>
+                <div class="ponds__step"><span bind="stepDig"></span><button bind="stepDigBtn" type="button" data-testid="terrain-ponds-dig">Dig</button></div>
+                <div class="ponds__step"><span>4 · Terrain</span><button bind="stepTerrainBtn" type="button" data-testid="terrain-ponds-terrain">Update</button></div>
+                <div class="ponds__step"><span>5 · Meshes</span><button bind="stepMeshesBtn" type="button" data-testid="terrain-ponds-meshes">Update</button></div>
+            </div>
+        </div>
+        <div bind="pondEdgeSection" class="section hidden" data-testid="terrain-edit-pond-edge">
+            <h4 bind="pondEdgeTitle" class="section-title" title="Red: the proposed edge, found on the photo between the lidar's open water (yellow, dashed) and the drawn line. Accept stores it on the pond as a B-spline."></h4>
+            <div bind="pondEdgeSummary" class="hint" data-testid="terrain-edit-pond-edge-summary"></div>
+            <div class="edit-form__actions">
+                <button bind="pondEdgeDiscardBtn" type="button" data-testid="terrain-edit-pond-edge-discard"></button>
+                <button bind="pondEdgeAcceptBtn" type="button" data-testid="terrain-edit-pond-edge-accept">Accept</button>
+            </div>
+        </div>
         <div class="section">
             <h4 class="section-title">New edit</h4>
             <select bind="opSelect" class="input" data-testid="terrain-edit-op" aria-label="Operation">
@@ -69,20 +89,10 @@ const tpl = template(`
             <button bind="genPadsBtn" type="button" class="gen-btn" data-testid="terrain-edit-gen-pads"></button>
             <button bind="genRoadsBtn" type="button" class="gen-btn" data-testid="terrain-edit-gen-roads"></button>
             <button bind="genPondsBtn" type="button" class="gen-btn" data-testid="terrain-edit-gen-ponds"></button>
-            <button bind="fitEdgesBtn" type="button" class="gen-btn" data-testid="terrain-edit-fit-edges"></button>
             <button bind="genBunkersBtn" type="button" class="gen-btn" data-testid="terrain-edit-gen-bunkers"></button>
             <button bind="genCreeksBtn" type="button" class="gen-btn" data-testid="terrain-edit-gen-creeks"></button>
             <div class="hint">Building pads: every OSM building footprint in the map area, measured on the lidar, gets a flat pad. Road grades: every OSM road, smoothed along and levelled across. Each run replaces its own previous edits only — yours stay. Then Apply to terrain.</div>
             <div class="hint">Bunkers, ponds and creeks under the course meshes are shaped in Blender by their recipe (the course default unless you pick one — click the feature). The DEM digs here still shape the terrain around and outside the meshes.</div>
-        </div>
-        <div bind="pondEdgeSection" class="section hidden" data-testid="terrain-edit-pond-edge">
-            <h4 bind="pondEdgeTitle" class="section-title"></h4>
-            <div bind="pondEdgeSummary" class="hint" data-testid="terrain-edit-pond-edge-summary"></div>
-            <div class="hint">Red: the proposed edge, found on the photo between the lidar's open water (yellow, dashed) and the drawn line. Accept stores it on the pond as a B-spline.</div>
-            <div class="edit-form__actions">
-                <button bind="pondEdgeDiscardBtn" type="button" data-testid="terrain-edit-pond-edge-discard"></button>
-                <button bind="pondEdgeAcceptBtn" type="button" data-testid="terrain-edit-pond-edge-accept">Accept</button>
-            </div>
         </div>
         <div bind="savingLine" class="busy-line">Saving…</div>
         <div bind="notice" class="notice" data-testid="terrain-edit-notice"></div>
@@ -282,6 +292,35 @@ export class TerrainEditPanelComponent extends Component {
                 border-radius: ${t('radius-sm')};
                 &.hidden { display: none; }
             }
+            & .ponds.hidden { display: none; }
+            & .ponds__head {
+                font: inherit;
+                font-weight: 600;
+                text-align: left;
+                padding: ${s('xs')} 0;
+                border: none;
+                background: none;
+                color: ${t('color-text-primary')};
+                cursor: pointer;
+            }
+            & .ponds__steps { display: flex; flex-direction: column; gap: 2px; &.hidden { display: none; } }
+            & .ponds__step {
+                display: flex;
+                align-items: center;
+                justify-content: space-between;
+                gap: ${s('sm')};
+                & span { color: ${t('color-text-secondary')}; }
+                & button {
+                    font: inherit;
+                    padding: 0 ${s('sm')};
+                    border: 1px solid ${t('color-border-default')};
+                    border-radius: ${t('radius-sm')};
+                    background: ${t('color-surface-raised')};
+                    color: ${t('color-text-primary')};
+                    cursor: pointer;
+                    &:disabled { opacity: 0.45; cursor: not-allowed; }
+                }
+            }
             & .shape__head { display: flex; align-items: center; justify-content: space-between; }
             & .shape__head .section-title { margin: 0; }
             & .shape__feature { font-weight: 600; }
@@ -399,6 +438,8 @@ export class TerrainEditPanelComponent extends Component {
         return surface ? this.tool.shaping.resolve(this.recipeChoice.get(), surface) : null;
     });
     private confirmDialog = this.inject(ConfirmService);
+    /** The GSPro board (Update terrain / meshes from the Ponds checklist). */
+    private gspro = this.inject(GsproSyncService);
 
     render(): DocumentFragment {
         const frag = this.wire(tpl, {
@@ -430,11 +471,56 @@ export class TerrainEditPanelComponent extends Component {
                 title: 'DEM digs: each water feature dug below its water level (its dig preset, default Natural Pond); the shoreline stays at the level. Creeks are left alone. Replaces the previous pond digs. Under the course meshes the pond is shaped in Blender by its recipe instead (the course default lake recipe unless you pick one), so this matters outside the meshes',
                 onclick: () => void this.tool.generate('water-digs'),
             },
-            fitEdgesBtn: {
+            pondsSection: {
+                className: () => this.tool.pondProgress.get().total > 0 ? 'section ponds' : 'section ponds hidden',
+            },
+            pondsHead: {
+                textContent: () => pondsHeadline(this.tool.pondProgress.get(), this.tool.pondsOpen.get()),
+                title: 'Ponds, in order: fit their edges to the water, steep banks at the water (optional), dig, then update the terrain and the meshes. Click to fold.',
+                onclick: () => this.tool.pondsOpen.set(!this.tool.pondsOpen.peek()),
+            },
+            pondsBody: {
+                className: () => this.tool.pondsOpen.get() ? 'ponds__steps' : 'ponds__steps hidden',
+            },
+            stepEdges: {
+                textContent: () => { const p = this.tool.pondProgress.get(); return `${mark(p.fitted === p.total)} 1 · Edges ${p.fitted}/${p.total}`; },
+            },
+            stepEdgesBtn: {
                 disabled: () => this.tool.proposingEdge.get() || this.tool.generating.get() !== null || this.tool.applying.get(),
-                textContent: () => this.tool.proposingEdge.get() ? 'Reading the photos…' : 'Fit pond edges (lidar + photo)',
-                title: "Each pond's edge found on the orthophoto between the lidar's open water and the drawn line (the lidar smears a steep bank over the water; a drawn or Hydrografi line follows the shore or reed line). Shown one pond at a time on the map, biggest change first: Accept stores it, Discard skips it. Where the photo shows no clear edge (reeds, shade) the drawn line stays. Same as `bun run water:edge`",
+                textContent: () => this.tool.proposingEdge.get() ? '…' : 'Fit',
+                title: "Each pond's edge found on the orthophoto between the lidar's open water and the drawn line, one pond at a time on the map (biggest change first): Accept or Skip. Reeds and shade keep the drawn line. Same as `bun run water:edge`",
                 onclick: () => void this.tool.proposeAllEdges(),
+            },
+            stepSteep: {
+                textContent: () => { const p = this.tool.pondProgress.get(); return `${mark(p.steep === p.total)} 2 · Steep bank ${p.steep}/${p.total}`; },
+            },
+            stepSteepBtn: {
+                disabled: () => this.tool.saving.get() || this.tool.generating.get() !== null || this.tool.pondProgress.get().steep === this.tool.pondProgress.get().total,
+                title: "Optional. The outline is the water's edge and the bank outside comes down to the water at 45° (per pond: the pencil on its dig). The water plane then stands at the dig's level.",
+                onclick: () => void this.tool.steepAllPonds(45),
+            },
+            stepDig: {
+                textContent: () => {
+                    const p = this.tool.pondProgress.get();
+                    const done = p.dug === p.total && p.stale === 0;
+                    return `${mark(done)} 3 · Dig ${p.stale ? `(${p.stale} re-dig)` : `${p.dug}/${p.total}`}`;
+                },
+            },
+            stepDigBtn: {
+                disabled: () => this.tool.generating.get() !== null || this.tool.applying.get(),
+                textContent: () => this.tool.generating.get() === 'water-digs' ? '…' : 'Dig',
+                title: 'Dig ponds (DEM): every pond below its water level, by its dig settings.',
+                onclick: () => void this.tool.generate('water-digs'),
+            },
+            stepTerrainBtn: {
+                disabled: () => this.gspro.running.get(),
+                title: "GSPro › Update terrain: bakes the digs into the heightmaps and the Unity terrains, and writes the ponds' water levels.",
+                onclick: () => { const id = this.tool.courseId(); if (id) void this.gspro.update(id, 'terrain'); },
+            },
+            stepMeshesBtn: {
+                disabled: () => this.gspro.running.get(),
+                title: 'GSPro › Update meshes. A changed pond outline needs the SVG built in OPCD first (the GSPro board says when).',
+                onclick: () => { const id = this.tool.courseId(); if (id) void this.gspro.update(id, 'meshes'); },
             },
             pondEdgeSection: {
                 className: () => this.tool.pondEdge.get() ? 'section pond-edge' : 'section pond-edge hidden',
@@ -1088,14 +1174,22 @@ function pondEdgeSummary(r: PondEdgeReview): string {
     const p = r.proposal;
     const kept = p.kept.reduce((sum, k) => sum + (k.toM - k.fromM), 0);
     const parts = [
-        `Moves the line ${p.movedM.p50} m (median), up to ${p.movedM.max} m; area ${p.areaM2.drawn} → ${p.areaM2.new} m² (lidar's open water ${p.areaM2.lidar} m²).`,
-        kept > 0 ? `Keeps the drawn line on ${Math.round(kept)} m where the photo shows no clear edge (reeds, shade).` : '',
-        `${r.controls.length} control points.`,
-        r.queue.length ? `${r.queue.length} more pond(s) after this one.` : '',
-        r.failed.length ? `Not proposed: ${r.failed.map((f) => `${f.shape} (${f.error})`).join('; ')}.` : '',
+        `Moves ${p.movedM.p50} m (max ${p.movedM.max})`,
+        `${Math.round(p.areaM2.drawn)} → ${Math.round(p.areaM2.new)} m²`,
+        kept > 0 ? `keeps the line on ${Math.round(kept)} m` : '',
+        r.queue.length ? `${r.queue.length} more` : '',
+        r.failed.length ? `skipped ${r.failed.map((f) => f.shape).join(', ')}` : '',
     ];
-    return parts.filter(Boolean).join(' ');
+    return parts.filter(Boolean).join(' · ');
 }
+
+/** The Ponds checklist folded to one line: how far, and what is next. */
+function pondsHeadline(p: PondProgress, open: boolean): string {
+    const next = p.fitted < p.total ? 'fit edges' : p.dug < p.total || p.stale > 0 ? 'dig' : 'update terrain & meshes';
+    return `${open ? '▾' : '▸'} Ponds · ${p.fitted}/${p.total} fitted · next: ${next}`;
+}
+
+const mark = (done: boolean) => (done ? '✓' : '○');
 
 /** A saved `overrides` object's numeric entries (the only kind the form edits). */
 function numericOverrides(overrides: Record<string, unknown> | undefined): Record<string, number> {

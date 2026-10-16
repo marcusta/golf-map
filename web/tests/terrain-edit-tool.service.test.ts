@@ -1414,12 +1414,15 @@ describe('fit edge to water', () => {
         const geometry = stored.patch.geometry as typeof drawn;
         expect(geometry.curveType).toBe('bspline');
         expect(geometry.rings[0]!.points).toEqual(review.controls);
+        expect(stored.patch.attributes).toMatchObject({ waterEdge: 'photo' });
+        expect(h.svc.pondProgress.get()).toMatchObject({ total: 2, fitted: 1 });
         expect(h.svc.pondEdge.get()).toBeNull();
         expect(h.svc.view.get().pondEdge).toBeNull();
         expect(h.svc.notice.get()).toContain('Dig ponds again');
 
         expect(await h.svc.undoEdge()).toBe(true);
-        expect(h.features.updates[1]).toEqual({ id: 'p1', patch: { geometry: drawn } });
+        expect(h.features.updates[1]).toEqual({ id: 'p1', patch: { geometry: drawn, attributes: null } });
+        expect(h.svc.pondProgress.get()).toMatchObject({ total: 2, fitted: 0 });
         expect(h.svc.edgeUndo.get()).toBeNull();
     });
 
@@ -1444,6 +1447,43 @@ describe('fit edge to water', () => {
         h.svc.discardEdge();
         expect(h.svc.pondEdge.get()).toBeNull();
         expect(h.features.updates).toEqual([]);
+    });
+
+    test('the Ponds checklist: steep banks on all ponds in one go (one re-dig), lakes marked dig: false left out', async () => {
+        const features = fakeFeatures([
+            { id: 'p1', type: 'water', attributes: null, geometry: drawn, version: 1 },
+            { id: 'p2', type: 'water', attributes: { digBankAboveDeg: 40 }, geometry: drawn, version: 1 },
+            { id: 'lake', type: 'water', attributes: { dig: false }, geometry: drawn, version: 1 },
+        ]);
+        const h = await harness({ features });
+        expect(h.svc.pondProgress.get()).toEqual({ total: 2, fitted: 0, steep: 1, dug: 0, stale: 0 });
+        expect(await h.svc.steepAllPonds(45)).toBe(true);
+        expect(h.features.updates).toEqual([{ id: 'p1', patch: { attributes: { digBankAboveDeg: 45 } } }]);
+        expect(h.generators.calls).toEqual([{ courseId: 'course-1', kind: 'water-digs' }]);
+        expect(h.svc.pondProgress.get().steep).toBe(2);
+    });
+
+    test("a dig older than the pond's edge fit counts as stale", async () => {
+        const dig = makeEdit({ id: 'd1', op: 'dig', origin: 'water-digs', originRef: 'feature:p1', updatedAt: '2026-10-16 10:00:00',
+            params: { featherM: 0, reference: 'level', depthM: 1 } });
+        const h = await harness({ listResult: [dig], features: fakeFeatures([
+            { id: 'p1', type: 'water', attributes: { waterEdge: 'photo', waterEdgeAt: '2026-10-16T12:00:00.000Z' }, geometry: drawn, version: 2 },
+        ]) });
+        expect(h.svc.pondProgress.get()).toEqual({ total: 1, fitted: 1, steep: 0, dug: 1, stale: 1 });
+    });
+
+    test('after a water import the tool proposes the edges as soon as it is up', async () => {
+        let asked = 0;
+        const pondEdge: PondEdgeApi = {
+            propose: async () => { throw new Error('unused'); },
+            proposeAll: async () => { asked++; return { proposals: [proposal('p1', 'others_4d', 1)], failed: [] }; },
+        };
+        const h = await harness({ features: ponds(), pondEdge });
+        h.svc.requestPondFit();   // the tool is already active in the harness: proposes at once
+        await new Promise((r) => setTimeout(r, 0));
+        expect(asked).toBe(1);
+        expect(h.svc.pondsOpen.get()).toBe(true);
+        expect(h.svc.pondEdge.get()?.proposal.shape).toBe('others_4d');
     });
 
     test("a pond dig's form carries the bank above the water: read from and saved on the feature", async () => {
