@@ -298,6 +298,7 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--near-cell-m", dest="near_cell_m", type=float, default=lake_plane.DEFAULT_NEAR_CELL_M, help=f"cell size round the course (default {lake_plane.DEFAULT_NEAR_CELL_M:g}; Gerstner waves need it fine)")
     p.add_argument("--outer-cell-m", dest="outer_cell_m", type=float, default=lake_plane.DEFAULT_OUTER_CELL_M)
     p.add_argument("--far-cell-m", dest="far_cell_m", type=float, default=lake_plane.DEFAULT_FAR_CELL_M)
+    p.add_argument("--outer-sink-m", dest="outer_sink_m", type=float, default=0.0, help="how far the outer terrain sits under its sidecar position in Unity (golfmap.terrain.update's sinkM): its ground that low beside the lake is covered too")
     p.add_argument("--out", required=True, help="output JSON, by convention <export folder>/<prefix>-inner-lake-plane.json (where golfmap.lake.build looks)")
 
     p = sub.add_parser("shore-edits", help="A big lake's true shoreline (hydro lake corrected by each terrain's lidar ground hits) -> ONE 'shore' terrain edit (D-TE5 edits GeoJSON, WGS84)")
@@ -879,6 +880,7 @@ def main(argv: list[str] | None = None) -> int:
                 Path(args.outer_sidecar) if args.outer_sidecar else None, Path(args.out),
                 level=args.level, name=args.name, radius_m=args.radius_m, under_bank_m=args.under_bank_m,
                 near_cell_m=args.near_cell_m, outer_cell_m=args.outer_cell_m, far_cell_m=args.far_cell_m,
+                outer_sink_m=args.outer_sink_m,
             )
 
         elif args.command == "shore-edits":

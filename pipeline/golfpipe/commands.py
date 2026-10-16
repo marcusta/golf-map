@@ -2416,9 +2416,12 @@ def cmd_lake_plane(
     near_cell_m: float = 2.0,
     outer_cell_m: float = 10.0,
     far_cell_m: float = 25.0,
+    outer_sink_m: float = 0.0,
 ) -> Path:
     """A big lake's water surface as Unity plane meshes (golfpipe/lake_plane.py): the
-    shore edit's outline inside the squares, Hydrografi's lake beyond, out to radius_m."""
+    shore edit's outline inside the squares, Hydrografi's lake beyond, out to radius_m,
+    plus the ground each terrain draws under the surface next to the lake (the DEMs next
+    to the sidecars; the outer one less outer_sink_m)."""
     import json as _json
     import time as _time
     from golfpipe import lake_plane
@@ -2432,9 +2435,23 @@ def cmd_lake_plane(
     inner = lake_plane.read_square(inner_sidecar)
     outer = lake_plane.read_square(outer_sidecar) if outer_sidecar else None
     print(f"Lake plane '{name}' at {level_m:.3f} m, out to {radius_m:g} m")
+    from shapely.geometry import box as _box
+    from shapely.ops import unary_union as _union
+    lows = []
+    for sidecar, sink, skip in ((inner_sidecar, 0.0, None), (outer_sidecar, outer_sink_m, _box(*inner["square"]))):
+        if sidecar is None:
+            continue
+        dem = Path(str(sidecar)[: -len(".json")]) if str(sidecar).endswith(".tif.json") else None
+        if dem is None or not dem.is_file():
+            print(f"  no DEM next to {sidecar}: low ground beside the lake not checked")
+            continue
+        low = lake_plane.low_ground(dem, level_m, shore_poly, sink_m=sink, skip_box=skip)
+        if low is not None:
+            print(f"  {dem.name}: {low.area:.0f} m2 of ground under the surface beside the lake (sink {sink:g} m) also covered")
+            lows.append(low)
     doc = lake_plane.build_lake_plane(
         shore_poly, hydro_lake, inner, outer, level_m, name=name, radius_m=radius_m, under_bank_m=under_bank_m,
-        near_cell_m=near_cell_m, outer_cell_m=outer_cell_m, far_cell_m=far_cell_m)
+        near_cell_m=near_cell_m, outer_cell_m=outer_cell_m, far_cell_m=far_cell_m, low=_union(lows) if lows else None)
     out = Path(out)
     out.parent.mkdir(parents=True, exist_ok=True)
     out.write_text(_json.dumps(doc, separators=(",", ":")), encoding="utf-8")

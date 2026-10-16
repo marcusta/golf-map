@@ -345,7 +345,7 @@ namespace GolfMap.Editor
         const float AboveWaterKeepM = 0.3f;   // bed vertices higher than this over the water are bank: left as painted
 
         [Serializable]
-        sealed class BedSettings { public float bandM = 25f, fadeM = 5f; }
+        sealed class BedSettings { public float bandM = 25f, fadeM = 20f; }
 
         [Serializable]
         sealed class Original { public string obj = "", path = "", mesh = ""; }
@@ -354,7 +354,7 @@ namespace GolfMap.Editor
         sealed class Originals { public List<Original> entries = new List<Original>(); }
 
         [BridgeCommand("golfmap.lake.bed", "Lighten a big lake's bed near the shore: its OPCD lake meshes (*" + BedSuffix + " under the water, in the lake-plane file's shore distance grid) get <course>/Lake/<name> bed.mat - their OPCD material with OPCD's bunker sand copied into the red channel, satellite and base blend off, tinted light beige - and red vertex paint within bandM of the shore, fading out over fadeM (islands and skerries are shore too). Painted mesh copies go to <course>/Lake/Bed/ (computed from the FBX colours every run). bandM/fadeM are kept in <course>/Lake/<name> bed.json for golfmap.course.refresh, which runs this after the water planes. Tune the colour with golfmap.lake.material which=bed.",
-            args = "bandM (default 25, or the kept value), fadeM (default 5, or the kept value), resetMaterial=false (make bed.mat again), dryRun=false, " + GolfMapSceneSave.Arg)]
+            args = "bandM (default 25, or the kept value), fadeM (default 20, or the kept value), resetMaterial=false (make bed.mat again), dryRun=false, " + GolfMapSceneSave.Arg)]
         static object BedCommand(BridgeArgs a)
         {
             var r = Bed(a.Bool("dryRun", false), a);
@@ -376,7 +376,7 @@ namespace GolfMap.Editor
             var settingsPath = folder + "/" + doc.name + " bed.json";
             var settings = File.Exists(settingsPath) ? JsonUtility.FromJson<BedSettings>(File.ReadAllText(settingsPath)) : new BedSettings();
             if (a != null && a.Has("bandM")) settings.bandM = Mathf.Max(0f, (float)a.Number("bandM", 25));
-            if (a != null && a.Has("fadeM")) settings.fadeM = Mathf.Max(0.01f, (float)a.Number("fadeM", 5));
+            if (a != null && a.Has("fadeM")) settings.fadeM = Mathf.Max(0.01f, (float)a.Number("fadeM", 20));
             var dist = Convert.FromBase64String(grid.data);
             if (dist.Length != grid.width * grid.height) throw new BridgeError(file + ": the shore grid's data is not width x height.");
             float gx1 = grid.x0 + grid.width * grid.cellM, gz1 = grid.z0 + grid.height * grid.cellM;
@@ -481,9 +481,12 @@ namespace GolfMap.Editor
             GolfMapBunkerChannels.CopyChannel(sand, BunkerPaintChannel.Black, m, BunkerPaintChannel.Red);
             ToggleProperty(m, "_RedUseSatelliteforBase", false);
             ToggleProperty(m, "_RedBaseBlend", false);
+            // Soft: OPCD's bunker blend makes a crisp line of the band's 20 m fade; at 0.5 the paint gradient shows.
+            foreach (var kv in new[] { new KeyValuePair<string, float>("_RedBlendStrength", 0.5f), new KeyValuePair<string, float>("_BlackBlendStrength", 0.5f), new KeyValuePair<string, float>("_RedBlendSharpness", 0.3f), new KeyValuePair<string, float>("_RedFalloff", 0.2f) })
+                if (m.HasProperty(kv.Key)) m.SetFloat(kv.Key, kv.Value);
             if (m.HasProperty("_RedDetailColorTint")) m.SetColor("_RedDetailColorTint", new Color(1.0f, 0.88f, 0.70f, 1f));
             if (m.HasProperty("_RedOverallColor")) m.SetColor("_RedOverallColor", Color.white);
-            if (m.HasProperty("_RedOverallColorStrength")) m.SetFloat("_RedOverallColorStrength", 1.5f);
+            if (m.HasProperty("_RedOverallColorStrength")) m.SetFloat("_RedOverallColorStrength", 1.35f);
             if (existing != null) { EditorUtility.CopySerialized(m, existing); UnityEngine.Object.DestroyImmediate(m); EditorUtility.SetDirty(existing); return existing; }
             AssetDatabase.CreateAsset(m, path);
             return m;

@@ -213,11 +213,37 @@ def shore_distance_grid(water, near_box: Polygon, frame: tuple[float, float], ce
     }
 
 
+def low_ground(dem_path: Path, level_m: float, water, sink_m: float = 0.0, skip_box: Polygon | None = None,
+               tolerance_m: float = 0.02):
+    """Ground that Unity draws under the water surface and that touches the lake: the plane must
+    cover it too, or it shows as a dry hole beside the water. Heights are the DEM's less `sink_m`
+    (the outer terrain is placed that far under its sidecar position so it never pokes through
+    the inner); `skip_box` is a square another terrain draws (the inner over the outer)."""
+    from rasterio.features import shapes
+    from scipy import ndimage
+    with rasterio.open(dem_path) as r:
+        z = r.read(1).astype(np.float64) - sink_m
+        transform, res = r.transform, abs(r.transform.a)
+    low = z < level_m + tolerance_m
+    if skip_box is not None:
+        low &= ~rasterio.features.rasterize([(mapping(skip_box), 1)], out_shape=z.shape, transform=transform,
+                                            fill=0, dtype="uint8").astype(bool)
+    wet = rasterio.features.rasterize([(mapping(water), 1)], out_shape=z.shape, transform=transform,
+                                      fill=0, all_touched=True, dtype="uint8").astype(bool)
+    lab, _ = ndimage.label(low | wet)
+    keep = np.unique(lab[wet])
+    region = np.isin(lab, keep[keep > 0]) & low & ~wet
+    if not region.any():
+        return None
+    polys = [shape(g) for g, v in shapes(region.astype(np.uint8), mask=region, transform=transform) if v == 1]
+    return unary_union(polys).simplify(res / 2).buffer(0)
+
+
 def build_lake_plane(shore: Polygon, hydro_lake: Polygon | None, inner: dict, outer: dict | None, level_m: float,
                      name: str = "Lake", radius_m: float = DEFAULT_RADIUS_M, under_bank_m: float = DEFAULT_UNDER_BANK_M,
                      near_margin_m: float = DEFAULT_NEAR_MARGIN_M, near_cell_m: float = DEFAULT_NEAR_CELL_M,
                      outer_cell_m: float = DEFAULT_OUTER_CELL_M, far_cell_m: float = DEFAULT_FAR_CELL_M,
-                     collider_cell_m: float = DEFAULT_COLLIDER_CELL_M, log=print) -> dict:
+                     collider_cell_m: float = DEFAULT_COLLIDER_CELL_M, low=None, log=print) -> dict:
     iw, isth, ie, inn = inner["square"]
     frame = (iw, isth)
     centre = ((iw + ie) / 2, (isth + inn) / 2)
@@ -226,7 +252,8 @@ def build_lake_plane(shore: Polygon, hydro_lake: Polygon | None, inner: dict, ou
     water = lake_outline(shore, hydro_lake, known, centre, radius_m)
     if water.is_empty:
         raise LakePlaneError("the lake does not reach within radiusM of the course")
-    under = water.buffer(under_bank_m, join_style=2).intersection(Point(centre).buffer(radius_m + far_cell_m, 256))
+    covered = water if low is None or low.is_empty else unary_union([water, low])
+    under = covered.buffer(under_bank_m, join_style=2).intersection(Point(centre).buffer(radius_m + far_cell_m, 256))
     surface_y = level_m - inner["minM"] + inner["y"]
 
     # Zone boxes on each other's grid lines: the near box on the outer grid, the outer square on

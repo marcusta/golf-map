@@ -100,3 +100,22 @@ def test_shore_distance_grid_measures_from_land_islands_included():
     assert at(65, 45) == 0                        # on the island
     assert 4 <= at(75.5, 45) <= 6                 # 5 m off the island
     assert at(50, 98.5) < 2.5                     # the north shore
+
+
+def test_low_ground_beside_the_lake_is_covered_an_inland_hollow_is_not(tmp_path):
+    import rasterio
+    from rasterio.transform import from_origin
+    z = np.full((40, 40), 90.0, np.float32)          # 1 m cells, E 0..40, N 0..40, ground 90 m
+    z[:, :10] = 87.0                                  # the lake, E 0..10
+    z[10:20, 10:16] = 88.5                            # a low bank beside it, under the 88.76 surface
+    z[30:34, 30:34] = 88.0                            # a hollow inland, not touching the lake
+    path = tmp_path / "dem.tif"
+    with rasterio.open(path, "w", driver="GTiff", width=40, height=40, count=1, dtype="float32",
+                       crs="EPSG:3006", transform=from_origin(0, 40, 1, 1)) as dst:
+        dst.write(z, 1)
+    low = lake_plane.low_ground(path, 88.76, box(0, 0, 10, 40))
+    assert low is not None
+    assert abs(low.area - 60) < 1                     # the bank, 6 x 10 m
+    assert not low.intersects(box(30, 6, 34, 10))     # the hollow (rows 30-34 = N 6-10)
+    sunk = lake_plane.low_ground(path, 88.76, box(0, 0, 10, 40), sink_m=1.5)   # 90 - 1.5 < 88.76: all of it
+    assert sunk.area > 1000
