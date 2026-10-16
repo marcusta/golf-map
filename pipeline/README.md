@@ -453,7 +453,17 @@ dig's row edits these attributes on
 its feature (preset, depth, bank/entry slope, bunker face) and re-runs that
 generator; deleting the row sets `dig: false` on the feature, so a re-run
 leaves it out. Hand-drawn plane/smooth edits change their own op and params
-there. On Vreta the digs change about 112 000 cells. The shorelines move
+there.
+
+The same generators run from the command line, so a pond's profile is set
+and dug in one step (`--dry-run` writes nothing and lists each dig as new,
+changed or the same as the stored one):
+
+    bun run terrain:generate -- "Ombergs Golfklubb" water-digs --feature hole_14_53 --preset deep_water --depth 1 --bank 32 --dry-run
+
+A run re-digs every feature of that kind on the course, as the button does.
+`--feature` takes the shape name, the feature number or its id. `--no-dig`
+leaves a feature out, and `--reset` drops its dig settings. On Vreta the digs change about 112 000 cells. The shorelines move
 at most 4 cm, every bunker ends at least 0.45 m below its surroundings, and
 11 of 21 ponds are too narrow for Natural Pond's 11° banks to reach 1 m.
 

@@ -371,6 +371,18 @@ const rectRing = (x0: number, y0: number, w: number, h: number) => ({ crs: 'EPSG
     { x: x0, y: y0 }, { x: x0 + w, y: y0 }, { x: x0 + w, y: y0 + h }, { x: x0, y: y0 + h },
 ] }] });
 
+test('water digs dry run: the digs it would write, nothing written', async () => {
+    const t = await setup(recordingRunner().runner);
+    await buildSite(t);
+    const pond = await t.courseFeatures.create({ courseId: TEST_COURSE_ID, type: 'water', geometry: rectRing(530000, 6487000, 40, 30), attributes: { digPreset: 'deep_water', digDepthM: 1 } });
+    const result = await t.svc.generate(TEST_COURSE_ID, 'water-digs', { dryRun: true });
+    expect(result.imported).toBe(0);
+    expect(result.report).toEqual(['dry run, nothing written', '1 pond(s) to dig below their water level (Deep Water 1)']);
+    expect(result.planned?.map(p => [p.originRef, p.params.depthM, p.params.bankSlopeDeg])).toEqual([[`feature:${pond.id}`, 1, WATER_DIG_PRESETS.deep_water.bankSlopeDeg]]);
+    expect(await t.terrainEdits.listBySite(SITE_ID)).toEqual([]);
+    await expect(t.svc.generate(TEST_COURSE_ID, 'road-grades', { dryRun: true })).rejects.toThrow(/dig generators/);
+});
+
 test('water digs: one level dig per pond with its preset, outline as drawn, creeks and dig: false left alone', async () => {
     const { calls, runner } = recordingRunner();
     const t = await setup(runner);

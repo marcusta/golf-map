@@ -23,6 +23,7 @@
         "gspro:bisect": "bun scripts/gspro-bisect.ts",
         "zones": "bun scripts/vegetation-zones.ts",
         "grass:zones": "bun scripts/grass-zones.ts",
+        "terrain:generate": "bun scripts/terrain-generate.ts",
         "shaping": "bun scripts/shaping-apply.ts",
         "arborist": "bun scripts/arborist.ts",
         "opcd:build": "bun scripts/opcd-build.ts",

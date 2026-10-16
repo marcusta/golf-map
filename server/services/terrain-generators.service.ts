@@ -111,6 +111,13 @@ export interface TerrainGenerateResult {
     /** Features the import could not read (never fatal). */
     skipped: string[];
     report: string[];
+    /** A dry run's digs, as they would be written (nothing is). */
+    planned?: TerrainEditInput[];
+}
+
+/** `generate` options. `dryRun` (the dig generators only) works the digs out and writes nothing. */
+export interface TerrainGenerateOptions {
+    dryRun?: boolean;
 }
 
 export interface TerrainGeneratorsDeps {
@@ -246,13 +253,16 @@ export class TerrainGeneratorsService {
     }
 
     /** Run one generator and import its edits under its origin. */
-    async generate(courseId: string, kind: TerrainGeneratorKind): Promise<TerrainGenerateResult> {
+    async generate(courseId: string, kind: TerrainGeneratorKind, opts: TerrainGenerateOptions = {}): Promise<TerrainGenerateResult> {
+        if (opts.dryRun && kind !== 'water-digs' && kind !== 'bunker-digs' && kind !== 'creek-digs') {
+            throw new ConflictError(`A dry run is for the dig generators; '${kind}' runs the pipeline`);
+        }
         switch (kind) {
             case 'building-pads': return this.generateBuildingPads(courseId);
             case 'road-grades': return this.generateRoadGrades(courseId);
-            case 'water-digs': return this.generateDigs(courseId, 'water-digs');
-            case 'bunker-digs': return this.generateDigs(courseId, 'bunker-digs');
-            case 'creek-digs': return this.generateCreekDigs(courseId);
+            case 'water-digs': return this.generateDigs(courseId, 'water-digs', opts);
+            case 'bunker-digs': return this.generateDigs(courseId, 'bunker-digs', opts);
+            case 'creek-digs': return this.generateCreekDigs(courseId, opts);
             default: throw new ConflictError(`Unknown terrain generator '${String(kind)}'`);
         }
     }
@@ -266,7 +276,7 @@ export class TerrainGeneratorsService {
      * the nearest green). Creeks are not dug here: their surface falls
      * downstream.
      */
-    private async generateDigs(courseId: string, kind: 'water-digs' | 'bunker-digs'): Promise<TerrainGenerateResult> {
+    private async generateDigs(courseId: string, kind: 'water-digs' | 'bunker-digs', opts: TerrainGenerateOptions): Promise<TerrainGenerateResult> {
         const course = await this.courses.get(courseId);
         const siteId = this.builtSiteId(course);
         const features = await this.courseFeatures.listByCourse(courseId);
@@ -315,15 +325,17 @@ export class TerrainGeneratorsService {
             }
             inputs.push({ op: 'dig', params, rings, originRef: FEATURE_ORIGIN_REF + f.id });
         }
-        const rows = await this.terrainEdits.replaceByOrigin(siteId, kind, inputs, { courseId });
+        const count = opts.dryRun ? inputs.length : (await this.terrainEdits.replaceByOrigin(siteId, kind, inputs, { courseId })).length;
+        const verb = opts.dryRun ? 'to dig' : 'dug';
         if (kind === 'water-digs') {
-            report.push(`${rows.length} pond(s) dug below their water level` + (presets.size ? ` (${[...presets].map(([l, n]) => `${l} ${n}`).join(', ')})` : ''));
+            report.push(`${count} pond(s) ${verb} below their water level` + (presets.size ? ` (${[...presets].map(([l, n]) => `${l} ${n}`).join(', ')})` : ''));
         } else {
-            report.push(`${rows.length} bunker(s) dug below the ground around them, face towards the green`
+            report.push(`${count} bunker(s) ${verb} below the ground around them, face towards the green`
                 + (noGreen ? `; ${noGreen} with no green to face (even banks)` : ''));
         }
         if (optedOut) report.push(`${optedOut} ${type} feature(s) marked dig: false left alone`);
-        return { kind, imported: rows.length, skipped: [], report };
+        if (opts.dryRun) return { kind, imported: 0, skipped: [], report: ['dry run, nothing written', ...report], planned: inputs };
+        return { kind, imported: count, skipped: [], report };
     }
 
     /**
@@ -335,7 +347,7 @@ export class TerrainGeneratorsService {
      * line down it. `digPreset` picks the bed profile, `digDepthM` /
      * `digBankSlopeDeg` override it, `dig: false` skips the creek.
      */
-    private async generateCreekDigs(courseId: string): Promise<TerrainGenerateResult> {
+    private async generateCreekDigs(courseId: string, opts: TerrainGenerateOptions): Promise<TerrainGenerateResult> {
         const course = await this.courses.get(courseId);
         const siteId = this.builtSiteId(course);
         const creeks = (await this.courseFeatures.listByCourse(courseId)).filter(f => f.type === 'water_creek');
@@ -364,12 +376,13 @@ export class TerrainGeneratorsService {
             }
             inputs.push({ op: 'dig', params, rings, originRef: FEATURE_ORIGIN_REF + f.id });
         }
-        const rows = await this.terrainEdits.replaceByOrigin(siteId, 'creek-digs', inputs, { courseId });
-        const report = [`${rows.length} creek bed(s) dug below their falling water surface`
+        const count = opts.dryRun ? inputs.length : (await this.terrainEdits.replaceByOrigin(siteId, 'creek-digs', inputs, { courseId })).length;
+        const report = [`${count} creek bed(s) ${opts.dryRun ? 'to dig' : 'dug'} below their falling water surface`
             + (presets.size ? ` (${[...presets].map(([l, n]) => `${l} ${n}`).join(', ')})` : '')
-            + (rows.length ? `; ${lines} along a drawn centerline, ${rows.length - lines} along the line found down their polygon` : '')];
+            + (count ? `; ${lines} along a drawn centerline, ${count - lines} along the line found down their polygon` : '')];
         if (optedOut) report.push(`${optedOut} creek(s) marked dig: false left alone`);
-        return { kind: 'creek-digs', imported: rows.length, skipped: [], report };
+        if (opts.dryRun) return { kind: 'creek-digs', imported: 0, skipped: [], report: ['dry run, nothing written', ...report], planned: inputs };
+        return { kind: 'creek-digs', imported: count, skipped: [], report };
     }
 
     /**
