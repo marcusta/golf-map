@@ -465,6 +465,17 @@ A run re-digs every feature of that kind on the course, as the button does.
 `--feature` takes the shape name, the feature number or its id. `--no-dig`
 leaves a feature out, and `--reset` drops its dig settings.
 
+**Far shore** (`golfpipe/horizon.py`): a big lake's planes end at `radiusM` (4 km),
+so past them GSPro shows bare sky. `golfpipe horizon` puts a low hazy ridge 3.9 km
+out wherever the far plane's water reaches that edge (hills 30-70 m, about
+0.4-0.9 deg over the horizon from the course; the foot under the water, the ends
+sinking into it), with a haze texture. Unity's `golfmap.horizon.build` draws it
+unlit and without depth (`GolfMap/FarShore`), so OPCD's gradient fog does not
+fog it into the sky:
+
+    python -m golfpipe horizon --lake-plane <prefix>-inner-lake-plane.json --out <prefix>-inner-horizon.json
+    bun unity/mcp/call.ts golfmap.horizon.build '{}'
+
 **Pond edges** (`golfpipe/water_edge.py`, server `PondEdgeService`): neither
 the lidar nor a drawn or Hydrografi outline is the water's edge. The lidar's
 0.5 m grid smears a steep bank a metre or two out over the water; the outline

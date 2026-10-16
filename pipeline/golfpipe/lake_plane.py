@@ -323,6 +323,7 @@ def build_lake_plane(shore: Polygon, hydro_lake: Polygon | None, inner: dict, ou
         "surfaceY": round(surface_y, 3),
         "frame": {"west3006": iw, "south3006": isth, "minM": inner["minM"], "unityY": inner["y"]},
         "radiusM": radius_m,
+        "centre": [round(centre[0] - frame[0], 2), round(centre[1] - frame[1], 2)],   # what radiusM is measured from
         "areaKm2": round(water.area / 1e6, 3),
         "meshes": meshes,
         "collider": _mesh_doc(f"{name}_WaterPlane_Collider", "collider", collider_cell_m, cv, ct) if cc else None,

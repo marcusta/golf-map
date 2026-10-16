@@ -286,6 +286,15 @@ def build_parser() -> argparse.ArgumentParser:
     )
     p.add_argument("--out", required=True, help="output GeoJSON path (importable by the web GeoJSON import wizard)")
 
+    p = sub.add_parser("horizon", help="A big lake's far shore: a low hazy ridge where its water reaches the horizon (golfmap-horizon-v1 + haze texture, for golfmap.horizon.build)")
+    p.add_argument("--lake-plane", dest="lake_plane", required=True, help="<prefix>-inner-lake-plane.json (golfpipe lake-plane)")
+    p.add_argument("--out", required=True, help="<prefix>-horizon.json (the texture goes next to it as .png)")
+    p.add_argument("--distance", type=float, default=3900.0, help="the ridge's foot from the lake's centre (m; the planes reach 4000)")
+    p.add_argument("--height-min", dest="height_min", type=float, default=30.0, help="lowest crest over the water (m)")
+    p.add_argument("--height-max", dest="height_max", type=float, default=70.0, help="highest crest over the water (m)")
+    p.add_argument("--seed", type=int, default=7)
+    p.add_argument("--centre", help="x,z: the lake's centre in Unity metres, for a lake-plane file without one")
+
     p = sub.add_parser("lake-plane", help="A big lake's water surface (the shore edit's outline, Hydrografi beyond the squares) as Unity plane meshes for golfmap.lake.build (golfmap-lake-plane-v1)")
     p.add_argument("--shore", required=True, help="the shore-edits output (D-TE5, WGS84; its levelM is the level) or its --out-3006 file")
     p.add_argument("--hydro", help="fetch-hydro GeoJSON reaching radiusM round the course: the lake beyond the outer square")
@@ -873,6 +882,11 @@ def main(argv: list[str] | None = None) -> int:
                 simplify_tolerance_m=args.simplify_tolerance,
                 flatness_spread_m=args.flatness_spread,
             )
+
+        elif args.command == "horizon":
+            from golfpipe.horizon import cmd_horizon
+            cmd_horizon(Path(args.lake_plane), Path(args.out), args.distance, (args.height_min, args.height_max), args.seed,
+                        tuple(float(v) for v in args.centre.split(",")) if args.centre else None)
 
         elif args.command == "lake-plane":
             commands.cmd_lake_plane(
