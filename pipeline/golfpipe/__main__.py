@@ -16,6 +16,7 @@ Commands:
   dem-analysis      Publishable analysis DEM: 0.5 m greens + 1 m background mosaic
   detect-trees      Lidar nDSM tree-canopy polygons -> typed GeoJSON (trees)
   detect-water      Lidar class-9 presence polygons -> typed GeoJSON (water)
+  lake-plane        A big lake's water surface out to the horizon -> Unity plane meshes (golfmap-lake-plane-v1)
   shore-edits       Hydro lake + both terrains' lidar ground hits -> the true shoreline as one 'shore' terrain edit (D-TE5)
   clean-ortho       LaMa-inpaint canopy+shadows out of the playable corridor (+ --woodland: forest floor) -> .clean.tif
   cleaned-init      Ortho GeoTIFF -> the site's cleaned photo: one square 8192 px RGB GeoTIFF on the inner terrain square
@@ -54,6 +55,7 @@ from golfpipe import detect_trees
 from golfpipe import detect_water
 from golfpipe import grid_dem as grid_dem_mod
 from golfpipe import hydro
+from golfpipe import lake_plane
 from golfpipe import sources
 from golfpipe import trees_stems
 from golfpipe import osm
@@ -283,6 +285,20 @@ def build_parser() -> argparse.ArgumentParser:
         ),
     )
     p.add_argument("--out", required=True, help="output GeoJSON path (importable by the web GeoJSON import wizard)")
+
+    p = sub.add_parser("lake-plane", help="A big lake's water surface (the shore edit's outline, Hydrografi beyond the squares) as Unity plane meshes for golfmap.lake.build (golfmap-lake-plane-v1)")
+    p.add_argument("--shore", required=True, help="the shore-edits output (D-TE5, WGS84; its levelM is the level) or its --out-3006 file")
+    p.add_argument("--hydro", help="fetch-hydro GeoJSON reaching radiusM round the course: the lake beyond the outer square")
+    p.add_argument("--inner-sidecar", dest="inner_sidecar", required=True, help="inner heightmap sidecar (<prefix>-inner-dem-<side>m.tif.json): the Unity frame")
+    p.add_argument("--outer-sidecar", dest="outer_sidecar", help="outer heightmap sidecar: where the shore outline stops and Hydrografi takes over")
+    p.add_argument("--level", type=float, help="water level in metres (default: the shore edit's levelM)")
+    p.add_argument("--name", default="Lake", help="object name prefix in Unity (default Lake): <name>_WaterPlane[_Outer|_Far|_Collider]")
+    p.add_argument("--radius-m", dest="radius_m", type=float, default=lake_plane.DEFAULT_RADIUS_M, help=f"how far from the inner square's centre the water goes (default {lake_plane.DEFAULT_RADIUS_M:g}: inside GSPro's 5 km draw distance)")
+    p.add_argument("--under-bank-m", dest="under_bank_m", type=float, default=lake_plane.DEFAULT_UNDER_BANK_M, help=f"how far the plane runs in under the banks (default {lake_plane.DEFAULT_UNDER_BANK_M:g})")
+    p.add_argument("--near-cell-m", dest="near_cell_m", type=float, default=lake_plane.DEFAULT_NEAR_CELL_M, help=f"cell size round the course (default {lake_plane.DEFAULT_NEAR_CELL_M:g}; Gerstner waves need it fine)")
+    p.add_argument("--outer-cell-m", dest="outer_cell_m", type=float, default=lake_plane.DEFAULT_OUTER_CELL_M)
+    p.add_argument("--far-cell-m", dest="far_cell_m", type=float, default=lake_plane.DEFAULT_FAR_CELL_M)
+    p.add_argument("--out", required=True, help="output JSON, by convention <export folder>/<prefix>-inner-lake-plane.json (where golfmap.lake.build looks)")
 
     p = sub.add_parser("shore-edits", help="A big lake's true shoreline (hydro lake corrected by each terrain's lidar ground hits) -> ONE 'shore' terrain edit (D-TE5 edits GeoJSON, WGS84)")
     p.add_argument("--hydro", required=True, help="fetch-hydro GeoJSON (EPSG:3006) for the outer square plus a margin (>= 300 m of open lake past it)")
@@ -857,6 +873,14 @@ def main(argv: list[str] | None = None) -> int:
                 flatness_spread_m=args.flatness_spread,
             )
 
+        elif args.command == "lake-plane":
+            commands.cmd_lake_plane(
+                Path(args.shore), Path(args.hydro) if args.hydro else None, Path(args.inner_sidecar),
+                Path(args.outer_sidecar) if args.outer_sidecar else None, Path(args.out),
+                level=args.level, name=args.name, radius_m=args.radius_m, under_bank_m=args.under_bank_m,
+                near_cell_m=args.near_cell_m, outer_cell_m=args.outer_cell_m, far_cell_m=args.far_cell_m,
+            )
+
         elif args.command == "shore-edits":
             hydro_path = Path(args.hydro)
             commands.cmd_shore_edits(
@@ -1093,6 +1117,9 @@ def main(argv: list[str] | None = None) -> int:
         print(f"error: {exc}", file=sys.stderr)
         return 1
     except hydro.HydroError as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return 1
+    except lake_plane.LakePlaneError as exc:
         print(f"error: {exc}", file=sys.stderr)
         return 1
     except shore.ShoreError as exc:

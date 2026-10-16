@@ -2400,3 +2400,44 @@ def cmd_canopy(
         print(f"Backed up manifest to {backup}")
     print(f"Wrote {manifest_path}")
     return counts
+
+
+def cmd_lake_plane(
+    shore_path: Path,
+    hydro_path: Path | None,
+    inner_sidecar: Path,
+    outer_sidecar: Path | None,
+    out: Path,
+    *,
+    level: float | None = None,
+    name: str = "Lake",
+    radius_m: float = 4000.0,
+    under_bank_m: float = 4.0,
+    near_cell_m: float = 2.0,
+    outer_cell_m: float = 10.0,
+    far_cell_m: float = 25.0,
+) -> Path:
+    """A big lake's water surface as Unity plane meshes (golfpipe/lake_plane.py): the
+    shore edit's outline inside the squares, Hydrografi's lake beyond, out to radius_m."""
+    import json as _json
+    import time as _time
+    from golfpipe import lake_plane
+
+    started = _time.perf_counter()
+    shore_poly, edit_level = lake_plane.read_shore(shore_path)
+    level_m = level if level is not None else edit_level
+    if level_m is None:
+        raise lake_plane.LakePlaneError(f"{shore_path} carries no levelM: pass --level")
+    hydro_lake = lake_plane.read_hydro_lake(hydro_path, shore_poly) if hydro_path else None
+    inner = lake_plane.read_square(inner_sidecar)
+    outer = lake_plane.read_square(outer_sidecar) if outer_sidecar else None
+    print(f"Lake plane '{name}' at {level_m:.3f} m, out to {radius_m:g} m")
+    doc = lake_plane.build_lake_plane(
+        shore_poly, hydro_lake, inner, outer, level_m, name=name, radius_m=radius_m, under_bank_m=under_bank_m,
+        near_cell_m=near_cell_m, outer_cell_m=outer_cell_m, far_cell_m=far_cell_m)
+    out = Path(out)
+    out.parent.mkdir(parents=True, exist_ok=True)
+    out.write_text(_json.dumps(doc, separators=(",", ":")), encoding="utf-8")
+    print(f"  water {doc['areaKm2']} km2, surface y {doc['surfaceY']}, probe at {doc['probe']}")
+    print(f"Wrote {out} ({out.stat().st_size / 1e6:.1f} MB) in {_time.perf_counter() - started:.1f} s")
+    return out

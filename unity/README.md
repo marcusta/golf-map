@@ -1291,6 +1291,32 @@ build succeeded, ["Saving what a command changed"](#saving-what-a-command-change
 - Water planes are named `Spline_*` but are not ground: terrain conform, surfaces export, the creek fit, vertex
   paint and the VSP tree planter leave them out (`GolfMapWaterplanes.IsWaterPlane`).
 
+## A big lake (Lux Water)
+
+A lake that runs past both terrain squares to the horizon (Vättern at Omberg) does not get its
+plane from its OPCD lake mesh: that mesh ends out in the dug bed at the inner square's edge, so
+`golfmap.waterplanes.build`'s level (the lowest edge vertex) lands metres under the water. The
+pipeline cuts it from the lake's outline instead (`golfpipe lake-plane`, pipeline/AGENTS.md) into
+`<export folder>/<prefix>-inner-lake-plane.json`, and `GolfMapLake.cs` builds it:
+
+- `golfmap.lake.build [file] [parent=Waterplanes] [resetMaterials] [dryRun] [save]`: `<name>_WaterPlane`
+  (near, Lux Gerstner waves), `_Outer`, `_Far` (no vertex waves), a flat `_Collider` with
+  `GSPwater`, a realtime reflection probe (on awake, far clip 6 km so the backdrop is in it) that
+  all three anchor on. Meshes in `<course>/Lake/`; materials `<course>/Lake/<name> near.mat` and
+  `far.mat` are made once from Lux's `water cristal clear gerstner` demo and then kept. The names
+  carry `WaterPlane`, so waterplanes.build leaves the lake as covered; the planes it had built
+  there before (more than 1 m under the surface) are switched off.
+- `golfmap.lake.material {which, floats, colors, vectors, on, off}` tunes those materials from the
+  bridge and recomputes Lux's derived Gerstner values (the inspector does the same).
+
+What Omberg needed (2026-10-16): Lux's crest foam (`_FoamCaps`) whitens all the water once the
+Gerstner keyword `_GERSTNERDISPLACEMENT` is on (the demo has it off), so it is 0; caustics with
+`_CausticMode` 1 ("normals from GBuffer") draw a white cell pattern under the forward camera,
+so they use mode 0 at scale 0.5 on the near material and are off on the far one; the far
+material reads deep from 2 m (`_DepthAtten` [0, 2, 1]) so water over the outer terrain's 8 m bed
+and over no ground at all look alike. Judge Lux in screenshots with `depth: true` (and
+`far: 5000`): without a depth texture its depth colour and shore foam go wrong.
+
 ## Not built yet
 
 - Historical note for the original tools: no Unity or C# compiler was installed on the dev

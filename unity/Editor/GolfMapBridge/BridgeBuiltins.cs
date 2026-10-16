@@ -258,7 +258,7 @@ namespace GolfMap.Bridge
         }
 
         [BridgeCommand("screenshot", "Render the Scene view camera to a PNG in the project's Temp/GolfMapBridge folder. Optionally move the view first: from/at (world points) or pivot/rotation/size; it stays there unless restore=true puts it back after the capture. mode=view (default) reads the Scene view's own render target (what it shows, VSP included, window size); mode=camera renders its camera offscreen at width x height. Neither reads screen pixels, so both work while Unity is covered or unfocused.",
-            args = "width=1280, height=720, from=[x,y,z], at=[x,y,z], pivot=[x,y,z], rotation=[x,y,z] (euler), size, eye=<m above ground; with from/at>, hide=[object paths, renderers off for this capture], mode=view|camera, warmup=12 (editor frames pumped first), restore=false (put the Scene view back to its pose before the call)")]
+            args = "width=1280, height=720, from=[x,y,z], at=[x,y,z], pivot=[x,y,z], rotation=[x,y,z] (euler), size, eye=<m above ground; with from/at>, hide=[object paths, renderers off for this capture], mode=view|camera, depth=false (the camera renders a depth texture, as a game camera with post-processing does: water shaders such as Lux read it for depth colour and shore foam), far=<m> (far clip, mode=camera; GSPro draws 5000 m by default), warmup=12 (editor frames pumped first), restore=false (put the Scene view back to its pose before the call)")]
         static IEnumerator Screenshot(BridgeArgs a)
         {
             var sv = SceneView.lastActiveSceneView;
@@ -298,6 +298,9 @@ namespace GolfMap.Bridge
                 var euler = a.Vector("rotation");
                 sv.LookAtDirect(a.Vector("pivot") ?? sv.pivot, euler.HasValue ? Quaternion.Euler(euler.Value) : sv.rotation, (float)a.Number("size", sv.size));
             }
+            // depth=true: the camera renders a depth texture for this capture, as GSPro's does.
+            var oldDepthMode = sv.camera.depthTextureMode;
+            if (a.Bool("depth", false)) sv.camera.depthTextureMode |= DepthTextureMode.Depth;
             // Let the Scene view and [ExecuteInEditMode] renderers catch up at the new pose.
             int warmup = Mathf.Clamp(a.Int("warmup", 12), 1, 600);
             foreach (var step in Nudge(sv, warmup)) yield return step;
@@ -315,11 +318,15 @@ namespace GolfMap.Bridge
             try
             {
                 if (hidden.Count > 0) for (int i = 0; i < 3; i++) { sv.Repaint(); yield return null; }
-                shot = mode == "view" ? ReadSceneTarget(sv) : RenderCamera(sv.camera, width, height);
+                var oldFar = sv.camera.farClipPlane;
+                if (mode == "camera" && a.Has("far")) sv.camera.farClipPlane = (float)a.Number("far", oldFar);
+                try { shot = mode == "view" ? ReadSceneTarget(sv) : RenderCamera(sv.camera, width, height); }
+                finally { sv.camera.farClipPlane = oldFar; }
             }
             finally
             {
                 foreach (var r in hidden) if (r) r.enabled = true;
+                sv.camera.depthTextureMode = oldDepthMode;
             }
             // the pose the image was taken at (the result reports it, restored or not)
             var shotPivot = sv.pivot;
