@@ -62,7 +62,7 @@ import {
     GSPRO_TARGETS, GSPRO_TARGET_IDS, gsproTarget, type GsproTargetId,
 } from '../../shared/gspro-targets';
 import type { CoursesService } from './courses.service';
-import type { MapBuildService } from './map-build.service';
+import { DIG_WATER_LEVELS_SOURCE, type MapBuildService } from './map-build.service';
 import {
     buildingsExportFileName, courseSlug, creeksExportFileName, demExportFileName, demSidecarName, ensureDir,
     failure, meshTextureFileName, reportLines, savedLine, statOrNull, treesExportFileName, venvPython,
@@ -823,6 +823,8 @@ export class GsproSyncService {
             before[kind] = await this.exports.demSidecarMinM(ctx.courseId, kind);
             report.push(...prefixed(kind, (await this.exports.exportDem(ctx.courseId, kind, { force: ctx.force })).report));
         }
+        // The water-edge ponds' water levels, in the new heightmap's frame (golfmap.waterplanes.build reads them).
+        report.push(...(await this.exports.exportWaterLevels(ctx.courseId)).report);
         rec.phases.end(id('dem'), 'done', 'inner and outer heightmaps exported');
 
         if (!unity.editor) {
@@ -1353,10 +1355,18 @@ export class GsproSyncService {
     private async innerStale(ctx: SyncContext): Promise<string | null> {
         if (!ctx.siteId) return null;
         try {
-            return await this.exports.innerDemStale(ctx.courseId);
+            const stale = await this.exports.innerDemStale(ctx.courseId);
+            if (stale) return stale;
         } catch {
             return null;   // no DEM persisted at all: `blocked` already says to build the map
         }
+        // A pond dug with its outline at the water's edge needs its water level, which apply-dem-edits writes
+        // next to the edited DEM: an edited DEM from before that is applied again.
+        const waterEdge = (await this.terrainEdits.listDemEdits(ctx.siteId)).some(e => e.op === 'dig' && e.params.bankAboveDeg !== undefined);
+        if (waterEdge && !await Bun.file(path.join(this.dataDir, 'sources', ctx.siteId, DIG_WATER_LEVELS_SOURCE)).exists()) {
+            return "the water-edge ponds' water levels are not worked out yet";
+        }
+        return null;
     }
 
     /** One target's entry in `<export dir>/gspro-sync.json`, the rest of the file kept. */

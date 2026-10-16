@@ -626,6 +626,16 @@ def test_dig_level_with_bank_above_makes_the_outline_the_waters_edge():
     assert out[40, 40] == pytest.approx(9.0, abs=0.01)
 
 
+def test_dig_bank_above_reports_its_water_level_under_its_origin_ref():
+    dem = pond_dem()
+    edit = edit_3006("dig", rect_3006(20, 60, 20, 60), feather_m=0.0, depth_m=1.0, bank_slope_deg=30.0,
+                     reference="level", rim_m=2.0, bank_above_deg=45.0, origin_ref="feature:p1")
+    plain = edit_3006("dig", rect_3006(20, 60, 20, 60), feather_m=0.0, depth_m=1.0, reference="level")
+    levels: dict = {}
+    apply_edits(dem, TRANSFORM, NODATA, [edit, plain], log=lambda *_: None, water_levels=levels)
+    assert levels == {"feature:p1": pytest.approx(10.0)}   # the plain dig keeps OPCD's rim rule
+
+
 def test_dig_bank_above_is_for_a_level_dig():
     with pytest.raises(ValueError, match="bankAboveDeg"):
         dem_edit._dig_params({"depthM": 1.0, "reference": "plane", "bankAboveDeg": 45})

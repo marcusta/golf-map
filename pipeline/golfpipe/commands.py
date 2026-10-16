@@ -4,6 +4,7 @@ parsing (__main__.py) so they're easy to unit test directly.
 
 from __future__ import annotations
 
+import json
 import shutil
 import sys
 import tempfile
@@ -875,6 +876,11 @@ def cmd_dem_analysis(
     return out_path
 
 
+def water_levels_path(dem_path: Path) -> Path:
+    """`dem-edited.tif` -> `dem-edited.water-levels.json`: the levels apply-dem-edits found."""
+    return dem_path.with_suffix(".water-levels.json")
+
+
 def cmd_apply_dem_edits(input_path: Path, edits_paths: Path | list[Path], out_path: Path) -> Path:
     """Replays vector terrain edits (plane-fit flatten / circular-median
     smooth, both feathered — see golfpipe/dem_edit.py) onto a DEM GeoTIFF.
@@ -905,6 +911,8 @@ def cmd_apply_dem_edits(input_path: Path, edits_paths: Path | list[Path], out_pa
     out_path.parent.mkdir(parents=True, exist_ok=True)
 
     if not edits:
+        if water_levels_path(out_path).exists():
+            water_levels_path(out_path).unlink()
         shutil.copyfile(input_path, out_path)
         print(f"No edits in {', '.join(str(p) for p in paths)} — wrote a byte-identical copy of the input")
         print(f"Wrote {out_path}")
@@ -914,7 +922,17 @@ def cmd_apply_dem_edits(input_path: Path, edits_paths: Path | list[Path], out_pa
         dem = src.read(1)
         profile = src.profile.copy()
         reprojected = dem_edit_mod.reproject_edits(edits, src.crs)
-        edited = dem_edit_mod.apply_edits(dem, src.transform, src.nodata, reprojected)
+        water_levels: dict = {}
+        edited = dem_edit_mod.apply_edits(dem, src.transform, src.nodata, reprojected, water_levels=water_levels)
+    # The water levels of the ponds whose outline is the water's edge, next to the DEM (the GSPro export puts
+    # each one's water plane there: <prefix>-inner-water-levels.json).
+    levels_path = water_levels_path(out_path)
+    if water_levels:
+        levels_path.write_text(json.dumps({"format": "golfmap-dig-levels-v1", "levels": water_levels}, indent=1) + "\n",
+                               encoding="utf-8")
+        print(f"Water levels of {len(water_levels)} pond(s) with their outline at the water's edge -> {levels_path}")
+    elif levels_path.exists():
+        levels_path.unlink()
 
     # Same profile-copy hygiene as _fill_interior_nodata: drop source
     # tiling/block-size options — they're only valid together with TILED=YES,

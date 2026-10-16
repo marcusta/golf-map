@@ -1,9 +1,0 @@
-{
- "format": "golfmap-water-levels-v1",
- "source": "hole 14 pond: its dig's water level (dem_edit level = 25th percentile of the lidar within 2 m of the outline) + 0.05 m; the dig has bankAboveDeg, so the outline is the water's edge and OPCD's lake mesh rim sits on the dug bank below it",
- "planes": {
-  "Spline_hole_14_53_WaterPlane": {
-   "surfaceM": 22.719
-  }
- }
-}

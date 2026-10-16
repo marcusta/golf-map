@@ -2474,3 +2474,31 @@ test('a skipped heightmap render still goes into Unity: the push reads the files
         ours.server.stop(true);
     }
 });
+
+test("exportWaterLevels: a water-edge pond's dig level + 5 cm in the heightmap's frame, keyed by its plane; none -> no file", async () => {
+    const exportDir = await mkdtemp(path.join(os.tmpdir(), 'gspro-out-'));
+    const t = await setup(async () => ({ code: 0, stdout: '', stderr: '' }));
+    const sources = await buildSite(t, ['dem.tif']);
+    await t.svc.setDir(TEST_COURSE_ID, exportDir);
+    await writeFile(path.join(exportDir, 'linkan-inner-dem-2050m.tif.json'), JSON.stringify({ minM: 80.762 }));
+    const features = new CourseFeaturesService(t.db);
+    const pond = await features.create({
+        courseId: TEST_COURSE_ID, holeId: null, type: 'water',
+        geometry: { crs: 'EPSG:3006', rings: [{ points: [{ x: 529400, y: 6487400 }, { x: 529420, y: 6487400 }, { x: 529420, y: 6487420 }] }] },
+    });
+    const file = path.join(exportDir, 'linkan-inner-water-levels.json');
+
+    expect((await t.svc.exportWaterLevels(TEST_COURSE_ID)).file).toBeNull();
+    await writeFile(path.join(sources, 'dem-edited.water-levels.json'), JSON.stringify({
+        format: 'golfmap-dig-levels-v1', levels: { [`feature:${pond.id}`]: 103.431, 'feature:elsewhere': 90, 'edit:3': 50 },
+    }));
+    const res = await t.svc.exportWaterLevels(TEST_COURSE_ID);
+    expect(res.file).toBe(file);
+    const doc = JSON.parse(await readFile(file, 'utf8'));
+    expect(doc.format).toBe('golfmap-water-levels-v1');
+    expect(doc.planes).toEqual({ [`Spline_others_${pond.no!.toString(16)}_WaterPlane`]: { surfaceM: 22.719, levelM: 103.431, featureId: pond.id } });
+
+    await rm(path.join(sources, 'dem-edited.water-levels.json'));
+    await t.svc.exportWaterLevels(TEST_COURSE_ID);
+    expect(existsSync(file)).toBe(false);
+});

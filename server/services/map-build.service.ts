@@ -458,8 +458,10 @@ export class MapBuildService {
     ): Promise<string | null | false> {
         const edits = await this.terrainEdits.listDemEdits(siteId);
         const persisted = path.join(this.sourcesDir(siteId), 'dem-edited.tif');
+        const persistedLevels = path.join(this.sourcesDir(siteId), DIG_WATER_LEVELS_SOURCE);
         if (edits.length === 0) {
             await rm(persisted, { force: true }).catch(() => {});
+            await rm(persistedLevels, { force: true }).catch(() => {});
             return null;
         }
         const editsPath = path.join(work, 'terrain-edits.geojson');
@@ -470,6 +472,10 @@ export class MapBuildService {
         }
         await mkdir(this.sourcesDir(siteId), { recursive: true });
         await copyFile(demEdited, persisted);
+        // The water levels of the ponds whose outline is the water's edge (bankAboveDeg), when there are any.
+        const levels = path.join(work, DIG_WATER_LEVELS_SOURCE);
+        if (await Bun.file(levels).exists()) await copyFile(levels, persistedLevels);
+        else await rm(persistedLevels, { force: true }).catch(() => {});
         return demEdited;
     }
 
@@ -1015,6 +1021,9 @@ function orthoSourceName(collection: string): string {
  * pipeline's defensive re-sort agrees. GeoJSON linear rings must be closed —
  * the tool stores open rings, so the first point is repeated at the end.
  */
+/** What apply-dem-edits writes next to `dem-edited.tif` (golfpipe commands.water_levels_path): each water-edge pond's level by originRef. */
+export const DIG_WATER_LEVELS_SOURCE = 'dem-edited.water-levels.json';
+
 export function terrainEditsGeojson(edits: TerrainEdit[], opts: { sculptDir?: string } = {}): {
     type: 'FeatureCollection';
     features: object[];
@@ -1057,6 +1066,8 @@ export function terrainEditsGeojson(edits: TerrainEdit[], opts: { sculptDir?: st
                 // delta (a Unity sculpt): the GeoTIFF it adds, as a path the pipeline can open.
                 ...(edit.op === 'delta' && edit.params.raster ? { raster: path.join(opts.sculptDir ?? '', edit.params.raster) } : {}),
                 createdAt: edit.createdAt,
+                // A generated dig's feature (`feature:<id>`): apply-dem-edits reports a pond's water level under it.
+                ...(edit.originRef ? { originRef: edit.originRef } : {}),
             },
         })),
     };

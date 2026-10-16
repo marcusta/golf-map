@@ -463,7 +463,15 @@ changed or the same as the stored one):
 
 A run re-digs every feature of that kind on the course, as the button does.
 `--feature` takes the shape name, the feature number or its id. `--no-dig`
-leaves a feature out, and `--reset` drops its dig settings. On Vreta the digs change about 112 000 cells. The shorelines move
+leaves a feature out, and `--reset` drops its dig settings.
+
+A pond dug with `bankAboveDeg` (`--bank-above`) has its outline at the water's
+edge, so OPCD's lake mesh rim ends on the dug bank below the water. apply-dem-edits
+writes each such dig's level next to the edited DEM
+(`sources/<site>/dem-edited.water-levels.json`), and the GSPro terrain update
+turns them into `<export folder>/<slug>-inner-water-levels.json` (level + 5 cm,
+Unity Y, keyed `Spline_<shape name>_WaterPlane`), which golfmap.waterplanes.build
+puts those planes at; a hand-set `<course folder>/water-levels.json` still wins. On Vreta the digs change about 112 000 cells. The shorelines move
 at most 4 cm, every bunker ends at least 0.45 m below its surroundings, and
 11 of 21 ponds are too narrow for Natural Pond's 11° banks to reach 1 m.
 

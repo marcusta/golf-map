@@ -74,7 +74,7 @@ import type { CoursesService } from './courses.service';
 import type { AssetsService } from './assets.service';
 import { SCULPT_DIR, SCULPT_ORIGINS, TerrainEditsService, type TerrainEditInput } from './terrain-edits.service';
 import { defaultUnityBridge, editorForExportDir, type UnityBridge, type UnityEditor } from './unity-bridge';
-import { terrainEditsGeojson, ROOFS_SOURCE } from './map-build.service';
+import { terrainEditsGeojson, ROOFS_SOURCE, DIG_WATER_LEVELS_SOURCE } from './map-build.service';
 import { resolveCourseMapBbox } from './course-bbox';
 import {
     courseTerrainFor, innerSquareFrom3006, terrainArg, bboxArg,
@@ -447,6 +447,13 @@ export function buildingsExportFileName(courseName: string, kind: TerrainKind): 
 export const BUILDINGS_SURVEY_SOURCE = 'buildings.geojson';
 /** The outer DEM with the site's terrain edits replayed onto it (derived, rebuilt per export). */
 export const OUTER_DEM_EDITED_SOURCE = 'outer-dem-edited.tif';
+
+/** `Vreta` -> `vreta-inner-water-levels.json`: the water planes' set surfaces (Unity Y), golfmap.waterplanes.build reads it. */
+export function waterLevelsFileName(courseName: string): string {
+    return `${courseSlug(courseName)}-inner-water-levels.json`;
+}
+/** A water-edge pond's water stands this far over its dig's level: it meets the bank just outside the outline. */
+export const WATER_EDGE_SURFACE_M = 0.05;
 
 /** `vreta-orto-l2-2025-8192.jpg` -> `vreta-orto-l2-2025-8192-terrain.jpg`: the darkened terrain-texture twin. */
 export function terrainTextureFileName(orthoFileName: string): string {
@@ -1071,6 +1078,49 @@ export class GsproExportService {
     }
 
     /** A terrain's exported heightmap sidecar `minM` (the terrain's zero); null without one. */
+    /**
+     * The water surfaces of the ponds whose outline is the water's edge (dug
+     * with `bankAboveDeg`): each one's dig level, as apply-dem-edits found it
+     * (`sources/<site>/dem-edited.water-levels.json`), + WATER_EDGE_SURFACE_M,
+     * in the inner heightmap's Unity frame, keyed by the plane OPCD's lake mesh
+     * gets (`Spline_<shape name>_WaterPlane`), into
+     * `<export folder>/<slug>-inner-water-levels.json`. golfmap.waterplanes.build
+     * puts those planes there, not at the lake mesh's lowest rim (which lies on
+     * the dug bank under the water); a hand-set level in the course folder still
+     * wins. No such pond: the file is removed.
+     */
+    async exportWaterLevels(courseId: string): Promise<{ file: string | null; report: string[] }> {
+        const course = await this.courses.get(courseId);
+        const out = path.join(await this.exportDir(courseId), waterLevelsFileName(course.name));
+        const src = course.siteId ? path.join(this.sourcesDir(course.siteId), DIG_WATER_LEVELS_SOURCE) : null;
+        const doc = src && await Bun.file(src).exists() ? JSON.parse(await readFile(src, 'utf8')) as { levels?: Record<string, number> } : null;
+        const levels = Object.entries(doc?.levels ?? {}).filter(([ref]) => ref.startsWith('feature:'));
+        const minM = levels.length ? await this.demSidecarMinM(courseId, 'inner') : null;
+        if (!levels.length || minM === null) {
+            await rm(out, { force: true });
+            return { file: null, report: [levels.length ? 'water levels: no inner heightmap sidecar yet, nothing written' : "water levels: no pond has its outline at the water's edge"] };
+        }
+        const rows = await this.db.selectFrom('course_features')
+            .leftJoin('holes', 'holes.id', 'course_features.hole_id')
+            .select(['course_features.id as id', 'course_features.feature_no as no', 'holes.number as hole'])
+            .where('course_features.course_id', '=', courseId)
+            .execute();
+        const byId = new Map(rows.map((r) => [r.id, r]));
+        const planes: Record<string, { surfaceM: number; levelM: number; featureId: string }> = {};
+        for (const [ref, level] of levels) {
+            const f = byId.get(ref.slice('feature:'.length));
+            if (!f || f.no === null) continue;   // another course's pond on the same site, or a generated feature
+            const shape = `${f.hole !== null ? `hole_${f.hole}` : 'others'}_${f.no.toString(16)}`;
+            planes[`Spline_${shape}_WaterPlane`] = { surfaceM: Math.round((level + WATER_EDGE_SURFACE_M - minM) * 1000) / 1000, levelM: level, featureId: f.id };
+        }
+        await writeFile(out, JSON.stringify({
+            format: 'golfmap-water-levels-v1',
+            source: "golf-map: each pond dug with its outline at the water's edge (bankAboveDeg), its dig level + 0.05 m, Unity Y",
+            planes,
+        }, null, 1) + '\n');
+        return { file: out, report: [`water levels: ${Object.keys(planes).length} pond(s) set at their dig's level (${Object.keys(planes).join(', ')}) -> ${path.basename(out)}`] };
+    }
+
     async demSidecarMinM(courseId: string, kind: TerrainKind): Promise<number | null> {
         const course = await this.courses.get(courseId);
         const terrain = await this.resolveTerrain(courseId, `read the GSPro ${kind} heightmap of`);

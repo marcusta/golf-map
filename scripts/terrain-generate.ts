@@ -95,7 +95,7 @@ function settingsFor(f: CourseFeature, k: DigGeneratorKind): FeatureAttributes |
 
 function findFeature(features: CourseFeature[], arg: string, type: string): CourseFeature {
     const q = arg.trim().toLowerCase();
-    const shape = /^hole_\d+_([0-9a-f]+)$/.exec(q) ?? /^course_([0-9a-f]+)$/.exec(q);
+    const shape = /^(?:hole_\d+|others|course)_([0-9a-f]+)$/.exec(q);
     const hits = shape ? features.filter((f) => f.no === parseInt(shape[1], 16))
         : /^\d{1,6}$/.test(q) ? features.filter((f) => f.no === Number(q))
         : q.length >= 6 ? features.filter((f) => f.id.toLowerCase().startsWith(q)) : [];
@@ -106,7 +106,7 @@ function findFeature(features: CourseFeature[], arg: string, type: string): Cour
 
 const shapeName = (f: CourseFeature | undefined, holes: Map<string, number>) =>
     !f ? '(deleted feature)' : f.no === null ? f.id.slice(0, 8)
-        : `${f.holeId && holes.has(f.holeId) ? `hole_${holes.get(f.holeId)}` : 'course'}_${f.no.toString(16)}`;
+        : `${f.holeId && holes.has(f.holeId) ? `hole_${holes.get(f.holeId)}` : 'others'}_${f.no.toString(16)}`;
 
 const dataDir = process.env.DATA_DIR ?? path.join(ROOT, 'data');
 const db = createDb<Database>(process.env.DB_PATH ?? path.join(dataDir, 'app.sqlite'));

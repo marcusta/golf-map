@@ -376,25 +376,30 @@ namespace GolfMap.Editor
         // water surface set by hand (world Y): the build flattens that plane's mesh FixedLiftM under it and lifts it
         // FixedLiftM, whatever the lake mesh's rim comes to, so a hand-tuned lake keeps its water through a rebuild
         // and a fresh plane (a new .blend).
-        // An explicit liftM still wins. The repo keeps the copy at docs/gspro/<course>/water-levels.json.
+        // An explicit liftM still wins. The repo keeps a hand-set copy at docs/gspro/<course>/water-levels.json.
         public const string LevelsFile = "water-levels.json";
         const float FixedLiftM = 0.3f;  // a set surface: the plane this far over its flattened mesh
         const string LevelsFormat = "golfmap-water-levels-v1";
 
+        // The export folder's <prefix>-inner-water-levels.json first (golf-map writes it on every terrain update: the
+        // ponds dug with their outline at the water's edge, at their dig's level), then the course folder's own file,
+        // whose hand-set surfaces win.
         static Dictionary<string, float> FixedLevels(GolfMapCourse course)
         {
             var result = new Dictionary<string, float>();
-            var path = GolfMapCourses.Folder(course) + LevelsFile;
-            if (!File.Exists(path)) return result;
-            var root = GolfMapJsonDoc.ParseObject(File.ReadAllText(path));
-            if (root.String("format") != LevelsFormat) throw new InvalidOperationException(path + ": format must be " + LevelsFormat + ".");
-            var planes = root.Object("planes");
-            if (planes == null) return result;
-            foreach (var key in planes.keys)
+            foreach (var path in new[] { GolfMapCourses.ExportFile(course, "inner", "water-levels"), GolfMapCourses.Folder(course) + LevelsFile })
             {
-                var o = planes.Object(key);
-                if (o == null || !o.Has("surfaceM")) throw new InvalidOperationException(path + " planes." + key + ": needs surfaceM.");
-                result[key] = (float)o.Number("surfaceM");
+                if (string.IsNullOrEmpty(path) || !File.Exists(path)) continue;
+                var root = GolfMapJsonDoc.ParseObject(File.ReadAllText(path));
+                if (root.String("format") != LevelsFormat) throw new InvalidOperationException(path + ": format must be " + LevelsFormat + ".");
+                var planes = root.Object("planes");
+                if (planes == null) continue;
+                foreach (var key in planes.keys)
+                {
+                    var o = planes.Object(key);
+                    if (o == null || !o.Has("surfaceM")) throw new InvalidOperationException(path + " planes." + key + ": needs surfaceM.");
+                    result[key] = (float)o.Number("surfaceM");
+                }
             }
             return result;
         }

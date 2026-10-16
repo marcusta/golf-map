@@ -199,6 +199,8 @@ class DemEdit:
     radius_m: float = DEFAULT_SMOOTH_RADIUS_M
     flat: bool = False
     created_at: str | None = None
+    # The edit's originRef (`feature:<id>` for a generated dig): what a pond's water level is reported under.
+    origin_ref: str | None = None
     # corridor only: the road's centerline as [[x, y], …] (WGS84 as loaded,
     # the DEM CRS after reproject_edits), the along-line smoothing window,
     # and the paved width the profile is sampled over (None = all mask cells).
@@ -342,7 +344,9 @@ def load_edits(path: Path, log=print) -> list[DemEdit]:
                 log(f"warning: {label}: {exc} — skipped")
                 continue
         created_at = props.get("createdAt")
+        origin_ref = props.get("originRef")
         edits.append(DemEdit(
+            origin_ref=str(origin_ref) if origin_ref else None,
             op=op,
             geometry=geometry,
             feather_m=feather_m,
@@ -539,11 +543,14 @@ def apply_edits(
     nodata: float | None,
     edits: list[DemEdit],
     log=print,
+    water_levels: dict | None = None,
 ) -> np.ndarray:
     """Replays `edits` (geometries already in the DEM's CRS, already sorted
     per D-TE4) onto `dem`, returning a new float32 grid. The input array is
     never modified. Cells outside every mask — and every nodata cell — come
-    back bit-identical.
+    back bit-identical. `water_levels`, when given, collects the water level
+    of every pond dug with `bankAboveDeg` (its outline is the water's edge,
+    so the water belongs exactly there), under its originRef.
     """
     current = dem.astype(np.float64)
     valid = np.isfinite(current)
@@ -551,7 +558,7 @@ def apply_edits(
         valid &= current != nodata
 
     for index, edit in enumerate(edits):
-        _apply_one(current, valid, transform, edit, index, log)
+        _apply_one(current, valid, transform, edit, index, log, water_levels)
 
     return current.astype(np.float32)
 
@@ -563,6 +570,7 @@ def _apply_one(
     edit: DemEdit,
     index: int,
     log,
+    water_levels: dict | None = None,
 ) -> None:
     """Applies one edit to `current` in place. All raster math runs on a
     mask-bbox window only (masks are small; whole-raster filtering is
@@ -605,7 +613,8 @@ def _apply_one(
     elif edit.op == "corridor":
         target = _corridor_target(cur_win, mask_win, valid_win, transform, r0, c0, cell_x, cell_y, edit, label, log)
     elif edit.op == "dig":
-        target = _dig_target(cur_win, mask_win, valid_win, transform, r0, c0, cell_x, cell_y, edit, label, log)
+        target = _dig_target(cur_win, mask_win, valid_win, transform, r0, c0, cell_x, cell_y, edit, label, log,
+                             water_levels=water_levels, key=edit.origin_ref or f"edit:{index + 1}")
     elif edit.op == "delta":
         target = _delta_target(cur_win, mask_win, transform, r0, c0, edit)
     elif edit.op == "shore":
@@ -809,6 +818,8 @@ def _dig_target(
     edit: DemEdit,
     label: str,
     log,
+    water_levels: dict | None = None,
+    key: str = "",
 ) -> np.ndarray | None:
     inside = mask_win & valid_win
     if int(np.count_nonzero(inside)) < 4:
@@ -848,6 +859,8 @@ def _dig_target(
             rim = inside
         level = float(np.percentile(cur_win[rim], DIG_LEVEL_PERCENTILE))
         if edit.bank_above_deg is not None:
+            if water_levels is not None:
+                water_levels[key] = round(level, 3)
             return _water_edge_target(cur_win, mask_win, valid_win, rows, cols, d, cell, cell_x, cell_y, level,
                                       slope, shelf, edit)
         # An outline drawn a little generously takes in bank above the water:
