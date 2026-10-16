@@ -62,6 +62,29 @@ Operations (D-TE3, two only in v1):
   GeoTIFF of metres, bilinear at each cell centre, 0 outside it): a Unity
   sculpt layer (golfpipe/sculpt.py). No feather — the layer carries its own
   edges — and it can raise as well as lower.
+- ``shore`` — a lake bed dug below a big lake's water surface (Vättern at
+  Omberg): the lidar sees the lake as a flat sheet, OPCD needs a bottom
+  under it. The polygon is the WATER (holes are islands and skerries, land),
+  its boundary the shoreline; every valid cell inside becomes
+  min(current, ``levelM`` − drop), so ground the lidar or a fill left above
+  the lake inside the polygon comes straight down to the bed (no rim taper)
+  and nothing outside it moves. ``featherM`` is ignored: hard edge. The drop
+  at distance ``d`` from the shore is the integral of a slope: ``edgeSlope``
+  for ``edgeM`` (the beach), easing linearly over ``edgeEaseM`` to
+  ``shelfSlope`` until ``shelfEndM`` (the long shallow shelf), easing over
+  ``shelfEaseM`` to ``slope``, then capped at ``depthM`` with its knee
+  rounded over ``floorRoundM`` (the slope falls linearly to 0, so the bed
+  meets the floor tangentially). Slopes are rise/run (0.15 = 15 %).
+  Narrow water — a sound between an island and the mainland — has a local
+  half-width ``r`` (the radius of the largest disk inside the water that
+  covers the cell); there the bed is at least min(``channelDepthM``,
+  ``channelRatio``·r)·sin(π/2·min(d/r, 1)), weighted 1 for r ≤
+  ``channelFullM`` down to 0 at ``channelGoneM``, so a 12 m sound gets a
+  1 m channel and wide water follows the profile. The lake runs past the
+  DEM square (its polygon is clipped far outside it) and so does the shore:
+  distances are taken on a grid grown past the edit window by the profile's
+  reach plus ``channelGoneM``, where polygon beyond the DEM is water and the
+  rest land, rather than the DEM's edge passing for either.
 
 The ops feather over an edge band inside the polygon (D-TE3): weight
 w = clamp(dist_to_polygon_edge / featherM, 0, 1) via a cell-size-aware
@@ -95,7 +118,7 @@ from scipy.ndimage import distance_transform_edt, generic_filter, median_filter
 __all__ = [
     "DemEditError", "DemEdit", "PlaneFit",
     "OPS", "DEFAULT_FEATHER_M", "DEFAULT_SMOOTH_RADIUS_M", "DEFAULT_CORRIDOR_SMOOTH_M",
-    "DIG_REFERENCES", "dig_drop",
+    "DIG_REFERENCES", "dig_drop", "SHORE_PARAMS", "shore_drop",
     "MIN_PLANE_CELLS", "OUTLIER_SIGMA", "OUTLIER_ROUNDS",
     "load_edits", "reproject_edits", "fit_plane", "apply_edits",
 ]
@@ -105,7 +128,7 @@ class DemEditError(RuntimeError):
     """User-actionable apply-dem-edits input/setup error."""
 
 
-OPS = ("plane", "smooth", "corridor", "dig", "delta")
+OPS = ("plane", "smooth", "corridor", "dig", "delta", "shore")
 DEFAULT_FEATHER_M = 2.0
 DEFAULT_SMOOTH_RADIUS_M = 2.0
 # Longitudinal smoothing window for corridors: long enough to take out the
@@ -123,6 +146,24 @@ DIG_LEVEL_PERCENTILE = 25.0
 # STREAM_MAX_BANK_DEG (a creek a cell or two wide stays shallower).
 STREAM_THALWEG_REACH = 2.0
 STREAM_MAX_BANK_DEG = 60.0
+# shore: (D-TE5 key, DemEdit field, default). The first nine shape the profile
+# (shore_drop's keywords), the last four the channels in narrow water.
+SHORE_PARAMS = (
+    ("edgeSlope", "edge_slope", 0.15),
+    ("edgeM", "edge_m", 2.0),
+    ("edgeEaseM", "edge_ease_m", 2.0),
+    ("shelfSlope", "shelf_slope", 0.02),
+    ("shelfEndM", "shelf_end_m", 100.0),
+    ("shelfEaseM", "shelf_ease_m", 5.0),
+    ("slope", "slope", 0.05),
+    ("depthM", "depth_m", 8.0),
+    ("floorRoundM", "floor_round_m", 5.0),
+    ("channelDepthM", "channel_depth_m", 1.0),
+    ("channelRatio", "channel_ratio", 0.2),
+    ("channelFullM", "channel_full_m", 10.0),
+    ("channelGoneM", "channel_gone_m", 15.0),
+)
+_SHORE_PROFILE_DEFAULTS = {field: default for _, field, default in SHORE_PARAMS[:9]}
 # A plane fit over fewer valid cells than this is meaningless noise — skip.
 MIN_PLANE_CELLS = 16
 OUTLIER_SIGMA = 2.0
@@ -161,6 +202,20 @@ class DemEdit:
     seed: int = 0
     # delta only: the GeoTIFF of metres to add.
     raster: str | None = None
+    # shore only (SHORE_PARAMS; depth_m is shared with dig).
+    level_m: float | None = None
+    edge_slope: float = 0.15
+    edge_m: float = 2.0
+    edge_ease_m: float = 2.0
+    shelf_slope: float = 0.02
+    shelf_end_m: float = 100.0
+    shelf_ease_m: float = 5.0
+    slope: float = 0.05
+    floor_round_m: float = 5.0
+    channel_depth_m: float = 1.0
+    channel_ratio: float = 0.2
+    channel_full_m: float = 10.0
+    channel_gone_m: float = 15.0
 
 
 def load_edits(path: Path, log=print) -> list[DemEdit]:
@@ -200,7 +255,8 @@ def load_edits(path: Path, log=print) -> list[DemEdit]:
             log(f"warning: {label}: unknown op {op!r} (expected one of {OPS}) — skipped")
             continue
         try:
-            feather_m = float(props.get("featherM", DEFAULT_FEATHER_M))
+            # A shore's edge is hard: the polygon is the water.
+            feather_m = float(props.get("featherM", DEFAULT_FEATHER_M)) if op != "shore" else 0.0
             radius_m = float(props.get("radiusM", DEFAULT_SMOOTH_RADIUS_M))
         except (TypeError, ValueError):
             log(f"warning: {label}: featherM/radiusM is not a number — skipped")
@@ -253,6 +309,13 @@ def load_edits(path: Path, log=print) -> list[DemEdit]:
             except ValueError as exc:
                 log(f"warning: {label}: {exc} — skipped")
                 continue
+        shore: dict = {}
+        if op == "shore":
+            try:
+                shore = _shore_params(props)
+            except ValueError as exc:
+                log(f"warning: {label}: {exc} — skipped")
+                continue
         created_at = props.get("createdAt")
         edits.append(DemEdit(
             op=op,
@@ -266,6 +329,7 @@ def load_edits(path: Path, log=print) -> list[DemEdit]:
             width_m=width_m,
             raster=raster,
             **dig,
+            **shore,
         ))
 
     edits.sort(key=lambda e: (e.created_at is None, e.created_at or ""))
@@ -318,6 +382,38 @@ def _dig_params(props: dict) -> dict:
         shelf_m=shelf, shelf_depth_m=shelf_depth, reference=reference, rim_m=rim,
         variation=variation, seed=seed,
     )
+
+
+def _shore_params(props: dict) -> dict:
+    """The shore fields of a D-TE5 feature's properties, defaults filled in,
+    validated (ValueError names the bad one)."""
+    def num(key, default=None):
+        value = props.get(key, default)
+        if value is None:
+            raise ValueError(f"shore needs {key}")
+        try:
+            value = float(value)
+        except (TypeError, ValueError):
+            raise ValueError(f"{key} is not a number")
+        if not np.isfinite(value):
+            raise ValueError(f"{key} is not finite")
+        return value
+
+    out = {"level_m": num("levelM")}
+    for key, field, default in SHORE_PARAMS:
+        value = num(key, default)
+        if value < 0:
+            raise ValueError(f"{key} must be >= 0")
+        out[field] = value
+    if out["depth_m"] <= 0:
+        raise ValueError("depthM must be > 0")
+    if out["slope"] <= 0:
+        raise ValueError("slope must be > 0 (the bed has to reach depthM)")
+    if out["shelf_end_m"] < out["edge_m"] + out["edge_ease_m"]:
+        raise ValueError("shelfEndM must be >= edgeM + edgeEaseM")
+    if out["channel_gone_m"] <= out["channel_full_m"]:
+        raise ValueError("channelGoneM must be > channelFullM")
+    return out
 
 
 def reproject_edits(edits: list[DemEdit], dem_crs) -> list[DemEdit]:
@@ -453,7 +549,9 @@ def _apply_one(
 
     cell_x = abs(transform.a)
     cell_y = abs(transform.e)
-    pad_m = max(edit.feather_m, edit.radius_m if edit.op == "smooth" else 0.0, edit.rim_m if edit.op == "dig" else 0.0)
+    # A shore reads past its window on a grid of its own (_shore_target).
+    feather_m = edit.feather_m if edit.op != "shore" else 0.0
+    pad_m = max(feather_m, edit.radius_m if edit.op == "smooth" else 0.0, edit.rim_m if edit.op == "dig" else 0.0)
     pad = int(np.ceil(pad_m / min(cell_x, cell_y))) + 2
     mask_rows = np.flatnonzero(mask.any(axis=1))
     mask_cols = np.flatnonzero(mask.any(axis=0))
@@ -475,6 +573,8 @@ def _apply_one(
         target = _dig_target(cur_win, mask_win, valid_win, transform, r0, c0, cell_x, cell_y, edit, label, log)
     elif edit.op == "delta":
         target = _delta_target(cur_win, mask_win, transform, r0, c0, edit)
+    elif edit.op == "shore":
+        target = _shore_target(cur_win, mask_win, valid_win, transform, r0, c0, cell_x, cell_y, edit, label, log)
     else:
         target = _smooth_target(cur_win, mask_win, valid_win, cell_x, cell_y, edit)
     if target is None:
@@ -482,7 +582,7 @@ def _apply_one(
 
     # Feather: w = clamp(dist_to_polygon_edge / featherM, 0, 1) over the edge
     # band inside the mask; 0 everywhere outside it. featherM 0 = hard edge.
-    if edit.feather_m > 0:
+    if feather_m > 0:
         distances = distance_transform_edt(mask_win, sampling=(cell_y, cell_x))
         weight = np.clip(distances / edit.feather_m, 0.0, 1.0)
     else:
@@ -862,6 +962,204 @@ def _delta_target(
     target = cur_win.copy()
     target[rows, cols] = cur_win[rows, cols] + add
     return target
+
+
+def _shore_profile(params: dict) -> dict:
+    unknown = set(params) - set(_SHORE_PROFILE_DEFAULTS)
+    if unknown:
+        raise TypeError(f"shore_drop: unknown parameter(s) {sorted(unknown)}")
+    return {**_SHORE_PROFILE_DEFAULTS, **{k: float(v) for k, v in params.items()}}
+
+
+def _shore_segments(p: dict) -> tuple[list[tuple[float, float, float, float]], float]:
+    """The slope as linear pieces (start, length, slope at start, at end)
+    up to where the steady `slope` takes over, and that point."""
+    a1 = p["edge_m"]
+    a2 = a1 + p["edge_ease_m"]
+    a3 = p["shelf_end_m"]
+    a4 = a3 + p["shelf_ease_m"]
+    e, sh, sl = p["edge_slope"], p["shelf_slope"], p["slope"]
+    pieces = [(0.0, a1, e, e), (a1, a2 - a1, e, sh), (a2, a3 - a2, sh, sh), (a3, a4 - a3, sh, sl)]
+    return [piece for piece in pieces if piece[1] > 0], a4
+
+
+def _shore_uncapped(x: np.ndarray, p: dict) -> np.ndarray:
+    """The integral of the slope from the shore to `x`, before the cap."""
+    pieces, end = _shore_segments(p)
+    drop = p["slope"] * np.maximum(x - end, 0.0)
+    for a, length, s0, s1 in pieces:
+        t = np.clip(x - a, 0.0, length)
+        drop += s0 * t + (s1 - s0) * t * t / (2.0 * length)
+    return drop
+
+
+def _shore_slope_at(x: float, p: dict) -> float:
+    pieces, _ = _shore_segments(p)
+    for a, length, s0, s1 in pieces:
+        if x < a + length:
+            return s0 + (s1 - s0) * max(x - a, 0.0) / length
+    return p["slope"]
+
+
+def _shore_knee(p: dict) -> tuple[float, float, float, float]:
+    """Where the rounded knee starts, how long it is, and the drop and slope
+    there: the slope falls linearly to 0 over the knee, so the knee starts
+    where drop + slope · floorRoundM / 2 first reaches depthM."""
+    depth, rounding = p["depth_m"], p["floor_round_m"]
+
+    def reached(x):
+        return _shore_uncapped(np.asarray(x, dtype=np.float64), p) + rounding / 2.0 * np.vectorize(
+            lambda v: _shore_slope_at(float(v), p))(x)
+
+    s_start = _shore_slope_at(0.0, p)
+    if s_start * rounding / 2.0 >= depth:
+        # Shallower than one knee: round it from the shore.
+        return 0.0, 2.0 * depth / s_start, 0.0, s_start
+    _, end = _shore_segments(p)
+    xs = np.linspace(0.0, end + depth / p["slope"] + rounding + 1.0, 4097)
+    i = int(np.argmax(reached(xs) >= depth))
+    lo, hi = float(xs[i - 1]), float(xs[i])
+    for _ in range(60):
+        mid = (lo + hi) / 2.0
+        lo, hi = (mid, hi) if reached(mid) < depth else (lo, mid)
+    x0 = hi
+    return x0, rounding, float(_shore_uncapped(np.asarray(x0), p)), _shore_slope_at(x0, p)
+
+
+def _shore_reach(p: dict) -> float:
+    """How far from the shore the bed reaches depthM."""
+    x0, rounding, _, _ = _shore_knee(p)
+    return x0 + rounding
+
+
+def shore_drop(d, **params) -> np.ndarray:
+    """How far below the lake's surface a shore bed lies at distance `d` (m)
+    from the shoreline: the integral of a slope that is `edge_slope` for
+    `edge_m`, eases linearly over `edge_ease_m` to `shelf_slope` until
+    `shelf_end_m`, eases over `shelf_ease_m` to `slope`; capped at `depth_m`
+    with the knee rounded over `floor_round_m` (the slope falls linearly to
+    0, so the bed meets the floor tangentially and never passes it).
+    Keywords are SHORE_PARAMS' first nine fields, its defaults when left out."""
+    p = _shore_profile(params)
+    d = np.maximum(np.asarray(d, dtype=np.float64), 0.0)
+    x0, rounding, drop0, slope0 = _shore_knee(p)
+    out = np.full(d.shape, p["depth_m"])
+    before = d < x0
+    out[before] = _shore_uncapped(d[before], p)
+    knee = ~before & (d < x0 + rounding)
+    t = d[knee] - x0
+    out[knee] = drop0 + slope0 * (t - t * t / (2.0 * rounding))
+    return np.minimum(out, p["depth_m"])
+
+
+def _shore_target(
+    cur_win: np.ndarray,
+    mask_win: np.ndarray,
+    valid_win: np.ndarray,
+    transform: "rasterio.Affine",
+    r0: int,
+    c0: int,
+    cell_x: float,
+    cell_y: float,
+    edit: DemEdit,
+    label: str,
+    log,
+) -> np.ndarray | None:
+    inside = mask_win & valid_win
+    if not inside.any():
+        log(f"warning: {label}: no valid cells in the lake polygon — skipped")
+        return None
+    if edit.level_m is None or not np.isfinite(edit.level_m) or not edit.depth_m > 0 or not edit.slope > 0 \
+            or not edit.channel_gone_m > edit.channel_full_m:
+        log(f"warning: {label}: shore needs levelM, depthM > 0, slope > 0 and channelGoneM > channelFullM — skipped")
+        return None
+    profile = {field: getattr(edit, field) for field in _SHORE_PROFILE_DEFAULTS}
+    p = _shore_profile(profile)
+    cell = min(cell_x, cell_y)
+    sampling = (cell_y, cell_x)
+
+    # Distances on the window grown by everything that can still reach into
+    # it: the polygon past the DEM is water, the rest of that ring land.
+    pad = int(np.ceil((_shore_reach(p) + edit.channel_gone_m) / cell)) + 2
+    h, w = mask_win.shape
+    water = rasterio.features.rasterize(
+        [(edit.geometry, 1)],
+        out_shape=(h + 2 * pad, w + 2 * pad),
+        transform=transform @ rasterio.Affine.translation(c0 - pad, r0 - pad),
+        fill=0,
+        all_touched=False,
+        dtype="uint8",
+    ).astype(bool)
+    if water.all():
+        d = np.full(water.shape, np.inf)
+    else:
+        d = distance_transform_edt(water, sampling=sampling)
+        d -= cell / 2.0
+        np.maximum(d, 0.0, out=d)
+    inner = np.s_[pad:pad + h, pad:pad + w]
+    half_width = _shore_half_width(water, d, inner, sampling, edit.channel_gone_m)
+
+    dist = d[inner][inside]
+    drop = shore_drop(dist, **profile)
+    r = half_width[inside]
+    weight = np.clip((edit.channel_gone_m - r) / (edit.channel_gone_m - edit.channel_full_m), 0.0, 1.0)
+    narrow = weight > 0
+    if narrow.any():
+        rn, dn = r[narrow], dist[narrow]
+        channel = np.minimum(edit.channel_depth_m, edit.channel_ratio * rn) \
+            * np.sin(np.pi / 2.0 * np.minimum(dn / np.maximum(rn, 1e-9), 1.0))
+        drop[narrow] = np.maximum(drop[narrow], weight[narrow] * channel)
+    target = cur_win.copy()
+    target[inside] = np.minimum(cur_win[inside], edit.level_m - drop)
+    return target
+
+
+def _shore_half_width(
+    water: np.ndarray,
+    d: np.ndarray,
+    inner: tuple,
+    sampling: tuple[float, float],
+    gone_m: float,
+) -> np.ndarray:
+    """Local half-width of the water at each cell of `inner` (the radius of
+    the largest disk inside the water that covers it): r >= t where the cell
+    lies within t of a cell whose distance from the shore is >= t, for t
+    a cell apart from half a cell (the distances of an axis-aligned sound's
+    cells) up to `gone_m`, never less than the cell's own distance. Only
+    cells within `gone_m` of the shore are looked at — a channel has gone by
+    then — and are worked through in tiles round them; every other cell,
+    and every cell within `gone_m` of water that wide, is inf."""
+    cell = min(sampling)
+    d_in = d[inner]
+    band = water[inner] & (d_in <= gone_m)
+    r = np.full(d_in.shape, np.inf)
+    r[band] = d_in[band]
+    if not band.any():
+        return r
+    steps = list(np.arange(cell / 2.0, gone_m, cell)) + [gone_m]
+    margin = int(np.ceil(gone_m / cell)) + 1
+    tile = 4 * margin
+    row0, col0 = inner[0].start, inner[1].start
+    h, w = d_in.shape
+    for i0 in range(0, h, tile):
+        for j0 in range(0, w, tile):
+            band_t = band[i0:i0 + tile, j0:j0 + tile]
+            if not band_t.any():
+                continue
+            a0, b0 = max(row0 + i0 - margin, 0), max(col0 + j0 - margin, 0)
+            a1 = min(row0 + i0 + band_t.shape[0] + margin, water.shape[0])
+            b1 = min(col0 + j0 + band_t.shape[1] + margin, water.shape[1])
+            water_t, d_t = water[a0:a1, b0:b1], d[a0:a1, b0:b1]
+            local = np.s_[row0 + i0 - a0:row0 + i0 - a0 + band_t.shape[0],
+                          col0 + j0 - b0:col0 + j0 - b0 + band_t.shape[1]]
+            r_t = r[i0:i0 + tile, j0:j0 + tile]
+            for t in steps:
+                core = water_t & (d_t >= t)
+                if not core.any():
+                    break
+                hit = band_t & (distance_transform_edt(~core, sampling=sampling)[local] <= t)
+                r_t[hit] = np.inf if t >= gone_m else np.maximum(r_t[hit], t)
+    return r
 
 
 def _smooth_target(
