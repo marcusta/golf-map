@@ -24,7 +24,7 @@ async function recipeChecked<T>(c: Context, f: () => Promise<T>): Promise<T> {
 
 // --- Input schemas ---
 
-const OpSchema = Type.Union([Type.Literal('plane'), Type.Literal('smooth'), Type.Literal('corridor'), Type.Literal('dig'), Type.Literal('delta'), Type.Literal('recipe')]);
+const OpSchema = Type.Union([Type.Literal('plane'), Type.Literal('smooth'), Type.Literal('corridor'), Type.Literal('dig'), Type.Literal('shore'), Type.Literal('delta'), Type.Literal('recipe')]);
 
 // A straight-segment ring in the DEM CRS (EPSG:3006).
 const RingSchema = Type.Array(Type.Object({ x: Type.Number(), y: Type.Number() }));
@@ -50,6 +50,20 @@ const ParamsSchema = Type.Object({
     rimM: Type.Optional(Type.Number()),
     variation: Type.Optional(Type.Number()),
     seed: Type.Optional(Type.Number()),
+    // shore (a generated lake shore, origin `lake-shore`): the water level and the profile out from the shoreline; depthM above.
+    levelM: Type.Optional(Type.Number()),
+    edgeSlope: Type.Optional(Type.Number()),
+    edgeM: Type.Optional(Type.Number()),
+    edgeEaseM: Type.Optional(Type.Number()),
+    shelfSlope: Type.Optional(Type.Number()),
+    shelfEndM: Type.Optional(Type.Number()),
+    shelfEaseM: Type.Optional(Type.Number()),
+    slope: Type.Optional(Type.Number()),
+    floorRoundM: Type.Optional(Type.Number()),
+    channelDepthM: Type.Optional(Type.Number()),
+    channelRatio: Type.Optional(Type.Number()),
+    channelFullM: Type.Optional(Type.Number()),
+    channelGoneM: Type.Optional(Type.Number()),
     // delta (a Unity sculpt layer, "Pull from Unity"): its GeoTIFF's name and what it holds.
     raster: Type.Optional(Type.String()),
     changedM2: Type.Optional(Type.Number()),

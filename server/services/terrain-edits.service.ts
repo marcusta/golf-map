@@ -20,13 +20,19 @@ import {
  * `plane` fitted to the ground around it) along a depth profile in from its
  * edge; generated from the course's bunkers and water (`bunker-digs`,
  * `water-digs`), listed and toggled like corridors.
+ * `shore` — a lake's shore and bed dug into the DEM (Vättern at Omberg):
+ * one polygon whose holes are the islands, the water at `levelM`, the ground
+ * falling from the shoreline over an edge, a shelf and a slope down to a
+ * rounded floor `depthM` below the level, with an optional channel along it.
+ * Only the pipeline generates it (`golfpipe shore-edits`, imported under
+ * origin `lake-shore`); listed and toggled like corridors, never drawn.
  * `recipe` — not a DEM edit: the Blender shaping recipe of ONE course feature
  * (blender/SHAPING-PLAN.md, "Terrain editor → Blender"): params
  * `{ recipe: <library id>, overrides? }`, origin `feature`, originRef
  * `feature:<id>`, no rings. At most one per feature. The DEM replay skips it
  * (`isDemEdit`); `gspro.py shaping-global` writes it as an `afrod.recipe` op.
  */
-export const TERRAIN_EDIT_OPS = ['plane', 'smooth', 'corridor', 'dig', 'delta', 'recipe'] as const;
+export const TERRAIN_EDIT_OPS = ['plane', 'smooth', 'corridor', 'dig', 'shore', 'delta', 'recipe'] as const;
 
 /** The origin of every `recipe` edit (its originRef names the feature). */
 export const RECIPE_ORIGIN = 'feature';
@@ -81,6 +87,27 @@ export interface TerrainEditParams {
     rimM?: number;
     variation?: number;
     seed?: number;
+    /**
+     * shore: the water level (required), then the profile out from the
+     * shoreline: the edge (slope, width, ease), the shelf (slope, where it
+     * ends, ease), the slope beyond it, the floor (`depthM` below the level,
+     * rounded over `floorRoundM`) and an optional channel (depth, ratio, full
+     * from `channelFullM`, gone by `channelGoneM`). The pipeline's
+     * dem_edit owns their meaning and defaults; the server only stores them.
+     */
+    levelM?: number;
+    edgeSlope?: number;
+    edgeM?: number;
+    edgeEaseM?: number;
+    shelfSlope?: number;
+    shelfEndM?: number;
+    shelfEaseM?: number;
+    slope?: number;
+    floorRoundM?: number;
+    channelDepthM?: number;
+    channelRatio?: number;
+    channelFullM?: number;
+    channelGoneM?: number;
     /** delta: the sculpt GeoTIFF's file name in `sources/<siteId>/terrain-sculpt/`, and what it holds (for the panel). */
     raster?: string;
     changedM2?: number;
@@ -97,6 +124,12 @@ export type TerrainEditParamsInput = Omit<TerrainEditParams, 'featherM'> & { fea
 /** The dig params, in the order they go into the pipeline handoff. */
 export const DIG_PARAM_KEYS = [
     'depthM', 'bankSlopeDeg', 'faceSlopeDeg', 'faceBearingDeg', 'shelfM', 'shelfDepthM', 'reference', 'rimM', 'variation', 'seed',
+] as const;
+
+/** The shore params (all numbers), in the order they go into the pipeline handoff; `depthM` is shared with dig. */
+export const SHORE_PARAM_KEYS = [
+    'levelM', 'edgeSlope', 'edgeM', 'edgeEaseM', 'shelfSlope', 'shelfEndM', 'shelfEaseM', 'slope', 'depthM', 'floorRoundM',
+    'channelDepthM', 'channelRatio', 'channelFullM', 'channelGoneM',
 ] as const;
 
 export interface TerrainEdit {
@@ -135,15 +168,21 @@ export interface TerrainEditInput {
  * index (a pad beside a road could overwrite the graded road).
  */
 export const GENERATED_EPOCH = '2000-01-01 00:00';
-/** Replay order of the generators, first to last (last wins). Roads last: a creek or a pad never cuts a graded road. */
-export const GENERATED_ORDER = ['building-pads', 'water-digs', 'bunker-digs', 'creek-digs', 'road-grades'] as const;
+/**
+ * Replay order of the generators, first to last (last wins). The lake shore
+ * first: a pad, a pond or a road beside the lake is graded on top of it.
+ * Roads last: a creek or a pad never cuts a graded road.
+ */
+export const GENERATED_ORDER = ['lake-shore', 'building-pads', 'water-digs', 'bunker-digs', 'creek-digs', 'road-grades'] as const;
 export function generatedCreatedAt(index: number, origin?: string): string {
     // A Unity sculpt was made on top of everything, hand-drawn edits included: it replays last of all.
     const sculpt = Object.values(SCULPT_ORIGINS).indexOf(origin as (typeof SCULPT_ORIGINS)[keyof typeof SCULPT_ORIGINS]);
     if (sculpt >= 0) return `2999-01-01 00:00:${String(sculpt * 2 + 1).padStart(2, '0')}.${String(index).padStart(6, '0')}`;
     const slot = GENERATED_ORDER.indexOf(origin as (typeof GENERATED_ORDER)[number]);
-    // Unknown origins go in the middle second, between the known ones and never past them.
-    const second = slot >= 0 ? slot * 2 + 1 : GENERATED_ORDER.length;
+    // The lake shore takes second 00, the rest the odd seconds from 01 they had before it came: stored
+    // stamps keep their order without a regeneration. Unknown origins go in the middle second, between
+    // the known ones and never past them.
+    const second = slot === 0 ? 0 : slot > 0 ? slot * 2 - 1 : GENERATED_ORDER.length - 1;
     return `${GENERATED_EPOCH}:${String(second).padStart(2, '0')}.${String(index).padStart(6, '0')}`;
 }
 
@@ -230,7 +269,8 @@ export function parseEditsGeojson(doc: unknown): { edits: TerrainEditInput[]; sk
             skipped.push(`feature ${i}: unknown op ${JSON.stringify(props.op)}`);
             return;
         }
-        const params: TerrainEditParams = { featherM: Number(props.featherM ?? 2) };
+        // A shore has no feather band (its profile is the transition).
+        const params: TerrainEditParams = { featherM: Number(props.featherM ?? (props.op === 'shore' ? 0 : 2)) };
         if (props.radiusM !== undefined) params.radiusM = Number(props.radiusM);
         if (props.flat) params.flat = true;
         if (props.smoothM !== undefined) params.smoothM = Number(props.smoothM);
@@ -238,6 +278,10 @@ export function parseEditsGeojson(doc: unknown): { edits: TerrainEditInput[]; sk
         for (const key of DIG_PARAM_KEYS) {
             if (props[key] === undefined || props[key] === null) continue;
             (params as unknown as Record<string, unknown>)[key] = key === 'reference' ? String(props[key]) : Number(props[key]);
+        }
+        for (const key of SHORE_PARAM_KEYS) {
+            if (props[key] === undefined || props[key] === null) continue;
+            params[key] = Number(props[key]);
         }
         if (Array.isArray(props.centerline)) {
             params.centerline = props.centerline.map((p: unknown) =>
@@ -320,6 +364,7 @@ function assertOpParams(op: TerrainEditOp, params: TerrainEditParams): void {
         throw new InvalidTerrainEditError('A corridor edit needs a centerline');
     }
     if (op === 'dig') assertDigParams(params);
+    if (op === 'shore') assertShoreParams(params);
     if (op === 'delta' && (typeof params.raster !== 'string' || !SCULPT_RASTER.test(params.raster))) {
         throw new InvalidTerrainEditError('A delta edit needs raster: inner-sculpt.tif or outer-sculpt.tif');
     }
@@ -349,6 +394,24 @@ function assertDigParams(p: TerrainEditParams): void {
         throw new InvalidTerrainEditError('variation must be in [0, 1]');
     }
     if (p.seed !== undefined && !Number.isInteger(p.seed)) throw new InvalidTerrainEditError('seed must be an integer');
+}
+
+/**
+ * A shore needs its water level; every other shore param is optional, a
+ * finite number >= 0 (`depthM` > 0), and the channel fades out past where it
+ * is full. The rings are the lake (rings[0]) and its islands (the holes).
+ */
+function assertShoreParams(p: TerrainEditParams): void {
+    const finite = (v: unknown) => typeof v === 'number' && Number.isFinite(v);
+    if (!finite(p.levelM)) throw new InvalidTerrainEditError('A shore edit needs levelM (the water level)');
+    for (const key of SHORE_PARAM_KEYS) {
+        if (key === 'levelM' || p[key] === undefined) continue;
+        if (!finite(p[key]) || p[key]! < 0) throw new InvalidTerrainEditError(`${key} must be a finite number >= 0`);
+    }
+    if (p.depthM !== undefined && p.depthM <= 0) throw new InvalidTerrainEditError('depthM must be > 0');
+    if (p.channelFullM !== undefined && p.channelGoneM !== undefined && p.channelGoneM <= p.channelFullM) {
+        throw new InvalidTerrainEditError('channelGoneM must be past channelFullM');
+    }
 }
 
 /**
@@ -417,6 +480,7 @@ function assertValidOverride(recipe: string, key: string, value: unknown, known:
     }
 }
 
+/** rings[0] is the outline, any further ring a hole (a shore's islands); no bound on the points (a lake shore has tens of thousands). */
 function assertValidRings(rings: TerrainEditRing[]): void {
     if (!Array.isArray(rings) || rings.length === 0) {
         throw new InvalidTerrainEditError('rings must have at least one ring');

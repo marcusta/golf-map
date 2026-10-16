@@ -5,7 +5,7 @@ import { mkdtemp, mkdir, copyFile, readdir, rename, rm, stat, writeFile } from '
 import { tmpdir } from 'node:os';
 import type { Database, MapBuildJobsTable } from '../db/schema';
 import type { AssetsService } from './assets.service';
-import { DIG_PARAM_KEYS, SCULPT_DIR, TerrainEditsService, type TerrainEdit } from './terrain-edits.service';
+import { DIG_PARAM_KEYS, SCULPT_DIR, SHORE_PARAM_KEYS, TerrainEditsService, type TerrainEdit } from './terrain-edits.service';
 import { CourseFeaturesService, type GeneratedFeatureCollection } from './course-features.service';
 import { sweref99tmToWgs84 } from './geo';
 import { innerSquareFromWgs84, squareArg, squareSideM, terrainManifestField } from './terrain-square';
@@ -1052,6 +1052,8 @@ export function terrainEditsGeojson(edits: TerrainEdit[], opts: { sculptDir?: st
                 ...(edit.params.widthM !== undefined ? { widthM: edit.params.widthM } : {}),
                 // dig: its profile params, verbatim.
                 ...Object.fromEntries(DIG_PARAM_KEYS.filter(k => edit.params[k] !== undefined).map(k => [k, edit.params[k]])),
+                // shore: the water level and its profile, verbatim (the islands are the polygon's holes).
+                ...Object.fromEntries(SHORE_PARAM_KEYS.filter(k => edit.params[k] !== undefined).map(k => [k, edit.params[k]])),
                 // delta (a Unity sculpt): the GeoTIFF it adds, as a path the pipeline can open.
                 ...(edit.op === 'delta' && edit.params.raster ? { raster: path.join(opts.sculptDir ?? '', edit.params.raster) } : {}),
                 createdAt: edit.createdAt,

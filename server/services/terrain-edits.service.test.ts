@@ -10,7 +10,8 @@ import { seedCourse, TEST_COURSE_ID } from '../db/seeds/course';
 import { SitesService } from './sites.service';
 import { CourseFeaturesService } from './course-features.service';
 import {
-    TerrainEditsService, InvalidTerrainEditError, InvalidRecipeEditError, RECIPE_ORIGIN, isDemEdit, parseEditsGeojson, type TerrainEditRing,
+    TerrainEditsService, InvalidTerrainEditError, InvalidRecipeEditError, RECIPE_ORIGIN, generatedCreatedAt, isDemEdit, parseEditsGeojson,
+    type TerrainEditRing,
 } from './terrain-edits.service';
 import { VersionConflictError } from '@basics/core/server/version-conflict';
 import { ConflictError, NotFoundError } from '@basics/core/server/auth';
@@ -334,6 +335,99 @@ test('a dig edit validates its profile and round-trips through the D-TE5 export'
     expect(feature.properties).toMatchObject({ op: 'dig', featherM: 0, depthM: 0.45, bankSlopeDeg: 18, faceSlopeDeg: 40, faceBearingDeg: 90, reference: 'plane', rimM: 2.5, variation: 0.25, seed: 42 });
     expect(feature.properties.shelfM).toBeUndefined();
     expect(parseEditsGeojson(terrainEditsGeojson([edit])).edits[0]!.params).toEqual(params);
+});
+
+test('a lake shore with islands imports through the API, toggles, and goes to the pipeline with its params and holes', async () => {
+    const { svc, siteId } = await setup();
+    const { terrainEditsGeojson } = await import('./map-build.service');
+    const app = new Hono();
+    app.use('*', async (c, next) => {
+        c.set('user', { id: 'user-1', username: 'tester' });
+        await next();
+    });
+    mount(app, '/api', createTerrainEditsApi(svc));
+    const post = (route: string, body: unknown) => app.request(`/api/terrain-edits/${route}`, {
+        method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body),
+    });
+    // Vättern off Omberg: a lake outline as dense as the real one, with one island.
+    const circle = (lon: number, lat: number, r: number, n: number) => {
+        const ring = Array.from({ length: n }, (_, i) => [lon + r * Math.cos((2 * Math.PI * i) / n), lat + r * Math.sin((2 * Math.PI * i) / n)]);
+        return [...ring, ring[0]!];
+    };
+    const LAKE_POINTS = 20000;
+    const shoreParams = {
+        levelM: 88.5, edgeSlope: 0.3, edgeM: 4, edgeEaseM: 2, shelfSlope: 0.05, shelfEndM: 40, shelfEaseM: 10, slope: 0.15,
+        depthM: 12, floorRoundM: 30, channelDepthM: 1.5, channelRatio: 0.4, channelFullM: 50, channelGoneM: 120,
+    };
+    const shore = (props: Record<string, unknown>) => ({
+        type: 'Feature',
+        geometry: { type: 'Polygon', coordinates: [circle(14.62, 58.34, 0.02, LAKE_POINTS), circle(14.625, 58.345, 0.002, 64)] },
+        properties: { op: 'shore', featherM: 0, originRef: 'lake:vattern', ...props },
+    });
+    const geojson = {
+        type: 'FeatureCollection',
+        features: [
+            shore(shoreParams),
+            shore({ depthM: 12 }),                                      // no water level
+            shore({ ...shoreParams, channelGoneM: 40 }),                // channel gone before it is full
+        ],
+    };
+    const res = await post('import', { siteId, origin: 'lake-shore', geojson });
+    expect(res.status).toBe(200);
+    const { imported, skipped } = await res.json() as { imported: Array<{ id: string; version: number; op: string; origin: string; params: object; rings: unknown[][] }>; skipped: string[] };
+    expect(imported).toHaveLength(1);
+    expect(skipped).toHaveLength(2);
+    expect(skipped[0]).toMatch(/levelM/);
+    expect(skipped[1]).toMatch(/channelGoneM/);
+    const [edit] = imported;
+    expect(edit!.op).toBe('shore');
+    expect(edit!.origin).toBe('lake-shore');
+    expect(edit!.params).toEqual({ featherM: 0, ...shoreParams });
+    expect(edit!.rings).toHaveLength(2);                                // the lake and its island
+    expect(edit!.rings[0]).toHaveLength(LAKE_POINTS);                   // GeoJSON's closing point dropped
+
+    // Listed and toggled like any generated edit; a re-import keeps it off.
+    expect((await post('update', { id: edit!.id, version: edit!.version, enabled: false })).status).toBe(200);
+    await post('import', { siteId, origin: 'lake-shore', geojson });
+    const [again] = await svc.listBySite(siteId);
+    expect(again!.enabled).toBe(false);
+    expect(await svc.listDemEdits(siteId)).toHaveLength(0);
+    await svc.update(again!.id, again!.version, { enabled: true });
+
+    // The pipeline handoff: every shore param verbatim, the island as the polygon's hole.
+    const [feature] = terrainEditsGeojson(await svc.listDemEdits(siteId)).features as any[];
+    expect(feature.properties).toMatchObject({ op: 'shore', featherM: 0, ...shoreParams });
+    expect(feature.geometry.coordinates).toHaveLength(2);
+    for (const ring of feature.geometry.coordinates) expect(ring[0]).toEqual(ring[ring.length - 1]);
+    expect(feature.geometry.coordinates[1]).toHaveLength(65);
+    expect(parseEditsGeojson(terrainEditsGeojson([again!])).edits[0]!.params).toEqual({ featherM: 0, ...shoreParams });
+
+    // Without featherM a shore has none; bad params are refused on create too.
+    expect(parseEditsGeojson({ type: 'FeatureCollection', features: [shore({ levelM: 88.5, featherM: undefined })] }).edits[0]!.params.featherM).toBe(0);
+    const bad: Array<Record<string, unknown>> = [
+        { featherM: 0 },                                            // no level
+        { featherM: 0, levelM: Infinity },
+        { featherM: 0, levelM: 88, depthM: 0 },
+        { featherM: 0, levelM: 88, edgeSlope: -0.1 },
+        { featherM: 0, levelM: 88, channelFullM: 50, channelGoneM: 50 },
+    ];
+    for (const p of bad) {
+        await expect(svc.create({ siteId, op: 'shore', params: p as any, rings: [SQUARE] })).rejects.toBeInstanceOf(InvalidTerrainEditError);
+    }
+    expect((await svc.create({ siteId, op: 'shore', params: { featherM: 0, levelM: -2 }, rings: [SQUARE] })).params.levelM).toBe(-2);
+});
+
+test('the lake shore replays first of the generated edits, and the others keep their stored stamps', async () => {
+    const { svc, siteId } = await setup();
+    const input = (ref: string) => ({ op: 'plane' as const, params: { featherM: 2 }, rings: [SQUARE], originRef: ref });
+    await svc.replaceByOrigin(siteId, 'building-pads', [input('pad')]);
+    await svc.replaceByOrigin(siteId, 'lake-shore', [{ op: 'shore', params: { featherM: 0, levelM: 88.5 }, rings: [SQUARE], originRef: 'lake' }]);
+    expect((await svc.listBySite(siteId)).map(e => e.originRef)).toEqual(['lake', 'pad']);
+    // Stamps written before the lake shore came still sort as they did.
+    expect(generatedCreatedAt(0, 'lake-shore')).toBe('2000-01-01 00:00:00.000000');
+    expect(generatedCreatedAt(2, 'building-pads')).toBe('2000-01-01 00:00:01.000002');
+    expect(generatedCreatedAt(0, 'road-grades')).toBe('2000-01-01 00:00:09.000000');
+    expect(generatedCreatedAt(0, 'someone-else')).toBe('2000-01-01 00:00:05.000000');
 });
 
 test('generated edits replay in the generators\' fixed order (roads last), each in file order, before hand-drawn ones', async () => {

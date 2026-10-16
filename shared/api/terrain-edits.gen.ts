@@ -4,7 +4,7 @@ import { apiFetch } from '@basics/core/client/fetch';
 export interface TerrainEdit {
     id: string;
     siteId: string;
-    op: 'corridor' | 'plane' | 'smooth' | 'dig' | 'delta' | 'recipe';
+    op: 'corridor' | 'plane' | 'smooth' | 'dig' | 'shore' | 'delta' | 'recipe';
     params: TerrainEditParams;
     rings: { x: number; y: number }[][];
     enabled: boolean;
@@ -32,6 +32,19 @@ export interface TerrainEditParams {
     rimM?: number;
     variation?: number;
     seed?: number;
+    levelM?: number;
+    edgeSlope?: number;
+    edgeM?: number;
+    edgeEaseM?: number;
+    shelfSlope?: number;
+    shelfEndM?: number;
+    shelfEaseM?: number;
+    slope?: number;
+    floorRoundM?: number;
+    channelDepthM?: number;
+    channelRatio?: number;
+    channelFullM?: number;
+    channelGoneM?: number;
     raster?: string;
     changedM2?: number;
     maxRaiseM?: number;
@@ -42,8 +55,8 @@ export interface TerrainEditParams {
 
 export interface TerrainEditsApi {
     list(input: { siteId: string }): Promise<TerrainEdit[]>;
-    create(input: { featureId?: string; rings?: { x: number; y: number }[][]; enabled?: boolean; params: { centerline?: { x: number; y: number }[]; widthM?: number; flat?: boolean; variation?: number; seed?: number; recipe?: string; featherM?: number; radiusM?: number; smoothM?: number; depthM?: number; bankSlopeDeg?: number; faceSlopeDeg?: number; faceBearingDeg?: number; shelfM?: number; shelfDepthM?: number; reference?: 'plane' | 'level' | 'stream'; rimM?: number; raster?: string; changedM2?: number; maxRaiseM?: number; maxLowerM?: number; overrides?: { [x: string]: unknown; } }; siteId: string; op: 'corridor' | 'plane' | 'smooth' | 'dig' | 'delta' | 'recipe' }): Promise<TerrainEdit>;
-    update(input: { params?: { centerline?: { x: number; y: number }[]; widthM?: number; flat?: boolean; variation?: number; seed?: number; recipe?: string; featherM?: number; radiusM?: number; smoothM?: number; depthM?: number; bankSlopeDeg?: number; faceSlopeDeg?: number; faceBearingDeg?: number; shelfM?: number; shelfDepthM?: number; reference?: 'plane' | 'level' | 'stream'; rimM?: number; raster?: string; changedM2?: number; maxRaiseM?: number; maxLowerM?: number; overrides?: { [x: string]: unknown; } }; rings?: { x: number; y: number }[][]; op?: 'corridor' | 'plane' | 'smooth' | 'dig' | 'delta' | 'recipe'; enabled?: boolean; id: string; version: number }): Promise<TerrainEdit>;
+    create(input: { featureId?: string; rings?: { x: number; y: number }[][]; enabled?: boolean; params: { centerline?: { x: number; y: number }[]; widthM?: number; flat?: boolean; variation?: number; seed?: number; recipe?: string; featherM?: number; radiusM?: number; smoothM?: number; depthM?: number; bankSlopeDeg?: number; faceSlopeDeg?: number; faceBearingDeg?: number; shelfM?: number; shelfDepthM?: number; reference?: 'plane' | 'level' | 'stream'; rimM?: number; levelM?: number; edgeSlope?: number; edgeM?: number; edgeEaseM?: number; shelfSlope?: number; shelfEndM?: number; shelfEaseM?: number; slope?: number; floorRoundM?: number; channelDepthM?: number; channelRatio?: number; channelFullM?: number; channelGoneM?: number; raster?: string; changedM2?: number; maxRaiseM?: number; maxLowerM?: number; overrides?: { [x: string]: unknown; } }; siteId: string; op: 'corridor' | 'plane' | 'smooth' | 'dig' | 'shore' | 'delta' | 'recipe' }): Promise<TerrainEdit>;
+    update(input: { params?: { centerline?: { x: number; y: number }[]; widthM?: number; flat?: boolean; variation?: number; seed?: number; recipe?: string; featherM?: number; radiusM?: number; smoothM?: number; depthM?: number; bankSlopeDeg?: number; faceSlopeDeg?: number; faceBearingDeg?: number; shelfM?: number; shelfDepthM?: number; reference?: 'plane' | 'level' | 'stream'; rimM?: number; levelM?: number; edgeSlope?: number; edgeM?: number; edgeEaseM?: number; shelfSlope?: number; shelfEndM?: number; shelfEaseM?: number; slope?: number; floorRoundM?: number; channelDepthM?: number; channelRatio?: number; channelFullM?: number; channelGoneM?: number; raster?: string; changedM2?: number; maxRaiseM?: number; maxLowerM?: number; overrides?: { [x: string]: unknown; } }; rings?: { x: number; y: number }[][]; op?: 'corridor' | 'plane' | 'smooth' | 'dig' | 'shore' | 'delta' | 'recipe'; enabled?: boolean; id: string; version: number }): Promise<TerrainEdit>;
     remove(input: { id: string; version: number }): Promise<{ ok: boolean }>;
     import(input: { siteId: string; origin: string; geojson: unknown }): Promise<{ imported: TerrainEdit[]; skipped: string[] }>;
 }

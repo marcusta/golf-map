@@ -265,6 +265,36 @@ describe('recipe edits', () => {
     });
 });
 
+describe('a lake shore', () => {
+    test('its dense outline is drawn once, simplified, with the islands as holes; a draft click leaves it alone', () => {
+        const m = fakeMap();
+        const log: MarkerLog = { created: 0, moved: 0, removed: 0 };
+        const r = new TerrainEditOverlayRenderer(markerFactory(log));
+        // 50k points 0.25 m apart along a wavy 2 km shoreline, and one island.
+        const N = 50_000;
+        const lake = Array.from({ length: N }, (_, k) => {
+            const a = (2 * Math.PI * k) / N;
+            const rad = 2000 + 3 * Math.sin(400 * a);
+            return { x: X0 + rad * Math.cos(a), y: Y0 + rad * Math.sin(a) };
+        });
+        const shore = edit(900, { op: 'shore', origin: 'lake-shore', params: { featherM: 0, levelM: 88.5 }, rings: [lake, ring(0, 64)] });
+        r.render(m.svc, view([], [])); // overlay added
+        resetTerrainEditProjectionCount();
+        r.render(m.svc, view([shore], []));
+        const data = m.updates.filter(u => u.id === TERRAIN_EDIT_OVERLAY_ID).at(-1)!.data;
+        expect(data.features).toHaveLength(1);
+        const coords = (data.features[0].geometry as { coordinates: number[][][] }).coordinates;
+        expect(coords).toHaveLength(2);
+        expect(coords[0][0]).toEqual(coords[0].at(-1)!);
+        expect(coords[0].length).toBeLessThan(N);
+        expect(terrainEditProjectionCount()).toBeLessThan(N);
+
+        resetTerrainEditProjectionCount();
+        r.render(m.svc, view([shore], addDraftPoint([], 0)));
+        expect(terrainEditProjectionCount()).toBe(1);
+    });
+});
+
 describe('rubber band', () => {
     test('draft-cursor segment runs from the last point to the pointer; absent without a draft', () => {
         const m = fakeMap();

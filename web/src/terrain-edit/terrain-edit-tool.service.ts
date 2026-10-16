@@ -80,7 +80,10 @@ export type TerrainEditOp = TerrainEdit['op'];
 export const RECIPE_OP = 'recipe' satisfies TerrainEditOp;
 
 /** Marker glyph per op (DOM markers — the editor style has no glyphs endpoint). */
-export const OP_GLYPHS: Record<TerrainEditOp, string> = { plane: '▱', smooth: '∿', corridor: '⫽', dig: '◡', delta: '≈', recipe: '◈' };
+export const OP_GLYPHS: Record<TerrainEditOp, string> = { plane: '▱', smooth: '∿', corridor: '⫽', dig: '◡', shore: '≋', delta: '≈', recipe: '◈' };
+
+/** The origin of the generated lake shore (`golfpipe shore-edits`, imported through the terrain-edits import). */
+export const LAKE_SHORE_ORIGIN = 'lake-shore';
 
 /** Whether an edit is a feature's Blender recipe. */
 export function isRecipeEdit(edit: TerrainEdit): boolean {
@@ -139,11 +142,18 @@ export function paramsSummary(edit: TerrainEdit): string {
             ? `face ${edit.params.faceSlopeDeg}° to ${Math.round(edit.params.faceBearingDeg ?? 0)}°, entry ${edit.params.bankSlopeDeg}°`
             : `banks ${edit.params.bankSlopeDeg}°`);
     }
+    if (edit.op === 'shore') {
+        // The generated lake shore: the water level, the bed dug below it.
+        parts.push(`water at ${edit.params.levelM} m`);
+        if (edit.params.depthM !== undefined) parts.push(`floor ${edit.params.depthM} m below`);
+        const islands = edit.rings.length - 1;
+        if (islands > 0) parts.push(`${islands} island${islands === 1 ? '' : 's'}`);
+    }
     if (edit.op === 'delta') {
         // A Unity sculpt layer ("Pull from Unity"): heights changed in Unity, added on top of everything.
         parts.push(`Unity sculpt, ${((edit.params.changedM2 ?? 0) / 10000).toFixed(2)} ha, +${edit.params.maxRaiseM ?? 0} / ${edit.params.maxLowerM ?? 0} m`);
     }
-    if (edit.op !== 'dig' && edit.op !== 'delta') parts.push(`feather ${edit.params.featherM} m`);
+    if (edit.op !== 'dig' && edit.op !== 'shore' && edit.op !== 'delta') parts.push(`feather ${edit.params.featherM} m`);
     return parts.join(' · ');
 }
 
@@ -161,6 +171,7 @@ export interface EditGroup {
 const GROUPS: Array<{ key: string; label: string }> = [
     { key: 'hand', label: 'Your edits' },
     { key: 'recipes', label: 'Blender recipes' },
+    { key: LAKE_SHORE_ORIGIN, label: 'Lake shore' },
     { key: 'water-digs', label: 'Ponds' },
     { key: 'bunker-digs', label: 'Bunkers' },
     { key: 'creek-digs', label: 'Creeks' },
@@ -803,6 +814,7 @@ export class TerrainEditToolService {
             if (table && typeof preset === 'string' && preset in table) parts.push(table[preset].label);
             return parts.join(' · ');
         }
+        if (edit.origin === LAKE_SHORE_ORIGIN) return 'Lake shore';
         if (edit.origin === 'building-pads') return 'Building pad';
         if (edit.origin === 'road-grades') return edit.params.widthM !== undefined ? `Road grade · ${edit.params.widthM} m wide` : 'Road grade';
         if (edit.origin.startsWith('unity-sculpt')) {
@@ -843,7 +855,7 @@ export class TerrainEditToolService {
         if (isRecipeEdit(edit)) return this.featureOf(edit) ? 'recipes' : 'away';
         if (!edit.origin) return 'hand';
         if (edit.origin in DIG_NOUNS) return this.featureOf(edit) ? edit.origin : 'away';
-        if (edit.origin === 'building-pads' || edit.origin === 'road-grades') return edit.origin;
+        if (edit.origin === 'building-pads' || edit.origin === 'road-grades' || edit.origin === LAKE_SHORE_ORIGIN) return edit.origin;
         if (edit.origin.startsWith('unity-sculpt')) return 'sculpt';
         return 'other';
     }

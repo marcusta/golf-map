@@ -639,6 +639,13 @@ test('paramsSummary names flat planes and smooth radii', () => {
         .toBe(`r ${DEFAULT_RADIUS_M} m · feather 2 m`);
 });
 
+test('paramsSummary gives a lake shore its water level, floor and islands, no feather', () => {
+    const ring = [{ x: 0, y: 0 }, { x: 10, y: 0 }, { x: 10, y: 10 }];
+    expect(paramsSummary(makeEdit({ op: 'shore', params: { featherM: 0, levelM: 88.5, depthM: 12 }, rings: [ring, ring, ring] })))
+        .toBe('water at 88.5 m · floor 12 m below · 2 islands');
+    expect(paramsSummary(makeEdit({ op: 'shore', params: { featherM: 0, levelM: 88.5 } }))).toBe('water at 88.5 m');
+});
+
 // ─── Apply to terrain (the T56 fast re-terrain job) ─────────────────────────
 
 describe('applyToTerrain', () => {
@@ -769,6 +776,7 @@ describe('changing an edit', () => {
         expect(h.svc.formKind(makeEdit({ op: 'plane', origin: 'building-pads', originRef: 'osm:way/1' }))).toBeNull();
         expect(h.svc.formKind(makeEdit({ op: 'corridor', origin: 'road-grades', originRef: 'osm:way/2' }))).toBeNull();
         expect(h.svc.formKind(makeEdit({ op: 'delta', origin: 'unity-sculpt-inner', originRef: null }))).toBeNull();
+        expect(h.svc.formKind(makeEdit({ op: 'shore', origin: 'lake-shore', originRef: 'lake:vattern', params: { featherM: 0, levelM: 88.5 } }))).toBeNull();
     });
 
     test("a generated dig's settings come from its feature, and saving them writes the feature and re-digs", async () => {
@@ -824,6 +832,7 @@ describe('finding an edit', () => {
         dig('d-c', 'creek-digs', 'c'),
         dig('d-gone', 'water-digs', 'elsewhere'),
         makeEdit({ id: 'mine', op: 'smooth', params: { featherM: 2, radiusM: 3 } }),
+        makeEdit({ id: 'lake', op: 'shore', origin: 'lake-shore', originRef: 'lake:vattern', params: { featherM: 0, levelM: 88.5, depthM: 12 } }),
     ];
 
     test('each edit is named after what it is: its feature and hole, or its kind', async () => {
@@ -835,6 +844,7 @@ describe('finding an edit', () => {
         expect(byId('pad')).toBe('Building pad');
         expect(byId('road')).toBe('Road grade · 6 m wide');
         expect(byId('mine')).toBe('Smooth (drawn)');
+        expect(byId('lake')).toBe('Lake shore');
         expect(byId('d-gone')).toBe('Pond · not on this course');
     });
 
@@ -843,6 +853,7 @@ describe('finding an edit', () => {
         const groups = h.svc.groups.get().map(g => [g.label, g.edits.map(e => e.id)]);
         expect(groups).toEqual([
             ['Your edits', ['mine']],
+            ['Lake shore', ['lake']],
             ['Ponds', ['d-p5']],
             ['Bunkers', ['d-b1', 'd-b3']],
             ['Creeks', ['d-c']],
