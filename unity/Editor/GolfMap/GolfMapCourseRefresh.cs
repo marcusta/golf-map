@@ -162,6 +162,8 @@ namespace GolfMap.Editor
             else steps.Add(new Step { id = "opcd.materials", label = "OPCD default materials", status = skip.Contains("meshes.sync") ? "skipped" : "not run", note = "part of meshes.sync" });
 
             // 3. the bunker paint convention (Set Default Materials puts OPCD's own bunker materials back)
+            // OPCD's Set Default Materials leaves its satellite materials' _Satellite empty again: the course photo back in
+            run("satellite.fill", "Course photo into emptied satellite slots", () => GolfMapTerrainImporter.SatelliteAssignCommand(new BridgeArgs(new Dictionary<string, object> { { "only", "empty" }, { "dryRun", dryRun } })), planned);
             run("bunkers.materials", "Bunker Materials convention", () => GolfMapBunkerMaterials.ApplyConvention(a.String("conventionFile"), a.String("convention"), dryRun), planned);
 
             // 3b. the cart path look (Set Default Materials puts OPCD's satellite concrete back on a re-added path)
@@ -336,6 +338,8 @@ namespace GolfMap.Editor
             if (!only.Any(n => GolfMapBunkerMaterials.SetKey(n) != null))
                 notNeeded("bunkers.materials", "Bunker Materials convention", "no bunker or bunker blend among them");
             else
+                // OPCD's Set Default Materials leaves its satellite materials' _Satellite empty again: the course photo back in
+                run("satellite.fill", "Course photo into emptied satellite slots", () => GolfMapTerrainImporter.SatelliteAssignCommand(new BridgeArgs(new Dictionary<string, object> { { "only", "empty" }, { "dryRun", dryRun } })), planned);
                 run("bunkers.materials", "Bunker Materials convention (their bunker sets)", () =>
                     GolfMapBunkerMaterials.ApplyConvention(a.String("conventionFile"), a.String("convention"), dryRun, only), planned);
 

@@ -586,7 +586,7 @@ namespace GolfMap.Editor
         // and onto every one of them.
         [BridgeCommand("golfmap.satellite.assign", "Put an orthophoto JPEG of the course export folder (default <prefix>-*-meshes.jpg, the newest) into Assets/Terrain Backup/<prefix>/ (8192, high quality) and onto every project material with a _Satellite slot (OPCD MAHS satellite materials) and every Stix grass material's empty _ColorMap (NewRough), setting _TerrainSize / _ColorMapTiling to the inner terrain's side. For a new course whose materials still hold another course's photo or none. only=empty leaves materials that already show a texture other than the source course's alone.",
             args = "file (a .jpg in the export folder), only=all|empty, list=false (every material in the answer, not the first 10), dryRun=false, " + GolfMapSceneSave.Arg)]
-        static object SatelliteAssignCommand(BridgeArgs a)
+        internal static object SatelliteAssignCommand(BridgeArgs a)
         {
             var course = GolfMapCourses.Require();
             if (string.IsNullOrEmpty(course.exportFolder)) throw new BridgeError("The course asset names no export folder.");
