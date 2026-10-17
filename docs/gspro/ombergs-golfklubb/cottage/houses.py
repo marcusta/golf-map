@@ -28,7 +28,7 @@ def register_materials():
     M["tile_moss"] = ("pantile:110,88,70", (2.0, 2.0), None, 0.15, 0.0)        # old tile under moss (the ortho roof is brown-green)
     M["plinth_stone"] = ("stone:116,112,108", (2.0, 2.0), None, 0.2, 0.0)            # granite plinth and steps
     M["sheet_red"] = ("seam:152,66,55:0.076:2.0:1", (2.0, 2.0), None, 0.12, 0.1)    # corrugated red sheet, relief in the normal map
-    M["sheet_pale"] = ("seam:200,172,152:0.076:2.0:1", (2.0, 2.0), None, 0.2, 0.1)  # the lighter patch on the barn roof
+    M["sheet_pale"] = ("seam:186,138,118:0.076:2.0:1", (2.0, 2.0), None, 0.2, 0.1)  # the lighter patch on the barn roof; calibrated in Unity against the ortho (~242,209,190 raw)
     M["sheet_frame"] = (None, (1, 1), (140, 56, 46), 0.12, 0.1)
     kit.TILE_ROOFS["tile_clay"] = 0.34     # stepped courses as geometry (as kit._roof_slab and the farm do)
     kit.TILE_ROOFS["tile_moss"] = 0.34
