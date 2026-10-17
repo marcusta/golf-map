@@ -43,10 +43,10 @@ def materials():
     kit.MATERIALS["omberg_pale_grey"] = ("boards:207,201,189:v:0.145:2:2", (2, 2), None, .15, 0)
     kit.MATERIALS["omberg_main_grey"] = ("plaster:190,193,187", (2, 2), None, .12, 0)
     kit.MATERIALS["omberg_basement_stone"] = ("stone:119,124,119", (2, 2), None, .10, 0)
-    # Ortho-matched clay tile: check_survey.py, white-balanced on car-park asphalt,
-    # gives about 148,106,94 sRGB on the five tile roofs (2023: 171,121,104).
-    # The pantile texture averages ~0.9 of its input colour.
-    kit.MATERIALS["omberg_terracotta"] = ("pantile:165,116,100", (2, 2), None, .22, 0)
+    # Clay tile matched to the ortho as RENDERED in Unity: a top-down Unity capture
+    # of the clubhouse roof should read like the raw 2025 ortho (about 212,149,135).
+    # Unity's sky light lifts the dark channels, so the albedo is redder than that.
+    kit.MATERIALS["omberg_terracotta"] = ("pantile:161,93,80", (2, 2), None, .22, 0)
     # Roof relief is carried by the texture/normal map, not centimetre-scale
     # repeated mesh lips: the latter produced lighting bands in Unity 2018.
     kit.MATERIALS["omberg_silver_roof"] = ("seam:142,146,147:0.45:1.8:0", (1.8, 1.8), None, .3, .25)  # foyer; ortho ~130,133,134

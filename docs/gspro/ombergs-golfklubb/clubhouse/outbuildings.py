@@ -20,7 +20,7 @@ def register_materials():
     kit.MATERIALS["omberg_sedum"]=("foliage:88,85,81",(1.8,1.8),None,.08,0)
     # Cross-gable roof of the hall: dark brown-grey tile (ortho 2025 cal. 92,83,80), not the lodges' orange.
     kit.MATERIALS["omberg_tile_dark"]=("pantile:102,92,89",(2,2),None,.2,0)
-    kit.MATERIALS["omberg_terracotta_aged"]=("pantile:142,104,97",(2,2),None,.22,0)
+    kit.MATERIALS["omberg_terracotta_aged"]=("pantile:139,83,78",(2,2),None,.22,0)
     solid("omberg_roof_fascia",(112,56,47),.15)         # red-brown roof edge of the hall (DJI photo)
     solid("omberg_stair_grey",(166,167,162),.12)        # pale grey exterior stair (DJI photo)
     solid("omberg_fascia_dark",(62,62,60),.15)          # fascia of the metal annex roofs
