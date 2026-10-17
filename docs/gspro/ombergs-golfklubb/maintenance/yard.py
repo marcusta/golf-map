@@ -52,6 +52,9 @@ PAVE_EAST = [
     (702.61, 934.1), (703.6, 936.82), (703.62, 937.63), (706.48, 945.84), (706.62, 947.13), (707.26, 949.03),
     (708, 950.4), (708.51, 952.16), (709.5, 953.9), (709.75, 955.01), (711.04, 957.71), (711.66, 958.5),
 ]
+# edges (vertex i -> i+1) of the polygons that lie on the road mesh (within 0.7 m of its smoothed outline)
+ROAD_EDGES_EAST = range(12, 73)
+ROAD_EDGES_WEST = range(19, 77)
 PAVE_WEST = [
     (700.6, 864.5), (696.8, 871.2), (694.9, 875.9), (692.4, 881.6), (690.5, 886.6), (689.1, 890.7), (686.7, 900.3),
     (685.3, 905.2), (683.8, 909.6), (683.2, 914), (683.4, 915.8), (689.9, 915.7), (690.2, 926), (690.6, 934.2),
@@ -150,7 +153,7 @@ def _tex_yardasphalt(self, color="74,74,73"):
     g = kit._fbm((S, S), 211, scales=(256, 96, 24))
     grit = kit._noise((S, S), 213, 2) * 0.6 + kit._rng(214).random((S, S)) * 0.4
     chips = (kit._rng(215).random((S, S)) > 0.985) * 0.18          # a few pale stones in the binder
-    v = 0.80 + 0.34 * g + 0.16 * (grit - 0.5) + chips
+    v = 0.94 + 0.10 * (g - 0.5) + 0.09 * (grit - 0.5) + chips * 0.5      # even: the road mesh beside it is very even
     return _rgb(color) * v[:, :, None], grit, 1.2
 
 
@@ -258,19 +261,40 @@ def fill(poly, step):
     return tris, edges
 
 
-def surface(g, F, poly, mat, zfn, step=1.5, skirt=0.12, name=None):
-    """A thin paving laid on the ground: grid-cut fill at zfn(x, y) and a skirt going `skirt` m under the terrain round the
-    rim. Records the residual of every triangle's plane against the terrain (at its centroid) in STATS[name]."""
+def _on_segment(m, a, b, tol=2e-3):
+    dx, dy = b[0] - a[0], b[1] - a[1]
+    L2 = dx * dx + dy * dy
+    t = max(0.0, min(1.0, ((m[0] - a[0]) * dx + (m[1] - a[1]) * dy) / L2)) if L2 else 0.0
+    return math.hypot(m[0] - a[0] - t * dx, m[1] - a[1] - t * dy) < tol
+
+
+def surface(g, F, poly, mat, zfn, uvfn, step=1.5, skirt=0.12, name=None, taper=()):
+    """A thin paving laid on the ground: grid-cut fill at zfn(x, y) and a skirt going `skirt` m under the terrain round the rim.
+    - UVs are `uvfn(x, y)` in metres, the same planar mapping for every triangle (the kit's default mapping builds a frame from
+      each face's own normal, so a draped surface whose normals differ by a degree would jump in texture at every edge).
+    - The skirt is separate geometry: its top edge hangs 3 mm below the paving's rim, so the kit's weld (0.5 mm) leaves the vertices
+      apart and a smooth-shaded top never shares normals with the vertical skirt (no dark rim).
+    - `taper` = [(p, q)] edges that lie on the course's road mesh: there the rim comes down to the ground (+1.2 cm, the road mesh's
+      own height) and has no skirt, so the paving runs out onto the road instead of ending in a lip.
+    Records the residual of every triangle's plane against the terrain (at its centroid) in STATS[name]."""
     tris, edges = fill(orient(poly), step)
     res = STATS.setdefault(name or mat, [9e9, -9e9, 0])
+    on_road = [any(_on_segment(((a[0] + b[0]) / 2, (a[1] + b[1]) / 2), p, q) for p, q in taper) for a, b in edges]
+    tap = {(round(v[0], 3), round(v[1], 3)) for (a, b), r in zip(edges, on_road) if r for v in (a, b)}
+
+    def zf(x, y):
+        return F.ground(x, y) + 0.012 if (round(x, 3), round(y, 3)) in tap else zfn(x, y)
+
     for t in tris:
-        pts = [(x, y, zfn(x, y)) for x, y in t]
-        g.poly(pts, mat)
+        pts = [(x, y, zf(x, y)) for x, y in t]
+        g.poly(pts, mat, uv=("uv", [uvfn(x, y) for x, y in t]))
         cx, cy = sum(p[0] for p in t) / 3, sum(p[1] for p in t) / 3
         r = sum(p[2] for p in pts) / 3 - F.ground(cx, cy)
         res[0], res[1], res[2] = min(res[0], r), max(res[1], r), res[2] + 1
-    for a, b in edges:
-        g.poly([(*a, F.ground(*a) - skirt), (*b, F.ground(*b) - skirt), (*b, zfn(*b)), (*a, zfn(*a))], mat)
+    for (a, b), r in zip(edges, on_road):
+        if not r:
+            g.poly([(*a, F.ground(*a) - skirt), (*b, F.ground(*b) - skirt), (*b, zf(*b) - 0.003), (*a, zf(*a) - 0.003)], mat,
+                   uv=("uv", [uvfn(*a), uvfn(*b), uvfn(*b), uvfn(*a)]))
 
 
 # ---- walls ---------------------------------------------------------------------------------------------
@@ -336,7 +360,8 @@ def heap(g, F, mat, cones, a_rng, b_rng, step, lumps, seed):
         for j in range(nb):
             if max(hs[i, j], hs[i + 1, j], hs[i + 1, j + 1], hs[i, j + 1]) < 0.02:
                 continue
-            g.poly([zs[i, j], zs[i + 1, j], zs[i + 1, j + 1], zs[i, j + 1]], mat)
+            g.poly([zs[i, j], zs[i + 1, j], zs[i + 1, j + 1], zs[i, j + 1]], mat,
+                   uv=("uv", [(A[i], B[j]), (A[i + 1], B[j]), (A[i + 1], B[j + 1]), (A[i], B[j + 1])]))   # planar (a, b): no per-face frames
 
 
 def slab_abs(ev, e, n):
@@ -485,12 +510,15 @@ def tilt_trailer(g, with_carts=True):
 
 
 # ---- build ---------------------------------------------------------------------------------------------
-def build_asphalt(add, new, ev, name, poly_off):
+def build_asphalt(add, new, ev, name, poly_off, road_edges):
     F = world_frame(ev, poly_off)
     g = new()
     g.category = "structure"
     poly = [(OFF[0] + e - F.e, OFF[1] + n - F.n) for e, n in poly_off]
-    surface(g, F, poly, "yard_asphalt", lambda x, y: F.smooth(x, y) + ASPHALT_LIFT, step=1.0, skirt=0.12, name=name)
+    taper = [(poly[i], poly[(i + 1) % len(poly)]) for i in road_edges]
+    # planar world UVs: one texture field across the whole apron (and across both assets' tiles, as 4 m repeats)
+    surface(g, F, poly, "yard_asphalt", lambda x, y: F.smooth(x, y) + ASPHALT_LIFT,
+            lambda x, y: (F.e + x - OFF[0], F.n + y - OFF[1]), step=1.0, skirt=0.12, name=name, taper=taper)
     add("omberg_maint_" + name, g, F.e, F.n, 90.0, F.z0)
 
 
@@ -505,7 +533,8 @@ def build_bays(add, new, ev):
     g = new()
     g.category = "structure"
     surface(g, F, [L(a0, b0), L(a1, b0), L(a1, b1), L(a0, b1)], "yard_slab",
-            lambda x, y: F.up(slab_abs(ev, *F.world(x, y))), step=1.5, skirt=0.12, name="yard_slab")
+            lambda x, y: F.up(slab_abs(ev, *F.world(x, y))),
+            lambda x, y: (x + F.a0 - a0, y + F.b0 - b0), step=1.5, skirt=0.12, name="yard_slab")   # (a, b) from the slab's corner: the 4 m saw-cut grid starts at its edges
     add("omberg_maint_yard_slab", g, F.e, F.n, F.yaw, F.z0)
 
     # precast walls: foot 20 cm under the lowest ground along the wall, tops level at the lidar height
@@ -598,8 +627,8 @@ def build_vehicles(add, new, ev):
 
 def build(add, new, ev):
     STATS.clear()
-    build_asphalt(add, new, ev, "yard_asphalt_east", PAVE_EAST)
-    build_asphalt(add, new, ev, "yard_asphalt_west", PAVE_WEST)
+    build_asphalt(add, new, ev, "yard_asphalt_east", PAVE_EAST, ROAD_EDGES_EAST)
+    build_asphalt(add, new, ev, "yard_asphalt_west", PAVE_WEST, ROAD_EDGES_WEST)
     build_bays(add, new, ev)
     build_stones(add, new, ev, "edge_stones_east", STONES_EAST, True)
     build_stones(add, new, ev, "edge_stones_west", STONES_WEST, False)
