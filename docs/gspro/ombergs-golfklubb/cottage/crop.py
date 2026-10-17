@@ -16,7 +16,7 @@ from laspy.copc import Bounds
 ROOT = Path(__file__).resolve().parents[4]
 SOURCE = ROOT / 'data/sources/317d1f83-3ade-431c-8201-605ac0bd2871'
 OUT = ROOT / 'data/omberg-cottage'
-BOUNDS = (477350, 6457490, 477700, 6457720)  # the house group by the rocks and the barn to the north-west
+BOUNDS = (477350, 6457230, 477700, 6457720)  # the house group by the rocks, the barn to the north-west and the toilet house by the track to the south
 
 def main():
     OUT.mkdir(parents=True, exist_ok=True)
