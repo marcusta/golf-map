@@ -737,6 +737,7 @@ namespace GolfMap.Editor
         {
             LoadFile(); // Always re-read an export changed on disk.
             if (loaded == null) return;
+            var buildingNote = ClearBuildingStems();
             string biomeReport;
             try { ValidateTarget();biomeReport=PrepareBiome(); } catch(Exception e){status="Not planted: "+e.Message;Debug.LogError("[GolfMap] "+status);return;}
             var report = AlignmentReport();
@@ -756,12 +757,64 @@ namespace GolfMap.Editor
             int planted = 0, skipped = 0;
 
             if(useBiome&&biomeMatches.Count==0){status="No eligible biome matches. Nothing changed.";return;}
-            if (mode == Mode.PersistentStorage) {bool available=false;StorageAvailable(ref available);if(!available){status="Install GolfMapTreePlanterVsp.cs for PersistentStorage mode.";return;} PlantStorage();status+=biomeReport; return; }
+            if (mode == Mode.PersistentStorage) {bool available=false;StorageAvailable(ref available);if(!available){status="Install GolfMapTreePlanterVsp.cs for PersistentStorage mode.";return;} PlantStorage();status+=biomeReport+buildingNote; return; }
             if (mode == Mode.TerrainInstances) planted = PlantTerrainInstances(protos, rng, out skipped);
             else planted = PlantGameObjects(protos, rng, out skipped);
 
-            status = $"Planted {planted} trees ({skipped} skipped). {report}"+biomeReport;
+            status = $"Planted {planted} trees ({skipped} skipped). {report}"+biomeReport+buildingNote;
             Debug.Log($"[GolfMap] {status}");
+        }
+
+        // Survey stems under or within kBuildingClearM of a placed building (GolfMap Props/Buildings)
+        // are left out: lidar reads roof edges and corners as small crowns, and a house fitted to its
+        // lidar roof covers stems the trees export never knew about. Hand-edited stems stay. The
+        // re-read file is planted from, so this only drops stems for this planting.
+        const float kBuildingClearM = 1.0f;
+        string ClearBuildingStems()
+        {
+            if (terrain == null || loaded == null) return "";
+            var root = terrain.gameObject.scene.GetRootGameObjects().FirstOrDefault(g => g.name == GolfMapProps.RootName);
+            var buildings = root ? root.transform.Find("Buildings") : null;
+            if (!buildings) return "";
+            var colliders = new List<MeshCollider>();
+            var temporary = new List<GameObject>();
+            try
+            {
+                foreach (var filter in buildings.GetComponentsInChildren<MeshFilter>())
+                {
+                    if (!filter.sharedMesh || !filter.gameObject.activeInHierarchy) continue;
+                    var go = new GameObject("GolfMap building probe") { hideFlags = HideFlags.HideAndDontSave };
+                    temporary.Add(go);
+                    go.transform.SetParent(filter.transform, false);
+                    var c = go.AddComponent<MeshCollider>();
+                    c.sharedMesh = filter.sharedMesh;
+                    colliders.Add(c);
+                }
+                Physics.SyncTransforms();
+                int before = loaded.trees.Count;
+                loaded.trees.RemoveAll(t => !treeEdits.ContainsKey(t) && NearBuilding(colliders, WorldPos(t)));
+                int cleared = before - loaded.trees.Count;
+                return cleared > 0 ? "\nLeft out " + cleared + " stems under or within " + kBuildingClearM + " m of a building." : "";
+            }
+            finally { foreach (var go in temporary) if (go) DestroyImmediate(go); }
+        }
+
+        // A downward ray at the stem and at eight points kBuildingClearM around it: any hit on a
+        // building mesh means the stem stands inside its roof outline or against its wall.
+        static bool NearBuilding(List<MeshCollider> colliders, Vector3 stem)
+        {
+            for (int i = -1; i < 8; i++)
+            {
+                var p = i < 0 ? stem : stem + new Vector3(Mathf.Cos(i * Mathf.PI / 4), 0, Mathf.Sin(i * Mathf.PI / 4)) * kBuildingClearM;
+                foreach (var c in colliders)
+                {
+                    var b = c.bounds;
+                    if (p.x < b.min.x || p.x > b.max.x || p.z < b.min.z || p.z > b.max.z) continue;
+                    RaycastHit hit;
+                    if (c.Raycast(new Ray(new Vector3(p.x, b.max.y + 1, p.z), Vector3.down), out hit, b.size.y + 2)) return true;
+                }
+            }
+            return false;
         }
 
         List<GameObject> Fallback(int kind)
