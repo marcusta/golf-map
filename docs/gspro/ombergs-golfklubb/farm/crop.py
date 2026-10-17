@@ -16,7 +16,7 @@ from laspy.copc import Bounds
 ROOT = Path(__file__).resolve().parents[4]
 SOURCE = ROOT / 'data/sources/317d1f83-3ade-431c-8201-605ac0bd2871'
 OUT = ROOT / 'data/omberg-farm'
-BOUNDS = (478190, 6457540, 478450, 6457760)
+BOUNDS = (478190, 6457380, 478450, 6457760)  # south edge takes in the houses across the road
 
 def main():
     OUT.mkdir(parents=True, exist_ok=True)

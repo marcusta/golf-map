@@ -5,7 +5,7 @@ Output is a golfmap-props-v1 folder (Models/, Textures/, props.json, build-repor
 omberg-farm-authored.blend), installed beside the clubhouse set by
 clubhouse/install.ps1 (it merges by asset id). Evidence: data/omberg-farm/ (crop.py).
 
-dwellings.py, barns.py and garden.py each define register_materials() and build(add, new, ev).
+dwellings.py, barns.py, garden.py and neighbours.py each define register_materials() and build(add, new, ev).
 Every material here is exported as omberg_farm_<name>, so nothing collides with the
 clubhouse set's materials in the shared Unity props.json.
 """
@@ -26,6 +26,7 @@ import build_props as exporter
 import dwellings
 import barns
 import garden
+import neighbours
 
 ORIGIN = (478320.0, 6457650.0)   # review-scene origin (EPSG:3006)
 BASE_Z = 100.0                    # review-scene z origin (RH2000)
@@ -58,6 +59,7 @@ def main():
     dwellings.register_materials()
     barns.register_materials()
     garden.register_materials()
+    neighbours.register_materials()
     ev = Evidence()
     assets, instances = {}, []
 
@@ -72,6 +74,7 @@ def main():
     dwellings.build(add, kit.Geo, ev)
     barns.build(add, kit.Geo, ev)
     garden.build(add, kit.Geo, ev)
+    neighbours.build(add, kit.Geo, ev)
 
     for g in assets.values():
         renamed = []
@@ -83,7 +86,7 @@ def main():
         g.faces = renamed
     used = {m for g in assets.values() for _, m, _ in g.faces}
     table = kit.material_table(kit.TextureBank(str(out / "Textures"), 1024), used)
-    matte = {farm_name(m) for m in getattr(dwellings, "MATTE", set()) | getattr(barns, "MATTE", set()) | getattr(garden, "MATTE", set())}
+    matte = {farm_name(m) for m in getattr(dwellings, "MATTE", set()) | getattr(barns, "MATTE", set()) | getattr(garden, "MATTE", set()) | getattr(neighbours, "MATTE", set())}
     for name in matte & set(table):
         table[name]["specular"] = [0, 0, 0]
         table[name]["smoothness"] = 0
