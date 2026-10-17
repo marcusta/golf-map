@@ -243,6 +243,20 @@ def test_gravel_and_dirt_paths_get_the_edge_fade_last_on_the_final_heights(tmp_p
     assert "paths-edge-fade" not in [o["id"] for o in doc["ops"]] and stats["edge_fade_paths"] == 0
 
 
+def test_hard_paths_get_a_rounded_edge_after_the_split_and_the_footprints(tmp_path):
+    """Asphalt, concrete and paving roll over into a lip above the verge: after split_surfaces (each part's own
+    surface) and on the heights the pads leave, before the gravel's edge fade. Gravel and dirt alone get none."""
+    doc, stats = _layer(tmp_path)
+    ids = [o["id"] for o in doc["ops"]]
+    assert _ops(doc)["paths-kerb"] == {"id": "paths-kerb", "op": "golfmap.path_kerb", "select": {"type": "path"}}
+    assert ids.index("paths-surfaces") < ids.index("paths-kerb") < ids.index("paths-edge-fade")
+    assert all(ids.index("paths-kerb") > i for i, o in enumerate(doc["ops"]) if o["op"] == "golfmap.flatten_footprint")
+    assert stats["kerb_paths"] >= 1
+    soft = [dict(f, attrs={"surface": "gravel"}) if f["type"] == "path" else f for f in FEATURES]
+    doc, stats = _layer(tmp_path, features=soft, name="soft.sqlite")
+    assert "paths-kerb" not in [o["id"] for o in doc["ops"]] and stats["kerb_paths"] == 0
+
+
 def test_a_road_network_of_two_surfaces_is_split_per_surface_after_the_cut_and_smooth(tmp_path):
     """The asphalt lot and the gravel road touch: one `roads_<n>` shape in the SVG, of two surfaces, so Blender
     cuts its mesh apart (golfmap.split_surfaces, selected by the shape's name) before any footprint levels it;

@@ -3636,6 +3636,13 @@ def shaping_global(db_path: Path, course_ident: str) -> tuple[dict, dict]:
     ops += pads
     stats["pads"] = len(pads)
 
+    # On the final heights too: the hard roads' fringe strips roll over into a lip above the verge, as laid asphalt
+    # does (blender/README.md "Shaping: rounded hard-road edge"). After split_surfaces (each part's own surface).
+    hard = [r for r in paths if _row_surface(r) in SHAPING_KERB_SURFACES]
+    stats["kerb_paths"] = len(hard)
+    if hard:
+        ops.append({"id": SHAPING_KERB_ID, "op": "golfmap.path_kerb", "select": {"type": "path"}})
+
     # Last, on the final heights (the footprints above level lots and pads): gravel and dirt paths break up into the
     # grass instead of ending on a line (blender/README.md "Shaping: path edge fade"). After split_surfaces, which
     # gives every part its own surface; asphalt, concrete ... keep their crisp edge.
@@ -3672,6 +3679,8 @@ def shaping_global(db_path: Path, course_ident: str) -> tuple[dict, dict]:
 SHAPING_WEAR_MAX_EDGE_M = 0.2   # the middle string between two tracks is ~0.3 m wide on a 2 m path
 SHAPING_SPLIT_ID = "paths-surfaces"
 SHAPING_EDGE_FADE_ID = "paths-edge-fade"
+SHAPING_KERB_ID = "paths-kerb"
+SHAPING_KERB_SURFACES = ("asphalt", "concrete", "paving")  # shape_kerb.SURFACES
 SHAPING_EDGE_FADE_SURFACES = ("gravel", "dirt")   # shape_edgefade.SURFACES
 
 # --- Rock slabs ----------------------------------------------------------------
