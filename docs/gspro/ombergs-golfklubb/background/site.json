@@ -1,0 +1,17 @@
+{
+  "name": "Omberg background houses",
+  "dataDir": "../../../../data/omberg-background",
+  "crop": "crop.json",
+  "origin": [
+    477750,
+    6456590,
+    100.0
+  ],
+  "assetPrefix": "omberg_bg_",
+  "groundAssets": [],
+  "osm": {},
+  "footprints": "../../../../data/omberg-background/osm-buildings.json",
+  "categories": [
+    "building"
+  ]
+}
