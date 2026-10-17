@@ -14,7 +14,8 @@
     "omberg_cot_outbuilding": "786179223",
     "omberg_cot_barn": "786179225",
     "omberg_cot_cottage": "1431567004",
-    "omberg_cot_wc": "1431567007"
+    "omberg_cot_wc": "1431567007",
+    "omberg_cot_house2": "1431567000"
   },
   "footprints": "../../../../data/omberg-cottage/osm-buildings.json",
   "categories": [

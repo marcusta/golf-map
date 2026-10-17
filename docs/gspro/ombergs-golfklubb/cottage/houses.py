@@ -19,7 +19,7 @@ from mathutils import Matrix, Vector
 import props_kit as kit
 
 # Only materials defined here (model.py zeroes their specular: sRGB-lit matt, no mirror on the tiles).
-MATTE = {"apron_concrete", "tile_clay", "tile_moss", "plinth_stone", "sheet_red", "sheet_pale", "sheet_frame"}
+MATTE = {"sheet_dark", "sheet_dark_frame", "apron_concrete", "tile_clay", "tile_moss", "plinth_stone", "sheet_red", "sheet_pale", "sheet_frame"}
 
 
 def register_materials():
@@ -30,6 +30,8 @@ def register_materials():
     M["sheet_red"] = ("seam:152,66,55:0.076:2.0:1", (2.0, 2.0), None, 0.12, 0.1)    # corrugated red sheet, relief in the normal map
     M["sheet_pale"] = ("seam:186,138,118:0.076:2.0:1", (2.0, 2.0), None, 0.2, 0.1)  # the lighter patch on the barn roof; calibrated in Unity against the ortho (~242,209,190 raw)
     M["apron_concrete"] = ("plaster:156,154,148", (2.0, 2.0), None, 0.08, 0.0)    # pale concrete paving
+    M["sheet_dark"] = ("seam:62,66,72:0.076:2.0:1", (2.0, 2.0), None, 0.2, 0.1)      # dark grey corrugated sheet / felt, low pitch
+    M["sheet_dark_frame"] = (None, (1, 1), (52, 55, 60), 0.2, 0.1)
     M["sheet_frame"] = (None, (1, 1), (140, 56, 46), 0.12, 0.1)
     kit.TILE_ROOFS["tile_clay"] = 0.34     # stepped courses as geometry (as kit._roof_slab and the farm do)
     kit.TILE_ROOFS["tile_moss"] = 0.34
@@ -422,6 +424,7 @@ def build(add, new, ev):
     barn(add, new, ev)
     cottage(add, new, ev)
     wc(add, new, ev)
+    house2(add, new, ev)
 
 
 # ---------------------------------------------------------------------------------------------
@@ -833,3 +836,75 @@ def wc_paving(add, new, ev, F, Z0, wl):
                     g.poly([(x, y, h(x, y)) for x, y in tri], "apron_concrete")
     g.pop()
     add("omberg_cot_wc_paving", g, *F.en(cx, cy), F.yaw, Z0)
+
+
+# ---------------------------------------------------------------------------------------------
+# house 2, OSM 1431567000, east of the 18th-hole woods.  Frame at 88.5 deg about the OSM centre (477677.1, 6457682.69): x runs
+# north (compass 1.5), y to the west.  Both orthos show a dark grey gable, ridge N-S (the earlier tree-crown call was wrong:
+# its lidar is mostly canopy 10-18 m above the roof).  Roof returns (107 between z 109.4 and 111.3, canopy above and ground
+# below dropped, rms 0.04): LOW pitch, tan 0.254 (14 deg), ridge y -0.47 z 110.75, eaves 109.9 at y -3.9 and +3.0 (half width
+# 3.45), x -4.96..6.55 so the roof is 12.3 m long (barge 0.4).  Ground 106.7: the eave is 3.2 m up, the ridge 4.1 m.
+# North end: a plateau of returns at z 109.95 over x 6.8..7.5, y -1.6..0.6, with a light bar in the 2025 ortho just north of
+# the roof: modelled as a small entrance porch with a flat-ish shed roof (inferred form).  No lidar return stands above the
+# roof, so no chimney.  The "shed" at E 477679 N 6457698 in the 2023 ortho is a pale square at ground level (all returns
+# class 2, z 107.2): a pad, not built.  Inferred: falu red walls, white trim, windows, the east side door.
+# ---------------------------------------------------------------------------------------------
+def house2(add, new, ev):
+    F = Frame(477677.1, 6457682.69, 88.5)
+    Z0, FL, OV, BG, TV = 106.7, 0.35, 0.45, 0.40, 0.14
+    YR, ZR, T, HW = -0.47, 110.75 - Z0, 0.254, 3.45
+    x0, x1 = -5.4, 6.95
+    yS, yN = YR - HW, YR + HW
+    wl = dict(W=x0 + BG, E=x1 - BG, S=yS + OV, N=yN - OV)
+    py0, py1, PE = -1.5, 0.5, 7.35                     # porch: y range, north wall plane
+    cx, cy = (x0 + x1) / 2, YR
+    g = new()
+    g.push(Matrix.Translation((-cx, -cy, 0)))
+    foot = [(wl["W"], wl["S"]), (wl["E"], wl["S"]), (wl["E"], py0), (PE, py0), (PE, py1), (wl["E"], py1), (wl["E"], wl["N"]), (wl["W"], wl["N"])]
+    glow, gmed = ground_under(ev, F, foot)
+    zb = glow - Z0 - 0.35
+    g.extrude(offset_poly(foot, 0.04), zb, FL, STONE, top=STONE, bottom=False)
+    ring_report("house2", ev, F, foot, FL, Z0, zb)
+    dark = "sheet_dark"
+    zE = ZR - T * HW
+    fr_ = dict(edge=WHITE, under=WHITE)
+    for pl, ys, fr in (((0, -T, ZR + T * YR), yN, [((x0, yN), (x0, YR)), ((x1, yN), (x0, yN)), ((x1, YR), (x1, yN))]),
+                       ((0, T, ZR - T * YR), yS, [((x0, YR), (x0, yS)), ((x0, yS), (x1, yS)), ((x1, yS), (x1, YR))])):
+        slab(g, [(x0, YR), (x1, YR), (x1, ys), (x0, ys)], pl, dark, TV, fr, **fr_)
+    ridge_cap(g, (x0, YR), (x1, YR), ZR, "sheet_dark_frame", 0.26, 0.08)
+    # porch: shed roof falling north from the gable wall, 0.3 m overhang on three sides
+    zp, sp = 110.05 - Z0, 0.12
+    prz = lambda x: zp - sp * (x - wl["E"])
+    pxe, pya, pyb = PE + 0.3, py0 - 0.3, py1 + 0.3
+    slab(g, [(wl["E"], pya), (pxe, pya), (pxe, pyb), (wl["E"], pyb)], (-sp, 0, zp + sp * wl["E"]), dark, 0.10,
+         [((pxe, pya), (pxe, pyb)), ((wl["E"], pya), (pxe, pya)), ((pxe, pyb), (wl["E"], pyb))], **fr_)
+    # walls
+    gab = lambda c, m: tent(ZR, T, YR, c) - 0.09
+    eave_top = lambda c, m: ZR - T * (HW - OV) - 0.09
+    pr_top = lambda c, m: prz(c) - 0.09
+    win_ = lambda at: win(at, 1.1, 1.3, 0.95, (2, 2))
+    walls = [
+        dict(side="-y", plane=wl["S"], lo=wl["W"], hi=wl["E"], top=eave_top, ops=[win_(-3.6), win_(-1.0), dr(1.5, 0.95, 2.0, mat="door_white"), win_(4.0)]),
+        dict(side="+y", plane=wl["N"], lo=wl["W"], hi=wl["E"], top=eave_top, ops=[win_(-3.6), win_(-1.0), win_(1.5), win_(4.0)]),
+        dict(side="-x", plane=wl["W"], lo=wl["S"], hi=wl["N"], top=gab, brk=(YR,), ops=[win_(-1.7), win_(0.8)]),
+        dict(side="+x", plane=wl["E"], lo=wl["S"], hi=py0, top=gab, ops=[]),
+        dict(side="+x", plane=wl["E"], lo=py1, hi=wl["N"], top=gab, ops=[]),
+        dict(side="+x", plane=wl["E"], lo=py0, hi=py1, top=gab, brk=(YR,), ops=[]),
+    ]
+    for W in walls:
+        build_wall(g, W, FL, TV)
+    porch = [
+        dict(side="+x", plane=PE, lo=py0, hi=py1, top=lambda c, m: prz(PE) - 0.09, ops=[dr(YR, 0.95, 2.0, mat="door_white")]),
+        dict(side="-y", plane=py0, lo=wl["E"], hi=PE, top=pr_top, ops=[]),
+        dict(side="+y", plane=py1, lo=wl["E"], hi=PE, top=pr_top, ops=[]),
+    ]
+    for W in porch:
+        build_wall(g, W, FL, 0.10)
+    corner_boards(g, foot, walls[:3] + walls[3:5] + porch, FL)
+    stoop(g, "+x", PE, YR, 1.5, 0.7, FL - 0.02, zb)
+    stoop(g, "-y", wl["S"], 1.5, 1.4, 0.6, FL - 0.02, zb)
+    eave = lambda a, b, nout, ez, pipes, plane: eave_line(g, ev, F, Z0, OV, a, b, nout, ez, pipes, plane)
+    eave((x0 + 0.05, yN), (x1 - 0.05, yN), (0, 1), zE, [x0 + 0.6, x1 - 0.6], wl["N"])
+    eave((x0 + 0.05, yS), (x1 - 0.05, yS), (0, -1), zE, [x0 + 0.6, x1 - 0.6], wl["S"])
+    g.pop()
+    add("omberg_cot_house2", g, *F.en(cx, cy), F.yaw, Z0)
