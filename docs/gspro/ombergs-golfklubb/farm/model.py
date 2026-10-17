@@ -76,15 +76,15 @@ def main():
 
     def add_prefab(aid, prefab, e, n, yaw, ground_abs, scale=(1, 1, 1), size=None, dz=0.0, category="prop"):
         """Place a Unity prefab from the course project (e.g. the CESimgolf boxwood) instead of
-        authored geometry. Unity scales it by `scale` in its local axes (x along yawDeg) and sets
-        each instance's centre on the terrain + dz. `size` (local x, y, z metres before scaling) only
-        draws a review box in the .blend; prefabs are not exported."""
+        authored geometry. `scale` is Unity's local scale (x along yawDeg, y up, z across; it
+        multiplies the prefab's own); each instance's centre sits on the terrain + dz. `size` is
+        the unscaled prefab in the same axes and only draws a review box; prefabs are not exported."""
         assert aid.startswith("omberg_farm_"), aid
         prefabs.setdefault(aid, dict(prefab=prefab, category=category, collider="keep"))
         instances.append(dict(asset=aid, e=e, n=n, yawDeg=yaw, ground="centre", dz=dz,
                               scale=[round(v, 4) for v in scale], layoutZ=round(ground_abs - BASE_Z, 3)))
         if size:
-            proxies.append((aid, e, n, yaw, ground_abs + dz, [s * k for s, k in zip(size, scale)]))
+            proxies.append((aid, e, n, yaw, ground_abs + dz, [size[0] * scale[0], size[2] * scale[2], size[1] * scale[1]]))
 
     ev.add_prefab = add_prefab
     dwellings.build(add, kit.Geo, ev)
@@ -133,7 +133,7 @@ def main():
     manifest["assets"].update(prefabs)
     (out / "props.json").write_text(json.dumps(manifest, indent=2), encoding="utf-8")
     report = dict(format="omberg-farm-build-v1", source="farm/model.py", assets=len(assets),
-                  triangles=sum(v["tris"] for v in manifest["assets"].values()), perAsset=manifest["assets"])
+                  triangles=sum(v.get("tris", 0) for v in manifest["assets"].values()), perAsset=manifest["assets"])
     (out / "build-report.json").write_text(json.dumps(report, indent=2), encoding="utf-8")
     for i in instances:
         if i["asset"] not in objects:

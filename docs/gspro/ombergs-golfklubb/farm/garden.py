@@ -1,9 +1,11 @@
-"""Farm garden and yard details: clipped hedges, the gravel forecourt with its round bed, the raised-bed
-kitchen garden with a flagstone seat, and the garden furniture on the terraces.
+"""Farm garden and yard details: clipped boxwood hedges (CESimgolf prefabs from the course project), the gravel
+forecourt with its round bed, the raised-bed kitchen garden with a flagstone seat, and the garden furniture.
 
 Read from the 2025 ortho (checked against 2023) and the lidar; coordinates below are metres from
 (478000, 6457000) in EPSG:3006. model.py calls register_materials() and build(add, new, ev).
-Assets (all omberg_farm_*): garden_hedges, forecourt (gravel + round bed), kitchen_garden, garden_furniture.
+Authored assets (omberg_farm_*): forecourt (gravel + the bed's mulch), kitchen_garden, garden_furniture.
+Prefab assets (ev.add_prefab, many scaled instances each): hedge_boxwood, hedge_corner_boxwood, edging_boxwood,
+shrub_boxwood, arborvitae.
 Everything ground-bound is built relative to a ground model made from the lidar's class-2 points
 (it agrees with the exported terrain DEM to 2-4 cm here) and every asset is authored around the ground
 height at its own centre, which is where Unity puts it.
@@ -15,24 +17,18 @@ from mathutils import Matrix
 import props_kit as kit
 
 O = (478000.0, 6457000.0)
-MATTE = {"garden_gravel", "garden_path", "garden_hedge", "garden_hedge_low", "garden_soil", "garden_flagstone", "garden_cushion",
-         "garden_shrub"}
+MATTE = {"garden_gravel", "garden_path", "garden_soil", "garden_flagstone", "garden_cushion"}
 
 # ---- survey data (metres from O) -------------------------------------------------------------
-# Hedge centrelines fitted to the class-1 lidar returns 1.2-2.8 m over the ground (5-95% lateral spread
-# 2.3-2.5 m, so 2.6 m at the foot and 2.0 m on top); `h` = (station m, top height m): 80th percentile of the returns within 0.8 m of the centreline.
+# Hedge runs fitted to the class-1 lidar returns 1.2-2.8 m over the ground (5-95% lateral spread 2.3-2.5 m);
+# `h` = (station m, top height m): 80th percentile of the returns within 0.8 m of the centreline.
 EAST_HEDGE = dict(
-    pts=[(354.8, 651.0), (354.9, 652.4), (355.4, 653.8), (355.85, 655.1), (355.9, 657.5), (355.95, 659.6), (355.9, 661.1),
-         (355.05, 662.35), (354.2, 663.6), (353.3, 664.8), (352.6, 666.1), (352.25, 667.5), (352.15, 669.0),
-         (352.25, 670.5), (352.35, 673.5), (352.4, 676.5), (352.6, 678.0), (352.85, 679.5), (353.15, 681.0),
-         (353.5, 682.4), (353.85, 683.8), (354.4, 685.2), (355.4, 686.2), (356.9, 686.55), (358.4, 686.4),
-         (359.9, 686.1), (361.35, 685.95), (362.85, 686.0), (364.3, 685.85), (365.8, 685.6), (367.3, 685.3)],
-    base=1.3, top=1.0, h=[(0, 1.82), (12, 1.82), (20, 1.86), (26, 1.97), (32, 2.10), (36, 2.26), (42, 2.20), (49, 2.28)],
-    mat="garden_hedge")
+    # straight runs through the fitted centreline; `corners` = vertices with a turn over 20 degrees, closed by a cube
+    pts=[(354.8, 651.0), (355.9, 656.0), (355.9, 661.1), (352.25, 667.4), (352.4, 677.0), (354.5, 686.3), (367.3, 685.3)],
+    corners=(2, 3, 5), width=2.6, h=[(0, 1.82), (12, 1.82), (20, 1.86), (26, 1.97), (32, 2.10), (36, 2.26), (42, 2.20), (49, 2.28)])
 # the hedge along the west edge of the lawn island, 2 m wide (lidar returns 1.55-1.8 m, lower to the south)
-WEST_HEDGE = dict(
-    pts=[(312.2, 685.6), (312.0, 683.0), (311.3, 681.5), (311.0, 679.0), (310.5, 676.0), (310.1, 673.0), (310.0, 670.0)],
-    base=1.0, top=0.8, h=[(0, 1.75), (8, 1.82), (12, 1.68), (16, 1.58)], mat="garden_hedge")
+WEST_HEDGE = dict(pts=[(312.2, 685.6), (311.1, 679.5), (310.0, 670.0)], corners=(), width=2.0,
+                  h=[(0, 1.75), (8, 1.82), (12, 1.68), (16, 1.58)])
 
 # lit gravel of the forecourt (ortho colour segmentation, straightened east edge) minus the brick
 # terrace +0.3 m and the course's own road mesh (surfaces raster class 10); counter-clockwise
@@ -41,7 +37,7 @@ FORECOURT = [(324.36, 683.36), (323.9, 684.9), (325.3, 685.4), (327.0, 685.35), 
              (336.24, 689.53), (336.73, 689.76), (338.08, 689.78), (339.24, 690.06), (341.39, 689.78), (343.64, 689.77),
              (344.3, 689.47), (344.6, 688.9), (335.0, 671.55), (327.07, 671.54), (326.55, 671.67), (326.22, 671.95),
              (324.99, 675.73), (324.38, 676.99), (324.35, 677.79), (324.05, 679.0)]
-# the teardrop bed in the loop (2023 ortho, leaf-off, clearest): 4 x 8 m, low clipped hedge round it
+# the teardrop bed in the loop (2023 ortho, leaf-off, clearest): 4 x 8 m, low clipped boxwood edging round it
 ROUNDEL = [(330.96, 682.6), (329.7, 682.2), (329.0, 680.7), (328.9, 678.8), (329.2, 676.4), (329.8, 675.1), (330.6, 674.7),
            (331.4, 675.6), (332.2, 677.2), (332.7, 678.8), (332.9, 680.4), (332.4, 682.0)]
 SHRUBS = [(330.95, 681.0, .7, .65), (330.9, 679.4, .8, .75), (330.8, 677.8, .7, .6), (330.7, 676.3, .5, .5),
@@ -159,47 +155,6 @@ class Frame:
 
 
 # ---- mesh builders ------------------------------------------------------------------------------
-def hedge_profile(spec, h):
-    b, t = spec["base"], spec["top"]
-    # slight batter, a clipped chamfer on each shoulder, 0.3 m skirt buried under the ground
-    return [(-b, -0.3), (-b, 0.0), (-(t + .1), h - 0.2), (-t, h), (t, h), (t + .1, h - 0.2), (b, 0.0), (b, -0.3)]
-
-
-def sweep(g, F, pts, profile, mat, closed=False, uvm=None):
-    """Sweep profile(s) [(offset left of travel, dz)] along pts (survey metres); right-to-left over the
-    top gives outward faces. `profile` is a function of the station."""
-    n = len(pts)
-    rings = []
-    s = 0.0
-    for i in range(n):
-        a, b = pts[(i - 1) % n], pts[(i + 1) % n]
-        if not closed:
-            a, b = pts[max(i - 1, 0)], pts[min(i + 1, n - 1)]
-        t = np.array([b[0] - a[0], b[1] - a[1]]); t /= np.linalg.norm(t)
-        nl = np.array([-t[1], t[0]])
-        if i:
-            s += math.dist(pts[i], pts[i - 1])
-        # mitre: widen by 1/cos(half turn) so offset faces stay parallel to the segments
-        p, q = pts[i - 1] if (i or closed) else pts[0], pts[(i + 1) % n] if (i < n - 1 or closed) else pts[-1]
-        d0 = np.array([pts[i][0] - p[0], pts[i][1] - p[1]]); d1 = np.array([q[0] - pts[i][0], q[1] - pts[i][1]])
-        k = 1.0
-        if np.linalg.norm(d0) > 1e-6 and np.linalg.norm(d1) > 1e-6:
-            k = 1 / max(0.7, float(np.dot(d0 / np.linalg.norm(d0), d1 / np.linalg.norm(d1))) * 0.5 + 0.5) ** .5
-        zc = F.z(pts[i])
-        ring = []
-        for off, dz in profile(s):
-            ring.append((*F.xy((pts[i][0] + nl[0] * off * k, pts[i][1] + nl[1] * off * k)), zc + dz))
-        rings.append(ring)
-    m = len(rings[0])
-    for j in range(n if closed else n - 1):
-        r0, r1 = rings[j], rings[(j + 1) % n]
-        for i in range(m - 1):
-            g.poly([r0[i], r1[i], r1[i + 1], r0[i + 1]], mat)
-    if not closed:
-        g.poly(rings[0], mat)
-        g.poly(rings[-1][::-1], mat)
-
-
 def fill(poly, step):
     """Triangles of a polygon (survey metres, counter-clockwise) cut by a `step` m grid so a surface laid on
     it can follow the ground. Returns (triangles, boundary edges as (a, b) CCW pairs)."""
@@ -231,12 +186,6 @@ def surface(g, F, poly, mat, lift, step=2.0, skirt=0.15, edge_mat=None):
     for a, b in edges:
         g.poly([(*F.xy(a), F.z(a) - skirt), (*F.xy(b), F.z(b) - skirt), (*F.xy(b), F.z(b) + lift), (*F.xy(a), F.z(a) + lift)],
                edge_mat or mat)
-
-
-def mound(g, F, c, r, h, mat, seg=10, rings=5):
-    """A clipped shrub: a flattened ball sunk into the bed."""
-    z = F.z(c)
-    g.sphere((*F.xy(c), z + h * 0.42), r, mat, seg=seg, rings=rings, scale=(1, 1, h * .58 / r))
 
 
 def board_box(g, F, c, size, rot, mat, top_mat=None):
@@ -304,45 +253,101 @@ def register_materials():
         # course scene lights sunlit faces at ~1.7x albedo
         "garden_gravel": ("farmgravel:132,117,102", (2.0, 2.0), None, 0.04, 0.0),
         "garden_path": ("farmgravel:112,98,86", (2.0, 2.0), None, 0.03, 0.0),
-        # dense dark-green clipped hedge (Street View: flat top, almost black-green)
-        "garden_hedge": ("foliage:44,70,36", (1.5, 1.5), None, 0.06, 0.0),
-        "garden_hedge_low": ("foliage:58,88,44", (1.2, 1.2), None, 0.06, 0.0),
-        "garden_shrub": ("foliage:66,94,50", (1.2, 1.2), None, 0.06, 0.0),
         "garden_soil": ("gravel:78,62,50", (2.0, 2.0), None, 0.03, 0.0),
         "garden_flagstone": ("stone:136,132,124", (2.0, 2.0), None, 0.1, 0.0),
         "garden_cushion": (None, (1, 1), (190, 188, 180), 0.1, 0.0),
     })
 
 
-def hedge(g, F, spec):
-    pts = centreline(spec["pts"])
-    sweep(g, F, pts, lambda s: hedge_profile(spec, interp(spec["h"], s)), spec["mat"])
+# ---- Unity prefabs ------------------------------------------------------------------------------
+BOX = "Assets/CESimgolf 3D Assets/BUSHES - Boxwood/PREFABS/"
+ARB = "Assets/CESimgolf 3D Assets/BUSHES - Arborvitae/PREFABS/"
+# Prefab size at scale 1 in Unity's axes: L along local x (the long axis), W across (local z), H = top above
+# the pivot (local y; the mesh also sits ~0.2 m below the pivot). From the FBX/prefab files in the Omberg
+# project and data/arborist/catalog-sizes.json. NB the manifest `scale` is Unity's localScale: (x, y UP, z).
+REC_SMALL = dict(path=BOX + "Boxwood Rectangle Small.prefab", L=6.35, W=1.59, H=1.267)
+SQUARE = dict(path=BOX + "Boxwood Square.prefab", L=1.564, W=1.564, H=1.566)
+ROUND = dict(path=BOX + "Boxwood Round.prefab", L=1.096, W=1.096, H=0.88)
+THUJA = dict(path=ARB + "Arborvitae_Tall_Thin_PREFAB.prefab", L=2.27, W=2.27, H=6.04)
+
+
+def put_prefab(ev, gz, aid, P, p, yaw, length, width, height, overlap=1.0, dz=0.0):
+    """One scaled instance centred at survey point p whose footprint is length x width and whose top stands
+    `height` above the terrain. The driver multiplies `size` by the scale per axis and draws it as (along, across,
+    up), so the review box gets its axes swapped to come out right."""
+    e, n = A(p)
+    sc = (length * overlap / P["L"], height / P["H"], width / P["W"])
+    ev.add_prefab(aid, P["path"], round(e, 2), round(n, 2), round(yaw, 2), gz(e, n), scale=sc,
+                  size=(P["L"], P["H"], P["W"]), dz=dz)
+
+
+def bearing(a, b):
+    return math.degrees(math.atan2(b[0] - a[0], b[1] - a[1]))
+
+
+def hedge_row(ev, gz, spec, max_len=6.0):
+    """Boxwood Rectangle Small blocks tiled along the runs (about 6 m, 6% overlap), top height from the lidar
+    table, and a Boxwood Square cube on each sharp corner so the outer corner closes."""
+    pts, w = spec["pts"], spec["width"]
+    cum = [0.0]
+    for a, b in zip(pts, pts[1:]):
+        cum.append(cum[-1] + math.dist(a, b))
+    for i, (a, b) in enumerate(zip(pts, pts[1:])):
+        L = cum[i + 1] - cum[i]
+        n = max(1, math.ceil(L / max_len))
+        for k in range(n):
+            t = (k + .5) / n
+            c = (a[0] + (b[0] - a[0]) * t, a[1] + (b[1] - a[1]) * t)
+            put_prefab(ev, gz, "omberg_farm_hedge_boxwood", REC_SMALL, c, bearing(a, b), L / n, w, interp(spec["h"], cum[i] + t * L), 1.06)
+    for i in spec["corners"]:
+        put_prefab(ev, gz, "omberg_farm_hedge_corner_boxwood", SQUARE, pts[i], bearing(pts[i], pts[i + 1]), w, w, interp(spec["h"], cum[i]))
+
+
+def resample_closed(ring, step):
+    cum = [0.0]
+    for a, b in zip(ring, ring[1:] + ring[:1]):
+        cum.append(cum[-1] + math.dist(a, b))
+    n = max(3, round(cum[-1] / step))
+    out, j = [], 0
+    for k in range(n):
+        s = cum[-1] * k / n
+        while cum[j + 1] < s:
+            j += 1
+        a, b, t = ring[j], ring[(j + 1) % len(ring)], (s - cum[j]) / (cum[j + 1] - cum[j])
+        out.append((a[0] + (b[0] - a[0]) * t, a[1] + (b[1] - a[1]) * t))
+    return out
 
 
 def build(add, new, ev):
     gz = ground_model(ev)
 
-    # --- hedges
-    g = new(); g.category = "structure"
-    F = Frame(gz, EAST_HEDGE["pts"] + WEST_HEDGE["pts"])
-    hedge(g, F, EAST_HEDGE); hedge(g, F, WEST_HEDGE)
-    add("omberg_farm_garden_hedges", g, F.e, F.n, 90, F.z0)
+    # --- hedges: boxwood prefab blocks along the fitted runs
+    hedge_row(ev, gz, EAST_HEDGE)
+    hedge_row(ev, gz, WEST_HEDGE)
 
-    # --- forecourt gravel and the round bed
+    # --- forecourt gravel and the round bed (soil here; the planting is prefabs)
     g = new(); g.category = "structure"
     F = Frame(gz, FORECOURT + ROUNDEL)
     ring = orient(chaikin(ROUNDEL, 3))
     surface(g, F, [p for p in FORECOURT], "garden_gravel", 0.035)
-    # bed: soil, a low clipped hedge on the outline (outer face on the outline), shrubs
+    # bed: mulch up to the edging; the edging, shrubs and thuja pair are prefabs below
     c = (sum(p[0] for p in ring) / len(ring), sum(p[1] for p in ring) / len(ring))
-    inner = [(c[0] + (p[0] - c[0]) * (1 - 0.3 / max(math.dist(p, c), 1)), c[1] + (p[1] - c[1]) * (1 - 0.3 / max(math.dist(p, c), 1))) for p in ring]
-    sweep(g, F, inner, lambda s: [(-0.22, -0.3), (-0.22, 0.0), (-0.19, 0.36), (-0.15, 0.42), (0.15, 0.42), (0.19, 0.36), (0.22, 0.0), (0.22, -0.3)],
-          "garden_hedge_low", closed=True)
-    inside = [(c[0] + (p[0] - c[0]) * (1 - 0.5 / max(math.dist(p, c), 1)), c[1] + (p[1] - c[1]) * (1 - 0.5 / max(math.dist(p, c), 1))) for p in ring]
-    surface(g, F, inside, "garden_soil", 0.14, step=1.0, skirt=0.1)
-    for e, n, r, h in SHRUBS:
-        mound(g, F, (e, n), r * .85, h + 0.05, "garden_shrub")
+
+    def inset(d):
+        return [(c[0] + (p[0] - c[0]) * (1 - d / max(math.dist(p, c), 1)), c[1] + (p[1] - c[1]) * (1 - d / max(math.dist(p, c), 1))) for p in ring]
+    surface(g, F, inset(0.4), "garden_soil", 0.14, step=1.0, skirt=0.1)
     add("omberg_farm_forecourt", g, F.e, F.n, 90, F.z0)
+    # low clipped edging on the outline (0.44 m wide, 0.42 m tall), ~1.8 m blocks round the ends, 15% overlap
+    ep = resample_closed(inset(0.3), 1.8)
+    for a, b in zip(ep, ep[1:] + ep[:1]):
+        put_prefab(ev, gz, "omberg_farm_edging_boxwood", REC_SMALL, ((a[0] + b[0]) / 2, (a[1] + b[1]) / 2), bearing(a, b),
+                   math.dist(a, b), 0.44, 0.42, 1.15)
+    for e, n, r, h in SHRUBS:                       # clipped round shrubs, standing on the mulch (+0.12)
+        put_prefab(ev, gz, "omberg_farm_shrub_boxwood", ROUND, (e, n), 0, 1.8 * r, 1.8 * r, h + 0.05, dz=0.12)
+    # INFERRED, not seen in the orthos: a pair of clipped columns flanking the entrance of the manor-type main
+    # house (OSM 1431566968, porch on its south side); move them to suit the dwellings agent's steps
+    for e, n in ((328.7, 690.7), (337.1, 690.7)):
+        put_prefab(ev, gz, "omberg_farm_arborvitae", THUJA, (e, n), 0, 0.95, 0.95, 2.3)
 
     # --- kitchen garden (raised beds) and the flagstone seat
     g = new(); g.category = "structure"
