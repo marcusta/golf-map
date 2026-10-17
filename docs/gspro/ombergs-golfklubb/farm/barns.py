@@ -495,9 +495,9 @@ def south_barn(g):
     HX, HY = 13.92, 5.11
     ZR, P = 7.95, 0.685               # ridge 120.7 - ground 112.75; pitch from eave 117.2 and the cross-gable ridge
     # Cross gable (frontispiece): a full gable wall from the eave line to its own level ridge, perpendicular to the main
-    # ridge and 0.95 m below it (Street View 7: apex at ~74 % of the eave-to-ridge rise), at 45 deg (the photos show a steep
-    # gable, the ortho a ~5 m wide triangle). The 5 lidar returns at 118.95 on it are 0.8 m under this ridge.
-    ZD, PC = 7.0, 1.0
+    # ridge. The ridge is on the lidar: five level returns at 118.95 (6.2 m above ground) on the west slope. The 5.5 m
+    # wide base (ortho triangle, Street View 7) then fixes its pitch, ~0.64 (32.5 deg).
+    ZD = 6.2
     A0 = 1.3                          # cross-gable axis along the barn (those returns)
     T = 0.12
     DZ = T * math.sqrt(1 + P * P)     # one sheet drop for every plane, so all lowered edges (ridge, valleys) coincide
@@ -505,6 +505,7 @@ def south_barn(g):
     FL = 0.3
     ye = HY + OVH
     x0, x1 = -HX - OVG, HX + OVG
+    PC = (P * HY - (ZR - ZD)) / 2.75  # cross-gable pitch for a 5.5 m wide gable wall
     bC = (ZR - ZD) / P                # where the cross ridge runs into the main roof
     hwe = (P * ye - (ZR - ZD)) / PC   # half width of the cross gable at the eave line: the valleys are the plane intersections
     hw5 = (P * HY - (ZR - ZD)) / PC   # ... and at the wall plane (the gable wall's half base)
@@ -544,7 +545,7 @@ def south_barn(g):
     for sx in (-1.55, -0.65):
         g.box((sx, 0.12 + 1.55, 0.075), (0.04, 1.1, 0.03), red)
     g.box((0, 0.06, 0.07), (dw + 2 * fw + 0.6, 0.12, 0.14), "omberg_barn_apron")  # threshold slab at floor level
-    window(g, 1.2, 0.7, 5.3, frame=red, glass="omberg_barn_louvre", bars=(3, 1))  # slatted gable vent
+    window(g, 1.0, 0.45, 4.7, frame=red, glass="omberg_barn_louvre", bars=(3, 1))  # slatted gable vent, centred in the gable
     g.pop()
     # east face and ends: the same arched windows (inferred, the photos do not show this side)
     for off in (-9.85, -8.2, -6.55, -4.9, 4.9, 6.55, 8.2, 9.85):
