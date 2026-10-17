@@ -62,7 +62,7 @@ def metal_texture(bank):
     broad=kit._fbm((S,S),821,scales=(128,32))
     tone=.985+.025*(broad-.5)
     tone=np.where(edge,tone*.94,tone)
-    rgb=np.array([132,141,140])[None,None,:]/255*tone[:,:,None]
+    rgb=np.array([146,151,150])[None,None,:]/255*tone[:,:,None]
     height=np.broadcast_to(np.where(edge,.60,.50),(S,S)).copy()
     return rgb,height,.6
 
@@ -89,11 +89,47 @@ def clip_scalar(poly, value):
 # a hip. For that line to be the exact plane-plane intersection (no step, no
 # sliver, no gable wall above the other roof) the straight wing needs
 # W_straight = W_diagonal*cos(bend) and pitch_straight = pitch_diagonal/cos(bend);
-# the survey's 12.7 m traced width is within 0.12 m of that (12.58 m).
+# the lidar width of the straight roof (12.75 m) agrees with that (12.57 m).
 RIDGE,EAVE=121.0,118.4
 OVER=.4        # roof overhang past the wall: gables and the diagonal's eaves
 THICK=.16      # roof slab thickness = fascia height; wall tops stop at the soffit
 GUTTER_R,PIPE_R=.06,.045
+
+# Plan position, fitted to the class-1 lidar points (lidar-crop.npz) rather than the ortho
+# traces, which lean tall roofs by up to 1.5 m. EPSG:3006. Ridge lines: robust fits of
+# z = R - pitch*|lateral offset| to the points above 116 m on each wing (R 120.96-121.03,
+# pitch 0.32-0.34 diagonal, 0.404 straight, whose ratio is 1/cos(bend) as the roof needs).
+DIAG_RIDGE,DIAG_YAW=(477797.03,6457695.33),148.4    # a ridge point; bearing = the west lodge's axis
+STRAIGHT_RIDGE,STRAIGHT_YAW=(477797.0,6457688.0),1.5  # a ridge point; bearing = the clubhouse wing's axis
+HALF_W=7.5          # diagonal roof half width at the eaves (lidar: ridge -7.44 / +8.0 across)
+NW_LEN=23.2         # ridge length from the bend to the diagonal's north-west verge (last return 23.2)
+SOUTH_VERGE_N=6457681.3   # northing of the straight wing's south verge on its ridge (last 120 m return 681.2)
+# The connector's final south wall plane, for the clubhouse wing to end against: it passes through
+# (SOUTH_WALL_E, SOUTH_WALL_N) and runs along bearing 91.5 deg (northing falls 0.026 m per metre east).
+SOUTH_WALL_N=SOUTH_VERGE_N+OVER*math.cos(math.radians(STRAIGHT_YAW))
+SOUTH_WALL_E=STRAIGHT_RIDGE[0]+(SOUTH_WALL_N-STRAIGHT_RIDGE[1])*math.tan(math.radians(STRAIGHT_YAW))
+# Low flat-roofed porch on the diagonal's north-east wall (lidar: flat returns at 109.47 m, E 797.5-800.4,
+# N 706.9-712.6). Along the ridge from the bend, across from the ridge, top height.
+PORCH_X,PORCH_Y,PORCH_TOP=(-14.3,-8.3),(7.1,10.3),109.47
+# Stair bay on top of the porch: a small gable with a level ridge that runs out over the east eave
+# (lidar: ridge 120.45 m at 11.2 m before the bend, pitch 0.55 both ways, verge 1.4 m past the wall).
+BAY_XC,BAY_HALF,BAY_RIDGE,BAY_PITCH,BAY_END=-11.2,2.9,120.45,.55,8.9
+
+
+def subtract_convex(poly,cutter):
+    """Disjoint convex pieces of poly outside a convex cutter."""
+    remaining=poly
+    result=[]
+    for a,b in zip(cutter,cutter[1:]+cutter[:1]):
+        def side(p):
+            return (b[0]-a[0])*(p[1]-a[1])-(b[1]-a[1])*(p[0]-a[0])
+        outside=clip_scalar(remaining,lambda p:-side(p))
+        if len(outside)>=3:
+            result.append(outside)
+        remaining=clip_scalar(remaining,side)
+        if len(remaining)<3:
+            break
+    return result
 
 
 def clean(poly):
@@ -176,9 +212,9 @@ def outward(a,b):
 class Neighbour:
     """A roof the connector abuts, as a heightfield over its footprint. Constants are
     ray-cast from the built omberg_clubhouse / omberg_west_lodge meshes (2026-10-17):
-    the tile wing is open to the south and ends at N 681.55 under the connector's
-    south gable; the west lodge's south-east end reaches 1.5 m past the connector's
-    north-west gable. Re-measure if either roof moves. Absolute EN and z."""
+    the tile wing (true gable, ridge 115.12, pitch 0.42, ridge on the 1.5 deg axis)
+    ends against SOUTH_WALL_N; the west lodge's south-east end reaches 1.5 m past the
+    connector's north-west gable. Re-measure if either roof moves. Absolute EN and z."""
     def __init__(self,centre,axis,half_len,half_wid,ridge,pitch):
         self.c,self.ax=centre,axis
         self.hl,self.hw,self.ridge,self.pitch=half_len,half_wid,ridge,pitch
@@ -192,7 +228,8 @@ class Neighbour:
         return None
 
 
-NEIGHBOURS=[Neighbour((477796.75,6457670.0),(0.,1.),11.55,7.0,115.05,.416),
+_wa=(math.sin(math.radians(STRAIGHT_YAW)),math.cos(math.radians(STRAIGHT_YAW)))
+NEIGHBOURS=[Neighbour((SOUTH_WALL_E-_wa[0]*12,SOUTH_WALL_N-_wa[1]*12),_wa,12.,7.3,115.12,.42),
             Neighbour((477780.1,6457724.03),(.5240,-.8517),12.6,7.3,114.8,.4217)]
 
 
@@ -353,43 +390,84 @@ def window_layout(volume,edge,diagonal,segment=None):
 
 def build(sections,origin,base):
     g=kit.Geo()
-    def centre(key):
-        pts=sections[key]["roofEdge3006"]
-        return (sum(p[0] for p in pts)/4-origin[0],sum(p[1] for p in pts)/4-origin[1])
-    cd,cs=centre("white-diagonal-link"),centre("white-straight-link")
-    A=math.radians(90-149.5)
+    o=origin
+    def loc(p): return (p[0]-o[0],p[1]-o[1])
+    A=math.radians(90-DIAG_YAW)
     a=(math.cos(A),math.sin(A))              # diagonal ridge direction, towards the straight wing
     lat=(-a[1],a[0])                          # its lateral direction (+y, east side)
-    # Straight wing: yaw 0, ridge due north (x=cs[0]). The bend is where the ridges cross.
-    t=(cs[0]-cd[0])/a[0]
-    X=(cd[0]+a[0]*t,cd[1]+a[1]*t)
-    k=abs(lat[0])                             # cos(bend)
-    diag=Volume(cd,24.3,14.6,149.5,base,0,t,OVER)
-    straight=Volume(cs,16.1,14.6*k,0,base,2,16.1/2+6,OVER*k,
+    B=math.radians(90-STRAIGHT_YAW)
+    b=(math.cos(B),math.sin(B))              # straight ridge direction (north)
+    es=(-b[1],b[0])                           # its lateral direction (+y = west, the course side)
+    pd,ps=loc(DIAG_RIDGE),loc(STRAIGHT_RIDGE)
+    # The bend is where the two ridges cross.
+    den=a[0]*b[1]-a[1]*b[0]
+    t=((ps[0]-pd[0])*b[1]-(ps[1]-pd[1])*b[0])/den
+    X=(pd[0]+a[0]*t,pd[1]+a[1]*t)
+    k=abs(lat[0]*es[0]+lat[1]*es[1])          # cos(bend)
+    cd=(X[0]-a[0]*NW_LEN/2,X[1]-a[1]*NW_LEN/2)
+    diag=Volume(cd,NW_LEN,2*HALF_W,DIAG_YAW,base,0,NW_LEN/2,OVER)
+    # South verge point on the straight ridge; the wing runs north from it and is cut at the bend.
+    s0=((loc((0,SOUTH_VERGE_N))[1]-ps[1])/b[1])
+    south=(ps[0]+b[0]*s0,ps[1]+b[1]*s0)
+    SL=17.5                                   # nominal length (window rhythm); the wing is trimmed at the bend
+    cs=(south[0]+b[0]*SL/2,south[1]+b[1]*SL/2)
+    straight=Volume(cs,SL,2*HALF_W*k,STRAIGHT_YAW,base,2,SL/2+6,OVER*k,
                     keep=lambda p:(p[0]-X[0])*a[0]+(p[1]-X[1])*a[1])
     volumes=[diag,straight]
-    iw=(X[0]-lat[0]*14.6/2,X[1]-lat[1]*14.6/2)   # interface ends: west (inner) and east (outer) eave corners
-    ie=(X[0]+lat[0]*14.6/2,X[1]+lat[1]*14.6/2)
+    iw=(X[0]-lat[0]*HALF_W,X[1]-lat[1]*HALF_W)   # interface ends: west (inner) and east (outer) eave corners
+    ie=(X[0]+lat[0]*HALF_W,X[1]+lat[1]*HALF_W)
+    def porch_pt(x,y): return (X[0]+a[0]*x+lat[0]*y,X[1]+a[1]*x+lat[1]*y)
+    porch=[porch_pt(PORCH_X[0],PORCH_Y[0]),porch_pt(PORCH_X[1],PORCH_Y[0]),
+           porch_pt(PORCH_X[1],PORCH_Y[1]),porch_pt(PORCH_X[0],PORCH_Y[1])]
+    def in_porch(p):
+        d=(p[0]-X[0],p[1]-X[1])
+        x,y=d[0]*a[0]+d[1]*a[1],d[0]*lat[0]+d[1]*lat[1]
+        return PORCH_X[0]-.05<=x<=PORCH_X[1]+.05 and PORCH_Y[0]-.05<=y<=PORCH_Y[1]+.05
+    def in_bay(p):
+        d=(p[0]-X[0],p[1]-X[1])
+        x,y=d[0]*a[0]+d[1]*a[1],d[0]*lat[0]+d[1]*lat[1]
+        return abs(x-BAY_XC)<=BAY_HALF-OVER+.1 and HALF_W-OVER-.05<=y<=BAY_END-OVER+.05
+    def W2(x,y): return (X[0]+a[0]*x+lat[0]*y,X[1]+a[1]*x+lat[1]*y)
+    def bay_z(x): return BAY_RIDGE-base-BAY_PITCH*abs(x-BAY_XC)
+    # Bay roof faces in (along, across) coordinates from the bend: inner halves only where above the
+    # main east slope (they are cut out of it, valleys on the plane intersections), outer halves whole.
+    bay_cutters,bay_faces=[],[]
+    pm=(RIDGE-EAVE)/HALF_W
+    for side in (-1,1):
+        xa,xb=(BAY_XC-BAY_HALF,BAY_XC) if side<0 else (BAY_XC,BAY_XC+BAY_HALF)
+        inner=[(xa,0),(xb,0),(xb,HALF_W),(xa,HALF_W)]
+        def above(q,side=side): return BAY_RIDGE-BAY_PITCH*abs(q[0]-BAY_XC)-(RIDGE-pm*q[1])
+        inner=clean(clip_scalar(inner,above))
+        if len(inner)>=3:
+            bay_cutters.append([W2(*q) for q in inner]); bay_faces.append(inner)
+        bay_faces.append([(xa,HALF_W),(xb,HALF_W),(xb,BAY_END),(xa,BAY_END)])
     def roof_z(p):
         v=straight if (p[0]-X[0])*a[0]+(p[1]-X[1])*a[1]>=0 else diag
         return v.height(p)
     def buried(p,z):
+        if in_porch(p) and z+base<PORCH_TOP+.1 or in_bay(p) and z+base>PORCH_TOP-.1:
+            return True
         top=neighbour_top(p[0]+origin[0],p[1]+origin[1])
         return top is not None and z+base<top+.1
     for index,v in enumerate(volumes):
         for edge,a_,b_ in v.edges(False):
             facade(g,v,edge,a_,b_,window_layout(v,edge,index==0,(a_,b_)),buried)
         for poly in v.roof_faces():
-            pts=[Vector((x,y,v.height((x,y)))) for x,y in poly]
-            uv=[(v.local((p.x,p.y))[0]+v.L/2,abs(v.local((p.x,p.y))[1])) for p in pts]
-            # Standing seams are in the phase-aligned albedo/normal only.
-            # Millimetre-scale physical strips alias in Unity's course views.
-            g.poly([tuple(p) for p in pts],"omberg_main_roof",uv=("uv",uv))
-            g.poly([(p.x,p.y,p.z-THICK) for p in reversed(pts)],"omberg_main_reveal")
-            # Fascia / bargeboard: the slab edge on eaves and verges, closed at every corner.
-            for p,q in zip(pts,pts[1:]+pts[:1]):
-                if v.label((p.x,p.y),(q.x,q.y),v.x0,v.W/2) is not None:
-                    g.poly([(p.x,p.y,p.z-THICK),(q.x,q.y,q.z-THICK),(q.x,q.y,q.z),(p.x,p.y,p.z)],"omberg_main_gutter")
+            pieces=[poly]
+            if v is diag and sum(v.local(q)[1] for q in poly)>0:      # east slope: the bay roof stands above it
+                for cut in bay_cutters:
+                    pieces=[r for pc in pieces for r in subtract_convex(pc,cut)]
+            for poly in pieces:
+                pts=[Vector((x,y,v.height((x,y)))) for x,y in poly]
+                uv=[(v.local((p.x,p.y))[0]+v.L/2,abs(v.local((p.x,p.y))[1])) for p in pts]
+                # Standing seams are in the phase-aligned albedo/normal only.
+                # Millimetre-scale physical strips alias in Unity's course views.
+                g.poly([tuple(p) for p in pts],"omberg_main_roof",uv=("uv",uv))
+                g.poly([(p.x,p.y,p.z-THICK) for p in reversed(pts)],"omberg_main_reveal")
+                # Fascia / bargeboard: the slab edge on eaves and verges, closed at every corner.
+                for p,q in zip(pts,pts[1:]+pts[:1]):
+                    if v.label((p.x,p.y),(q.x,q.y),v.x0,v.W/2) is not None:
+                        g.poly([(p.x,p.y,p.z-THICK),(q.x,q.y,q.z-THICK),(q.x,q.y,q.z),(p.x,p.y,p.z)],"omberg_main_gutter")
         # Gutters on the eaves only; the verges have none.
         for edge,p,q in v.edges(True):
             if edge==3:
@@ -402,7 +480,17 @@ def build(sections,origin,base):
                 if abs(v.local(e)[0]-v.x0)>.01: ex[i]=.04
             pa=(p[0]+n[0]*off-d[0]*ex[0],p[1]+n[1]*off-d[1]*ex[0],EAVE-base-.09)
             pb=(q[0]+n[0]*off+d[0]*ex[1],q[1]+n[1]*off+d[1]*ex[1],EAVE-base-.09)
-            g.pipe(pa,pb,GUTTER_R,"omberg_main_gutter",seg=8)
+            runs=[(pa,pb)]
+            if v is diag and edge==2:                 # no gutter across the bay
+                ta=(pa[0]-X[0])*a[0]+(pa[1]-X[1])*a[1]
+                tb=(pb[0]-X[0])*a[0]+(pb[1]-X[1])*a[1]
+                lo,hi=BAY_XC-BAY_HALF-.05,BAY_XC+BAY_HALF+.05
+                def at(t_):
+                    f=(t_-ta)/(tb-ta)
+                    return (pa[0]+(pb[0]-pa[0])*f,pa[1]+(pb[1]-pa[1])*f,pa[2])
+                runs=[(pa,at(lo)),(at(hi),pb)]
+            for r0,r1 in runs:
+                g.pipe(r0,r1,GUTTER_R,"omberg_main_gutter",seg=8)
         # Downpipes at the free ends of the eave walls.
         for edge,p,q in v.edges(False):
             if edge not in [0,2]:
@@ -414,11 +502,34 @@ def build(sections,origin,base):
             reach=v.oy+GUTTER_R+.015
             downpipe(g,w,n,(w[0]+n[0]*reach,w[1]+n[1]*reach),base,origin)
     # One downpipe in the inner corner of the bend, where the valley drains.
-    n1,n2=(-lat[0],-lat[1]),(-1.,0.)
+    n1,n2=(-lat[0],-lat[1]),es
     bis=unit((n1[0]+n2[0],n1[1]+n2[1]))
-    cw=(X[0]-lat[0]*(14.6/2-OVER),X[1]-lat[1]*(14.6/2-OVER))
+    cw=(X[0]-lat[0]*(HALF_W-OVER),X[1]-lat[1]*(HALF_W-OVER))
     reach=(GUTTER_R+.015)/.96
     downpipe(g,cw,bis,(iw[0]+bis[0]*reach,iw[1]+bis[1]*reach),base,origin)
+    # The bay: roof faces, fascia on its free edges, walls down to the porch roof (blank: no evidence of windows).
+    for face in bay_faces:
+        pts=[(*W2(*q),bay_z(q[0])) for q in face]
+        uv=[(q[1],abs(q[0]-BAY_XC)) for q in face]
+        g.poly(pts,"omberg_main_roof",uv=("uv",uv))
+        g.poly([(x,y,z-THICK) for x,y,z in reversed(pts)],"omberg_main_reveal")
+        for (q0,q1),(p0,p1) in zip(zip(face,face[1:]+face[:1]),zip(pts,pts[1:]+pts[:1])):
+            near=lambda u,v:abs(u-v)<1e-6
+            free=(near(q0[1],BAY_END) and near(q1[1],BAY_END)) or (
+                (near(q0[0],BAY_XC-BAY_HALF) and near(q1[0],BAY_XC-BAY_HALF)) or
+                (near(q0[0],BAY_XC+BAY_HALF) and near(q1[0],BAY_XC+BAY_HALF)))
+            if free:
+                g.poly([(p0[0],p0[1],p0[2]-THICK),(p1[0],p1[1],p1[2]-THICK),(p1[0],p1[1],p1[2]),p0],"omberg_main_gutter")
+    xw=BAY_HALF-OVER                       # wall half width, wall end across
+    ye,y0w=BAY_END-OVER,HALF_W-OVER
+    zb=PORCH_TOP-base
+    top=lambda x:bay_z(x)-THICK
+    g.poly([(*W2(BAY_XC+xw,ye),zb),(*W2(BAY_XC-xw,ye),zb),(*W2(BAY_XC-xw,ye),top(BAY_XC-xw)),
+            (*W2(BAY_XC,ye),top(BAY_XC)),(*W2(BAY_XC+xw,ye),top(BAY_XC+xw))],"omberg_main_grey")
+    g.poly([(*W2(BAY_XC+xw,y0w),zb),(*W2(BAY_XC+xw,ye),zb),(*W2(BAY_XC+xw,ye),top(BAY_XC+xw)),(*W2(BAY_XC+xw,y0w),top(BAY_XC+xw))],"omberg_main_grey")
+    g.poly([(*W2(BAY_XC-xw,ye),zb),(*W2(BAY_XC-xw,y0w),zb),(*W2(BAY_XC-xw,y0w),top(BAY_XC-xw)),(*W2(BAY_XC-xw,ye),top(BAY_XC-xw))],"omberg_main_grey")
+    # The porch: a flat-roofed block against the NE wall, down to the basement.
+    g.extrude(porch,105.2-base,PORCH_TOP-base,"omberg_main_grey",top="omberg_main_gutter",bottom=False)
     # Caps: one bent ridge cap, and a hip cap down the outside of the bend.
     r0,r1=diag.world(diag.x0,0),straight.world(straight.x0,0)
     z=RIDGE-base

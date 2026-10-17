@@ -17,7 +17,9 @@ def solid(name, rgb, smooth=.2, metal=0):
 def register_materials():
     """Materials used only by the outbuildings."""
     # Green-brown sedum of the event hall (ortho: olive with red-brown patches).
-    kit.MATERIALS["omberg_sedum"]=("foliage:93,92,66",(1.8,1.8),None,.08,0)
+    kit.MATERIALS["omberg_sedum"]=("foliage:88,85,81",(1.8,1.8),None,.08,0)
+    # Cross-gable roof of the hall: dark brown-grey tile (ortho 2025 cal. 92,83,80), not the lodges' orange.
+    kit.MATERIALS["omberg_tile_dark"]=("pantile:102,92,89",(2,2),None,.2,0)
     solid("omberg_roof_fascia",(112,56,47),.15)         # red-brown roof edge of the hall (DJI photo)
     solid("omberg_stair_grey",(166,167,162),.12)        # pale grey exterior stair (DJI photo)
     solid("omberg_fascia_dark",(62,62,60),.15)          # fascia of the metal annex roofs
@@ -25,7 +27,10 @@ def register_materials():
     # course light (sun ~1.7x albedo); the ortho shows the padel annex nearly black, the central one
     # light grey.
     kit.MATERIALS["omberg_roof_charcoal"]=("seam:74,78,82:0.45:1.8:0",(1.8,1.8),None,.12,.1)
-    kit.MATERIALS["omberg_roof_greymetal"]=("seam:118,122,126:0.45:1.8:0",(1.8,1.8),None,.12,.1)
+    # Lodge annex roofs (ortho cal.): the north lodge's is dark blue-grey, the east lodge's warm light grey.
+    kit.MATERIALS["omberg_roof_annex_dark"]=("seam:52,58,71:0.45:1.8:0",(1.8,1.8),None,.12,.1)
+    kit.MATERIALS["omberg_roof_annex_warm"]=("seam:124,114,109:0.45:1.8:0",(1.8,1.8),None,.12,.1)
+    kit.MATERIALS["omberg_roof_greymetal"]=("seam:154,159,158:0.45:1.8:0",(1.8,1.8),None,.12,.1)
 
 
 def outward(g, pts, mat, inside, uv=None):
@@ -134,8 +139,8 @@ def cross_gable(g, xc, W, ea, ri, door=None):
         for sx in (-1,1):
             ub=-oe*sg/sm                 # where the eave edge meets the extended main plane
             pts=[(xc+sx*(hw+oe),Y(-gov),zg(hw+oe)),(xc,Y(-gov),RG),(xc,Y(uv),RG),(xc+sx*(hw+oe),Y(ub),zg(hw+oe))]
-            slab(g,pts,thick,"omberg_terracotta","omberg_ivory_trim","omberg_ivory_trim",skip=(1,2))
-        g.box((xc,(Y(-gov)+Y(uv))/2,RG+.03),(.2,uv+gov,.1),"omberg_terracotta")
+            slab(g,pts,thick,"omberg_tile_dark","omberg_ivory_trim","omberg_ivory_trim",skip=(1,2))
+        g.box((xc,(Y(-gov)+Y(uv))/2,RG+.03),(.2,uv+gov,.1),"omberg_tile_dark")
     foot=[(-60,-W/2),(60,W/2)]
     # first-floor terrace door and a ground-floor door under the terrace, on the north wall
     kit.opening(g,opening("+y",xc,1.9,2.15,door,kind="glassdoor",frame="omberg_sage"),foot,None,"omberg_sage")
@@ -184,26 +189,38 @@ def hall(g, L, W, ea, ri, ground):
     solar(g,8.4,L/2-1.0,-W/2+.7,-1.4,zf,rows=4)
 
 
-def lodging(g, length, width, eave, ridge, bays=7, solar_sides=(), porch_side="-y", levels=2):
-    """Two-storey red lodging block. Windows that would collide with the entrance porch are left out."""
+def lodging(g, length, width, eave, ridge, bays=7, solar_sides=(), porch_side="-y", levels=2,
+            porch=None, annex_ends=()):
+    """Two-storey red lodging block. `porch` = dict(x, w, eave, ridge) of the entrance porch (wall width w,
+    centred at x): windows that would collide with its walls or its roof are left out. `annex_ends` lists the
+    gable ends ("-x"/"+x") that carry a low annex, whose 3 m roof covers the ground-floor end windows."""
     openings=[]
-    pw=4.7                               # porch width (see build())
+    px,pw=(porch["x"],porch["w"]) if porch else (0,0)
     xs=[-length/2+(i+.5)*length/bays for i in range(bays)]
     for side in ["-y","+y"]:
         for x in xs:
             for floor in range(levels):
-                if side==porch_side and abs(x)<(pw/2+.6+.2 if floor==0 else .9):
-                    continue             # porch walls / porch ridge stand in front of these
+                if porch and side==porch_side:
+                    dx=abs(x-px)
+                    if floor==0 and dx<pw/2+.6+.2:
+                        continue         # porch walls stand in front of these
+                    if floor==1:         # porch roof top at the window's nearest edge vs the sill board (3.5 m)
+                        dn=max(0,dx-.75)
+                        zr=porch["ridge"]-(porch["ridge"]-porch["eave"])*min(dn,pw/2+.46)/(pw/2+.46)
+                        if zr+.17>3.45:
+                            continue
                 openings.append(opening(side,x,w=1.15,h=1.3,sill=.85+floor*2.8))
     for side in ["-x","+x"]:
         for y in [-width*.24,width*.24]:
             for floor in range(levels):
+                if floor==0 and side in annex_ends:
+                    continue
                 openings.append(opening(side,y,w=1.2,h=1.3,sill=.85+floor*2.8))
         # louvred attic vent in the gable peak, between the ridge cap and the upper windows
-        openings.append(opening(side,0,w=.7,h=.7,sill=eave+.8,kind="vent",frame="omberg_ivory_trim"))
+        openings.append(opening(side,0,w=.7,h=.7,sill=ridge-1.9,kind="vent",frame="omberg_ivory_trim"))
     roof_building(g,length,width,eave,ridge,openings=openings)
     # Lodging entrance with glazing, not a vehicle-sized opening.
-    kit.opening(g,opening(porch_side,0,w=1.6,h=2.2,sill=.22,kind="glassdoor"),
+    kit.opening(g,opening(porch_side,px,w=1.6,h=2.2,sill=.22,kind="glassdoor"),
                 [(-length/2,-width/2),(length/2,width/2)],None,"omberg_ivory_trim")
     for side in solar_sides:
         sgn=-1 if side=="-y" else 1
@@ -214,8 +231,8 @@ def lodging(g, length, width, eave, ridge, bays=7, solar_sides=(), porch_side="-
         for sgn in [-1,1]:
             side="-y" if sgn<0 else "+y"
             segs=[(-length/2,length/2)]
-            if side==porch_side:
-                segs=[(-length/2,-pw/2-.3),(pw/2+.3,length/2)]
+            if porch and side==porch_side:
+                segs=[(-length/2,px-pw/2-.3),(px+pw/2+.3,length/2)]
             for a,b in segs:
                 g.box(((a+b)/2,sgn*(width/2+.045),3.1),(b-a,.08,.13),"omberg_ivory_trim")
 
@@ -263,21 +280,54 @@ def annex(g, L, W, ea, rise, roof_mat, doors, windows, vents=()):
 
 
 def build(byid, add, new):
-    lodges=[("687779185","omberg_north_lodge",477790.75,6457763.78,84.3,25.4,12.63,111.5,114.11,6,"-y"),
-            ("687779186","omberg_west_lodge",477780.1,6457724.03,148.4,24.64,13.25,112.0,114.79,6,"+y"),
-            ("687779187","omberg_east_lodge",477871.12,6457745.55,174.4,35.93,12.9,113.4,116.88,9,"-y")]
-    for fid,aid,e,n,yaw,L,W,ea,ri,bays,porch in lodges:
-        row=byid[fid]
+    # Fitted to the class-1 lidar points (ridge level, slope 0.40 on both sides, roof edges) in the frame of
+    # the old OSM-based rectangle: the real roofs are 14.3-14.7 m edge to edge and sit off that rectangle by
+    # (dx, dy) m along/across the axis. porch = lidar roof of the entrance wing: centre x, wall width w,
+    # ridge/eave heights above ground and depth d beyond the main wall.
+    lodges=[dict(fid="687779185",aid="omberg_north_lodge",e=477790.75,n=6457763.78,yaw=84.3,dx=.69,dy=1.10,
+                 L=25.55,W=13.53,ridge=114.08,pitch=.403,bays=6,side="-y",solar=["-y"],
+                 porch=dict(x=1.8-.69,w=5.5,eave=2.9,ridge=3.5,d=6.0),annex=[("-x",5.0,-5.6,5.6,"omberg_roof_annex_dark")]),
+            dict(fid="687779186",aid="omberg_west_lodge",e=477780.1,n=6457724.03,yaw=148.4,dx=-1.89,dy=-.95,
+                 L=23.6,W=14.02,ridge=114.78,pitch=.397,bays=6,side="+y",solar=[],
+                 porch=dict(x=-3.8+1.89,w=6.1,eave=2.9,ridge=4.1,d=6.2),annex=[]),
+            dict(fid="687779187",aid="omberg_east_lodge",e=477871.12,n=6457745.55,yaw=174.4,dx=-.1,dy=-.6,
+                 L=35.8,W=13.35,ridge=116.79,pitch=.395,bays=9,side="-y",solar=["+y","-y"],
+                 porch=dict(x=-.25,w=5.3,eave=2.9,ridge=3.65,d=3.5),
+                 canopy=(5.6,9.3,2.1,2.75,3.25),
+                 annex=[("-x",5.45,-5.65,5.85,"omberg_roof_annex_warm"),("+x",4.6,-5.65,5.85,"omberg_roof_annex_warm")])]
+    for c in lodges:
+        row=byid[c["fid"]]
         ground=row["groundMedianAbsM"]
+        L,W=c["L"],c["W"]
+        ri=c["ridge"]-ground
+        ea=ri-c["pitch"]*W/2
         g=new()
-        lodging(g,L,W,ea-ground,ri-ground,bays=bays,
-                solar_sides=["-y"] if fid=="687779185" else ["+y","-y"] if fid=="687779187" else [],porch_side=porch)
-        # Small cross-gabled entrance on the OSM protrusion. Eave/ridge sit below the upper-floor window
-        # sills (3.65 m) so the wall's second-floor windows beside the porch roof stay clear.
-        sgn=1 if porch=="+y" else -1
-        roof_building(g,5.6,4.7,2.9,3.9,at=(0,sgn*(W/2+1.9),0),rot=90,
+        po=c["porch"]
+        sgn=1 if c["side"]=="+y" else -1
+        lodging(g,L,W,ea,ri,bays=c["bays"],solar_sides=c["solar"],porch_side=c["side"],porch=po,
+                annex_ends=[a[0] for a in c["annex"]])
+        # Entrance wing on the main wall; it reaches 0.9 m into the lodge so no gap is left.
+        d=po["d"]
+        roof_building(g,d+.9,po["w"],po["eave"],po["ridge"],at=(po["x"],sgn*(W/2+(d-.9)/2),0),rot=90,
                       openings=[opening("+x" if sgn>0 else "-x",0,1.5,2.25,.22,kind="glassdoor")])
-        add(aid,g,e,n,yaw,ground)
+        # Low flat-roofed annexes at the gable ends (lidar: 2.9-3.0 m flat roofs, 5 m deep, ~11 m long; the
+        # ortho shows grey roofs there).
+        for end,depth,y0,y1,mat in c["annex"]:
+            sx=-1 if end=="-x" else 1
+            g.push(Matrix.Translation((sx*(L/2+depth/2),(y0+y1)/2,0)))
+            annex(g,depth,y1-y0,2.92,.08,mat,[],[])
+            g.pop()
+        if "canopy" in c:                # lean-to canopy on the wall beside the porch (lidar: 2.8-3.2 m, 3.7 x 2 m)
+            x0,x1,dep,zl,zh=c["canopy"]
+            yw=sgn*(W/2)
+            ys=sgn
+            top=[(x0,yw,zh),(x1,yw,zh),(x1,yw+ys*dep,zl),(x0,yw+ys*dep,zl)]
+            slab(g,top,.1,"omberg_roof_annex_warm","omberg_fascia_dark","omberg_fascia_dark")
+            for x in (x0+.1,x1-.1):
+                g.box((x,yw+ys*(dep-.1),(zl-.1)/2),(.12,.12,zl-.1),"omberg_ivory_trim")
+        dxy=(c["dx"]*math.sin(math.radians(c["yaw"]))+c["dy"]*-math.cos(math.radians(c["yaw"])),
+             c["dx"]*math.cos(math.radians(c["yaw"]))+c["dy"]*math.sin(math.radians(c["yaw"])))
+        add(c["aid"],g,c["e"]+dxy[0],c["n"]+dxy[1],c["yaw"],ground)
 
     row=byid["1431566994"]
     r=row["rect"]
