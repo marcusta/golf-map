@@ -767,45 +767,51 @@ namespace GolfMap.Editor
 
         // Survey stems under or within kBuildingClearM of a placed building (GolfMap Props/Buildings)
         // are left out: lidar reads roof edges and corners as small crowns, and a house fitted to its
-        // lidar roof covers stems the trees export never knew about. Hand-edited stems stay. The
-        // re-read file is planted from, so this only drops stems for this planting.
+        // lidar roof covers stems the trees export never knew about. A stem right under any other
+        // placed prop or structure (a boxwood hedge block, a shed) goes too: that prop is what the
+        // lidar saw. Hand-edited stems stay. The re-read file is planted from, so this only drops
+        // stems for this planting.
         const float kBuildingClearM = 1.0f;
         string ClearBuildingStems()
         {
             if (terrain == null || loaded == null) return "";
             var root = terrain.gameObject.scene.GetRootGameObjects().FirstOrDefault(g => g.name == GolfMapProps.RootName);
-            var buildings = root ? root.transform.Find("Buildings") : null;
-            if (!buildings) return "";
-            var colliders = new List<MeshCollider>();
+            if (!root) return "";
+            var buildings = new List<MeshCollider>();
+            var others = new List<MeshCollider>();
             var temporary = new List<GameObject>();
             try
             {
-                foreach (var filter in buildings.GetComponentsInChildren<MeshFilter>())
-                {
-                    if (!filter.sharedMesh || !filter.gameObject.activeInHierarchy) continue;
-                    var go = new GameObject("GolfMap building probe") { hideFlags = HideFlags.HideAndDontSave };
-                    temporary.Add(go);
-                    go.transform.SetParent(filter.transform, false);
-                    var c = go.AddComponent<MeshCollider>();
-                    c.sharedMesh = filter.sharedMesh;
-                    colliders.Add(c);
-                }
+                foreach (Transform group in root.transform)
+                    foreach (var filter in group.GetComponentsInChildren<MeshFilter>())
+                    {
+                        if (!filter.sharedMesh || !filter.gameObject.activeInHierarchy) continue;
+                        var go = new GameObject("GolfMap building probe") { hideFlags = HideFlags.HideAndDontSave };
+                        temporary.Add(go);
+                        go.transform.SetParent(filter.transform, false);
+                        var c = go.AddComponent<MeshCollider>();
+                        c.sharedMesh = filter.sharedMesh;
+                        (group.name == "Buildings" ? buildings : others).Add(c);
+                    }
                 Physics.SyncTransforms();
                 int before = loaded.trees.Count;
-                loaded.trees.RemoveAll(t => !treeEdits.ContainsKey(t) && NearBuilding(colliders, WorldPos(t)));
-                int cleared = before - loaded.trees.Count;
-                return cleared > 0 ? "\nLeft out " + cleared + " stems under or within " + kBuildingClearM + " m of a building." : "";
+                loaded.trees.RemoveAll(t => !treeEdits.ContainsKey(t) && NearBuilding(buildings, WorldPos(t), kBuildingClearM));
+                int nearBuildings = before - loaded.trees.Count;
+                loaded.trees.RemoveAll(t => !treeEdits.ContainsKey(t) && NearBuilding(others, WorldPos(t), 0));
+                int underProps = before - nearBuildings - loaded.trees.Count;
+                return (nearBuildings > 0 ? "\nLeft out " + nearBuildings + " stems under or within " + kBuildingClearM + " m of a building." : "")
+                    + (underProps > 0 ? "\nLeft out " + underProps + " stems standing under a placed prop or structure." : "");
             }
             finally { foreach (var go in temporary) if (go) DestroyImmediate(go); }
         }
 
-        // A downward ray at the stem and at eight points kBuildingClearM around it: any hit on a
-        // building mesh means the stem stands inside its roof outline or against its wall.
-        static bool NearBuilding(List<MeshCollider> colliders, Vector3 stem)
+        // A downward ray at the stem and at eight points clearM around it (none for clearM 0): any
+        // hit on a mesh means the stem stands inside its outline or against its wall.
+        static bool NearBuilding(List<MeshCollider> colliders, Vector3 stem, float clearM)
         {
-            for (int i = -1; i < 8; i++)
+            for (int i = -1; i < (clearM > 0 ? 8 : 0); i++)
             {
-                var p = i < 0 ? stem : stem + new Vector3(Mathf.Cos(i * Mathf.PI / 4), 0, Mathf.Sin(i * Mathf.PI / 4)) * kBuildingClearM;
+                var p = i < 0 ? stem : stem + new Vector3(Mathf.Cos(i * Mathf.PI / 4), 0, Mathf.Sin(i * Mathf.PI / 4)) * clearM;
                 foreach (var c in colliders)
                 {
                     var b = c.bounds;
