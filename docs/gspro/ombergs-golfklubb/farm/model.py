@@ -144,8 +144,14 @@ def main():
     objects = {}
     for name, g in assets.items():
         ob = kit.to_object(g, name, table, str(out / "Textures"), lib)
+        # Draped ground surfaces get one continuous smooth normal field: flat faces on a
+        # triangulated terrain drape read as a patchwork of triangles in Unity.
+        ground = any(k in name for k in ("forecourt",))
         for face in ob.data.polygons:
-            face.use_smooth = False
+            face.use_smooth = ground
+        if ground:
+            for edge in ob.data.edges:
+                edge.use_edge_sharp = False
         ob.data.update()
         objects[name] = ob
         exporter.export_fbx(ob, str(out / "Models" / (name + ".fbx")))
