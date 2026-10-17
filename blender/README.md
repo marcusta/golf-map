@@ -1220,6 +1220,10 @@ python docs/gspro/vreta/clubhouse-props.gen.py        # measurements -> docs/gsp
   0..1, readable from both sides. Vreta's 18 hole boards: `docs/gspro/vreta/hole-signs.gen.py` (par/index from the
   app, tee lengths from the club's card, hole view from the 2025 ortho, sign + bench spot by the yellow tee) writes
   the pictures to `data/props/<site>/hole-signs/` and `hole-signs.json`; run it before `clubhouse-props.gen.py`.
+  The `plank_sign` part (square wooden post, a plank screwed to its front, `face` and `back` each mapped once) is
+  Omberg's tee sign: `docs/gspro/ombergs-golfklubb/tee-signs/tee-signs.gen.py` writes one per tee group (tees on
+  one box or within 10 m share a plank; number, a dot and length per tee, par, index) straight as a props spec,
+  installed with `clubhouse/install.ps1` (its docstring has the commands).
 - **Then in Unity:** `golfmap.props.place` (GolfMap > Props), see [unity/README.md](../unity/README.md#course-props).
 
 ## Low-poly vehicles

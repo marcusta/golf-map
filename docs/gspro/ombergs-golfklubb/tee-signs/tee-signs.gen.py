@@ -53,9 +53,10 @@ SMALL = (0.46, 0.32)
 LARGE = (0.46, 0.40)
 BOTTOM = 0.55
 PX_W = 1024
-# Albedo: the scene lights sunlit faces at ~1.7x, so the photo's sunlit orange-brown (~165,105,65) is ~(120,72,40).
-WOOD_LIGHT = np.array((132, 80, 44), float)
-WOOD_DARK = np.array((92, 52, 27), float)
+# Albedo: tuned on the plank as Unity renders it in sun against the photo (R:G:B about 1 : 0.74 : 0.46, a little darker
+# than the grass beside it).
+WOOD_LIGHT = np.array((96, 69, 31), float)
+WOOD_DARK = np.array((66, 45, 19), float)
 INK = (26, 22, 19)
 DOT = {"white": (192, 192, 186), "yellow": (206, 172, 30), "blue": (38, 78, 168), "red": (172, 36, 30)}
 
