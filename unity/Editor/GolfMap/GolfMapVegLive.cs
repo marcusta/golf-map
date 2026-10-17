@@ -77,8 +77,12 @@ namespace GolfMap.Editor
                         }
                         else
                         {
+                            // A distance copy ("<item> @15m") is its item with a shorter render distance
+                            // (GolfMapGrass.Item.AtDistance): every live value goes to it too, or the
+                            // grass near the camera keeps the old tints until the next apply.
+                            string name = GolfMapZones.DistanceCopyBase(item.Name) ?? item.Name ?? "";
                             List<Slot> list;
-                            if (!grassSlots.TryGetValue(item.Name ?? "", out list)) grassSlots[item.Name ?? ""] = list = new List<Slot>();
+                            if (!grassSlots.TryGetValue(name, out list)) grassSlots[name] = list = new List<Slot>();
                             list.Add(slot);
                         }
                     }

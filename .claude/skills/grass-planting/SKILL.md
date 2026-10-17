@@ -212,12 +212,16 @@ continuous sward pick textures whose blades run evenly across the full card widt
 **Colour against the ground, not by eye**: take a 30 m top-down shot over open tall grass with
 the palette hidden (`golfmap.grass.apply {spawn: false}`) and shown, compare linear-space means of
 the centre, scale the green items' tints by ground/grass (a few iterations) so the grass averages
-to the ground colour; then it blends where VSP thins it with distance.
+to the ground colour; then it blends where VSP thins it with distance. Measure at the user's spot
+inside the course (hole deep rough), not the densest mask spot (often an outer field). `randomDarkening`
+is the *floor*, not the amount: the shader multiplies each instance by saturate(random + value), so 0.2
+leaves a fifth of the blades near black - raise it to lighten the dark mix close up (Omberg 0.3,
+2026-10-17: close-up p10 +27 %, the 30 m oblique mean only +8 %; it lifts top-down shots much more).
 
 **Tuning loop without apply**: `golfmap.vegpalette.adjust {select, brightness|saturation|hue|warmth
 |height|width|density|spread, set: {role: value}}` changes the working copy and the scene at once (colours
 graded in linear light: `brightness: -0.15` = x0.85 linear), `golfmap.vegpalette.spots {select, goto: 0}`
-frames where it grows, screenshot, measure, repeat; `golfmap.vegpalette.save` writes grass-palette.json
+frames where it grows, screenshot, measure, repeat (the live push reaches an item's distance copies too); `golfmap.vegpalette.save` writes grass-palette.json
 (every palette listing a shared item; minimal diff) or `.revert` puts it back. The user does the same in
 `GolfMap > Vegetation Palettes` (`golfmap.vegpalette.show {select}` opens it on what you changed). Texture
 white point and a bush's first `material` override still need `golfmap.vegpalette.rebuild` (= apply).
