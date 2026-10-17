@@ -1,0 +1,17 @@
+{
+  "name": "Omberg house group",
+  "dataDir": "../../../../data/omberg-cottage",
+  "crop": "crop.json",
+  "origin": [
+    477620,
+    6457570,
+    100.0
+  ],
+  "assetPrefix": "omberg_cot_",
+  "groundAssets": [],
+  "osm": {},
+  "footprints": "../../../../data/omberg-cottage/osm-buildings.json",
+  "categories": [
+    "building"
+  ]
+}
