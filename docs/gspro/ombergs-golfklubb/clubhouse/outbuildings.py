@@ -20,6 +20,7 @@ def register_materials():
     kit.MATERIALS["omberg_sedum"]=("foliage:88,85,81",(1.8,1.8),None,.08,0)
     # Cross-gable roof of the hall: dark brown-grey tile (ortho 2025 cal. 92,83,80), not the lodges' orange.
     kit.MATERIALS["omberg_tile_dark"]=("pantile:102,92,89",(2,2),None,.2,0)
+    kit.MATERIALS["omberg_terracotta_aged"]=("pantile:142,104,97",(2,2),None,.22,0)
     solid("omberg_roof_fascia",(112,56,47),.15)         # red-brown roof edge of the hall (DJI photo)
     solid("omberg_stair_grey",(166,167,162),.12)        # pale grey exterior stair (DJI photo)
     solid("omberg_fascia_dark",(62,62,60),.15)          # fascia of the metal annex roofs
@@ -327,6 +328,11 @@ def build(byid, add, new):
                 g.box((x,yw+ys*(dep-.1),(zl-.1)/2),(.12,.12,zl-.1),"omberg_ivory_trim")
         dxy=(c["dx"]*math.sin(math.radians(c["yaw"]))+c["dy"]*-math.cos(math.radians(c["yaw"])),
              c["dx"]*math.cos(math.radians(c["yaw"]))+c["dy"]*math.sin(math.radians(c["yaw"])))
+        if c["aid"]=="omberg_north_lodge":
+            # The ortho shows this tile roof darker than the clubhouse and west lodge
+            # (raw 178,126,120 against ~213,151,136). The east lodge's few tile pixels
+            # between its solar arrays are too mixed to tell.
+            g.faces=[(f,"omberg_terracotta_aged" if m=="omberg_terracotta" else m,uv) for f,m,uv in g.faces]
         add(c["aid"],g,c["e"]+dxy[0],c["n"]+dxy[1],c["yaw"],ground)
 
     row=byid["1431566994"]

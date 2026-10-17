@@ -484,7 +484,7 @@ def main():
         g.faces=renamed
     used={mat for g in assets.values() for _,mat,_ in g.faces}
     table=kit.material_table(kit.TextureBank(str(out/"Textures"),1024),used)
-    matte={"omberg_terracotta","omberg_red","omberg_main_grey","omberg_entry_stone","omberg_basement_stone",
+    matte={"omberg_terracotta","omberg_terracotta_aged","omberg_tile_dark","omberg_red","omberg_main_grey","omberg_entry_stone","omberg_basement_stone",
            "omberg_main_frame","omberg_main_reveal","omberg_main_sill","omberg_main_void","omberg_main_panel_joint",
            "omberg_courtyard_asphalt","omberg_main_roof"}
     for name in matte:
