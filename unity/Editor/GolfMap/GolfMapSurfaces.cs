@@ -217,11 +217,77 @@ namespace GolfMap.Editor
                 { "created", DateTime.Now.ToString("s") },
             };
             File.WriteAllText(file, BridgeJson.Write(doc));
+            string groundFile = a.Bool("ground", true) ? CaptureGround(terrain, file, cell, w, h) : null;
             yield return new Dictionary<string, object>
             {
                 { "file", file }, { "size", new object[] { w, h } }, { "meshes", meshes.Count }, { "triangles", triangles },
-                { "areaM2", doc["counts"] }, { "unclassified", others },
+                { "areaM2", doc["counts"] }, { "unclassified", others }, { "ground", groundFile },
             };
+        }
+
+        [BridgeCommand("golfmap.surfaces.ground", "The ground as rendered, straight from above with the vegetation (VSP) off: <prefix>-<terrain>-surfaces-ground.png in the course's export folder, one sRGB pixel per cell of the surface map (same grid, north up). pipeline/grass_zones.py reads its brightness for the dark tall-rough mix. golfmap.surfaces.export writes it too (ground=false skips).",
+            args = "terrain=inner|outer (default inner), cell=0.5 (metres; the surface map's)")]
+        static object Ground(BridgeArgs a)
+        {
+            var course = GolfMapCourses.Require();
+            var role = a.String("terrain", "inner");
+            var scene = EditorSceneManager.GetActiveScene();
+            var terrain = role == "outer"
+                ? GolfMapTreePlanter.RoleTerrain(scene, course.outerTerrainName, course.outerTerrainData, "outer")
+                : GolfMapTreePlanter.RoleTerrain(scene, course.innerTerrainName, course.innerTerrainData, "inner");
+            float cell = Mathf.Clamp((float)a.Number("cell", 0.5), 0.1f, 5f);
+            var size = terrain.terrainData.size;
+            var file = GolfMapCourses.ExportFile(course, role, "surfaces");
+            if (file == null) throw new BridgeError("The active course names no export folder/prefix.");
+            int w = Mathf.CeilToInt(size.x / cell), h = Mathf.CeilToInt(size.z / cell);
+            return new Dictionary<string, object> { { "file", CaptureGround(terrain, file, cell, w, h) }, { "size", new object[] { w, h } } };
+        }
+
+        // An orthographic camera straight down over the surface map's grid (row 0 at the terrain's north
+        // edge), close enough above the highest ground that OPCD's distance fog (from 150 m) stays out.
+        // The VSP systems are off while it renders: what the grass stands on, not the grass.
+        internal static string CaptureGround(Terrain terrain, string surfacesFile, float cell, int w, int h)
+        {
+            var origin = terrain.transform.position;
+            var size = terrain.terrainData.size;
+            var systems = UnityEngine.Object.FindObjectsOfType<AwesomeTechnologies.VegetationSystem.VegetationSystemPro>().Where(s => s.enabled).ToList();
+            var go = new GameObject("GolfMap ground capture") { hideFlags = HideFlags.HideAndDontSave };
+            var rt = RenderTexture.GetTemporary(w, h, 24, RenderTextureFormat.ARGB32, RenderTextureReadWrite.sRGB);
+            var previous = RenderTexture.active;
+            Texture2D tex = null;
+            try
+            {
+                foreach (var s in systems) s.enabled = false;
+                var cam = go.AddComponent<Camera>();
+                cam.enabled = false;
+                cam.orthographic = true;
+                cam.orthographicSize = h * cell / 2f;
+                cam.aspect = (float)w / h;
+                float top = origin.y + size.y + 20f;
+                cam.transform.position = new Vector3(origin.x + w * cell / 2f, top, origin.z + size.z - h * cell / 2f);
+                cam.transform.rotation = Quaternion.Euler(90f, 0f, 0f);   // looking down, north at the top of the image
+                cam.nearClipPlane = 0.5f;
+                cam.farClipPlane = size.y + 200f;
+                cam.clearFlags = CameraClearFlags.SolidColor;
+                cam.backgroundColor = Color.black;
+                cam.targetTexture = rt;
+                cam.Render();
+                RenderTexture.active = rt;
+                tex = new Texture2D(w, h, TextureFormat.RGB24, false);
+                tex.ReadPixels(new Rect(0, 0, w, h), 0, 0);
+                tex.Apply();
+                var path = Path.Combine(Path.GetDirectoryName(surfacesFile), Path.GetFileNameWithoutExtension(surfacesFile) + "-ground.png");
+                File.WriteAllBytes(path, tex.EncodeToPNG());
+                return path;
+            }
+            finally
+            {
+                foreach (var s in systems) if (s) s.enabled = true;
+                RenderTexture.active = previous;
+                RenderTexture.ReleaseTemporary(rt);
+                if (tex) UnityEngine.Object.DestroyImmediate(tex);
+                UnityEngine.Object.DestroyImmediate(go);
+            }
         }
 
         static readonly Color32[] Palette =

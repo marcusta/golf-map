@@ -214,6 +214,13 @@ keys the tools do not model (`catalogue`, `zones`, `originalPath`) survive, unto
 keep their text, and the output matches the node scripts' `JSON.stringify(p,null,2)` - a
 one-weight edit is a one-line diff.
 
+**Open-grown trees** (`openCrownPadM`, `openWidthWeight`; 0 = off). Lidar misses the edge of a
+free-standing crown by about the same width at any size, so a stem outside woodland matches against
+its crown width plus the pad, with width weighed against height by the weight (otherwise 1, height
+counting twice). Omberg's 0.7 m and 1.5 come from 104 solitary trees' ortho shadows measured across
+the sun direction (a crown's shadow is as wide as the crown; only its length stretches): small trees
+(3.6-6 m) had shadows 0.7 m wider than the lidar crown, trees from 9 m none.
+
 **Looks** (`GolfMapTreeLooks.cs`). A species' shapes - its prefabs, i.e. sizes and LOD sets -
 draw with the same few materials, so material settings belong to the species, not to a
 prefab. A look is a named set of copies of those materials plus a generated copy of each

@@ -925,7 +925,7 @@ export class TerrainEditToolService {
         if (!features) return null;
         const stack = features.stackTopDown.peek().filter(f => surfaceOf(f.type) !== null);
         return containingTopDown(stack, features.effectiveHiddenTypes.peek(), p,
-            features.hiddenIds.peek(), features.hiddenSources.peek())[0] ?? null;
+            features.effectiveHiddenIds.peek(), features.hiddenSources.peek())[0] ?? null;
     }
 
     // ── EditorTool lifecycle (called via terrain-edit-tool.ts) ─────────────

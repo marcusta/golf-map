@@ -99,6 +99,7 @@ const tpl = template(`
             <label class="scope-field">Scope
                 <select bind="scopeSelect" data-testid="stack-panel-scope"></select>
             </label>
+            <button bind="holeToggle" type="button" class="layer-toggle" data-testid="stack-hole-toggle"></button>
             <input bind="findShape" type="search" class="find-shape" placeholder="Find shape id, e.g. hole_5_15c"
                 aria-label="Find shape by id" title="Shape id from the GSPro SVG or an OPCD mesh name; Enter selects and zooms to it" data-testid="stack-find-shape" />
             <button bind="editLayerOrder" type="button" class="op-btn" data-testid="layer-order-edit">Edit layer order…</button>
@@ -473,6 +474,16 @@ export class FeatureStackPanelComponent extends Component {
                     : 'Hide the Roughs layer while editing (planner and export still include it)',
                 'aria-pressed': () => String(this.features.roughsLayerHidden.get()),
             },
+            holeToggle: {
+                style: () => this.tool.scope.get() === 'surfaces' && this.scopeHole() ? '' : 'display:none',
+                onclick: () => {
+                    const hole = this.scopeHole();
+                    if (hole) this.features.toggleHoleVisibility(hole.id);
+                },
+                innerHTML: () => `${icon(this.features.hiddenHoleIds.get().has(this.scopeKey.get()) ? 'eye-off' : 'eye', 16)}<span>Shapes in this ${this.scopeHole()?.drawingGroupName ? 'group' : 'hole'}</span>`,
+                title: () => `${this.features.hiddenHoleIds.get().has(this.scopeKey.get()) ? 'Show' : 'Hide'} all shapes in ${this.scopeHole()?.drawingGroupName ?? `Hole ${this.scopeHole()?.number}`} (editor only)`,
+                'aria-pressed': () => String(this.features.hiddenHoleIds.get().has(this.scopeKey.get())),
+            },
             // Contextual controls (law 04): reorder ops appear only while a
             // row is selected — selection is the context they act on.
             // Not for the backdrop rows Vegetation selects (creeks, water):
@@ -679,7 +690,7 @@ export class FeatureStackPanelComponent extends Component {
         // Per-feature visibility: same diff for the hidden class + eye.
         let shownHidden: ReadonlySet<string> = new Set();
         this.track(effect(() => {
-            const next = this.features.hiddenIds.get();
+            const next = this.features.effectiveHiddenIds.get();
             untrack(() => {
                 for (const id of shownHidden) if (!next.has(id)) this.paintHidden(id);
                 for (const id of next) if (!shownHidden.has(id)) this.paintHidden(id);
@@ -743,6 +754,10 @@ export class FeatureStackPanelComponent extends Component {
     private activeDrawingGroup() {
         const id = scopeFromKey(this.scopeKey.get()).holeId;
         return this.courseDetail.drawingGroups.get().find(h => h.id === id);
+    }
+
+    private scopeHole() {
+        return this.courseDetail.drawScopes.get().find(h => h.id === this.scopeKey.get());
     }
 
     private groupHasShapes(): boolean {
@@ -823,7 +838,7 @@ export class FeatureStackPanelComponent extends Component {
         return found.length;
     }
 
-    /** The row's hidden look: its own eye, or the Roughs layer's for a row of that layer. */
+    /** Dim hidden-hole members while keeping each individual eye's own state. */
     private paintHidden(id: string): void {
         const el = this.rowEls.get(id);
         if (!el) return;
@@ -831,7 +846,7 @@ export class FeatureStackPanelComponent extends Component {
         const layerOff = this.features.roughsLayerOff.peek()
             && this.features.featureIdSet.peek().has(id)
             && this.features.store.item(id).peek().layer === ROUGHS_LAYER;
-        el.classList.toggle('hidden', hidden || layerOff);
+        el.classList.toggle('hidden', this.features.effectiveHiddenIds.peek().has(id) || layerOff);
         const eye = el.querySelector<HTMLElement>('[bind="eye"]')!;
         eye.innerHTML = icon(hidden ? 'eye-off' : 'eye', 16);
         eye.title = hidden ? 'Show' : 'Hide';
@@ -839,10 +854,11 @@ export class FeatureStackPanelComponent extends Component {
 
     private renderGroupRow(group: Extract<StackRow, { kind: 'group' }>, track: (d: () => void) => void): HTMLElement {
         const hidden = () => this.features.hiddenSources.get().has(group.source);
+        const holeHidden = () => this.features.hiddenHoleIds.get().has(this.scopeKey.get());
         const style = FEATURE_STYLES[group.type as keyof typeof FEATURE_STYLES];
         const el = this.wireEl(groupRowTpl, {
             row: {
-                className: () => hidden() ? 'stack-row stack-row--group hidden' : 'stack-row stack-row--group',
+                className: () => hidden() || holeHidden() ? 'stack-row stack-row--group hidden' : 'stack-row stack-row--group',
             },
             eye: {
                 onclick: (e: Event) => {

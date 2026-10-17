@@ -10,10 +10,13 @@
       "near-weight": 0.46,
       "far-start": 55,
       "far-ramp": 25,
-      "far-weight": 0.5
+      "far-weight": 0.5,
+      "dark-light": 0.055,
+      "dark-dark": 0.049
     },
     "rock-shore": {
       "inland": 0.4
     }
-  }
+  },
+  "dark_comment": "2026-10-17 (Marcus: the brightened tall rough reads too light on the dark crop fields): tall-grass hands over to rough_tall/dark (and far to far_dark) where Unity's ground render (golfmap.surfaces.ground, linear luminance smoothed over 4 m) falls from 0.055 to 0.049. Measured in that render: deep rough on holes 1 and 5 0.056-0.064 (the brightened mix matches it), the crop field at Unity x 810-890, z 440-480 0.047-0.048, a pale meadow 0.066; the script's 0.056/0.046 left the crop field at 0.6-0.8 dark, with specks of the light mix."
 }

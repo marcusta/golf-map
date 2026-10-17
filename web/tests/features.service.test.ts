@@ -698,7 +698,7 @@ describe('multi-select', () => {
     });
 });
 
-describe('Roughs layer toggle', () => {
+describe('Editor layer visibility', () => {
     const overlayMap = () => ({
         ready: new Signal(false),
         map: new Signal(null),
@@ -707,6 +707,55 @@ describe('Roughs layer toggle', () => {
         removeOverlayLayer: () => {},
     });
     const ids = (svc: FeaturesService) => svc.geojson.get().features.map(f => f.id).sort();
+
+    test('a hole eye hides all members only in the editor and preserves individual eyes', async () => {
+        const { api, calls } = fakeApi([
+            feature('a', 'bunker', 1, { holeId: 'h1' }),
+            feature('b', 'green', 1, { holeId: 'h1' }),
+            { ...feature('generated', 'trees', 1, { holeId: 'h1' }), source: 'lidar-canopy', generated: true },
+            feature('other', 'fairway', 1, { holeId: 'h2' }),
+            feature('course', 'rough'),
+        ]);
+        const svc = new FeaturesService(api);
+        await svc.load('c1');
+        const editor = svc.attachOverlay(overlayMap() as never, { editor: true });
+        svc.toggleFeatureVisibility('a');
+        svc.setSelection(['b', 'other']);
+        svc.toggleHoleVisibility('h1');
+        expect(ids(svc)).toEqual(['course', 'other']);
+        expect(svc.generatedGeojson.get().features).toHaveLength(0);
+        expect(svc.isHidden(svc.store.item('b').peek())).toBe(true);
+        expect([...svc.selectedIds.get()]).toEqual(['other']);
+        svc.select('b'); // hidden members cannot reappear through stack selection
+        expect(svc.selectedIds.get().size).toBe(0);
+        expect(calls.update + calls.remove + calls.create).toBe(0);
+
+        const hidden = svc.effectiveHiddenIds.get();
+        svc.patchLocal('other', squareGeometry(12));
+        expect(svc.effectiveHiddenIds.get()).toBe(hidden); // geometry edits retain overlay diff eligibility
+        const created = await svc.create({ holeId: 'h1', type: 'bunker', geometry: squareGeometry() });
+        expect(svc.isHidden(created!)).toBe(true);
+        expect(svc.selectedIds.get().size).toBe(0);
+        expect(ids(svc)).toEqual(['course', 'other']);
+        editor();
+
+        const planner = svc.attachOverlay(overlayMap() as never);
+        expect(ids(svc)).toEqual(['b', 'course', created!.id, 'other'].sort());
+        expect(svc.generatedGeojson.get().features).toHaveLength(1);
+        planner();
+
+        const again = svc.attachOverlay(overlayMap() as never, { editor: true });
+        expect(ids(svc)).toEqual(['course', 'other']);
+        svc.toggleHoleVisibility('h1');
+        expect(ids(svc)).toContain('b');
+        expect(ids(svc)).not.toContain('a');
+        expect([...svc.hiddenIds.get()]).toEqual(['a']);
+        svc.toggleHoleVisibility('h1');
+        svc.showAll();
+        expect(svc.hiddenHoleIds.get().size).toBe(0);
+        expect(ids(svc)).toContain('a');
+        again();
+    });
 
     test('hides the layer only while the editor owns the overlay; the planner still draws it', async () => {
         const { api } = fakeApi([feature('r', 'rough', 1, { layer: 'roughs' }), feature('b', 'bunker')]);

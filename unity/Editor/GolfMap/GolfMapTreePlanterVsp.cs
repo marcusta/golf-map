@@ -612,6 +612,7 @@ namespace GolfMap.Editor
                 foreach (var t in prepared) storage.AddVegetationItemInstance(mapping[t.prefab], t.position, t.scale, t.rotation, false, ImportSource, 1f, false);
                 if (SourceCount(package, own) != prepared.Count) throw new InvalidOperationException("Stored count differs from expected count.");
                 } catch {EditorJsonUtility.FromJsonOverwrite(backup,package);EditorUtility.SetDirty(package);RefreshStorage();throw;}
+                int untrimmed=GolfMapVspRig.ForgetTrimmed(package, RoleIDs(system), ImportSource, lastPlantingBackup);
                 // Retired palette prefabs would otherwise stay in the catalogue for good and keep
                 // failing VSP's per-item validation at load. Only safe once the instances are in.
                 int pruned=GolfMapVspRig.PruneCatalogues(system);
@@ -619,7 +620,7 @@ namespace GolfMap.Editor
                 EditorSceneManager.MarkSceneDirty(terrain.gameObject.scene);
                 RefreshStorage();
                 AssetDatabase.SaveAssets();
-                status = "Replaced " + prior + " " + RoleKey + " trees with " + prepared.Count + ": " + meshHits + " mesh hits, " + terrainHits + " terrain fallback, " + skipped + " skipped, " + clamped + " scale-clamped, " + nudged + " nudged off cell edges" + (pruned > 0 ? ", " + pruned + " retired catalogue item(s) pruned" : "") + ". Source 42. Save the scene to retain setup.";
+                status = "Replaced " + prior + " " + RoleKey + " trees with " + prepared.Count + ": " + meshHits + " mesh hits, " + terrainHits + " terrain fallback, " + skipped + " skipped, " + clamped + " scale-clamped, " + nudged + " nudged off cell edges" + (pruned > 0 ? ", " + pruned + " retired catalogue item(s) pruned" : "") + ". Source 42. Save the scene to retain setup." + (untrimmed > 0 ? "\nHybrid course: " + untrimmed + " trimmed trees are back in the storage. Write the Arborist trees again (bun run gspro:export -- <course> arborist), then golfmap.vsp.trees.trim file=<its vsp-far.json>." : "");
                 File.WriteAllText(GolfMapCourses.ReportPath(Course, "tree_import.txt"), DateTime.UtcNow.ToString("o") + "\n" + status + "\n" + AlignmentReport() + "\nStorage: " + AssetDatabase.GetAssetPath(package));
                 Debug.Log("[GolfMap] " + status);
             }

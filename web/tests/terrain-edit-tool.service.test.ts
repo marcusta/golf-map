@@ -215,7 +215,7 @@ interface FakeFeatures {
     /** FeaturesService's hit-test inputs (draw mode's rule): the stack, top first, and nothing hidden. */
     stackTopDown: Computed<FakeFeature[]>;
     effectiveHiddenTypes: Signal<ReadonlySet<string>>;
-    hiddenIds: Signal<ReadonlySet<string>>;
+    effectiveHiddenIds: Signal<ReadonlySet<string>>;
     hiddenSources: Signal<ReadonlySet<string>>;
     updates: Array<{ id: string; patch: { attributes?: Record<string, string | number | boolean> | null; geometry?: unknown } }>;
     update(id: string, patch: { attributes?: Record<string, string | number | boolean> | null; geometry?: unknown }): Promise<unknown>;
@@ -227,7 +227,7 @@ function fakeFeatures(items: FakeFeature[] = []): FakeFeatures {
         store,
         stackTopDown: new Computed(() => store.items.get()),
         effectiveHiddenTypes: new Signal<ReadonlySet<string>>(new Set()),
-        hiddenIds: new Signal<ReadonlySet<string>>(new Set()),
+        effectiveHiddenIds: new Signal<ReadonlySet<string>>(new Set()),
         hiddenSources: new Signal<ReadonlySet<string>>(new Set()),
         updates: [],
         async update(id, patch) {

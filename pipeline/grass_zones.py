@@ -51,6 +51,18 @@ rasterizer keeps the maximum per type, so the bands stack into the ramp. One
 polygon with an inward feather cannot do that: it fades from every cut edge,
 which leaves a thin, dipping strip where a narrow rough meets deep rough.
 
+Dark ground gets darker grass: the grass must sit at the brightness of the ground
+it stands on, or it shows where it thins (and pops in), and the ground is not one
+brightness - Omberg's Outer_Deep_Sat fill shows the orthophoto, so a dark crop
+field and a pale meadow are the same mesh class. Unity renders the ground straight
+from above with the vegetation off (golfmap.surfaces.ground, also written by
+golfmap.surfaces.export: <prefix>-<terrain>-surfaces-ground.png on the surface
+map's grid); its linear luminance, smoothed over a few metres, hands the mix over
+to the type's DARK_VARIANT (and the far mix to FAR_DARK_VARIANT) between
+Rules.dark_light and Rules.dark_dark, as nested bands above the others like the
+far mix: the two add up to what grows there. Only where the course binds items to
+the variant; a course without a ground render keeps one mix.
+
 The result is written as `vegetation_zone` features (EPSG:3006 GeoJSON, one
 per polygon, holes kept) for the server's generated-feature import under one
 source, so a re-run replaces exactly what the last run made and nothing
@@ -64,6 +76,7 @@ import json
 import sys
 from dataclasses import dataclass
 from pathlib import Path
+from typing import NamedTuple
 
 import numpy as np
 from shapely import make_valid
@@ -129,6 +142,15 @@ class Rules:
     out_start: float = 40.0
     out_ramp: float = 10.0
     far_variant: bool = False
+    # Dark ground (the module doc): full ordinary mix where the ground render's smoothed linear
+    # luminance is dark_light or more, full DARK_VARIANT at dark_dark or less, a cross-fade
+    # between. Omberg 2026-10-17: deep rough on holes 1 and 5 0.056-0.064 (the brightened mix
+    # matches it), the dark crop fields 0.043-0.047, a pale meadow 0.066. dark_variant /
+    # far_dark_variant: main() sets them when the course binds items to those variants.
+    dark_light: float = 0.056
+    dark_dark: float = 0.046
+    dark_variant: bool = False
+    far_dark_variant: bool = False
 
 
 # (surface codes, clearance: zero weight within this many metres, ramp: full weight beyond clearance + ramp)
@@ -175,6 +197,9 @@ PATH_SEAM_M = 1.0              # the surface map's cells this close to a drawn p
 # hung over a 2 m path from both sides, and tufts of its own closed it.
 VERGE_VARIANT = "verge"
 FAR_VARIANT = "far"            # the thin mix beyond Rules.out_start from play (Rules.far_variant)
+DARK_VARIANT = "dark"          # the ordinary mix on dark ground (Rules.dark_*)
+FAR_DARK_VARIANT = "far_dark"  # the far mix on dark ground
+DARK_SMOOTH_M = 4.0            # sigma of the ground luminance's smoothing: fields, not single cells, pick the mix
 VERGE_DEEP_M = 1.8
 VERGE_ROUGH_M = 0.0
 VERGE_NOISE_FEATURE_M = 4.0    # blobs of the noise that bends the verge's outer edge
@@ -198,6 +223,8 @@ class Result:
     bands: list | None = None   # [(weight, geometry)] lowest first, from a weight field; None = `area` at one weight
     verge: BaseGeometry | None = None   # the loose paths' verges (VERGE_VARIANT), with --surfaces
     far_bands: list | None = None   # [(weight, geometry)] of the FAR_VARIANT mix far from play (Rules.far_variant)
+    dark_bands: list | None = None   # the same for DARK_VARIANT on dark ground (Rules.dark_variant)
+    far_dark_bands: list | None = None   # and FAR_DARK_VARIANT (Rules.far_dark_variant)
 
 
 def _union(geoms) -> BaseGeometry:
@@ -281,14 +308,33 @@ def slab_grass(cls: np.ndarray, cell: float, seed: int = 0) -> np.ndarray | None
     return slab & (fringe | patches)
 
 
+class Split(NamedTuple):
+    w: np.ndarray          # the ordinary mix
+    far: np.ndarray        # FAR_VARIANT
+    dark: np.ndarray       # DARK_VARIANT
+    far_dark: np.ndarray   # FAR_DARK_VARIANT
+
+
+def ground_darkness(lum: np.ndarray, cell: float, rules: Rules, smooth: float = DARK_SMOOTH_M) -> np.ndarray:
+    """0 (light ground: the ordinary mix) .. 1 (dark: DARK_VARIANT) per cell, from the ground
+    render's linear luminance smoothed over `smooth` metres (sigma)."""
+    from scipy.ndimage import gaussian_filter
+    smoothed = gaussian_filter(lum.astype(np.float32), sigma=smooth / cell) if smooth > 0 else lum
+    span = max(rules.dark_light - rules.dark_dark, 1e-6)
+    return np.clip((rules.dark_light - smoothed) / span, 0.0, 1.0).astype(np.float32)
+
+
 def weight_field(cls: np.ndarray, cell: float, blocked: np.ndarray | None, rules: Rules,
                  clearances=CLEARANCES, reach_ramp: float = DEFAULT_REACH_RAMP_M,
-                 block_ramp: float = DEFAULT_BLOCK_RAMP_M, seed: int = 0, split: bool = False):
+                 block_ramp: float = DEFAULT_BLOCK_RAMP_M, seed: int = 0, split: bool = False,
+                 darkness: np.ndarray | None = None):
     """Tall-grass weight 0..1 per cell of the surface map (see the module doc).
     `blocked`: buildings (+ margin), faded over `block_ramp`. Paths and roads are cut
-    from the band polygons instead (tall_grass_from_surfaces). `split`: (ordinary mix,
-    far mix) instead - with rules.far_variant the far mix takes over beyond out_start
-    from play; the two add up to what grows there without the far thinning."""
+    from the band polygons instead (tall_grass_from_surfaces). `split`: a Split of the
+    mixes instead - with rules.far_variant the far mix takes over beyond out_start
+    from play, and with `darkness` (ground_darkness) and rules.dark_variant /
+    far_dark_variant each hands its share on dark ground to its dark variant; they all
+    add up to what grows there without the far thinning."""
     from scipy.ndimage import distance_transform_edt
     from creek_bank_zones import smooth_noise
 
@@ -337,8 +383,14 @@ def weight_field(cls: np.ndarray, cell: float, blocked: np.ndarray | None, rules
         w *= 1.0 - (1.0 - rules.far_weight) * ramp(d_play, rules.far_start, rules.far_ramp)
     if rules.near_weight < 1.0 and play.any():
         w *= 1.0 - (1.0 - rules.near_weight) * ramp(d_play, rules.near_start, rules.near_ramp)
-    w, far = w.astype(np.float32), far.astype(np.float32)
-    return (w, far) if split else w
+    dark, far_dark = np.zeros_like(w), np.zeros_like(far)
+    if darkness is not None:
+        if rules.dark_variant:
+            dark, w = w * darkness, w * (1.0 - darkness)
+        if rules.far_dark_variant:
+            far_dark, far = far * darkness, far * (1.0 - darkness)
+    w, far, dark, far_dark = (a.astype(np.float32) for a in (w, far, dark, far_dark))
+    return Split(w, far, dark, far_dark) if split else w
 
 
 def path_verge(cls: np.ndarray, cell: float, loose: np.ndarray, blocked: np.ndarray | None,
@@ -404,12 +456,14 @@ def ways_cut(roads: list[tuple[LineString, float]], paths: list[tuple[BaseGeomet
 
 def tall_grass_from_surfaces(cls: np.ndarray, cell: float, west: float, north: float,
                              buildings: list[BaseGeometry], roads: list[tuple[LineString, float]],
-                             rules: Rules = Rules(), levels=BAND_LEVELS, paths: list = ()) -> Result:
+                             rules: Rules = Rules(), levels=BAND_LEVELS, paths: list = (),
+                             darkness: np.ndarray | None = None) -> Result:
     """`cls`: surface codes, rows north to south, `cell` metres; (`west`, `north`) the EPSG:3006
     corner of row 0, column 0. The weight field as nested bands; `area` is the lowest band.
     `paths`: the app's `path` features, each a geometry or (geometry, surface). The path
     meshes are drawn from them, so their outlines are the grass's edge: cut from the bands
-    (ways_cut), with tufts onto those with a loose surface."""
+    (ways_cut), with tufts onto those with a loose surface. `darkness`: ground_darkness on
+    the same grid, for the dark variants."""
     from rasterio import features
     from rasterio.transform import Affine
     from scipy.ndimage import binary_dilation, distance_transform_edt
@@ -434,7 +488,8 @@ def tall_grass_from_surfaces(cls: np.ndarray, cell: float, west: float, north: f
         if not under.all():
             rows, cols = distance_transform_edt(under, return_distances=False, return_indices=True)
             cls = cls[rows, cols]
-    w, w_far = weight_field(cls, cell, blocked, rules, split=True)
+    fields = weight_field(cls, cell, blocked, rules, split=True, darkness=darkness)
+    w = fields.w
     cut = ways_cut(roads, paths, rules)
 
     # A patch of grass on a rock slab is small by design: the minimum area does not apply there.
@@ -454,7 +509,7 @@ def tall_grass_from_surfaces(cls: np.ndarray, cell: float, west: float, north: f
         return out
 
     bands = contour_bands(w)
-    far_bands = contour_bands(w_far) if w_far.any() else None
+    far_bands, dark_bands, far_dark_bands = (contour_bands(f) if f.any() else None for f in (fields.far, fields.dark, fields.far_dark))
 
     # The verge of the loose paths: its cells, less every path and a margin.
     verge = None
@@ -471,7 +526,8 @@ def tall_grass_from_surfaces(cls: np.ndarray, cell: float, west: float, north: f
     deep = cls == S_DEEP
     return Result(bands[0][1], float(deep.sum()) * cell2, float(((cls == S_ROUGH) & (w > 0)).sum()) * cell2,
                   float((deep & (w == 0)).sum()) * cell2,
-                  float(blocked.sum()) * cell2 if blocked is not None else 0.0, cut.area, bands, verge, far_bands)
+                  float(blocked.sum()) * cell2 if blocked is not None else 0.0, cut.area, bands, verge, far_bands,
+                  dark_bands, far_dark_bands)
 
 
 def load_surfaces_map(path: Path, sidecar: Path | None) -> tuple[np.ndarray, float, float, float, dict]:
@@ -499,14 +555,17 @@ def load_surfaces_map(path: Path, sidecar: Path | None) -> tuple[np.ndarray, flo
 
 def feature_collection(area: BaseGeometry, zone_type: str, source: str, weight: float,
                        feather: float, noise: float, bands: list | None = None,
-                       verge: BaseGeometry | None = None, far_bands: list | None = None) -> dict:
+                       verge: BaseGeometry | None = None, far_bands: list | None = None,
+                       dark_bands: list | None = None, far_dark_bands: list | None = None) -> dict:
     """One zone per polygon; with `bands` ([(weight, geometry)], lowest first) one per band
     polygon in that order, so higher bands sit above lower ones in the zone stack. `far_bands`:
     the same for the FAR_VARIANT mix, above the ordinary bands (it claims its share first, the
-    ordinary mix keeps the rest, so the two cross-fade). `verge`: the loose paths' verges, on
+    ordinary mix keeps the rest, so the two cross-fade); `dark_bands` / `far_dark_bands` the
+    same again for the dark variants, above those. `verge`: the loose paths' verges, on
     top as VERGE_VARIANT mix zones (what is under them keeps growing)."""
     features = []
-    for variant, stack in ((None, bands if bands is not None else [(weight, area)]), (FAR_VARIANT, far_bands or [])):
+    for variant, stack in ((None, bands if bands is not None else [(weight, area)]), (FAR_VARIANT, far_bands or []),
+                           (DARK_VARIANT, dark_bands or []), (FAR_DARK_VARIANT, far_dark_bands or [])):
         for level, geom in stack:
             for poly in sorted(_each_polygon(geom), key=lambda p: -p.area):
                 rings = [poly.exterior, *poly.interiors]
@@ -565,14 +624,29 @@ def load_path_surfaces(db_path: Path, course_ident: str) -> list[tuple[BaseGeome
     return out
 
 
-def far_variant_bound(db_path: Path, course_ident: str, zone_type: str) -> bool:
-    """Whether the course's `zone_type` has a FAR_VARIANT that binds items (zones -- bind
-    <course> <type> --variant far --palette ...): the switch for the far mix."""
+def far_variant_bound(db_path: Path, course_ident: str, zone_type: str, variant: str = FAR_VARIANT) -> bool:
+    """Whether the course's `zone_type` has `variant` binding items (zones -- bind <course>
+    <type> --variant far --palette ...): the switch for the far mix (and the dark ones)."""
     conn = gspro._open_course_db(db_path)
     course = gspro._resolve_course(conn, course_ident)
     types = gspro._load_zone_types(conn, course["id"])
     conn.close()
-    return any(t.key == zone_type and any(v.key == FAR_VARIANT and v.items for v in t.variants) for t in types)
+    return any(t.key == zone_type and any(v.key == variant and v.items for v in t.variants) for t in types)
+
+
+def load_ground(surfaces: Path, shape: tuple) -> np.ndarray | None:
+    """Linear luminance of the ground render next to the surface map (golfmap.surfaces.ground:
+    <stem>-ground.png, sRGB, north up), or None when there is none or its grid differs."""
+    path = surfaces.with_name(surfaces.stem + "-ground.png")
+    if not path.exists():
+        return None
+    from PIL import Image
+    rgb = np.asarray(Image.open(path).convert("RGB"), dtype=np.float32) / 255.0
+    if rgb.shape[:2] != tuple(shape):
+        print(f"  warning: {path.name} is {rgb.shape[1]}x{rgb.shape[0]}, the surface map {shape[1]}x{shape[0]}: ignored (render it again)")
+        return None
+    lin = np.where(rgb <= 0.04045, rgb / 12.92, ((rgb + 0.055) / 1.055) ** 2.4)
+    return lin @ np.array([0.2126, 0.7152, 0.0722], dtype=np.float32)
 
 
 def load_buildings(path: Path | None) -> list[BaseGeometry]:
@@ -631,6 +705,10 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--near-weight", type=float, default=Rules.near_weight, help="its weight beyond --near-start + --near-ramp, times the far rule's (1 = off)")
     p.add_argument("--out-start", type=float, default=Rules.out_start,
                    help=f"metres from play where the <type>/{FAR_VARIANT} mix takes over (only when the course binds that variant)")
+    p.add_argument("--dark-light", type=float, default=Rules.dark_light,
+                   help=f"ground render luminance (linear) at and above which the ordinary mix grows alone (<type>/{DARK_VARIANT} below)")
+    p.add_argument("--dark-dark", type=float, default=Rules.dark_dark,
+                   help=f"ground render luminance at and below which <type>/{DARK_VARIANT} grows alone")
     args = p.parse_args(argv)
 
     buildings = load_buildings(Path(args.buildings) if args.buildings else None)
@@ -639,7 +717,8 @@ def main(argv: list[str] | None = None) -> int:
                   building_margin=args.building_margin, road_margin=args.road_margin, path_margin=args.path_margin,
                   clearance=args.clearance if args.clearance is not None else (DEFAULT_NOISE_M if args.noise is None else args.noise) + 0.5,
                   far_start=args.far_start, far_ramp=args.far_ramp, far_weight=args.far_weight,
-                  near_start=args.near_start, near_ramp=args.near_ramp, near_weight=args.near_weight, out_start=args.out_start)
+                  near_start=args.near_start, near_ramp=args.near_ramp, near_weight=args.near_weight, out_start=args.out_start,
+                  dark_light=args.dark_light, dark_dark=args.dark_dark)
     if args.surfaces:
         rules.far_variant = far_variant_bound(Path(args.db), args.course, args.zone_type)
         cls, cell, west, north, doc = load_surfaces_map(Path(args.surfaces), Path(args.sidecar) if args.sidecar else None)
@@ -652,15 +731,24 @@ def main(argv: list[str] | None = None) -> int:
             cls = cls.copy()
             cls[marked] = S_NONE
             print(f"  {marked.sum() * cell * cell:,.0f} m2 of water on creeks marked for bank vegetation: no clearance")
+        darkness = None
+        rules.dark_variant = far_variant_bound(Path(args.db), args.course, args.zone_type, DARK_VARIANT)
+        rules.far_dark_variant = rules.far_variant and far_variant_bound(Path(args.db), args.course, args.zone_type, FAR_DARK_VARIANT)
+        if rules.dark_variant or rules.far_dark_variant:
+            lum = load_ground(Path(args.surfaces), cls.shape)
+            if lum is None:
+                print(f"  no ground render next to the surface map (golfmap.surfaces.ground in Unity): no {args.zone_type}/{DARK_VARIANT} mix")
+            else:
+                darkness = ground_darkness(lum, cell, rules)
         r = tall_grass_from_surfaces(cls, cell, west, north, buildings, roads, rules,
-                                     paths=load_path_surfaces(Path(args.db), args.course))
+                                     paths=load_path_surfaces(Path(args.db), args.course), darkness=darkness)
     else:
         course, surfaces = load_surfaces(Path(args.db), args.course)
         r = tall_grass_area(surfaces, buildings, roads, rules)
     doc = feature_collection(r.area, args.zone_type, args.source, args.weight,
                              args.band_feather if r.bands is not None else args.feather,
                              args.noise if args.noise is not None else DEFAULT_BAND_NOISE_M if r.bands is not None else DEFAULT_NOISE_M,
-                             r.bands, r.verge, r.far_bands)
+                             r.bands, r.verge, r.far_bands, r.dark_bands, r.far_dark_bands)
     Path(args.out).write_text(json.dumps(doc), encoding="utf-8")
     print(f"{course['name']}: {len(doc['features'])} {args.zone_type} zones, {r.area.area:,.0f} m2 "
           f"(deep rough {r.habitat_m2:,.0f} m2 + rough spill {r.spill_m2:,.0f} m2; cut: beyond {args.max_distance:g} m "
@@ -675,6 +763,10 @@ def main(argv: list[str] | None = None) -> int:
               f"(hand-over across {rules.out_start:g}-{rules.out_start + rules.out_ramp:g} m)")
     elif args.surfaces:
         print(f"  no {args.zone_type}/{FAR_VARIANT} variant with items on this course: the ordinary mix grows to the reach limit")
+    for variant, stack in ((DARK_VARIANT, r.dark_bands), (FAR_DARK_VARIANT, r.far_dark_bands)):
+        if stack:
+            print(f"  {stack[0][1].area:,.0f} m2 on dark ground: the {args.zone_type}/{variant} mix "
+                  f"(hand-over between ground luminance {rules.dark_light:g} and {rules.dark_dark:g})")
     if r.verge is not None and not r.verge.is_empty:
         print(f"  {r.verge.area:,.0f} m2 of verge along the gravel and dirt paths ({args.zone_type}/{VERGE_VARIANT}, mixed over what grows there)")
     print(f"Wrote {args.out}")

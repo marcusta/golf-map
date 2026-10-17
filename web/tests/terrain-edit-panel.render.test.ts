@@ -81,7 +81,7 @@ function mount(opts: { edits?: TerrainEdit[]; jobs?: ShapingJob[]; features?: Ar
             store: { items },
             stackTopDown: new Computed(() => items.get()),
             effectiveHiddenTypes: new Signal(new Set()),
-            hiddenIds: new Signal(new Set()),
+            effectiveHiddenIds: new Signal(new Set()),
             hiddenSources: new Signal(new Set()),
         },
         courseId: 'course-1',

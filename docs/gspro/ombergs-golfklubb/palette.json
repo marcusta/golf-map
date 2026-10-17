@@ -24,6 +24,8 @@
     "woodlandWidthWeight": 2,
     "woodlandScaleBoost": 1.1,
     "woodlandSpeciesFitSlack": 1.5,
+    "openCrownPadM": 0.7,
+    "openWidthWeight": 1.5,
     "scaleJitter": 0.1,
     "maxLeanDeg": 2.5
   },

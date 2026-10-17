@@ -412,14 +412,34 @@ op_p = dict(op_l, name="cliff_t4", outline3006=[list(shape_coords.from_blend(x, 
 run_p = sa.cut_out(build(lake_region, LAKE), op_p)
 assert run_p["result"] == ["CANCELLED"] and "Pond" in run_p.get("skipped", ""), run_p
 
-# 10. the op cache keys on the DEM's content: the cut-out unit's extra carries its hash, a changed DEM another
-units, _ = sa.plan_units(ctx, op)
-key1 = units[0].extra
-assert json.loads(key1)["dem"] == sa._file_sha(tif)
-write_geotiff(tif, DEM + 0.5)
-os.utime(tif, ns=(time.time_ns() + 10 ** 9, time.time_ns() + 10 ** 9))
-units, _ = sa.plan_units(ctx, op)
-assert units[0].extra != key1, "a new DEM must re-run the op"
+# 10. the op cache keys on the DEM window the cut reads (outline box + apron + 1 m + DEM_PAD_PX), not the whole
+# file: an edit outside the window keeps the unit's key, one inside it changes it
+def rewrite(arr):
+    write_geotiff(tif, arr)
+    os.utime(tif, ns=(time.time_ns() + 10 ** 9, time.time_ns() + 10 ** 9))   # a new mtime: the file sha is re-read
+
+
+key_of = lambda o: sa.plan_units(ctx, o)[0][0].extra
+rewrite(DEM)
+key1, sha1 = key_of(op), sa._file_sha(tif)
+_, info = sa.dem_sampler(ctx, sl.polygon_bbox(sa.cut_out_poly(ctx, op), APRON + 1.0))
+r0, r1, c0, c1 = info["window"]
+assert json.loads(key1) == {"demWindow": info["windowSha"]}, key1
+assert 0 < r0 and r1 < size and 0 < c0 and c1 < size, ("the window must leave DEM outside it", info["window"])
+far = DEM.copy()
+far[:r0, :] -= 2.0                       # a pond dug north of the window, and every pixel east of it
+far[:, c1:] += 3.0
+rewrite(far)
+assert sa._file_sha(tif) != sha1 and key_of(op) == key1, "an edit outside the window must keep the key"
+near = DEM.copy()
+near[r1 - 1, c1 - 1] -= 0.01             # one pixel of the window's corner (the DEM_PAD_PX margin)
+rewrite(near)
+assert key_of(op) != key1, "an edit inside the window must re-run the op"
+rewrite(DEM)
+assert key_of(op) == key1, "the same window must key the same again"
+# a window outside the DEM keys on the whole file (and the cut cancels); a dome's key does not see the DEM at all
+off = dict(op, outline3006=[[e + 500.0, n] for e, n in outline])
+assert json.loads(key_of(off))["dem"] == sa._file_sha(tif) and "outside the DEM" in json.loads(key_of(off))["error"]
 assert sa.plan_units(ctx, dict(op, rise={"topM": 1.0}))[0][0].extra == "", "a dome's cache key must not change"
 
 print(f"cliff test passed: slab {sco[:, 2].min():.2f}-{sco[:, 2].max():.2f} m, DEM error {err * 1000:.2f} mm, "

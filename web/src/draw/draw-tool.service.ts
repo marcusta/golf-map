@@ -12,6 +12,7 @@ import { sweref99tmToWgs84 } from '../geo/transform';
 import { flattenRing, pointInGeometry, type AnchorPoint, type CurveType, type FeatureGeometry, type Point } from '../geo/bezier';
 import { ScreenPointCache } from './screen-cache';
 import { fitClosedBspline } from '../geo/spline-fit';
+import { UNION_ERRORS, unionShapes } from './shape-union';
 import { PATH_SURFACE_ATTRIBUTE, isPathSurface, type PathSurface } from '../../../shared/features/path-surface';
 import { TREE_AREA_SPECIES_ATTRIBUTE, TREE_AREA_TYPE, hasSpeciesMix } from '../../../shared/features/tree-areas';
 import { DEFAULT_POWER_LINE_WIDTH_M, POWER_LINE_TYPE } from '../../../shared/features/power-line';
@@ -1123,6 +1124,63 @@ export class DrawToolService {
             if (!created) return; // save failed — history dropped via saveError watcher
             this.record(created.map(c => ({ featureId: c.id, before: null, after: snapshotOf(c), beforeVersion: null })));
         })();
+    }
+
+    /**
+     * Union the selected shapes into the one selected first (`unionShapes`):
+     * it keeps its id, type, hole, layer, attributes and stack slot and takes
+     * the merged outline; the others are deleted. ONE history entry. Refused
+     * with a notice for fewer than two shapes, a road/path centerline, or
+     * shapes that do not overlap or touch.
+     */
+    unionSelection(): void {
+        const features = this.features;
+        if (!features) return;
+        const editable = features.editableSelectedFeatures.peek();
+        // The first-selected shape survives (selectedIds keeps click order).
+        const order = [...features.selectedIds.peek()];
+        const items = [...editable].sort((a, b) => order.indexOf(a.id) - order.indexOf(b.id));
+        const result = unionShapes(items.map(f => f.geometry));
+        if ('error' in result) {
+            this.actionNotice.set(UNION_ERRORS[result.error]);
+            return;
+        }
+        this.actionNotice.set(null);
+        const [kept, ...gone] = items;
+        const goneIds = new Set(gone.map(f => f.id));
+        this.record([
+            {
+                featureId: kept.id,
+                before: snapshotOf(kept),
+                after: { ...snapshotOf(kept), geometry: result.geometry },
+                beforeVersion: kept.version,
+            },
+            ...gone.map(f => ({
+                featureId: f.id,
+                before: {
+                    ...snapshotOf(f),
+                    attributes: attributesPatchOf(f.attributes),
+                    // Undo puts it back in its own slot in the stack.
+                    sortOrder: f.sortOrder,
+                    insertBeforeId: features.stackFor(scopeOf(f))
+                        .find(next => next.sortOrder > f.sortOrder && !goneIds.has(next.id))?.id,
+                },
+                after: null,
+                beforeVersion: f.version,
+            })),
+        ]);
+        batch(() => {
+            features.patchLocal(kept.id, result.geometry);
+            void features.removeMany([...goneIds]);
+            features.select(kept.id);
+        });
+        void features.update(kept.id, { geometry: result.geometry });
+    }
+
+    /** Whether the panel shows Union: two or more editable shapes, none a centerline. */
+    selectionCanUnion(): boolean {
+        const items = this.features?.editableSelectedFeatures.get() ?? [];
+        return items.length >= 2 && items.every(f => !f.geometry.centerline);
     }
 
     /**

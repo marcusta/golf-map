@@ -600,6 +600,24 @@ namespace GolfMap.Editor
             return report;
         }
 
+        // A replant puts every tree of its items back in the storage (GolfMapTreePlanter), so their rows on the
+        // trim file are stale: golfmap.trees.dump would write a stem whose model changed twice (the old item from
+        // the file, the new from the storage), and restore would plant the old one beside the new. The file as it
+        // was goes beside the planting backup. Returns the rows dropped.
+        internal static int ForgetTrimmed(PersistentVegetationStoragePackage package, HashSet<string> items, byte source, string backup)
+        {
+            string file = TrimFile(package);
+            if (!File.Exists(file)) return 0;
+            var rows = BridgeJson.Parse(File.ReadAllText(file)) as List<object> ?? new List<object>();
+            var kept = rows.Cast<Dictionary<string, object>>().Where(r => !(items.Contains((string)r["item"]) && Convert.ToInt32(r["source"]) == source)).Cast<object>().ToList();
+            int dropped = rows.Count - kept.Count;
+            if (dropped == 0) return 0;
+            if (!string.IsNullOrEmpty(backup)) File.Copy(file, backup + ".trimmed.json", true);
+            if (kept.Count > 0) File.WriteAllText(file, BridgeJson.Write(kept));
+            else if (!AssetDatabase.DeleteAsset(file)) { File.Delete(file); if (File.Exists(file + ".meta")) File.Delete(file + ".meta"); }
+            return dropped;
+        }
+
         static PersistentVegetationItem TrimmedItem(Dictionary<string, object> row)
         {
             var v = ((List<object>)row["v"]).Select(n => Convert.ToSingle(n, System.Globalization.CultureInfo.InvariantCulture)).ToArray();

@@ -102,6 +102,16 @@ between deep rough and a semi becomes a thin, dipping band - it reads as a hole 
   ordinary mix grows to the reach limit and the run says so. The area is defined by distance from play, not by
   the drawn `oob` ring: Vreta's ring holds the western holes only (half the fairways lie outside it). Hand-drawn
   zones and the woodland floor sit above it as before;
+- **the dark mix** (`rough_tall/dark`, and `rough_tall/far_dark` for the far mix; `Rules.dark_light/dark_dark`,
+  `--dark-light --dark-dark`): the grass must sit at the brightness of the ground under it, and OPCD's
+  Outer_Deep_Sat fill shows the orthophoto, so a dark crop field and a pale meadow are the same mesh class.
+  `golfmap.surfaces.ground` (also run by `golfmap.surfaces.export`, so every course refresh) renders the ground
+  straight down with VSP off into `<prefix>-<terrain>-surfaces-ground.png` on the surface map's grid; its linear
+  luminance, smoothed (sigma 4 m), hands each mix over to its dark variant between dark_light and dark_dark,
+  written as bands above the others like the far mix. Only where the course binds the variant. Omberg
+  (2026-10-17): 0.056 / 0.046 (deep rough on holes 1/5 0.056-0.064, the crop fields 0.043-0.047, a pale meadow
+  0.066 in that render - it has no post-processing, so its contrast is lower than a Scene-view shot's); the dark
+  items are the green ones with the tints from before the x1.75 lift, the accents shared by name;
 - times a 1.5 m ramp to 0 at buildings (+4 m);
 - paths and roads are **not in the weight field**: it runs on under them (the path mesh's `other` cells and
   OPCD's seam of single `blend` cells along it take the surface beside the path - as blend strips they

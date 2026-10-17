@@ -42,6 +42,18 @@ test('woodland pass increases overlap within uniform limits and preserves isolat
  const huge=matchTree({...stem,woodland:true,h:100,r:30},one);
  assert.equal(huge.scale,one.rules.maxScale);assert.equal(huge.status,'review');
 });
+test('open-grown crown pad widens solitary trees only; off by default',()=>{
+ const one={...config,assets:[birch],rules:{...config.rules,speciesWeights:null,scaleJitter:0}};
+ const padded={...one,rules:{...one.rules,openCrownPadM:2,openWidthWeight:1.5}};
+ const base=matchTree(stem,one),open=matchTree(stem,padded);
+ assert.equal(base.scale,1);assert.ok(open.scale>base.scale);
+ assert.deepEqual(matchTree(stem,{...one,rules:{...one.rules,openCrownPadM:0,openWidthWeight:0}}),base);
+ const wood={...padded,rules:{...padded.rules,woodlandCrownMultiplier:1.12,woodlandWidthWeight:2}};
+ assert.deepEqual(matchTree({...stem,woodland:true},wood),matchTree({...stem,woodland:true},{...wood,rules:{...wood.rules,openCrownPadM:0,openWidthWeight:0}}));
+ const shrubs={...config,rules:{...config.rules,speciesWeights:null}};
+ const bush={...stem,h:2,r:1,k:1};
+ assert.deepEqual(matchTree(bush,{...shrubs,rules:{...shrubs.rules,openCrownPadM:2,openWidthWeight:1.5}}),matchTree(bush,shrubs));
+});
 test('real palette chooses an exact natural fit',()=>{
  const result=matchTree(stem,{...config,rules:{...config.rules,variationBand:0,speciesWeights:null}});
  assert.equal(result.guid,birch.guid);assert.equal(result.scale,1);assert.equal(result.status,'proposed');

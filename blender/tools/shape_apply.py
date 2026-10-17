@@ -1861,14 +1861,18 @@ def plan_units(ctx, op):
         # one unit, named by the op; reads = every Spline mesh the cut can reach (the outline's box + 1 m; with
         # `rise`, + its apron, which it refines and moves) and every mesh within 1 m of their boxes: the welds run on
         # the whole boundary of those meshes and split their neighbours' edges (Omberg hall-58: a lake bed and a
-        # gravel path 20 m off the apron). With rise mode dem, the DEM it samples keys the cache too.
-        box = sl.polygon_bbox(cut_out_poly(ctx, op))
+        # gravel path 20 m off the apron). With rise mode dem, the DEM window it samples keys the cache too (only
+        # that window: a DEM edit elsewhere keeps the slab's entry); a window that cannot be read keys on the file.
+        poly = cut_out_poly(ctx, op)
+        box = sl.polygon_bbox(poly)
         reach = 1.0 + (rise_params(op["rise"])["apronM"] if op.get("rise") else 0.0)
         extra = ""
         if (op.get("rise") or {}).get("mode") == "dem":
             try:
-                extra = json.dumps({"dem": course_dem_sha(ctx)})
-            except OSError as e:          # cut_out reports it and cuts nothing
+                extra = json.dumps({"demWindow": dem_window_sha(ctx, sl.polygon_bbox(poly, reach))})
+            except (ValueError, KeyError) as e:   # cut_out reports it and cuts nothing
+                extra = json.dumps({"dem": course_dem_sha(ctx), "error": str(e)})
+            except OSError as e:
                 extra = json.dumps({"dem": None, "error": str(e)})
         return [Unit(op["name"], [], None, lambda margin=0.0: near_boxes(ctx, [
             o.name for o in spline_meshes() if ctx.box(o.name)
@@ -4178,9 +4182,9 @@ def course_dem_sha(ctx):
     return memo[k]
 
 
-def dem_sampler(ctx, box):
-    """Bilinear height of the course DEM in the .blend's frame for the XY box (x0, y0, x1, y1) and DEM_PAD_PX
-    round it: returns (sample(xy) -> z array, info). The window is cached per DEM content and window."""
+def _dem_grid(ctx, box):
+    """The course DEM's pixels under the XY box and DEM_PAD_PX round it: (path, sha, layout, to_col, to_row,
+    (r0, r1, c0, c1), window heights). The layout and the window are cached per DEM content and window."""
     path, sha, fr = course_dem_path(ctx), course_dem_sha(ctx), ctx.frame
     layouts = ctx.__dict__.setdefault("_dem_layouts", {})
     lay = layouts.get(sha) or layouts.setdefault(sha, tiff_layout(path))
@@ -4196,12 +4200,32 @@ def dem_sampler(ctx, box):
     wk = (sha, r0, r1, c0, c1)
     if wk not in windows:
         windows[wk] = tiff_window(path, lay, r0, r1, c0, c1)
-    win = windows[wk]
+    return path, sha, lay, to_col, to_row, (r0, r1, c0, c1), windows[wk]
+
+
+def dem_window_sha(ctx, box):
+    """Content hash of what dem_sampler(ctx, box) reads (it keys a dem rise's op cache): the window's heights as
+    read (nodata as NaN), its rows and columns, and the pixel grid. An edit of the DEM outside the window leaves it
+    as it was (a pond dug 500 m away re-cuts no slab); the frame (minM, position) keys every unit already."""
+    path, sha, lay, _, _, w, win = _dem_grid(ctx, box)
+    memo = ctx.__dict__.setdefault("_dem_window_sha", {})
+    if (sha, w) not in memo:
+        h = hashlib.sha1(json.dumps([list(w), [lay[k] for k in ("width", "height", "x0", "y0", "sx", "sy")]]).encode())
+        h.update(np.ascontiguousarray(win, dtype="<f8").tobytes())
+        memo[(sha, w)] = h.hexdigest()
+    return memo[(sha, w)]
+
+
+def dem_sampler(ctx, box):
+    """Bilinear height of the course DEM in the .blend's frame for the XY box (x0, y0, x1, y1) and DEM_PAD_PX
+    round it: returns (sample(xy) -> z array, info). The window is cached per DEM content and window."""
+    path, sha, lay, to_col, to_row, (r0, r1, c0, c1), dem = _dem_grid(ctx, box)
+    fr = ctx.frame
     off = fr["py"] - fr["minM"]          # z = H - minM + py (shape_coords.height_to_blend)
 
     def sample(xy, grid=None):
         """grid: an array the window's shape (e.g. the window blurred) to sample instead of the DEM."""
-        win = windows[wk] if grid is None else grid
+        win = dem if grid is None else grid
         xy = np.asarray(xy, dtype=np.float64)
         fc, frw = to_col(xy[:, 0]) - c0, to_row(xy[:, 1]) - r0
         i = np.clip(np.floor(fc).astype(np.int64), 0, win.shape[1] - 2)
@@ -4214,8 +4238,9 @@ def dem_sampler(ctx, box):
                              "(nodata, or outside its square)")
         return h + off
 
-    sample.window, sample.res = win, (lay["sx"], lay["sy"])
-    info = {"dem": os.path.basename(path), "demSha": sha, "window": [r0, r1, c0, c1]}
+    sample.window, sample.res = dem, (lay["sx"], lay["sy"])
+    info = {"dem": os.path.basename(path), "demSha": sha, "window": [r0, r1, c0, c1],
+            "windowSha": dem_window_sha(ctx, box)}
     return sample, info
 
 

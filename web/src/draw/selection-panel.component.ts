@@ -200,6 +200,7 @@ const tpl = template(`
         </div>
         <button bind="surroundBtn" type="button" class="op-btn surround-btn"></button>
         <button bind="duplicateBtn" type="button" class="op-btn">Duplicate (⌘D)</button>
+        <button bind="unionBtn" type="button" class="op-btn" title="Merge the selected shapes into the one selected first; the others are deleted. They must overlap or touch.">Union</button>
         <button bind="convertBtn" type="button" class="op-btn convert-btn">Convert to bezier…</button>
         <button bind="deleteBtn" type="button" class="delete-btn"></button>
     </div>
@@ -793,6 +794,10 @@ export class SelectionPanelComponent extends Component {
             duplicateBtn: {
                 onclick: () => this.tool.duplicateSelection(),
                 className: () => this.editingAllowed() ? 'op-btn show' : 'op-btn',
+            },
+            unionBtn: {
+                onclick: () => this.tool.unionSelection(),
+                className: () => this.tool.selectionCanUnion() ? 'op-btn show' : 'op-btn',
             },
             convertBtn: {
                 onclick: () => void this.tool.convertSelectedToBezier(),

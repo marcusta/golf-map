@@ -191,7 +191,7 @@ export function hitStack(host: DrawHoverHost, p: Point): CourseFeature[] {
         scope === 'vegetation' ? vegetationHitOrder(stack) : stack,
         unhittableTypes(features.effectiveHiddenTypes.peek(), host.drawType.peek()),
         p,
-        features.hiddenIds.peek(),
+        features.effectiveHiddenIds.peek(),
         features.hiddenSources.peek(),
     );
 }

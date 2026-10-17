@@ -169,6 +169,8 @@ export class FeaturesService {
      * Client-side view state, never persisted.
      */
     readonly hiddenIds = new Signal<ReadonlySet<string>>(new Set());
+    /** Hole/drawing-group eyes: editor-only, session view state. */
+    readonly hiddenHoleIds = new Signal<ReadonlySet<string>>(new Set());
     /**
      * Generated-feature SOURCES hidden from the overlay + hit tests (stack
      * panel group-row eye, e.g. 'lidar-canopy'). Client-side view state.
@@ -207,6 +209,17 @@ export class FeaturesService {
     readonly exportExcludedIds = new Signal<ReadonlySet<string>>(new Set());
     /** True while the editor (not the planner) owns the features overlay. */
     private readonly editorOverlay = new Signal(false);
+    private hiddenIdsMemo: ReadonlySet<string> = new Set();
+    /** Individual eyes plus every member of a hidden hole, including newly loaded/created shapes. */
+    readonly effectiveHiddenIds = new Computed<ReadonlySet<string>>(() => {
+        const individual = this.hiddenIds.get();
+        const holes = this.hiddenHoleIds.get();
+        if (!this.editorOverlay.get() || holes.size === 0) return individual;
+        const next = new Set([...individual, ...this.store.items.get()
+            .filter(f => f.holeId !== null && holes.has(f.holeId)).map(f => f.id)]);
+        if (!sameSet(this.hiddenIdsMemo, next)) this.hiddenIdsMemo = next;
+        return this.hiddenIdsMemo;
+    });
     /** `roughsLayerHidden`, in effect: what the overlay and hit tests skip. */
     readonly roughsLayerOff = new Computed(() => this.roughsLayerHidden.get() && this.editorOverlay.get());
     /** `hiddenTypes` ∪ `modeHiddenTypes`: what the overlay and hit tests skip. */
@@ -376,7 +389,7 @@ export class FeaturesService {
      * edit that touches no road reuses the last result.
      */
     private readonly junctionFeatures = new Computed<Feature[]>(() => {
-        const hiddenIds = this.hiddenIds.get();
+        const hiddenIds = this.effectiveHiddenIds.get();
         const roads = this.store.items.get()
             .filter(f => f.type === 'path' && f.geometry.centerline && !isGeneratedFeature(f) && !hiddenIds.has(f.id));
         const memo = this.junctionMemo;
@@ -437,7 +450,7 @@ export class FeaturesService {
      */
     readonly geojson = new Computed<FeatureCollection>(() => {
         const hidden = this.effectiveHiddenTypes.get();
-        const hiddenIds = this.hiddenIds.get();
+        const hiddenIds = this.effectiveHiddenIds.get();
         const roughsOff = this.roughsLayerOff.get();
         const visible = this.store.items.get()
             .filter(f => !isGeneratedFeature(f) && !hidden.has(f.type) && !hiddenIds.has(f.id)
@@ -505,7 +518,7 @@ export class FeaturesService {
     readonly generatedGeojson = new Computed<FeatureCollection>(() => {
         const items = this.generatedFeatures.get();
         const hidden = this.effectiveHiddenTypes.get();
-        const hiddenIds = this.hiddenIds.get();
+        const hiddenIds = this.effectiveHiddenIds.get();
         const hiddenSources = this.hiddenSources.get();
         const roughsOff = this.roughsLayerOff.get();
         const memo = this.generatedGeojsonMemo;
@@ -727,16 +740,17 @@ export class FeaturesService {
 
     /** Replace the selection with a single feature (or clear with null). */
     select(id: string | null): void {
-        this.selectedIds.set(id ? new Set([id]) : new Set());
+        this.setSelection(id ? [id] : []);
     }
 
     /** Replace the whole selection (marquee result, duplicate clones). */
     setSelection(ids: Iterable<string>): void {
-        this.selectedIds.set(new Set(ids));
+        this.selectedIds.set(new Set([...ids].filter(id => !this.isInHiddenHole(id))));
     }
 
     /** Toggle one feature's selection membership (Cmd/Ctrl+click). */
     toggleSelected(id: string): void {
+        if (this.isInHiddenHole(id)) return;
         const next = new Set(this.selectedIds.peek());
         if (next.has(id)) next.delete(id);
         else next.add(id);
@@ -789,12 +803,13 @@ export class FeaturesService {
         });
     }
 
-    /** Shift+H: clear every visibility toggle (types, single features, generated sources). */
+    /** Shift+H: clear visibility toggles (types, single features, holes, generated sources). */
     showAll(): void {
         this.soloMemory = null;
         batched(() => {
             if (this.hiddenTypes.peek().size > 0) this.setHiddenTypes(new Set());
             if (this.hiddenIds.peek().size > 0) this.hiddenIds.set(new Set());
+            if (this.hiddenHoleIds.peek().size > 0) this.hiddenHoleIds.set(new Set());
             if (this.hiddenSources.peek().size > 0) this.hiddenSources.set(new Set());
         });
     }
@@ -900,11 +915,33 @@ export class FeaturesService {
         this.roughsLayerHidden.set(hide);
     }
 
-    /** True when `f` is hidden by any of the view toggles (type, id, source, Roughs layer) or the active mode. */
+    /** Hide/show a hole without changing its shapes or their individual eye toggles. */
+    toggleHoleVisibility(holeId: string): void {
+        const next = new Set(this.hiddenHoleIds.peek());
+        const hide = !next.has(holeId);
+        if (hide) next.add(holeId);
+        else next.delete(holeId);
+        batched(() => {
+            if (hide) {
+                const members = new Set(this.store.items.peek().filter(f => f.holeId === holeId).map(f => f.id));
+                this.selectedIds.set(new Set([...this.selectedIds.peek()].filter(id => !members.has(id))));
+            }
+            this.hiddenHoleIds.set(next);
+        });
+    }
+
+    /** A hidden hole cannot be selected through stack rows, search or a new shape. */
+    private isInHiddenHole(id: string): boolean {
+        if (!this.editorOverlay.peek() || this.hiddenHoleIds.peek().size === 0 || !this.featureIdSet.peek().has(id)) return false;
+        const holeId = this.store.item(id).peek().holeId;
+        return holeId !== null && this.hiddenHoleIds.peek().has(holeId);
+    }
+
+    /** True when `f` is hidden by any view toggle or the active mode. */
     isHidden(f: CourseFeature): boolean {
         return this.effectiveHiddenTypes.peek().has(f.type)
             || (f.layer === ROUGHS_LAYER && this.roughsLayerOff.peek())
-            || this.hiddenIds.peek().has(f.id)
+            || this.effectiveHiddenIds.peek().has(f.id)
             || (f.source !== null && this.hiddenSources.peek().has(f.source));
     }
 
@@ -958,7 +995,9 @@ export class FeaturesService {
                 }
             }
             for (const c of created) this.store.add(c);
-            if (opts.select !== false) this.selectedIds.set(new Set(created.map(c => c.id)));
+            if (opts.select !== false) this.selectedIds.set(new Set(created
+                .filter(c => !this.editorOverlay.peek() || c.holeId === null || !this.hiddenHoleIds.peek().has(c.holeId))
+                .map(c => c.id)));
         });
         return created;
     }

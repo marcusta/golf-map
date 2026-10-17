@@ -46,6 +46,7 @@ namespace GolfMap.Editor
         public double woodlandRadiusM, woodlandCrownMultiplier, woodlandWidthWeight, woodlandScaleBoost;
         public int woodlandMinNeighbours;
         public double woodlandSpeciesFitSlack;
+        public double openCrownPadM, openWidthWeight;   // open-grown trees: lidar crown + pad (m), width weight; 0 = off
         public double scaleJitter, maxLeanDeg;   // cosmetic per-stem variety; 0 = off
     }
     // Species -> share of the broadleaf species race. A map, not fields, so a palette can
@@ -192,8 +193,11 @@ namespace GolfMap.Editor
             if(string.IsNullOrEmpty(id)||double.IsNaN(height)||double.IsInfinity(height)||height<=0||double.IsNaN(radius)||double.IsInfinity(radius)||radius<=0||kind<0||kind>2)throw new ArgumentException("Invalid tree dimensions, kind or ID");
             string form=height<=r.shrubMaxHeightM?"shrub":"tree";
             bool canopy=woodland&&form=="tree"&&r.woodlandCrownMultiplier>=1&&r.woodlandWidthWeight>0;
-            double targetWidth=2*radius*(canopy?r.woodlandCrownMultiplier:1);
-            double widthWeight=canopy?r.woodlandWidthWeight:1;
+            // Lidar also loses the edge of an open-grown crown, about the same width whatever the tree's
+            // size (the ortho's shadows): a pad in metres, not a multiplier. 0 = off, as the weight's 0.
+            bool open=form=="tree"&&!canopy;
+            double targetWidth=canopy?2*radius*r.woodlandCrownMultiplier:2*radius+(open?r.openCrownPadM:0);
+            double widthWeight=canopy?r.woodlandWidthWeight:open&&r.openWidthWeight>0?r.openWidthWeight:1;
             Func<GolfMapBiomeAsset,GolfMapBiomeMatch> fit=a=>{
                 if(a.heightM<=0||a.crownWidthM<=0)throw new ArgumentException("Invalid biome dimensions");
                 double ideal=Math.Exp((2*Math.Log(height/a.heightM)+widthWeight*Math.Log(targetWidth/a.crownWidthM))/(2+widthWeight));

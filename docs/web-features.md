@@ -101,7 +101,15 @@ vegetation zones, in `FeaturesService.modeHiddenTypes`: off the map, out of
 hit tests, the type picker and the stack panel. `resolveSurfaceStack` passes them through like
 OOB, so a higher shape never trims them away.
 
-## Hiding the Roughs layer is editor-only
+## Editor-only visibility for holes and Roughs
+
+In Draw, select a hole (or drawing group) under **Scope** in Feature stack,
+then use the **Shapes in this hole** eye (`stack-hole-toggle`) to hide/show
+all of its shapes. Hidden shapes leave the map, hit tests and selection;
+their individual eye settings are preserved when the hole is shown again.
+This uses `FeaturesService.hiddenHoleIds`, editor-only session state, and
+also covers shapes added to that hole while it is hidden. **Shift+H** shows
+the hidden holes again. The planner and GSPro export still include them.
 
 The stack panel's "Roughs layer" eye (`FeaturesService.roughsLayerHidden`)
 drops every `layer: 'roughs'` feature from the overlay and hit tests, but only
@@ -163,6 +171,10 @@ penalty areas and OOB).
 ## Rock slabs in Draw
 
 `rock_slab` ("Rock slab", Swedish berghäll; `shared/features/rock-slab.ts`) is a Draw-mode surface type like the roughs: pick it in the type panel (no digit key), press N, click the outline's points (Shift = corner) and Enter or click the first point, or drag it freehand. The selection panel's "Rock slab" section edits `marginM` (how far the cut-out reaches past the outline, 0-5 m, default 1.5) and `uvM` (texture tile size, default 4 m) on every selected slab; clearing a box drops the key. It is no OPCD surface: `gspro.py svg` leaves it out and `shaping-global` writes a `golfmap.cut_out` op for it (docs/gspro/export.md), applied by the command bar's Update meshes. The planner reads it as rough (unknown types do), iOS draws it in the fallback grey.
+
+## Union in Draw
+
+Select two or more shapes (Cmd/Ctrl+click) and press **Union** in the selection panel. The shape selected first takes the merged outline and keeps its id, type, hole, layer, attributes and slot in the stack; the others are deleted. One undo puts them all back. `draw/shape-union.ts` unions the sampled outlines with polygon-clipping (holes kept) and builds the result from the shapes' own control points: the controls away from the crossings stay exactly where they were drawn, each crossing becomes a corner control, and the stretch next to a crossing gets a few new controls fitted to the exact outline (within 0.4 m). When that cannot be done (very sparse controls, near-tangent crossings) it falls back to a fresh smooth B-spline fit (0.25 m, up to one control per 3 m); plain polygons stay polygons. Shapes that do not overlap or touch, and roads/paths (centerlines), are refused with a notice. The same function from the command line: `bun run features:union -- <course> <shape> <shape> [...] [--dry-run]` (first shape survives; the old shapes go to `data/backups/features-union/`).
 
 ## Picking shapes in Import GeoJSON
 

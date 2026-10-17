@@ -521,6 +521,7 @@ per op: paint for recipes, grey at 5x relief for the rest), `--no-cache`, `--cac
   distance + 0.5 m; recipe: the feature's mesh and its blends; footprint: meshes whose box meets the footprint +
   falloff + protect band). Key = this file + shape_layers + Blender + Afrod/Edit Mesh Tools sources, the op's
   JSON (without id/note/provenance), the unit, seed, frame, for recipes the recipe file + shape_paint + library,
+  for a `rise.mode` dem cut-out the DEM window it samples (not the whole DEM; "rise.mode dem" below),
   and the full state hash (every attribute incl. selection, custom normals, byte colours, vertex groups,
   materials, props) of each read mesh. Value: the changed meshes' arrays that differ from the input (+ meta,
   created/removed names, the run record) as `.npz`. A replay is verified against the stored result hashes (a
@@ -725,9 +726,14 @@ course meshes and lifts the inside out as one new object. Hand layer, one op per
   terrain.obj's vertices, and a half-pixel shift either way fits worse. It is read in Blender's own Python (numpy +
   zlib: classic TIFF, strips or tiles, deflate, predictor 1 or 3, the file the pipeline writes; bit-exact against
   rasterio, the whole 3020² band in 0.2 s) because the worker may run where there is no pipeline venv; only the
-  blocks under the op's window are read, the window is cached per DEM content, and the op cache keys on the DEM's
-  sha1, so a new DEM re-runs every dem slab. A terrain.obj older than the DEM (a lake dug since) shows as the slab
-  standing below or above its neighbours: re-prepare first. Report `rise` = `{mode, dem, demSha, window, slabZ,
+  blocks under the op's window are read, and the window is cached per DEM content. The op cache keys on that
+  window only (`dem_window_sha`: the outline's box + `apronM` + 1 m + `DEM_PAD_PX`, its heights as read, rows and
+  columns and the pixel grid; the frame with `minM` keys every unit anyway), so a DEM edit re-cuts only the dem
+  slabs whose window it touches. Until 2026-10-17 the key was the whole file's sha1: digging one Omberg pond 2 m
+  re-cut all 141 slabs (10-75 s each, most of an hour). A window that cannot be read (outside the DEM, a TIFF the
+  reader refuses) keys on the whole file's sha1 and the cut cancels. A terrain.obj older than the DEM (a lake dug
+  since) shows as the slab standing below or above its neighbours: re-prepare first. Report `rise` = `{mode, dem,
+  demSha, window, windowSha, slabZ,
   maxUpM, maxDownM, moved, pinned, steepFaces (>= 55°), maxSlopeDeg, seams {points, open, maxDz}, sunk, ...}`;
   `seams.open` > 0 is a warning. Test: `blender/tools/shape_cliff_test.py` (a 10 m step in a synthetic DEM across
   an outline over a plane of 1.2 m triangles; 0.5 s). On Omberg (a 20 x 8 m outline on a 52° bank of hole 1's

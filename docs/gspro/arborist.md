@@ -68,7 +68,9 @@ Unity, so the Arborist vegetation follows the zones without a shell (`ArboristSe
   changed owner the trim in Unity (the reload in Arborist is `bun run arborist`, below): the report then ends with
   a warning naming `golfmap.vsp.trees.trim restore=true`, then `file=<path>`, save, build.
   The trim is not run for you, because `restore` after a replant in Unity would put the old trees
-  back beside the new ones.
+  back beside the new ones. A replant (`golfmap.trees.plant`) drops its own items' rows from the trim
+  file (the old file goes beside the planting backup) and says so: the storage is full again, so
+  the dump writes no stem twice; then `arborist`, then `trim file=<path>` (no restore needed).
 - GSPro reads the file when the course loads. The course's own VSP half (grass, the Forst trees,
   the `prefabItemsInVsp` plants) still needs the scene saved and `golfmap.course.build`.
 

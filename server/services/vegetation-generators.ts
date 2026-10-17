@@ -88,6 +88,11 @@ function demFiles(inputs: VegetationInputs): string[] {
     return inputs.demSidecar ? [inputs.demSidecar, inputs.demSidecar.replace(/\.json$/i, '')] : [];
 }
 
+/** The ground as rendered next to a surface map (bridge `golfmap.surfaces.ground`): `<stem>-ground.png`. */
+export function groundRender(surfaces: string): string {
+    return surfaces.replace(/\.json$/i, '-ground.png');
+}
+
 /** The scripts every generator goes through: its own imports grass_zones/creek_bank_zones/gspro/golfpipe. */
 const GENERATOR_SCRIPTS = ['grass_zones.py', 'creek_bank_zones.py', 'gspro.py', 'golfpipe/__init__.py'];
 
@@ -107,12 +112,13 @@ export const TALL_GRASS: VegetationGenerator = {
         return { args, notes };
     },
     reads(inputs) {
-        // With the surface map: the paths, the far variant's bindings, and the creeks marked
-        // for banks plus the creek sections (no water clearance there). Without: the drawn features.
+        // With the surface map: the paths, the far and dark variants' bindings, the ground render
+        // (which picks the dark mix), and the creeks marked for banks plus the creek sections (no
+        // water clearance there). Without: the drawn features.
         return {
             features: inputs.surfaces ? ['path', 'water', 'water_creek'] : 'all',
             drawnZones: [CREEK_BANK_ZONE_TYPE], zoneTypes: ['rough_tall', CREEK_BANK_ZONE_TYPE],
-            files: inputs.surfaces ? demFiles(inputs) : [], scripts: GENERATOR_SCRIPTS,
+            files: inputs.surfaces ? [...demFiles(inputs), groundRender(inputs.surfaces)] : [], scripts: GENERATOR_SCRIPTS,
         };
     },
 };

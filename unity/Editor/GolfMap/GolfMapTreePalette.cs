@@ -289,11 +289,14 @@ namespace GolfMap.Editor
             r.maxWidthError = Rule("Max width error", "Relative crown width error above which a match is flagged imperfect.", r.maxWidthError, 0, 10);
             r.scaleJitter = Rule("Scale jitter", "Random size change per stem after the fit (0.1 = up to 10% smaller or larger), so neighbours of the same measured height, or pinned at a scale limit, are not identical. May go past min/max scale by this much.", r.scaleJitter, 0, 0.5);
             r.maxLeanDeg = Rule("Max lean (deg)", "Random tilt off vertical per stem, in a random direction, up to this many degrees. VSP and GameObject planting only: Unity terrain trees cannot tilt.", r.maxLeanDeg, 0, 45);
+            EditorGUILayout.LabelField("Open-grown trees", EditorStyles.miniBoldLabel);
+            r.openCrownPadM = Rule("Crown pad (m)", "Lidar misses the edge of an open-grown crown by about the same width at any size: stems outside woodland match against crown width + this. Measured on the ortho's shadows across the sun.", r.openCrownPadM, 0, 10);
+            r.openWidthWeight = Rule("Width weight", "Weight of crown width against height for open-grown stems (0: 1, height counts twice as much).", r.openWidthWeight, 0, 10);
             EditorGUILayout.LabelField("Woodland (dense stands match as canopy)", EditorStyles.miniBoldLabel);
             r.woodlandRadiusM = Rule("Neighbour radius (m)", "A stem is woodland when enough others stand within this radius. 0 turns woodland matching off.", r.woodlandRadiusM, 0, 1000);
             r.woodlandMinNeighbours = Math.Max(0, EditorGUILayout.IntField(new GUIContent("Min neighbours", "Neighbours within the radius that make a stem woodland."), r.woodlandMinNeighbours));
             r.woodlandCrownMultiplier = Rule("Crown multiplier", "Lidar under-measures crowns in a closed canopy; woodland stems match against radius x this.", r.woodlandCrownMultiplier, 0, 10);
-            r.woodlandWidthWeight = Rule("Width weight", "Weight of crown width against height for woodland stems (open-grown stems use 1).", r.woodlandWidthWeight, 0, 10);
+            r.woodlandWidthWeight = Rule("Width weight", "Weight of crown width against height for woodland stems.", r.woodlandWidthWeight, 0, 10);
             r.woodlandScaleBoost = Rule("Scale boost", "Extra scale applied to woodland matches, capped at max scale.", r.woodlandScaleBoost, 0, 10);
             r.woodlandSpeciesFitSlack = Rule("Species fit slack", "Species fit slack used for woodland stems (0: same as open-grown).", r.woodlandSpeciesFitSlack, 0, 10);
             EditorGUI.indentLevel--;

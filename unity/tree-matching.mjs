@@ -23,7 +23,11 @@ export function matchTree(stem,config,override,area) {
  // Detector bush flags are crown-ratio heuristics: broad mature oaks must remain trees.
  const form=stem.h<=rules.shrubMaxHeightM?'shrub':'tree';
  const canopy=stem.woodland===true&&form==='tree'&&rules.woodlandCrownMultiplier>=1&&rules.woodlandWidthWeight>0;
- const targetWidth=2*stem.r*(canopy?rules.woodlandCrownMultiplier:1),widthWeight=canopy?rules.woodlandWidthWeight:1;
+ // Lidar also loses the edge of an open-grown crown, about the same width whatever the tree's
+ // size (the ortho's shadows): a pad in metres, not a multiplier. 0 = off, as the weight's 0.
+ const open=form==='tree'&&!canopy;
+ const targetWidth=canopy?2*stem.r*rules.woodlandCrownMultiplier:2*stem.r+(open?rules.openCrownPadM||0:0);
+ const widthWeight=canopy?rules.woodlandWidthWeight:open&&rules.openWidthWeight>0?rules.openWidthWeight:1;
  const fit=a=>{
    if(!(a.heightM>0&&a.crownWidthM>0))throw Error('Invalid asset dimensions: '+a.guid);
    const h=stem.h/a.heightM,w=targetWidth/a.crownWidthM;

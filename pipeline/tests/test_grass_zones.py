@@ -299,7 +299,7 @@ def test_far_from_play_the_far_mix_takes_over_when_the_course_has_one():
     cls = np.full((40, 200), gz.S_DEEP, dtype=np.uint8)
     cls[:, :20] = gz.S_ROUGH
     rules = gz.Rules(min_area=1, simplify=0, spill=0, max_distance=150, far_variant=True)
-    near, far = (f[20] for f in gz.weight_field(cls, 1.0, None, rules, split=True))
+    near, far = (f[20] for f in gz.weight_field(cls, 1.0, None, rules, split=True)[:2])
     assert near[20 + 25] == pytest.approx(1.0) and far[20 + 25] == 0          # near play: the ordinary mix alone
     assert near[20 + 38] == pytest.approx(0.56 + 0.44 * 0.1, abs=0.01)        # 39 m: thinned, before the hand-over
     assert 0 < far[20 + 45] < 1 and 0 < near[20 + 45] < 0.56                  # 45 m: both, cross-fading
@@ -315,3 +315,38 @@ def test_far_from_play_the_far_mix_takes_over_when_the_course_has_one():
     first_far = variants.index("far")
     assert first_far > 0 and all(v is None for v in variants[:first_far]) and all(v == "far" for v in variants[first_far:])
     assert len({f["properties"]["source_ref"] for f in doc["features"]}) == len(doc["features"])
+
+
+def test_on_dark_ground_the_dark_mix_takes_over_when_the_course_has_one():
+    """With Rules.dark_variant the ordinary mix hands over to <type>/dark where the ground render
+    is dark (luminance at or below dark_dark), cross-fading between dark_light and dark_dark; the
+    two add up to the field without it. The far mix does the same with <type>/far_dark."""
+    import numpy as np
+    cls = np.full((40, 200), gz.S_DEEP, dtype=np.uint8)
+    cls[:, :20] = gz.S_ROUGH
+    lum = np.full(cls.shape, 0.06, dtype=np.float32)
+    lum[:, 100:] = 0.04                       # a dark field from 80 m from play on
+    rules = gz.Rules(min_area=1, simplify=0, spill=0, max_distance=150, near_weight=1.0, far_weight=1.0,
+                     dark_variant=True, dark_light=0.056, dark_dark=0.046)
+    darkness = gz.ground_darkness(lum, 1.0, rules, smooth=0)
+    assert darkness[0, 50] == 0 and darkness[0, 150] == 1
+    assert gz.ground_darkness(np.full((4, 4), 0.051, dtype=np.float32), 1.0, rules, smooth=0)[0, 0] == pytest.approx(0.5)
+
+    plain = gz.weight_field(cls, 1.0, None, rules)
+    s = gz.weight_field(cls, 1.0, None, rules, split=True, darkness=darkness)
+    assert s.dark[20, 50] == 0 and s.w[20, 50] == pytest.approx(plain[20, 50])          # light ground: the ordinary mix
+    assert s.w[20, 120] == 0 and s.dark[20, 120] == pytest.approx(plain[20, 120])      # dark ground: the dark mix
+    assert np.allclose(s.w + s.dark, plain)
+    off = gz.weight_field(cls, 1.0, None, gz.Rules(min_area=1, simplify=0, spill=0, max_distance=150), split=True, darkness=darkness)
+    assert not off.dark.any()                 # no dark variant bound: none
+
+    far_rules = gz.Rules(min_area=1, simplify=0, spill=0, max_distance=150, far_variant=True, far_dark_variant=True)
+    f = gz.weight_field(cls, 1.0, None, far_rules, split=True, darkness=darkness)
+    assert f.far_dark[20, 120] > 0 and f.far[20, 120] == 0 and f.far[20, 70] > 0 and f.far_dark[20, 70] == 0
+
+    r = gz.tall_grass_from_surfaces(cls, 1.0, 0.0, 40.0, [], [], rules, darkness=darkness)
+    assert r.dark_bands[-1][1].contains(Point(120, 20)) and r.bands[-1][1].contains(Point(50, 20))
+    doc = gz.feature_collection(r.area, "rough_tall", "tall-grass", 1.0, 0.5, 0.0, r.bands, None, r.far_bands, r.dark_bands)
+    variants = [f["properties"].get("zoneVariant") for f in doc["features"]]
+    first_dark = variants.index("dark")
+    assert first_dark > 0 and all(v is None for v in variants[:first_dark]) and all(v == "dark" for v in variants[first_dark:])
