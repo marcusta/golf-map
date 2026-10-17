@@ -11,9 +11,17 @@ generated course `.blend` is modified.
   elevations, source provenance and uncertainty. The local evidence images are
   under `data/omberg-clubhouse/`.
 - `references.md`: photographic sources, observed details and unresolved details.
-- `model.py`: course-specific Blender geometry, materials and placement manifest.
-- `main_building.py`: the tall main building's joined shell, recessed window
-  openings, facade details and roof junction, based on the user's photographs.
+- `model.py`: the clubhouse (lidar-fitted gables on the 1.5° building axis, foyer,
+  terrace), all materials and the placement manifest.
+- `main_building.py`: the white connector: two wings under one bent ridge with a
+  valley and a hip, fitted to the lidar; `SOUTH_WALL_N` is where the clubhouse
+  wing ends.
+- `outbuildings.py`: the three lodges (roofs and porches fitted to the lidar), the
+  southeast hall (centre cross gable, north deck and stair) and the small annexes.
+  `common.py` holds the helpers both generator files share.
+- `check_survey.py`: compares a build with the lidar (height difference per asset),
+  the ortho (roof outlines) and the ortho's roof colours. `closeups.py` renders
+  corner views of chosen assets. Run both on the built `.blend` (usage in each file).
 - `courtyard.py`, `courtyard.json`: the photo-traced courtyard paving, triangulated
   on a 1 m grid and sampled over the exported edited DEM with a 3.5 cm lift.
   Surveyed roofs, the foyer and its existing brick apron are excluded.
@@ -58,6 +66,26 @@ general **Update props** command does not execute `clubhouse/model.py`. Keep
 these assets and their instances when adding a future ordinary props spec.
 The installer merges them, but a later full replacement of `props.json` by an
 unrelated generator would need the same merge.
+
+## Checking against lidar and ortho
+
+After changing a roof, check the build before installing it:
+
+```powershell
+& 'C:/Program Files/Blender Foundation/Blender 4.5/blender.exe' -b data/omberg-clubhouse/build/omberg-clubhouse-authored.blend --python docs/gspro/ombergs-golfklubb/clubhouse/check_survey.py -- --out <folder>
+```
+
+On 2026-10-17 every house was within 0.02–0.08 m median of the lidar and under
+6 % of roof cells off by more than 0.5 m, except the southeast hall (0.26 m
+median, 3.7 % off). The checker's roof colours compare albedo with a white-balanced
+ortho and are soft (±15). Final tile colours were set from top-down Unity captures
+against the raw ortho instead: the clubhouse roof renders 215,151,133 against
+the ortho's 212,149,135. Unity's sky light lifts dark channels, so albedo must
+stay redder than the ortho.
+
+`courtyard.json` still excludes the old foyer outline and the old courtyard notch;
+the new foyer and moved walls cover those areas, so no hole shows, but rerun
+`courtyard.py` with the new foyer before the next paving change.
 
 ## Placement and limitations
 

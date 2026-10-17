@@ -491,6 +491,10 @@ def main():
         if name in table:
             table[name]["specular"]=[0,0,0]
             table[name]["smoothness"]=0
+    # The kit's glossy panels mirror the bright sky as a near-white roof in the
+    # Unity views; the ortho shows these arrays dark blue-black.
+    if "omberg_solar_panel" in table:
+        table["omberg_solar_panel"]["smoothness"]=.6
     for name,level in {"omberg_main_glass":.04,"omberg_main_gutter":.02}.items():
         if name in table:
             table[name]["specular"]=[level,level,level]
