@@ -179,7 +179,7 @@ def kerb_core(pieces, blends, roads, others, depth=DEPTH_M, road_m=ROAD_M, cuts=
     def near(kd, co, n):
         return n and kd.find((co[0], co[1], 0.0))[2] <= tol
 
-    out = {"depthM": depth, "roadM": road_m, "cuts": cuts, "blends": {}, "outer": 0}
+    out = {"depthM": depth, "roadM": road_m, "cuts": cuts, "blends": {}, "outer": 0, "moved": {}}
     inner_edges, outer_edges, widths = [], [], []
     strips = {}
     for o in blends:
@@ -235,7 +235,6 @@ def kerb_core(pieces, blends, roads, others, depth=DEPTH_M, road_m=ROAD_M, cuts=
                 moved_pts.append((v.co.x, v.co.y))
                 moved_dz.append(-depth * profile(1.0 - d / W))
     kd = kd_of(moved_pts)
-    out["moved"] = {}
     seen = set()
     for o in list(pieces) + list(blends) + list(roads) + list(others):
         if o.name in seen:
