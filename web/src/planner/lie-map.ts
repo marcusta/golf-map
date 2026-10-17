@@ -134,7 +134,7 @@ export function buildLieMap(
         const points = flat.map(([x, y]) => ({ x, y }));
         const ring: FlatRing = { points, kind: feature.type };
         const holeNumber = feature.holeId === null ? null : holeNumberById?.get(feature.holeId) ?? 0;
-        const key = holeNumberById ? stackKey(feature.layer, holeNumber, feature.sortOrder, feature.type) : feature.sortOrder;
+        const key = holeNumberById ? stackKey(feature.layer, holeNumber, feature.sortOrder, feature.type, feature.attributes) : feature.sortOrder;
         classified.push({ ring, stackKey: key, holeId: feature.holeId, ...bbox(ring) });
     }
     // Topmost-first (highest stack key) so the FIRST containing ring wins

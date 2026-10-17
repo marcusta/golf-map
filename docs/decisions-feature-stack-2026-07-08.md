@@ -105,6 +105,19 @@ and `sort_order` still orders paths among themselves. `pipeline/gspro.py` mirror
 writes them to a `Roads` SVG layer after the holes, so it is topmost in Inkscape and Blender
 never cuts anything into a road.
 
+**D33. Roads ranked by surface (amends D29; 2026-10-17).** Among the roads the
+surface decides which one paints on top, not the drawing order: asphalt >
+concrete > paving > wood > gravel (a gravel track is gravel) > dirt > grass >
+unknown, `ROAD_SURFACE_RANK` in `shared/render/stack-key.ts`, each a groupRank of
+its own above 1024. `sort_order` orders roads of one surface only. It is the
+rank the export already cut mixed road meshes by (`blender/tools/shape_surfaces.py`
+RANK), so the map now shows what GSPro gets: a gravel road drawn into an
+asphalt road stops at the asphalt kerb, and drawing a road a little INTO the
+road it joins is the way to meet it, never edge to edge. Moving a road above a
+higher-ranked one in the panel changes nothing on the map; change its surface
+instead. `pipeline/gspro.py` does not mirror the tiers: it merges every road
+into one shape and leaves the seams to that Blender step.
+
 ## Cross-cutting acceptance scenarios
 
 1. **Rough island (the motivating case).** Fairway + smaller rough polygon inside it, rough above

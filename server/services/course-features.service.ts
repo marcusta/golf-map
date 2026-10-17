@@ -839,7 +839,7 @@ export class CourseFeaturesService {
                     layer: feature.layer,
                     type: feature.type,
                     sortOrder: feature.sortOrder,
-                    stackKey: stackKey(feature.layer, row.hole_number, feature.sortOrder, feature.type),
+                    stackKey: stackKey(feature.layer, row.hole_number, feature.sortOrder, feature.type, feature.attributes),
                     source: feature.source,
                     sourceRef: feature.sourceRef,
                     license: feature.license,

@@ -635,7 +635,7 @@ export class FeaturesService {
         const holeNumber = f.holeId === null
             ? null
             : this.courseDetail.holes.get().find(h => h.id === f.holeId)?.number ?? 0;
-        return stackKey(f.layer, holeNumber, f.sortOrder, f.type);
+        return stackKey(f.layer, holeNumber, f.sortOrder, f.type, f.attributes);
     }
 
     /**
