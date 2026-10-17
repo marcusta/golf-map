@@ -5,6 +5,7 @@ ground median from survey.json. Placement goes through the add() callback.
 """
 import math
 
+import bpy
 from mathutils import Matrix, Vector
 import props_kit as kit
 from common import opening, roof_building, solar, ccw
@@ -32,6 +33,53 @@ def register_materials():
     kit.MATERIALS["omberg_roof_annex_dark"]=("seam:52,58,71:0.45:1.8:0",(1.8,1.8),None,.12,.1)
     kit.MATERIALS["omberg_roof_annex_warm"]=("seam:124,114,109:0.45:1.8:0",(1.8,1.8),None,.12,.1)
     kit.MATERIALS["omberg_roof_greymetal"]=("seam:154,159,158:0.45:1.8:0",(1.8,1.8),None,.12,.1)
+    garden_materials()
+
+
+def garden_materials():
+    """Materials of the padel courts, the garden house and its sheds (all new names; nothing existing changes)."""
+    # House roof: orange-red tile. Ortho 2025 reads (226,162,143) on average against the clubhouse tile's
+    # (212,149,135) = albedo (161,93,80); the same per-channel ratio gives this albedo.
+    kit.MATERIALS["omberg_tile_orange"]=("pantile:172,100,84",(2,2),None,.22,0)
+    # Padel: ortho turf ~(125,139,130), pale concrete surround ~(190,185,175); albedos are ~0.75x (course light).
+    kit.MATERIALS["omberg_padel_turf"]=("turf:46,90,70",(1,1),None,.05,0)
+    kit.MATERIALS["omberg_padel_concrete"]=("plaster:150,147,139",(2,2),None,.12,0)
+    solid("omberg_padel_line",(205,207,203),.2)
+    # Glass and steel mesh are translucent planes (props_kit's FADE path, as for the golf nets): the glass
+    # is one tinted alpha tile, the mesh is props_kit's own 4 cm 'netting' alpha cord texture.
+    kit.MATERIALS["omberg_padel_glass"]=("padelglass",(1,1),None,.9,0)
+    kit.MATERIALS["omberg_padel_mesh"]=("netting:36,38,36",(1,1),None,.1,0)
+    kit.MATERIALS["omberg_padel_net"]=("netting:40,42,40",(1,1),None,.1,0)     # the court net (a copy of the kit's 'net' would lose its fade flag when model.py renames it)
+    kit.FADE.update(TRANSLUCENT)
+    kit.TextureBank.tex_padelglass=padel_glass_texture
+    # The Blender material kit leaves alpha unlinked; link it for these two so the authored .blend and the
+    # review renders show the glass as glass (the Unity export reads the manifest flags, not this).
+    if not getattr(kit.blender_material,"_garden",False):
+        base=kit.blender_material
+        def blender_material(name, table, tex_folder):
+            fresh=bpy.data.materials.get(name) is None
+            m=base(name,table,tex_folder)
+            if fresh and name in TRANSLUCENT:
+                nt=m.node_tree
+                bsdf=nt.nodes.get("Principled BSDF")
+                tex=next((n for n in nt.nodes if n.type=="TEX_IMAGE"),None)
+                if tex and bsdf:
+                    nt.links.new(tex.outputs["Alpha"],bsdf.inputs["Alpha"])
+                m.surface_render_method="BLENDED"
+            return m
+        blender_material._garden=True
+        kit.blender_material=blender_material
+
+
+TRANSLUCENT={"omberg_padel_glass","omberg_padel_mesh","omberg_padel_net"}
+
+
+def padel_glass_texture(bank, color="150,196,184", alpha="0.30"):
+    """Blue-green tempered glass: flat tint, about a third opaque."""
+    import numpy as np
+    S=64
+    rgb=np.ones((S,S,3))*(np.array([float(c) for c in color.split(",")])/255.)
+    return rgb,None,1.0,np.full((S,S),float(alpha))
 
 
 def outward(g, pts, mat, inside, uv=None):
@@ -280,6 +328,241 @@ def annex(g, L, W, ea, rise, roof_mat, doors, windows, vents=()):
         g.cylinder((x,y,z+.5),.11,.04,"galvanised",seg=8)
 
 
+# ---------------------------------------------------------------------------------------------------------
+# Garden: padel courts, the small house and two sheds. Positions come from the 2025 ortho (and lidar where the
+# structure existed in 2022); ground numbers are from dem-edited.tif (the course terrain Unity uses, baked
+# 2026-10-17 14:33), bilinear: (value under the asset centre, highest and lowest over the footprint).
+# ---------------------------------------------------------------------------------------------------------
+Z=Vector((0,0,1))
+
+
+def pane(g, a, b, z0, z1, mat, inward):
+    """Thin two-faced plane from a to b (xy) between z0 and z1, just outside the wall line that `inward` faces
+    away from. Glass is 12 mm thick: the two faces stand 12 mm apart, each wound to its own side."""
+    d=(b[0]-a[0],b[1]-a[1])
+    flip=d[1]*inward[0]-d[0]*inward[1]<0         # normal of a->b is (dy,-dx)
+    for side,o in ((1,.005),(-1,.017)):
+        p=[(a[0]-inward[0]*o,a[1]-inward[1]*o),(b[0]-inward[0]*o,b[1]-inward[1]*o)]
+        q=[(*p[0],z0),(*p[1],z0),(*p[1],z1),(*p[0],z1)]
+        g.poly(q if (side>0)!=flip else q[::-1],mat)
+
+
+def flat(g, x0, x1, y0, y1, z, mat):
+    """Flat quad seen from above."""
+    g.poly([(x0,y0,z),(x1,y0,z),(x1,y1,z),(x0,y1,z)],mat)
+
+
+def padel_court(g, cy, zs):
+    """One FIP-size court (10 x 20 m inside the glass), centred at y=cy, x along the length, slab top at zs.
+    Back walls 3 m glass + 1 m mesh; the side walls keep that 4 m profile for 4 m from each end and drop to
+    3 m of mesh between, with a steel post every 2 m (one 2 m glass panel each)."""
+    g.push(Matrix.Translation((0,cy,zs)))
+    HX,HY,T=10.,5.,.015
+    g.box((0,0,T/2),(2*HX,2*HY,T),"omberg_padel_turf")
+    zl=T+.004                            # painted lines 4 mm over the turf, 5 cm wide
+    for sx in (-1,1):
+        flat(g,sx*6.95-.025,sx*6.95+.025,-HY,HY,zl,"omberg_padel_line")     # service lines
+    flat(g,-6.95,6.95,-.025,.025,zl,"omberg_padel_line")                      # centre line
+    # net: 0.92 m at the posts, 0.88 m in the middle; the posts stand against the side walls
+    ny=HY-.07
+    for sy in (-1,1):
+        g.box((0,sy*ny,.54),(.1,.1,1.05),"black_steel")
+    for y0,y1,z0,z1 in ((-ny,0,.92,.88),(0,ny,.88,.92)):
+        q=[(.003,y0,.04),(.003,y1,.04),(.003,y1,z1),(.003,y0,z0)]
+        g.poly(q,"omberg_padel_net")
+        g.poly([(-x,y,z) for x,y,z in q][::-1],"omberg_padel_net")
+        g.beam((0,y0,z0-.01),(0,y1,z1-.01),.02,.05,"paint_white")    # tape along the top edge
+    # steel frame: the post lines stand just outside the glass, 0.1 m square
+    P=.07
+    posts=[(sx*(HX+P),sy*(HY+P),4.) for sx in (-1,1) for sy in (-1,1)]
+    posts+=[(sx*(HX+P),y,4.) for sx in (-1,1) for y in (-3,-1,1,3)]
+    posts+=[(x,sy*(HY+P),4. if abs(x)>=6 else 3.) for x in range(-8,9,2) for sy in (-1,1)]
+    for x,y,h in posts:
+        g.box((x,y,h/2-.01),(.1,.1,h+.02),"black_steel")
+    for sx in (-1,1):                    # end walls: top rail, glass/mesh rail, base rail
+        for z,h in ((3.97,.06),(2.99,.08),(.05,.1)):
+            g.beam((sx*(HX+P),-(HY+P),z),(sx*(HX+P),HY+P,z),.06,h,"black_steel")
+    for sy in (-1,1):                    # side walls
+        for z,h,x0,x1 in ((3.97,.06,6,HX+P),(3.97,.06,-HX-P,-6),(2.99,.08,-HX-P,HX+P),(.05,.1,-HX-P,HX+P)):
+            g.beam((x0,sy*(HY+P),z),(x1,sy*(HY+P),z),.06,h,"black_steel")
+    for sx in (-1,1):
+        inward=(-sx,0)
+        pane(g,(sx*HX,-HY-.02),(sx*HX,HY+.02),.1,3.,"omberg_padel_glass",inward)
+        pane(g,(sx*HX,-HY-.02),(sx*HX,HY+.02),3.,4.,"omberg_padel_mesh",inward)
+    for sy in (-1,1):
+        inward=(0,-sy)
+        for xa,xb in ((-HX-.02,-6.),(6.,HX+.02)):
+            pane(g,(xa,sy*HY),(xb,sy*HY),.1,3.,"omberg_padel_glass",inward)
+            pane(g,(xa,sy*HY),(xb,sy*HY),3.,4.,"omberg_padel_mesh",inward)
+        pane(g,(-6.,sy*HY),(6.,sy*HY),.1,3.,"omberg_padel_mesh",inward)
+    g.pop()
+
+
+def padel(g, dem):
+    """Two courts side by side on one pale concrete platform. Ortho 2025 (rotated onto the court axis): long axis
+    bearing 100 deg, courts 12.3 m apart centre to centre (2.3 m between the glass), slab 23.3 x 26.0 m. The slab
+    is level at the highest ground under it + 5 cm; where the ground falls (east end, NE corner) its skirt
+    shows as a kerb and runs 10 cm under the lowest ground."""
+    c,hi,lo=dem
+    zs=hi-c+.05
+    zb=lo-c-.10
+    X,Y=11.65,13.0
+    flat(g,-X,X,-Y,Y,zs,"omberg_padel_concrete")
+    for a,b in (((-X,-Y),(X,-Y)),((X,-Y),(X,Y)),((X,Y),(-X,Y)),((-X,Y),(-X,-Y))):
+        g.poly([(*a,zb),(*b,zb),(*b,zs),(*a,zs)],"omberg_padel_concrete")
+    for cy in (-6.15,6.15):
+        padel_court(g,cy,zs)
+
+
+def wall_face(g, outer, holes, mat):
+    """Wall plane polygon with rectangular holes, in wall-local (s, z, d=0); counter-clockwise seen from outside."""
+    from mathutils.geometry import tessellate_polygon
+    loops=[[Vector((s,z,0)) for s,z in outer]]+[[Vector((s,z,0)) for s,z in ((a,c),(b,c),(b,e),(a,e))] for a,b,c,e in holes]
+    flatv=[v for l in loops for v in l]
+    for i,j,k in tessellate_polygon(loops):
+        a,b,c=flatv[i],flatv[j],flatv[k]
+        if (b.x-a.x)*(c.y-a.y)-(b.y-a.y)*(c.x-a.x)<0:
+            b,c=c,b
+        g.poly([tuple(a),tuple(b),tuple(c)],mat)
+
+
+def hole_detail(g, kind, s0, s1, za, zb, trim, leaf):
+    """Recess of a window (glazing 14 cm in) or door (leaf 10 cm in), white reveals, a frame in the recess and a
+    casing board round the outside. Wall-local frame (s, z, d out of the wall)."""
+    dr=.14 if kind=="window" else .10
+    loop=[(s0,za),(s1,za),(s1,zb),(s0,zb)]
+    for (a,b),(c,e) in zip(loop,loop[1:]+loop[:1]):
+        g.poly([(a,b,0),(c,e,0),(c,e,-dr),(a,b,-dr)],trim)
+    g.poly([(s0,za,-dr),(s1,za,-dr),(s1,zb,-dr),(s0,zb,-dr)],"window_dark" if kind=="window" else leaf)
+    fw,fd=.06,.05
+    for x,z,sx,sz in ((s0+fw/2+.003,(za+zb)/2,fw,zb-za-.006),(s1-fw/2-.003,(za+zb)/2,fw,zb-za-.006),
+                      ((s0+s1)/2,zb-fw/2-.003,s1-s0-.006,fw)):
+        g.box((x,z,-dr+fd/2),(sx,sz,fd),trim)
+    if kind=="window":
+        g.box(((s0+s1)/2,za+fw/2+.003,-dr+fd/2),(s1-s0-.006,fw,fd),trim)
+        if s1-s0>.8:
+            g.box(((s0+s1)/2,(za+zb)/2,-dr+.02),(.04,zb-za-2*fw,.04),trim)
+        g.box(((s0+s1)/2,(za+zb)/2+.1,-dr+.02),(s1-s0-2*fw,.03,.04),trim)
+    else:
+        g.box((s1-.14,(za+zb)/2-.1,-dr+.035),(.03,.14,.04),"chrome")
+    cw,cd=.09,.035
+    g.box(((s0+s1)/2,zb+cw/2,(cd-.01)/2),(s1-s0+2*cw,cw,cd+.01),trim)
+    for s in (s0-cw/2,s1+cw/2):
+        g.box((s,(za+zb)/2+(cw/2 if kind=="window" else 0),(cd-.01)/2),(cw,zb-za+(cw if kind=="window" else 0),cd+.01),trim)
+    if kind=="window":
+        g.box(((s0+s1)/2,za-.02,.04),(s1-s0+2*cw+.06,.04,.1),trim)       # sill board
+
+
+def gable_roof(g, hx, hy, ze, zr, ov, gov, t, mat, under, edge):
+    """Closed gable roof, ridge along x. ze/zr: top surface height at the wall line y=+-hy / at the ridge. The
+    underside is the top plane dropped by t vertically, so both undersides meet in one line: no slit under
+    the ridge. Equal overhangs when ov == gov."""
+    m=(zr-ze)/hy
+    tv=t*math.sqrt(1+m*m)
+    zt=zr-m*(hy+ov)
+    x0,x1=-hx-gov,hx+gov
+    c=Vector((0,0,zr-tv/2))
+    for s in (-1,1):
+        yt=s*(hy+ov)
+        outward(g,[(x0,yt,zt),(x1,yt,zt),(x1,0,zr),(x0,0,zr)],mat,c-Vector((0,0,3)))
+        outward(g,[(x0,yt,zt-tv),(x1,yt,zt-tv),(x1,0,zr-tv),(x0,0,zr-tv)],under,c+Vector((0,0,3)))
+        outward(g,[(x0,yt,zt),(x1,yt,zt),(x1,yt,zt-tv),(x0,yt,zt-tv)],edge,c)
+    for sx in (-1,1):
+        x=sx*(hx+gov)
+        outward(g,[(x,-hy-ov,zt),(x,0,zr),(x,hy+ov,zt),(x,hy+ov,zt-tv),(x,0,zr-tv),(x,-hy-ov,zt-tv)],edge,c)
+    g.box((0,0,zr+.03),(x1-x0,.2,.12),mat)                  # ridge cap, flush with the barge boards
+
+
+def cabin(g, L, W, zb, z0, ze, zr, wall, opens, roof, ov=.35, gov=.35, t=.14, door_leaf="omberg_sage",
+          trim="omberg_ivory_trim", gutters=False):
+    """Small gabled (or flat-roofed) building, ridge along x, walls L x W centred on the origin. zb: foundation
+    bottom (under the lowest ground), z0: wall base = plinth top, ze/zr: roof top at the eave line / ridge
+    (zr None: flat roof of top height ze). `roof` = (top, underside, edge) materials. opens: dicts side, at
+    (offset from the wall's middle, counter-clockwise seen from outside), w, h, sill, kind window|door."""
+    top,under,edge=roof
+    if zr is None:
+        zu=lambda y: ze-t
+    else:
+        m=(zr-ze)/(W/2)
+        tv=t*math.sqrt(1+m*m)
+        zu=lambda y: zr-m*abs(y)-tv
+    zeave=zu(W/2)
+    # side: outward normal n; u = Z x n runs along the wall counter-clockwise seen from outside
+    walls={"-y":((0,-1),(-L/2,-W/2),L),"+x":((1,0),(L/2,-W/2),W),"+y":((0,1),(L/2,W/2),L),"-x":((-1,0),(-L/2,W/2),W)}
+    for side,(n,p0,ln) in walls.items():
+        nv=Vector((*n,0))
+        u=Z.cross(nv)
+        g.push(Matrix(((u.x,0,nv.x,p0[0]),(u.y,0,nv.y,p0[1]),(u.z,1,nv.z,0),(0,0,0,1))))
+        if side in ("-y","+y") or zr is None:
+            outer=[(0,z0-.05),(ln,z0-.05),(ln,zeave+.03),(0,zeave+.03)]   # 5 cm below the doors' threshold: behind the plinth
+        else:
+            outer=[(0,z0-.05),(ln,z0-.05),(ln,zeave+.03),(ln/2,zu(0)+.03),(0,zeave+.03)]
+        holes=[]
+        for o in opens:
+            if o["side"]==side:
+                sc=ln/2+o["at"]
+                holes.append((sc-o["w"]/2,sc+o["w"]/2,z0+o["sill"],z0+o["sill"]+o["h"],o["kind"],o["sill"]==0))
+        wall_face(g,outer,[h[:4] for h in holes],wall)
+        for a,b,c,e,kind,landing in holes:
+            hole_detail(g,kind,a,b,c,e,trim,door_leaf)
+            if kind=="door" and landing:              # concrete landing 3 cm under the threshold, 90 cm out
+                g.box(((a+b)/2,(zb+z0-.03)/2,.45),(b-a+.5,z0-.03-zb,.9),"concrete")
+        g.box((ln/2,(zb+z0-.004)/2,0),(ln+.06,z0-.004-zb,.06),"concrete")      # plinth, 3 cm proud of the boards
+        g.pop()
+    cb=.12
+    for sx in (-1,1):                                  # white corner boards up to the roof underside
+        for sy in (-1,1):
+            g.box((sx*(L/2+cb/2-.02),sy*(W/2+cb/2-.02),(z0+zeave+.03)/2),(cb,cb,zeave+.03-z0),trim)
+    if zr is None:
+        p=[(-L/2-gov,-W/2-ov,ze),(L/2+gov,-W/2-ov,ze),(L/2+gov,W/2+ov,ze),(-L/2-gov,W/2+ov,ze)]
+        slab(g,p,t,top,under,edge)
+        return
+    gable_roof(g,L/2,W/2,ze,zr,ov,gov,t,top,under,edge)
+    if gutters:
+        m=(zr-ze)/(W/2)
+        for s in (-1,1):
+            gy=s*(W/2+ov+.04)
+            gz=zr-m*(W/2+ov)-.11
+            kit._gutter(g,-L/2-gov+.02,L/2+gov-.02,gy,gz,.07,"galvanised")
+            for x in (-L/2+.15,L/2-.15):               # down the corner, jogging in to the wall
+                wy=s*(W/2+.045)                        # pipe axis: its skin 5 mm off the boards
+                zt=gz-.07
+                g.pipe((x,gy,zt),(x,gy,zt-.25),.04,"galvanised",seg=8)
+                g.pipe((x,gy,zt-.25),(x,wy,zt-.25-abs(gy-wy)),.04,"galvanised",seg=8)
+                g.pipe((x,wy,zt-.25-abs(gy-wy)),(x,wy,z0+.2),.04,"galvanised",seg=8)
+                for zc in (z0+.7,zt-.9):                # two brackets tie the pipe to the wall
+                    g.box((x,s*(W/2+.0225),zc),(.08,.045,.03),"galvanised")
+
+
+def garden_house(g, dem):
+    c,hi,lo=dem
+    z0=hi-c+.02                          # wall base: 2 cm over the highest ground, so the low (west) side shows plinth
+    L,W=5.7,5.0
+    ops=[dict(side="+x",at=-1.0,w=.95,h=2.05,sill=0,kind="door"),
+         dict(side="+x",at=1.2,w=1.0,h=1.25,sill=.8,kind="window"),
+         dict(side="-x",at=0,w=1.0,h=1.25,sill=.8,kind="window")]
+    for side in ("-y","+y"):
+        ops+=[dict(side=side,at=a,w=1.1,h=1.2,sill=.75,kind="window") for a in (-1.4,1.4)]   # head + casing stay under the eave
+    cabin(g,L,W,lo-c-.3,z0,2.45,hi-c+4.0,"omberg_red",ops,("omberg_tile_orange","omberg_ivory_trim","omberg_ivory_trim"),gutters=True)
+
+
+def garden_shed(g, dem):
+    c,hi,lo=dem
+    z0=hi-c+.02
+    ops=[dict(side="+x",at=0,w=.95,h=1.9,sill=0,kind="door"),dict(side="+y",at=0,w=.8,h=.7,sill=1.05,kind="window")]
+    cabin(g,3.2,2.4,lo-c-.3,z0,z0+1.95,z0+2.5,"omberg_red",ops,("omberg_roof_charcoal","omberg_fascia_dark","omberg_fascia_dark"),
+          ov=.25,gov=.25,t=.1)
+
+
+def garden_store(g, dem, top):
+    """Low store (lidar: flat top at 109.6-109.68 m; ortho: dark top, pale grey south face with doors)."""
+    c,hi,lo=dem
+    z0=.12                               # the ground rises 0.3 m to the east (DEM-edited pad): the east end sinks into it
+    ops=[dict(side="-y",at=a,w=.7,h=.72,sill=.1,kind="door") for a in (-1.2,-.4,.4,1.2)]   # hatches: the wall is only ~1 m
+    cabin(g,3.4,1.1,lo-c-.3,z0,top-c,None,"omberg_main_grey",ops,("omberg_roof_charcoal","omberg_fascia_dark","omberg_fascia_dark"),
+          ov=.12,gov=.12,t=.1,door_leaf="omberg_fascia_dark")
+
+
 def build(byid, add, new):
     # Fitted to the class-1 lidar points (ridge level, slope 0.40 on both sides, roof edges) in the frame of
     # the old OSM-based rectangle: the real roofs are 14.3-14.7 m edge to edge and sit off that rectangle by
@@ -373,3 +656,17 @@ def build(byid, add, new):
                 solar(g,-L/2+.25,L/2-.25,-W/2+.15,W/2-.15,
                       lambda y:ea+.10+rise*(y+W/2)/W,rows=2)
         add(aid,g,r["cx"],r["cy"],row["axisBearingFromNorthDeg"],ground)
+
+    # Garden structures, appended after the old assets. dem = (under the asset centre, highest, lowest over the footprint).
+    g=new()
+    padel(g,(110.083,110.104,109.870))
+    add("omberg_padel_courts",g,477927.49,6457743.77,100.,110.083)
+    g=new()
+    garden_house(g,(109.609,109.733,109.098))
+    add("omberg_garden_house",g,477873.8,6457707.4,174.,109.609)
+    g=new()
+    garden_shed(g,(109.789,109.886,109.670))
+    add("omberg_garden_shed",g,477882.45,6457715.8,175.,109.789)
+    g=new()
+    garden_store(g,(108.226,108.531,108.163),109.64)
+    add("omberg_garden_store",g,477872.9,6457716.17,84.,108.226)
