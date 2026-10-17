@@ -43,7 +43,9 @@ the module docs and `.claude/skills/grass-planting/SKILL.md`; tests `tests/test_
 
 `vegetation_zone` features of type `rock_shore`, source `rock-shore`, from the surface map and the DEM next to
 it: only within 40 m of the big lake (the largest water body, at least 2 ha) and on or within 10 m of a
-`Slab` (12) cell. Variants `crack` (texture grass and moss on the slab: noise patches favouring ledges under
+`Slab` (12) cell, unless `--inland <0..1>` (a course's vegetation-rules.json; Omberg 0.4): then every slab, lake
+or not, gets its crack and heath in full and, away from the lake, scrub and grass at that weight in a 4 m band
+(`--inland-scrub-band`). Variants `crack` (texture grass and moss on the slab: noise patches favouring ledges under
 30-45°, none on faces over 70°, ~35 % plus the edge fringe; mix), `heath` (sparse patches on ledges and within
 3 m outside), `scrub` (bushes on land 0.5-8 m out from the slab, densest at the rock, and within 25 m of the
 lake; replace, so it takes the ground from the tall rough and the floor) and `grass` (under and between the

@@ -115,6 +115,25 @@ def test_a_rock_away_from_the_lake_or_by_a_pond_gets_nothing():
     assert all(v.max() == 0 for v in w.values())
 
 
+def test_with_inland_a_rock_in_the_rough_gets_its_cracks_and_heath_and_a_thinner_narrower_scrub():
+    cls = np.full((N, N), S_DEEP, dtype=np.uint8)
+    cls[:, :40] = S_WATER                                        # the lake
+    cls[block(80, 100, 30, 90)] = S_SLAB                         # 60 m from it
+    w = weights(cls, CELL, flat(), inland=0.4)
+    slab = slab_mask(cls)
+    assert 0.33 < float((w[rs.CRACK][slab] >= 0.5).mean()) < 0.6  # the same cracks as on the shore
+    assert w[rs.HEATH][block(100.5, 103, 30, 90)].max() > 0.9      # heath on the thin soil beside it
+    near = block(101.5, 103, 35, 85)
+    shore_w = weights(shore(), CELL, flat())                       # the shore slab's own band, 1.5-3 m off its edge
+    assert 0 < w[rs.SCRUB][near].mean() < 0.6 * shore_w[rs.SCRUB][block(41.5, 43, 35, 85)].mean()
+    assert w[rs.SCRUB][block(106, 120, 0, 120)].max() == 0         # the band stops at INLAND_SCRUB_BAND_M (+1 m)
+    assert (w[rs.GRASS][near] >= w[rs.SCRUB][near] - 1e-6).all()
+    # no lake at all is fine too; inland 0 keeps the shore-only rule
+    cls[:, :40] = S_DEEP
+    assert weights(cls, CELL, flat(), inland=0.4)[rs.CRACK].max() > 0
+    assert all(v.max() == 0 for v in weights(cls, CELL, flat()).values())
+
+
 def test_along_the_lake_the_scrub_runs_beside_the_rock_but_stops_ten_metres_from_it():
     cls = shore()
     w = weights(cls, CELL, flat())

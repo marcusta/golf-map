@@ -24,10 +24,14 @@ course's grass palette and bindings (.claude/skills/grass-planting/SKILL.md):
   grass   VSP texture grass under and between the scrub in the same band. A mix
           layer.
 
-  where   only the shore: within LAKE_REACH_M of the big lake (the largest water
+  where   the shore: within LAKE_REACH_M of the big lake (the largest water
           body of the surface map, at least LAKE_MIN_M2) AND on a slab or within
-          SLAB_REACH_M of one, both with a short ramp. A rock in the woods gets
-          nothing from here.
+          SLAB_REACH_M of one, both with a short ramp. By default a rock in the
+          woods gets nothing from here; with `inland` > 0 (a course's rules,
+          Omberg's outcrops in the rough, 2026-10-17) every slab gets its crack
+          grass and heath in full, and scrub and grass at the `inland` weight in a
+          band only INLAND_SCRUB_BAND_M wide (a rock in a meadow is not a shore
+          thicket), with no lake needed.
   clear   the tall rough's clearances from tees, greens, fairways, semi, bunkers
           and blend strips (grass_zones.CLEARANCES, without water and rock: a
           shore bush stands on the waterline and against the rock), houses
@@ -91,6 +95,7 @@ SCRUB_START_M = 0.5            # the band begins this far off the slab's edge (t
 SCRUB_FULL_M = (1.0, 2.5)      # ... is full from the first to the second ...
 SCRUB_BAND_M = 8.0             # ... and thins to SCRUB_FAR_WEIGHT here, gone a metre on
 SCRUB_FAR_WEIGHT = 0.3
+INLAND_SCRUB_BAND_M = 4.0      # away from the lake (inland > 0): the scrub band ends here, gone a metre on
 SHORE_BAND_M = 25.0            # along the lake: within this of its water ...
 SHORE_FULL_M = 8.0             # ... full to here
 SHORE_WEIGHT = 0.8
@@ -147,21 +152,25 @@ def _quantile_cut(score: np.ndarray, where: np.ndarray, cover: float, soft: floa
 def shore_weights(cls: np.ndarray, cell: float, z: np.ndarray, blocked: np.ndarray | None = None,
                   lake_reach: float = LAKE_REACH_M, slab_reach: float = SLAB_REACH_M, crack_cover: float = CRACK_COVER,
                   heath_cover: float = HEATH_COVER, scrub_band: float = SCRUB_BAND_M, shore_band: float = SHORE_BAND_M,
-                  lake_min_m2: float = LAKE_MIN_M2, seed: int = 0) -> dict[str, np.ndarray]:
-    """Weight 0..1 per cell of the surface map for each variant (see the module doc)."""
+                  lake_min_m2: float = LAKE_MIN_M2, inland: float = 0.0, inland_scrub_band: float = INLAND_SCRUB_BAND_M,
+                  seed: int = 0) -> dict[str, np.ndarray]:
+    """Weight 0..1 per cell of the surface map for each variant (see the module doc). `inland` 0 = the shore
+    only; above 0 every slab is dressed, its scrub and grass away from the lake at that weight."""
     from creek_bank_zones import slope_deg, smooth_noise
 
     zero = {k: np.zeros(cls.shape, dtype=np.float32) for k in VARIANTS}
     slab = cls == S_SLAB
     lake = big_lake(cls, cell, lake_min_m2)
-    if not slab.any() or not lake.any():
+    if not slab.any() or (not lake.any() and inland <= 0):
         return zero
 
-    d_lake = _dist(lake, cell)
+    d_lake = _dist(lake, cell)                     # inf when there is no lake
     d_slab = _dist(slab, cell)                     # 0 on the slab
     inside = _dist(~slab, cell)                    # on the slab: metres in from its edge (one cell on the edge cells)
     half = REACH_RAMP_M / 2
-    shore = (1.0 - _ramp(d_lake, lake_reach - half, lake_reach + half)) * (1.0 - _ramp(d_slab, slab_reach - half, slab_reach + half))
+    lakeside = 1.0 - _ramp(d_lake, lake_reach - half, lake_reach + half)      # 1 on the shore, 0 inland
+    near_slab = 1.0 - _ramp(d_slab, slab_reach - half, slab_reach + half)
+    shore = near_slab if inland > 0 else lakeside * near_slab
     if not (shore > 0).any():
         return zero
 
@@ -202,6 +211,10 @@ def shore_weights(cls: np.ndarray, cell: float, z: np.ndarray, blocked: np.ndarr
         (1.0 - (1.0 - SCRUB_FAR_WEIGHT) * _ramp(d_slab, SCRUB_FULL_M[1], scrub_band)) * \
         (1.0 - _ramp(d_slab, scrub_band, scrub_band + 1.0))
     along = SHORE_WEIGHT * (1.0 - _ramp(d_lake, SHORE_FULL_M, shore_band))
+    if inland > 0:
+        # inland: a narrower band at the `inland` weight, blending into the shore's over the lake reach's ramp
+        narrow = 1.0 - _ramp(d_slab, inland_scrub_band, inland_scrub_band + 1.0)
+        off_slab = off_slab * (lakeside + (1.0 - lakeside) * inland * narrow)
     band = np.maximum(off_slab, along) * land
     close = SCRUB_EDGE_CLOSE * (1.0 - _ramp(d_slab, *SCRUB_EDGE_M))
     clumps = _ramp(smooth_noise(cls.shape, cell, SCRUB_FEATURE_M, seed + 4) + close, *SCRUB_COVER)
@@ -276,6 +289,8 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--scrub-band", type=float, default=SCRUB_BAND_M, help=f"metres of scrub out from the slab's edge (default {SCRUB_BAND_M:g})")
     p.add_argument("--shore-band", type=float, default=SHORE_BAND_M, help=f"metres of scrub along the lake (default {SHORE_BAND_M:g})")
     p.add_argument("--lake-min", type=float, default=LAKE_MIN_M2, help=f"m2 of water that makes the big lake (default {LAKE_MIN_M2:g})")
+    p.add_argument("--inland", type=float, default=0.0, help="0 (default) = the shore only; 0..1 = every slab dressed, its scrub and grass away from the lake at this weight")
+    p.add_argument("--inland-scrub-band", type=float, default=INLAND_SCRUB_BAND_M, help=f"metres of scrub out from an inland slab (default {INLAND_SCRUB_BAND_M:g})")
     p.add_argument("--seed", type=int, default=0)
     p.add_argument("--source", default=DEFAULT_SOURCE)
     args = p.parse_args(argv)
@@ -296,12 +311,13 @@ def main(argv: list[str] | None = None) -> int:
     blocked = features.rasterize(blockers, out_shape=cls.shape, transform=transform).astype(bool) if blockers else None
     weights = shore_weights(cls, cell, z, blocked, lake_reach=args.lake_reach, slab_reach=args.slab_reach,
                             crack_cover=args.crack_cover, heath_cover=args.heath_cover, scrub_band=args.scrub_band,
-                            shore_band=args.shore_band, lake_min_m2=args.lake_min, seed=args.seed)
+                            shore_band=args.shore_band, lake_min_m2=args.lake_min, inland=args.inland,
+                            inland_scrub_band=args.inland_scrub_band, seed=args.seed)
     cell2 = cell * cell
     if not any(w.any() for w in weights.values()):
         Path(args.out).write_text(json.dumps(feature_collection([], args.source)), encoding="utf-8")
         why = ("no rock slab in the surface map" if not (cls == S_SLAB).any() else
-               f"no lake of {args.lake_min / 1e4:g} ha or more in the surface map" if not big_lake(cls, cell, args.lake_min).any() else
+               f"no lake of {args.lake_min / 1e4:g} ha or more in the surface map" if not big_lake(cls, cell, args.lake_min).any() and args.inland <= 0 else
                f"no rock slab within {args.lake_reach:g} m of the lake")
         print(f"{doc.get('course', args.course)}: no {ZONE_TYPE} zones ({why})")
         print(f"Wrote {args.out}")
