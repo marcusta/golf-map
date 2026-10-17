@@ -19,7 +19,7 @@ from mathutils import Matrix, Vector
 import props_kit as kit
 
 # Only materials defined here (model.py zeroes their specular: sRGB-lit matt, no mirror on the tiles).
-MATTE = {"tile_clay", "tile_moss", "plinth_stone", "sheet_red", "sheet_pale", "sheet_frame"}
+MATTE = {"apron_concrete", "tile_clay", "tile_moss", "plinth_stone", "sheet_red", "sheet_pale", "sheet_frame"}
 
 
 def register_materials():
@@ -29,6 +29,7 @@ def register_materials():
     M["plinth_stone"] = ("stone:116,112,108", (2.0, 2.0), None, 0.2, 0.0)            # granite plinth and steps
     M["sheet_red"] = ("seam:152,66,55:0.076:2.0:1", (2.0, 2.0), None, 0.12, 0.1)    # corrugated red sheet, relief in the normal map
     M["sheet_pale"] = ("seam:186,138,118:0.076:2.0:1", (2.0, 2.0), None, 0.2, 0.1)  # the lighter patch on the barn roof; calibrated in Unity against the ortho (~242,209,190 raw)
+    M["apron_concrete"] = ("plaster:156,154,148", (2.0, 2.0), None, 0.08, 0.0)    # pale concrete paving
     M["sheet_frame"] = (None, (1, 1), (140, 56, 46), 0.12, 0.1)
     kit.TILE_ROOFS["tile_clay"] = 0.34     # stepped courses as geometry (as kit._roof_slab and the farm do)
     kit.TILE_ROOFS["tile_moss"] = 0.34
@@ -420,6 +421,7 @@ def build(add, new, ev):
     outbuilding(add, new, ev)
     barn(add, new, ev)
     cottage(add, new, ev)
+    wc(add, new, ev)
 
 
 # ---------------------------------------------------------------------------------------------
@@ -756,3 +758,78 @@ def cottage(add, new, ev):
     eave((xs0 + 0.05, yNs), (x1 - 0.05, yNs), (0, 1), zk - TS * (yNs - yk), [x1 - 0.5], wl["NS"])
     g.pop()
     add("omberg_cot_cottage", g, *F.en(cx, cy), F.yaw, Z0)
+
+
+# ---------------------------------------------------------------------------------------------
+# toilet house, OSM 1431567007, by the gravel track.  Frame at 0.6 deg about the OSM centre (477510.08, 6457253.21).
+# Lidar (37 clean roof returns, rms 0.06, trees only above it): a gable with the ridge along x (E-W), level, ridge y 0.0,
+# z 113.71, tan 0.455; returns y -2.6..+2.8, x -1.6..3.3 (lidar frame: +1.0 m east of the ortho/OSM, so the building centre
+# is x 0.85) -> roof 5.4 x 5.4 (half width 2.7), walls 4.5 x 4.5 as OSM, overhang 0.45 all round, eave 112.44 = 2.3 m over
+# the 110.1 ground, ridge 3.6 m.  2023 ortho: lit south / shaded north half confirms the ridge, orange tile, pale paving west
+# and south-west.  Inferred: falu red walls, two doors in the west gable (the two paving strips lead to y +-1.7, the apron
+# runs on along the south wall), small high vents on the other sides.
+# ---------------------------------------------------------------------------------------------
+def wc(add, new, ev):
+    F = Frame(477510.08, 6457253.21, 0.6)
+    Z0, FL, OV, TV = 110.1, 0.30, 0.45, 0.17
+    YR, ZR, T, HW = 0.0, 113.71 - Z0, 0.455, 2.7
+    cx = 0.85
+    x0, x1 = cx - HW, cx + HW
+    yS, yN = YR - HW, YR + HW
+    wl = dict(W=x0 + OV, E=x1 - OV, S=yS + OV, N=yN - OV)
+    g = new()
+    g.push(Matrix.Translation((-cx, 0, 0)))
+    foot = [(wl["W"], wl["S"]), (wl["E"], wl["S"]), (wl["E"], wl["N"]), (wl["W"], wl["N"])]
+    glow, gmed = ground_under(ev, F, foot)
+    zb = glow - Z0 - 0.35
+    g.extrude(offset_poly(foot, 0.04), zb, FL, STONE, top=STONE, bottom=False)
+    ring_report("wc", ev, F, foot, FL, Z0, zb)
+    zE = ZR - T * HW
+    for pl, ys, fr in (((0, -T, ZR + T * YR), yN, [((x0, yN), (x0, YR)), ((x1, yN), (x0, yN)), ((x1, YR), (x1, yN))]),
+                       ((0, T, ZR - T * YR), yS, [((x0, YR), (x0, yS)), ((x0, yS), (x1, yS)), ((x1, yS), (x1, YR))])):
+        slab(g, [(x0, YR), (x1, YR), (x1, ys), (x0, ys)], pl, "tile_clay", TV, fr, zref=zE)
+    ridge_cap(g, (x0, YR), (x1, YR), ZR, "tile_clay")
+    gab = lambda c, m: tent(ZR, T, YR, c) - 0.09
+    eave_top = lambda c, m: ZR - T * (HW - OV) - 0.09
+    vent = lambda at, sill=1.2: win(at, 0.6, 0.4, sill, (2, 1))
+    walls = [
+        dict(side="-x", plane=wl["W"], lo=wl["S"], hi=wl["N"], top=gab, brk=(YR,), ops=[dr(-1.45, 0.85, 1.85, mat="door_red", lights=False), dr(1.45, 0.85, 1.85, mat="door_red", lights=False)]),
+        dict(side="+x", plane=wl["E"], lo=wl["S"], hi=wl["N"], top=gab, brk=(YR,), ops=[win(YR, 0.5, 0.4, 1.5, (1, 1))]),
+        dict(side="-y", plane=wl["S"], lo=wl["W"], hi=wl["E"], top=eave_top, ops=[vent(cx)]),
+        dict(side="+y", plane=wl["N"], lo=wl["W"], hi=wl["E"], top=eave_top, ops=[vent(cx)]),
+    ]
+    for W in walls:
+        build_wall(g, W, FL, TV)
+    corner_boards(g, foot, walls, FL)
+    for at in (-1.45, 1.45):                                   # a step down from each door to its paving strip
+        stoop(g, "-x", wl["W"], at, 1.3, 0.5, FL - 0.02, zb)
+    eave = lambda a, b, nout, ez, pipes, plane: eave_line(g, ev, F, Z0, OV, a, b, nout, ez, pipes, plane)
+    eave((x0 + 0.05, yN), (x1 - 0.05, yN), (0, 1), zE, [x1 - 0.5], wl["N"])
+    eave((x0 + 0.05, yS), (x1 - 0.05, yS), (0, -1), zE, [x1 - 0.5], wl["S"])
+    g.pop()
+    add("omberg_cot_wc", g, *F.en(cx, 0), F.yaw, Z0)
+    wc_paving(add, new, ev, F, Z0, wl)
+
+
+def wc_paving(add, new, ev, F, Z0, wl):
+    """Pale concrete paving west and south-west of the toilet house (2023 ortho; same +0.85 m shift as the roof): a strip to
+    each door, and the apron round the south-west corner and along the south wall.  A grid draped on the course terrain,
+    +4 cm, one smooth normal field (model.py smooths assets named *paving*); UVs are planar (kit default)."""
+    cell, lift = 0.4, 0.04
+    xw, xe = wl["W"], wl["E"]
+    rects = [(xw - 2.8, xw, -3.9, -1.0), (xw, xe + 0.15, -3.9, wl["S"]), (xw - 2.8, xw, 1.0, 1.9)]     # SW block, south apron, north strip
+    cx, cy = (xw - 2.8 + xe) / 2, -0.9
+    g = new()
+    g.category = "prop"
+    g.push(Matrix.Translation((-cx, -cy, 0)))
+    h = lambda x, y: ev.terrain(*F.en(x, y)) - Z0 + lift
+    for xa, xb, ya, yb in rects:
+        nx, ny = max(1, round((xb - xa) / cell)), max(1, round((yb - ya) / cell))
+        for i in range(nx):
+            for j in range(ny):
+                a, b = xa + (xb - xa) * i / nx, xa + (xb - xa) * (i + 1) / nx
+                c, d = ya + (yb - ya) * j / ny, ya + (yb - ya) * (j + 1) / ny
+                for tri in (((a, c), (b, c), (b, d)), ((a, c), (b, d), (a, d))):
+                    g.poly([(x, y, h(x, y)) for x, y in tri], "apron_concrete")
+    g.pop()
+    add("omberg_cot_wc_paving", g, *F.en(cx, cy), F.yaw, Z0)
