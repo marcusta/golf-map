@@ -180,6 +180,7 @@ const row = (patch: Partial<GsproTargetStatus> & { id: GsproTargetId }): GsproTa
     manual: GSPRO_TARGETS.find(t => t.id === patch.id)!.manual,
     blocked: null,
     note: null,
+    builds: [],
     ...patch,
 });
 
@@ -193,6 +194,11 @@ const BOARD = (): GsproTargetStatus[] => [
     row({
         id: 'shapes', lastRun: hoursAgo(48), seconds: 12, stale: true,
         changedSince: { count: 14, kinds: ['bunker', 'path', 'tee'] },
+        builds: [
+            { snapshot: '2026-10-15_15-37-30', outcome: 'failed', opcdCreated: '2026-10-17 09:38', status: 'Draft', lastGood: false },
+            { snapshot: '2026-10-15_13-17-34', outcome: 'ok', opcdCreated: '2026-10-17 07:17', status: 'Processing Complete', lastGood: true },
+            { snapshot: '2026-10-15_13-10-26', outcome: null, opcdCreated: null, status: null, lastGood: false },
+        ],
     }),
     row({ id: 'meshes' }),
     row({ id: 'vegetation' }),
@@ -1031,4 +1037,20 @@ test('the GSPro course folder is saved when the field is left and is back when t
     await svc.openFor('course-1', 'Vreta');
     expect(field().value).toBe(SCENE);
     expect(host.textContent).toContain('Writes Vreta_lidar_scene.GKD there.');
+});
+
+test('the Shapes row shows what OPCD made of each recent SVG export, the last good one marked', async () => {
+    const { host, svc } = await mount();
+    await open(svc);
+
+    const line = host.querySelector('[data-testid=gspro-builds-shapes]')!;
+    const marks = [...line.querySelectorAll('.gspro-export__build')];
+    expect(marks.map(m => m.textContent)).toEqual(['15/10 15:37 ✗', '15/10 13:17 ✓', '15/10 13:10 ?']);
+    expect(marks.map(m => m.className)).toEqual([
+        'gspro-export__build failed', 'gspro-export__build ok last-good', 'gspro-export__build unknown',
+    ]);
+    expect(marks[1]!.getAttribute('title')).toBe('Export 2026-10-15_13-17-34: OPCD built (Processing Complete, created 2026-10-17 07:17 OPCD time) — last good');
+    // No other row has a builds line.
+    const lines = [...host.querySelectorAll('[data-testid^=gspro-builds-]')].filter(n => n.innerHTML !== '');
+    expect(lines.map(n => n.getAttribute('data-testid'))).toEqual(['gspro-builds-shapes']);
 });

@@ -3,11 +3,28 @@
 // touching the course (each variant is exported from a copy of the database).
 //
 //   bun run gspro:bisect -- <course> snapshots
+//   bun run gspro:bisect -- <course> svg-mix [--from <snapshot>] [--to <snapshot>] [(--apply <list> | --without <list> | --match <regex>) [--name <variant>]]
 //   bun run gspro:bisect -- <course> changes --from <when> [--to <when>]
 //   bun run gspro:bisect -- <course> svg --from <when> [--to <when>] (--apply <list> | --without <list>) [--name <variant>]
 //
+// `snapshots` lists the kept exports with what OPCD made of each (export.json's
+// `build`, written by `bun run opcd:build -- <course> --status`) and names the last
+// good one.
+//
+// `svg-mix` is the fast bisect: variants built straight from two snapshot SVGs —
+// the good one plus a chosen group of the bad one's shape changes (scripts/svg-mix.ts:
+// keyed by data-feature-id, so a shape moved between holes is one change). Without
+// --apply/--without/--match it lists the numbered shape changes; with one it writes
+// <export dir>/bisect/<svg stem>-bisect-<variant>.svg. --from defaults to last-good
+// (the newest snapshot OPCD built), --to to the newest snapshot. --match takes the
+// changes whose path id in either file matches the regex (e.g. 'hole_101_').
+// Submit up to three at once with `opcd:build -- <course> --svg <variant> --submit-only`,
+// then `opcd:build -- <course> --status`.
+//
+// `changes`/`svg` rebuild states from the database instead (any moment, not only exports).
 // <when> is one of
 //   a snapshot   2026-09-26_18-32-04 (or a unique prefix): what a full SVG export kept in <export dir>/export-history/
+//   last-good    the newest snapshot whose export.json says OPCD built it
 //   a time       "2026-09-26 13:04" (local time): rebuilt from the edit history (migration 025)
 //   db:<file>    the course in another database, e.g. db:data/app.pre-renumber-2026-09-26.sqlite
 //   now          the course as it is (the default for --to)
@@ -20,14 +37,15 @@ import '../server/env-paths';
 import * as path from 'node:path';
 import * as os from 'node:os';
 import { existsSync } from 'node:fs';
-import { mkdtemp, rm } from 'node:fs/promises';
+import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { createDb } from '@basics/core/server/db';
 import type { Database } from '../server/db/schema';
 import { CoursesService } from '../server/services/courses.service';
 import { AssetsService } from '../server/services/assets.service';
 import { TerrainEditsService } from '../server/services/terrain-edits.service';
 import { GsproExportService, SVG_TYPE_MAP, venvPython } from '../server/services/gspro-export.service';
-import { FeatureHistoryService, type FeatureChange, type FeatureState } from '../server/services/feature-history.service';
+import { FeatureHistoryService, type BuildRecord, type FeatureChange, type FeatureState, type SnapshotInfo } from '../server/services/feature-history.service';
+import { layerOrderChanged, mixSvg, parseSvg, shapeChanges, type ShapeChange } from './svg-mix';
 
 const ROOT = path.resolve(import.meta.dir, '..');
 const PIPELINE_DIR = process.env.MAP_PIPELINE_DIR ?? path.join(ROOT, 'pipeline');
@@ -36,9 +54,11 @@ function usage(message?: string): never {
     if (message) console.error(`error: ${message}\n`);
     console.error([
         'usage: bun run gspro:bisect -- <course> snapshots',
+        '       bun run gspro:bisect -- <course> svg-mix [--from <snapshot>] [--to <snapshot>] [(--apply <list> | --without <list> | --match <regex>) [--name <variant>]]',
         '       bun run gspro:bisect -- <course> changes --from <when> [--to <when>]',
         '       bun run gspro:bisect -- <course> svg --from <when> [--to <when>] (--apply <list> | --without <list>) [--name <variant>]',
-        '<when>: snapshot name | "YYYY-MM-DD HH:MM" (local) | db:<sqlite file> | now',
+        '<when>: snapshot name | last-good | "YYYY-MM-DD HH:MM" (local) | db:<sqlite file> | now',
+        '<snapshot>: a snapshot name (or unique prefix) | last-good (svg-mix --from default) | latest (--to default)',
         '<list>: numbers from `changes`, e.g. 1,3-5 | all | none',
     ].join('\n'));
     process.exit(2);
@@ -113,12 +133,32 @@ async function stateOf(courseId: string, when: string, exportDir: string): Promi
         const { state, unknown } = await history.stateAt(courseId, utc);
         return { state, label: when, unknown };
     }
-    const snaps = (await FeatureHistoryService.listSnapshots(exportDir)).filter(s => s.name.startsWith(when));
-    if (snaps.length !== 1) usage(`${snaps.length ? 'several' : 'no'} snapshots match '${when}' (see: snapshots)`);
-    return { state: await FeatureHistoryService.readSnapshot(snaps[0].dir), label: `export ${snaps[0].name}` };
+    const snap = await snapshotOf(exportDir, when);
+    return { state: await FeatureHistoryService.readSnapshot(snap.dir), label: `export ${snap.name}` };
 }
 
-function parseList(text: string, changes: FeatureChange[]): Set<number> {
+/** A snapshot by name or unique prefix, `last-good` (newest OPCD built) or `latest`. */
+async function snapshotOf(exportDir: string, when: string): Promise<SnapshotInfo> {
+    const all = await FeatureHistoryService.listSnapshots(exportDir);
+    if (when === 'last-good') {
+        const good = FeatureHistoryService.lastGood(all);
+        if (!good) usage(`no snapshot has a recorded good OPCD build yet (run: bun run opcd:build -- <course> --status)`);
+        return good;
+    }
+    if (when === 'latest') {
+        if (!all.length) usage('no export snapshots yet');
+        return all[all.length - 1];
+    }
+    const snaps = all.filter(s => s.name.startsWith(when));
+    if (snaps.length !== 1) usage(`${snaps.length ? 'several' : 'no'} snapshots match '${when}' (see: snapshots)`);
+    return snaps[0];
+}
+
+function outcome(build: BuildRecord | null): string {
+    return build ? `${build.outcome.padEnd(7)} (OPCD ${build.opcdCreated}, ${build.status})` : '-';
+}
+
+function parseList(text: string, changes: { n: number }[]): Set<number> {
     if (text === 'all') return new Set(changes.map(c => c.n));
     if (text === 'none') return new Set();
     const out = new Set<number>();
@@ -147,9 +187,11 @@ async function main() {
     if (command === 'snapshots') {
         const snaps = await FeatureHistoryService.listSnapshots(dir);
         if (!snaps.length) console.log(`no export snapshots in ${dir} yet (every full SVG export keeps one)`);
-        for (const s of snaps) console.log(`${s.name}  ${s.features} features  ${s.svg ?? '(no svg)'}`);
+        for (const s of snaps) console.log(`${s.name}  ${String(s.features).padStart(6)} features  ${s.svg ?? '(no svg)'}  ${outcome(s.build)}`);
+        if (snaps.length) console.log(`last good: ${FeatureHistoryService.lastGood(snaps)?.name ?? '(none recorded; bun run opcd:build -- <course> --status)'}`);
         return;
     }
+    if (command === 'svg-mix') return svgMix(dir);
     if (command !== 'changes' && command !== 'svg') usage(`unknown command '${command}'`);
     if (!flags.from) usage('--from is required');
     const from = await stateOf(course.id, flags.from, dir);
@@ -196,6 +238,49 @@ async function main() {
     } finally {
         await rm(work, { recursive: true, force: true });
     }
+}
+
+function showShape(c: ShapeChange, mark = ''): string {
+    const where = c.kind === 'moved' ? `${c.goodLayer} -> ${c.badLayer}` : (c.badLayer ?? c.goodLayer ?? '');
+    const pid = c.goodPid && c.badPid && c.goodPid !== c.badPid ? `${c.goodPid} -> ${c.badPid}` : (c.badPid ?? c.goodPid);
+    return `${mark}${String(c.n).padStart(3)}  ${c.kind.padEnd(7)} ${c.type.padEnd(14)} ${where.padEnd(18)} ${pid}  ${c.key.length > 40 ? `${c.key.slice(0, 37)}...` : c.key}`;
+}
+
+/** `svg-mix`: list the shape changes between two snapshot SVGs, or write a variant with some of them. */
+async function svgMix(dir: string): Promise<void> {
+    const from = await snapshotOf(dir, flags.from ?? 'last-good');
+    const to = await snapshotOf(dir, flags.to ?? 'latest');
+    if (!from.svg || !to.svg) usage('both snapshots need an SVG');
+    const good = parseSvg(await readFile(path.join(from.dir, from.svg), 'utf-8'));
+    const bad = parseSvg(await readFile(path.join(to.dir, to.svg), 'utf-8'));
+    const changes = shapeChanges(good, bad);
+    const built = (s: SnapshotInfo) => `${s.name} [${s.build?.outcome ?? 'no build recorded'}]`;
+    console.log(`${changes.length} shape change(s) from ${built(from)} to ${built(to)}`);
+    if (layerOrderChanged(good, bad)) console.log(`note: the layers are in another order in ${to.name}; every variant takes that order`);
+    const picks = ['apply', 'without', 'match'].filter(f => flags[f] !== undefined);
+    if (!picks.length) {
+        for (const c of changes) console.log(showShape(c));
+        return;
+    }
+    if (picks.length > 1) usage('svg-mix takes one of --apply, --without and --match');
+    let apply: Set<number>;
+    if (flags.match !== undefined) {
+        const re = new RegExp(flags.match);
+        apply = new Set(changes.filter(c => [c.goodPid, c.badPid].some(p => p !== null && re.test(p))).map(c => c.n));
+    } else {
+        const picked = parseList(flags.apply ?? flags.without, changes);
+        apply = flags.apply ? picked : new Set(changes.map(c => c.n).filter(n => !picked.has(n)));
+    }
+    for (const c of changes) console.log(showShape(c, apply.has(c.n) ? '+ ' : '  '));
+    const label = flags.match !== undefined ? `match-${flags.match}` : flags.apply ?? `all-but-${flags.without}`;
+    const variant = (flags.name ?? label).replace(/[^A-Za-z0-9._-]+/g, '_');
+    const mixed = mixSvg(good, bad, new Set(changes.filter(c => apply.has(c.n)).map(c => c.key)));
+    const out = path.join(dir, 'bisect', `${to.svg.replace(/\.svg$/i, '')}-bisect-${variant}.svg`);
+    await mkdir(path.dirname(out), { recursive: true });
+    await writeFile(out, mixed.text);
+    console.log(`\n${apply.size} of ${changes.length} change(s) applied (+) -> ${out}`);
+    console.log(`  ${mixed.paths} paths in ${mixed.layers.length} layers`);
+    console.log(`submit: bun run opcd:build -- ${positional[0]} --svg "${out}" --submit-only   (then --status)`);
 }
 
 try {

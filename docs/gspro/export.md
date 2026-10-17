@@ -322,8 +322,29 @@ the next 10 m (`SIDE_STEP_M`) so a hand-typed area is never a decimal-metre terr
   to the road (`_square_off_wedge`) - the closing's slanted end ran along the kerb into a spike
   beside a notch.
   **Bisect against earlier states** (`bun run gspro:bisect`, see AGENTS.md): every full SVG export is
-  kept in `<export dir>/export-history/`, and the edit history rebuilds the course at any time since
-  migration 025; variants are exported from a copy of the database.
+  kept in `<export dir>/export-history/<local time>/` — the SVG, its `-paths.json`, `features.json`
+  and `export.json` (the pipeline code: git sha + a 16-hex hash of the uncommitted diff and untracked
+  files of `gspro.py`/`golfpipe/`, `pipelineCodeVersion`; the export's report lines; and a `build`
+  slot that `opcd:build --status` fills with `{opcdCreated, job, status, outcome, checkedAt}`). The
+  edit history rebuilds the course at any time since migration 025; `changes`/`svg` export variants
+  from a copy of the database.
+  **The fast way when an OPCD build broke** (2026-10-17, Omberg: culprit found in 5 rounds by hand,
+  now one command per round):
+  1. `bun run opcd:build -- <course> --status` — reads OPCD's job table and records each snapshot's
+     outcome (ok / failed / pending); `bun run gspro:bisect -- <course> snapshots` lists them and
+     names the **last good** one. The sync board's Shapes row shows the same (`OPCD 15:37 ✗ 13:17 ✓`).
+  2. `bun run gspro:bisect -- <course> svg-mix` — the numbered shape changes from the last good
+     snapshot to the newest (`--from`/`--to` to pick others), straight from the two kept SVGs
+     (`scripts/svg-mix.ts`). Shapes are keyed by `data-feature-id`, never path id: a feature moved
+     to another hole (`hole_3_112` → `hole_101_112`) is ONE change, where a path-id mix duplicated it.
+  3. `... svg-mix --apply 1-20 --name a` (or `--without <list>`, or `--match <regex on path ids>`,
+     e.g. `'hole_101_'`) writes `<export dir>/bisect/<stem>-bisect-<name>.svg`: the good SVG with
+     those changes laid over it (edited shapes in place, added/moved ones after their nearest
+     predecessor in the bad file, layers in the bad file's order, renumbered `layer1..n`; it refuses
+     a variant with duplicate path ids).
+  4. Submit up to three variants at once: `bun run opcd:build -- <course> --svg <variant> --submit-only`
+     each, then `--status` (a variant's job is matched by its file name; failed = Draft, or still
+     Processing 8 min after it was created). Always add one "bad minus the suspect" build to confirm.
   **Test variants** (for finding the shape the Blender build chokes on): `--exclude-ids FILE` (a JSON array
   of feature ids, or one per line) and `--exclude-type TYPE` (repeatable) leave features out before the
   road merge; excluding a road also drops the stored kerb fillets / tapers (`source = road-junctions`)
@@ -722,6 +743,11 @@ snapshot per run.
   pads" …`, `No props spec in docs/gspro/<slug>/`, or the map-area 409's own words. Only the cheap,
   certain reasons — the chains still throw their own 409s for the rest.
 - **`note`** is the row's one line of extra state (only `props` has one: see its chain above).
+- **`builds`** (`shapes` only, else `[]`): the newest 4 export snapshots, newest first, with what OPCD
+  made of each (`FeatureHistoryService.exportBuilds`, reading only the small `export.json` files on
+  every poll), plus the last good one when it is older. The board draws one line under the row —
+  `OPCD 15:37 ✗ 13:17 ✓ 13:10 ✗ 12:46 ✓` (✓ built, ✗ failed, … building, ? not checked), the last
+  good underlined, the OPCD status and Created time in each title (`buildMarks`).
 
 **API** (builder only, `requireAuth()`): `GET /api/gspro-sync/status?courseId` →
 `{unity: {editors, matched, exportDir}, worker, targets, job, queue}`,
@@ -753,7 +779,7 @@ minutes, a flat `.blend` comes back. `bun run opcd:build -- <course>` does that 
 
 ```
 bun run opcd:build -- <course> [--svg <file>] [--out <folder>] [--opcd-name <name>]
-                               [--dry-run] [--timeout <min>] [--headed]
+                               [--dry-run | --status | --submit-only] [--timeout <min>] [--headed]
 bun run opcd:build -- --setup [<course>]
 ```
 
@@ -792,6 +818,24 @@ click instead of a push to the phone) and waits up to 5 min.
 
 **`--dry-run`** walks to the SVG Jobs tab and prints the job table, submitting nothing: the way to
 see that the words still match the page before spending a build.
+
+**Which export a job built, and how it went.** The table's Name column is `<svg file> -
+<description>`. A submit of an export snapshot's SVG (found by its bytes in `export-history/`,
+`snapshotOfSvg`) writes the snapshot into the description — `golf-map Ombergs Golfklubb export
+2026-10-17_15-37-30` — else the UTC minute. **`--status`** prints the table and writes each linked
+snapshot's `build` into its `export.json` (`linkJobsToSnapshots`): by that stamp, or — for jobs
+from before it, named by the plain file — the newest snapshot of that SVG exported before the job's
+Created time. **OPCD's clock is US Eastern** (`America/New_York`, local Swedish time minus 6 h in
+October; the snapshot folder is local time, the old description UTC). Outcome: `ok` = a Download,
+`failed` = Draft (where a failed build ends up after a while) or still `Processing` 8 min after it
+was created, else `pending` (`Waiting to be processed` — failed builds seem to hold builder slots).
+The Node child leaves the table it read in `OPCD_JOBS_OUT`; the Bun parent writes the records
+(`FeatureHistoryService.recordBuild`), also after a `--submit-only` or a full build.
+
+**`--submit-only`** uploads and submits, prints the new row and exits 0 — for up to three parallel
+bisect builds (Marcus' limit), followed with `--status`. A waiting run tells its own row from the
+others by file and description (`pickNewJob` with `OurJob`), never "the newest new row", which with
+parallel builds was another variant's job.
 
 **`--setup`** is the debugging aid for when they do not. It opens a headed browser on the same
 profile, lets you do a build by hand and records it into `data/opcd-recording/<timestamp>/`: a

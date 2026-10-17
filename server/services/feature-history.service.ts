@@ -50,6 +50,66 @@ export interface SnapshotInfo {
     exportedAt: string;
     features: number;
     svg: string | null;
+    /** What OPCD made of this SVG (`export.json`'s `build`), null until `opcd:build --status` has seen its job. */
+    build: BuildRecord | null;
+}
+
+/**
+ * `export.json` next to a snapshot's features.json: what made the SVG and what
+ * became of it — so "the last export OPCD built" and "the code that wrote it" are
+ * on disk, not in somebody's memory of three clocks.
+ */
+export const EXPORT_RECORD_FILE = 'export.json';
+export const EXPORT_RECORD_FORMAT = 'golfmap-export-record-v1';
+
+export type BuildOutcome = 'ok' | 'failed' | 'pending';
+
+/** One OPCD job of this snapshot's SVG, as `opcd:build --status` last read the job table. */
+export interface BuildRecord {
+    /** OPCD's Created column as it reads (OPCD's own clock, see scripts/opcd-build.ts). */
+    opcdCreated: string;
+    /** The job's Name column: `<svg> - <description>`. */
+    job: string;
+    status: string;
+    /** ok = has a Download; failed = Draft, or still Processing 8 min after it was created; else pending. */
+    outcome: BuildOutcome;
+    /** ISO, when the table was read. */
+    checkedAt: string;
+}
+
+/** The pipeline code an export ran: the commit, and a hash of what was not committed in it. */
+export interface CodeVersion {
+    sha: string | null;
+    /** sha256 (16 hex) of the uncommitted diff + untracked files of gspro.py and golfpipe/; null = clean. */
+    dirty: string | null;
+    dirtyFiles: string[];
+}
+
+export interface ExportRecord {
+    format: string;
+    exportedAt: string;
+    code: CodeVersion | null;
+    /** The export's report lines. */
+    report: string[];
+    build: BuildRecord | null;
+}
+
+/** One export snapshot as the sync board shows it: when, and what OPCD made of it. */
+export interface ExportBuild {
+    /** The folder name, local time: `2026-10-17_15-37-30`. */
+    snapshot: string;
+    /** Null = no build recorded (`opcd:build --status` has not seen a job of it). */
+    outcome: BuildOutcome | null;
+    opcdCreated: string | null;
+    status: string | null;
+    /** The newest snapshot OPCD built: what a bisect starts from (`--from last-good`). */
+    lastGood: boolean;
+}
+
+/** What an export hands `snapshot` for its export.json. */
+export interface ExportRecordInput {
+    code?: CodeVersion | null;
+    report?: string[];
 }
 
 /**
@@ -199,8 +259,10 @@ export class FeatureHistoryService {
      * Keep a full SVG export: the SVG, its road-surface sidecar `<stem>-paths.json` and the features it was made
      * from, under <dir>/export-history/<local time>/. Blender reads the sidecar next to the SVG that built a .blend,
      * so a .blend built from an older export still splits its roads by surface after a newer export.
+     * `export.json` beside them records the pipeline code and the report, with an empty `build` slot that
+     * `opcd:build --status` fills.
      */
-    async snapshot(courseId: string, dir: string, svgPath: string, when = new Date()): Promise<string> {
+    async snapshot(courseId: string, dir: string, svgPath: string, when = new Date(), record: ExportRecordInput = {}): Promise<string> {
         const name = localStamp(when);
         const folder = path.join(dir, SNAPSHOT_DIR, name);
         await mkdir(folder, { recursive: true });
@@ -215,7 +277,68 @@ export class FeatureHistoryService {
         await writeFile(path.join(folder, 'features.json'), JSON.stringify({
             format: SNAPSHOT_FORMAT, courseId, exportedAt: when.toISOString(), svg, features,
         }));
+        const exportRecord: ExportRecord = {
+            format: EXPORT_RECORD_FORMAT, exportedAt: when.toISOString(),
+            code: record.code ?? null, report: record.report ?? [], build: null,
+        };
+        await writeFile(path.join(folder, EXPORT_RECORD_FILE), `${JSON.stringify(exportRecord, null, 2)}\n`);
         return folder;
+    }
+
+    /** A snapshot's export.json, or null (older snapshots have none, and a broken file counts as none). */
+    static async readExportRecord(snapshotDir: string): Promise<ExportRecord | null> {
+        try {
+            const doc = JSON.parse(await readFile(path.join(snapshotDir, EXPORT_RECORD_FILE), 'utf-8')) as ExportRecord;
+            return doc.format === EXPORT_RECORD_FORMAT ? doc : null;
+        } catch {
+            return null;
+        }
+    }
+
+    /**
+     * Put what OPCD made of the snapshot's SVG into its export.json — creating one
+     * (no code, no report) for a snapshot from before export.json existed.
+     */
+    static async recordBuild(snapshotDir: string, build: BuildRecord): Promise<void> {
+        let doc = await FeatureHistoryService.readExportRecord(snapshotDir);
+        if (!doc) {
+            const features = JSON.parse(await readFile(path.join(snapshotDir, 'features.json'), 'utf-8'));
+            doc = { format: EXPORT_RECORD_FORMAT, exportedAt: features.exportedAt, code: null, report: [], build: null };
+        }
+        await writeFile(path.join(snapshotDir, EXPORT_RECORD_FILE), `${JSON.stringify({ ...doc, build }, null, 2)}\n`);
+    }
+
+    /**
+     * The newest `limit` export snapshots with their OPCD outcome, newest first,
+     * plus the last good one when it is older than those — what the sync board's
+     * Shapes row shows. Reads only the small export.json files, never features.json
+     * (the board asks on every poll).
+     */
+    static async exportBuilds(dir: string, limit = 4): Promise<ExportBuild[]> {
+        const root = path.join(dir, SNAPSHOT_DIR);
+        let names: string[];
+        try {
+            names = (await readdir(root)).filter(n => /^\d{4}-\d{2}-\d{2}_\d{2}-\d{2}-\d{2}$/.test(n)).sort().reverse();
+        } catch {
+            return [];
+        }
+        const out: ExportBuild[] = [];
+        let good = false;
+        for (const name of names) {
+            if (out.length >= limit && good) break;
+            const build: BuildRecord | null = (await FeatureHistoryService.readExportRecord(path.join(root, name)))?.build ?? null;
+            const lastGood: boolean = !good && build?.outcome === 'ok';
+            good ||= lastGood;
+            if (out.length < limit || lastGood) {
+                out.push({ snapshot: name, outcome: build?.outcome ?? null, opcdCreated: build?.opcdCreated ?? null, status: build?.status ?? null, lastGood });
+            }
+        }
+        return out;
+    }
+
+    /** The newest snapshot OPCD built (outcome ok), or null. `snaps` oldest first, as `listSnapshots` gives them. */
+    static lastGood(snaps: SnapshotInfo[]): SnapshotInfo | null {
+        return [...snaps].reverse().find(s => s.build?.outcome === 'ok') ?? null;
     }
 
     /** The export snapshots in an export folder, oldest first. */
@@ -228,7 +351,9 @@ export class FeatureHistoryService {
             if (!(await exists(file))) continue;
             const doc = JSON.parse(await readFile(file, 'utf-8'));
             if (doc.format !== SNAPSHOT_FORMAT) continue;
-            out.push({ name, dir: path.join(root, name), exportedAt: doc.exportedAt, features: doc.features.length, svg: doc.svg });
+            const at = path.join(root, name);
+            const build = (await FeatureHistoryService.readExportRecord(at))?.build ?? null;
+            out.push({ name, dir: at, exportedAt: doc.exportedAt, features: doc.features.length, svg: doc.svg, build });
         }
         return out;
     }
@@ -248,7 +373,9 @@ export class FeatureHistoryService {
             try {
                 const doc = JSON.parse(await readFile(file, 'utf-8'));
                 if (doc.format !== SNAPSHOT_FORMAT) continue;
-                return { name, dir: path.join(root, name), exportedAt: doc.exportedAt, features: doc.features.length, svg: doc.svg };
+                const at = path.join(root, name);
+                const build = (await FeatureHistoryService.readExportRecord(at))?.build ?? null;
+                return { name, dir: at, exportedAt: doc.exportedAt, features: doc.features.length, svg: doc.svg, build };
             } catch {
                 continue;   // half-written or truncated: an older one still counts
             }

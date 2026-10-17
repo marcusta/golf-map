@@ -46,7 +46,7 @@ function targetRow(patch: Partial<GsproTargetStatus> & { id: GsproTargetStatus['
     return {
         label: GSPRO_TARGETS.find(t => t.id === patch.id)!.label,
         lastRun: null, seconds: null, changedSince: { count: 0, kinds: [] },
-        stale: false, manual: null, blocked: null, note: null,
+        stale: false, manual: null, blocked: null, note: null, builds: [],
         ...patch,
     };
 }

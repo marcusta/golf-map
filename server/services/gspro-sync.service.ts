@@ -74,7 +74,7 @@ import { fingerprint, mtimeMs, recordInputs, unchangedLine } from './export-fing
 import {
     PROPS_FOLDER, PROPS_MANIFEST, PROPS_PLACED, propsNote, propsSpecs, type PropsSpec,
 } from './gspro-props';
-import { FeatureHistoryService, sqlStamp, type ChangeCount } from './feature-history.service';
+import { FeatureHistoryService, sqlStamp, type ChangeCount, type ExportBuild } from './feature-history.service';
 import { TerrainEditsService } from './terrain-edits.service';
 import {
     blenderExecutable, SHAPING_PHASES,
@@ -128,6 +128,12 @@ export interface GsproTargetStatus {
      * other row today). The board shows it under the status line.
      */
     note: string | null;
+    /**
+     * `shapes` only: the newest SVG exports (export snapshots), newest first, with
+     * what OPCD made of each (`opcd:build --status` writes it), and the last good
+     * one even when it is older. Empty for every other row.
+     */
+    builds: ExportBuild[];
 }
 
 export interface GsproSyncUnity {
@@ -348,10 +354,11 @@ export class GsproSyncService {
         return Promise.all(GSPRO_TARGETS.map(async (target): Promise<GsproTargetStatus> => {
             const entry = ctx.record.targets[target.id];
             const lastRun = entry?.lastRun ?? await this.fallbackLastRun(ctx, target.id);
-            const [changedSince, blocked, note] = await Promise.all([
+            const [changedSince, blocked, note, builds] = await Promise.all([
                 this.changedSince(ctx, target.id, lastRun),
                 this.blocked(ctx, target.id),
                 this.note(ctx, target.id),
+                target.id === 'shapes' ? FeatureHistoryService.exportBuilds(ctx.dir) : Promise.resolve([]),
             ]);
             return {
                 id: target.id,
@@ -363,6 +370,7 @@ export class GsproSyncService {
                 manual: target.manual,
                 blocked,
                 note,
+                builds,
             };
         }));
     }

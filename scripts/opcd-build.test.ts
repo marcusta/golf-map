@@ -20,12 +20,13 @@
  *     `index.json`.
  */
 import { describe, expect, test } from 'bun:test';
-import { mkdtemp, readFile, readdir, rm } from 'node:fs/promises';
+import { mkdir, mkdtemp, readFile, readdir, rm, writeFile } from 'node:fs/promises';
 import * as os from 'node:os';
 import * as path from 'node:path';
 import {
-    BUILD_FIRST_LOOK_MS, BUILD_POLL_MS, Recording, blendPrefix, electronCandidates, isDone, isDraft,
-    jobDescription, jobFromCells, jobTableText, nextBlendName, nodeRuntime, parseArgs, pickNewJob,
+    BUILD_FIRST_LOOK_MS, BUILD_POLL_MS, Recording, blendPrefix, buildOutcome, electronCandidates, isDone, isDraft,
+    jobDescription, jobFromCells, jobTableText, linkJobsToSnapshots, nextBlendName, nodeRuntime, opcdCreatedToUtc,
+    parseArgs, pickNewJob, snapshotOfSvg, snapshotStampOf, splitJobName,
     usageText, waitForBuild, type BuildDeps, type SnapshotPage, type SvgJob,
 } from './opcd-build';
 
@@ -77,8 +78,10 @@ describe('the command line', () => {
     test('a build run: the course, headless, the 8 min cap', () => {
         expect(parseArgs(['vreta'])).toEqual({
             mode: 'build', course: 'vreta', svg: null, out: null, headless: true,
-            opcdName: null, dryRun: false, attach: false, timeoutMs: 8 * 60_000, url: null,
+            opcdName: null, dryRun: false, attach: false, submitOnly: false, status: false, timeoutMs: 8 * 60_000, url: null,
         });
+        expect(parseArgs(['vreta', '--submit-only'])).toMatchObject({ submitOnly: true, dryRun: false });
+        expect(parseArgs(['vreta', '--status'])).toMatchObject({ status: true, submitOnly: false });
         expect(parseArgs(['vreta', '--headed'])).toMatchObject({ headless: false });
         expect(parseArgs(['vreta', '--headed', '--headless'])).toMatchObject({ headless: true });
         expect(parseArgs(['vreta', '--timeout', '20'])).toMatchObject({ timeoutMs: 20 * 60_000 });
@@ -113,6 +116,8 @@ describe('the command line', () => {
         expect(parseArgs(['vreta', '--svg'])).toEqual({ error: '--svg needs a value' });
         expect(parseArgs(['vreta', '--timeout', 'soon'])).toEqual({ error: '--timeout needs minutes, e.g. --timeout 20' });
         expect(parseArgs(['vreta', '--fast'])).toEqual({ error: 'unknown option --fast' });
+        expect(parseArgs(['vreta', '--status', '--submit-only'])).toEqual({ error: 'pick one of --dry-run, --status, --submit-only and --attach' });
+        expect(parseArgs(['--setup', '--status'])).toMatchObject({ error: expect.stringContaining('--status') });
         // A flag's value is never read as the course.
         expect(parseArgs(['--svg', 'x.svg'])).toMatchObject({ error: expect.stringContaining('name a course') });
     });
@@ -121,6 +126,8 @@ describe('the command line', () => {
         expect(usageText()).toContain('--setup');
         expect(usageText()).toContain('--dry-run');
         expect(usageText()).toContain('--opcd-name');
+        expect(usageText()).toContain('--status');
+        expect(usageText()).toContain('--submit-only');
     });
 });
 
@@ -180,6 +187,13 @@ describe('the SVG Jobs table', () => {
 
     test('the description written into the submit box traces a job back to a run', () => {
         expect(jobDescription('Vreta', new Date('2026-10-14T19:05:00Z'))).toBe('golf-map Vreta 2026-10-14 19:05');
+        // An export snapshot's SVG names its snapshot instead, which --status reads back.
+        const desc = jobDescription('Ombergs Golfklubb', new Date(), '2026-10-17_15-37-30');
+        expect(desc).toBe('golf-map Ombergs Golfklubb export 2026-10-17_15-37-30');
+        const job = jobFromCells(0, [`ombergs-golfklubb.svg - ${desc}`, 'Draft', '2026-10-17 09:38'], [])!;
+        expect(snapshotStampOf(job)).toBe('2026-10-17_15-37-30');
+        expect(splitJobName(job.name)).toEqual({ svg: 'ombergs-golfklubb.svg', description: desc });
+        expect(splitJobName('ombergs-golfklubb.svg')).toEqual({ svg: 'ombergs-golfklubb.svg', description: null });
     });
 });
 
@@ -203,6 +217,31 @@ describe('waiting the build out', () => {
 
     test('an empty table before and after means our job has not appeared yet', () => {
         expect(pickNewJob([], [])).toBeNull();
+    });
+
+    test('parallel submits: ours is told apart by file and description, never as "the newest new row"', () => {
+        // Three bisect variants submitted a minute apart; ours is the middle one, and the newest is another's.
+        const a = job(0, 'omberg-bisect-k4.svg - golf-map Ombergs Golfklubb 2026-10-17 15:05', 'Waiting to be processed', '2026-10-17 11:05');
+        const b = job(1, 'omberg-bisect-k3.svg - golf-map Ombergs Golfklubb 2026-10-17 15:02', 'Processing', '2026-10-17 11:02');
+        const c = job(2, 'omberg-bisect-k1.svg - golf-map Ombergs Golfklubb 2026-10-17 15:01', 'Processing', '2026-10-17 11:01');
+        const ours = { svg: 'omberg-bisect-k3.svg', description: 'golf-map Ombergs Golfklubb 2026-10-17 15:02' };
+        expect(pickNewJob([older], [a, b, c, older], ours)).toBe(b);
+        // Not in the table yet: nothing, rather than somebody else's job.
+        expect(pickNewJob([older], [a, c, older], ours)).toBeNull();
+        // The same file submitted again by another run: a different description, not ours.
+        expect(pickNewJob([], [job(0, 'omberg-bisect-k3.svg - golf-map Ombergs Golfklubb 2026-10-17 15:09', 'Draft', '2026-10-17 11:09')], ours)).toBeNull();
+        // No Description box found: the Name is the file alone.
+        expect(pickNewJob([], [job(0, 'x.svg', 'Draft', '2026-10-17 11:09')], { svg: 'x.svg', description: null })!.name).toBe('x.svg');
+    });
+
+    test('waitForBuild follows our parallel job, not the one submitted after it', async () => {
+        const mine = (status: string, actions: string[] = []) => job(1, 'v1.svg - d1', status, '2026-10-17 11:00', actions);
+        const other = job(0, 'v2.svg - d2', 'Processing Complete', '2026-10-17 11:01', ['Download']);
+        const states = [[other, mine('Processing')], [other, mine('Processing Complete', ['Download'])]];
+        let looks = 0;
+        const found = await waitForBuild(async () => states[Math.min(looks++, 1)]!, [], fakeDeps(), { ours: { svg: 'v1.svg', description: 'd1' } });
+        expect(found.name).toBe('v1.svg - d1');
+        expect(looks).toBe(2);
     });
 
     /** A job table that turns into the next state on each look. */
@@ -369,4 +408,85 @@ test("bun's own node shim on PATH is not a Node", async () => {
     expect(isBunNodeShim(String.raw`C:\Users\x\AppData\Local\Temp\bun-node-0d9b296af\node.exe`)).toBe(true);
     expect(isBunNodeShim('/tmp/bun-node-abc/node')).toBe(true);
     expect(isBunNodeShim(String.raw`C:\Program Files\nodejs\node.exe`)).toBe(false);
+});
+
+describe('which export a job built, and how it went (--status)', () => {
+    // The Omberg table as it read on 2026-10-17 (OPCD's clock = US Eastern = local - 6 h).
+    const row = (name: string, status: string, created: string, actions: string[] = []): SvgJob =>
+        ({ index: 0, name, status, created, actions });
+    const ok = ['Download', 'Re-submit'];
+    const table = [
+        row('omberg-bisect-k3-bad-without-16c.svg - golf-map Ombergs Golfklubb 2026-10-17 15:02', 'Processing', '2026-10-17 11:02', ['Re-submit']),
+        row('ombergs-golfklubb.svg', 'Draft', '2026-10-17 09:38', ['Re-submit']),
+        row('ombergs-golfklubb.svg', 'Processing Complete', '2026-10-17 07:17', ok),
+        row('ombergs-golfklubb.svg', 'Draft', '2026-10-17 07:10', ['Re-submit']),
+        row('ombergs-golfklubb.svg', 'Processing Complete', '2026-10-17 06:46', ok),
+        row('ombergs-golfklubb.svg', 'Processing Complete', '2026-10-16 11:11', ok),
+        row('ombergs-golfklubb.svg', 'Draft', '2026-10-15 16:52', ['Re-submit']),
+    ];
+    // Snapshot folders are local (CEST, UTC+2) times.
+    const snap = (name: string, iso: string) => ({ name, exportedAt: new Date(iso).toISOString(), svg: 'ombergs-golfklubb.svg' });
+    const snaps = [
+        snap('2026-10-15_22-50-19', '2026-10-15T22:50:19+02:00'),
+        snap('2026-10-16_17-11-34', '2026-10-16T17:11:34+02:00'),
+        snap('2026-10-17_12-46-25', '2026-10-17T12:46:25+02:00'),
+        snap('2026-10-17_13-10-26', '2026-10-17T13:10:26+02:00'),
+        snap('2026-10-17_13-17-34', '2026-10-17T13:17:34+02:00'),
+        snap('2026-10-17_15-37-30', '2026-10-17T15:37:30+02:00'),
+    ];
+    const now = new Date('2026-10-17T16:00:00+02:00');
+
+    test("OPCD's Created column is US Eastern: local Swedish time minus 6 h in October", () => {
+        expect(opcdCreatedToUtc('2026-10-17 09:38').toISOString()).toBe('2026-10-17T13:38:00.000Z');
+        // After the US switch (1 Nov 2026) it is UTC-5.
+        expect(opcdCreatedToUtc('2026-11-10 09:38').toISOString()).toBe('2026-11-10T14:38:00.000Z');
+    });
+
+    test('ok = a Download, failed = Draft or Processing past 8 min, else pending', () => {
+        expect(buildOutcome(table[2]!, now)).toBe('ok');
+        expect(buildOutcome(table[1]!, now)).toBe('failed');
+        const created = '2026-10-17 09:55';   // 15:55 local
+        expect(buildOutcome(row('a', 'Processing', created), new Date('2026-10-17T16:00:00+02:00'))).toBe('pending');
+        expect(buildOutcome(row('a', 'Processing', created), new Date('2026-10-17T16:04:00+02:00'))).toBe('failed');
+        expect(buildOutcome(row('a', 'Waiting to be processed', created), new Date('2026-10-17T16:30:00+02:00'))).toBe('pending');
+    });
+
+    test("the day's four exports: matched by time, 12:46 ok, 13:10 failed, 13:17 ok, 15:37 failed", () => {
+        const linked = linkJobsToSnapshots(table, snaps, now);
+        expect([...linked].map(([name, b]) => `${name} ${b.outcome} ${b.opcdCreated}`).sort()).toEqual([
+            '2026-10-15_22-50-19 failed 2026-10-15 16:52',
+            '2026-10-16_17-11-34 ok 2026-10-16 11:11',
+            '2026-10-17_12-46-25 ok 2026-10-17 06:46',
+            '2026-10-17_13-10-26 failed 2026-10-17 07:10',
+            '2026-10-17_13-17-34 ok 2026-10-17 07:17',
+            '2026-10-17_15-37-30 failed 2026-10-17 09:38',
+        ]);
+        // A bisect variant's job belongs to no snapshot.
+        expect([...linked.values()].some((b) => b.job.includes('bisect'))).toBe(false);
+    });
+
+    test('a stamped job names its snapshot, whatever the clock says, and beats a match by time', () => {
+        const stamped = row('ombergs-golfklubb.svg - golf-map Ombergs Golfklubb export 2026-10-17_13-10-26', 'Processing Complete', '2026-10-17 10:30', ok);
+        const linked = linkJobsToSnapshots([stamped, ...table], snaps, now);
+        expect(linked.get('2026-10-17_13-10-26')!.outcome).toBe('ok');
+        // The unstamped 09:38 job still goes to 15:37, the newest export before it.
+        expect(linked.get('2026-10-17_15-37-30')!.opcdCreated).toBe('2026-10-17 09:38');
+    });
+
+    test('the SVG being uploaded is found among the snapshots by its bytes', async () => {
+        const dir = await tmp();
+        try {
+            for (const [name, body] of [['2026-10-17_12-46-25', 'old'], ['2026-10-17_15-37-30', 'new']]) {
+                await mkdir(path.join(dir, 'export-history', name!), { recursive: true });
+                await writeFile(path.join(dir, 'export-history', name!, 'c.svg'), body!);
+            }
+            await writeFile(path.join(dir, 'c.svg'), 'old');
+            expect(await snapshotOfSvg(path.join(dir, 'c.svg'), dir)).toBe('2026-10-17_12-46-25');
+            await writeFile(path.join(dir, 'c.svg'), 'edited');
+            expect(await snapshotOfSvg(path.join(dir, 'c.svg'), dir)).toBeNull();
+            expect(await snapshotOfSvg(path.join(dir, 'c.svg'), path.join(dir, 'nowhere'))).toBeNull();
+        } finally {
+            await rm(dir, { recursive: true, force: true });
+        }
+    });
 });

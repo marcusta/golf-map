@@ -240,8 +240,12 @@ test('a full SVG export is kept with the features it was made from; a variant is
 
     const kept = await readdir(path.join(dir, 'export-history'));
     expect(kept).toHaveLength(1);
-    expect((await readdir(path.join(dir, 'export-history', kept[0]))).sort()).toEqual(['features.json', 'linkan.svg']);
+    expect((await readdir(path.join(dir, 'export-history', kept[0]))).sort()).toEqual(['export.json', 'features.json', 'linkan.svg']);
     expect(full.report).toContain(`kept as ${path.join('export-history', kept[0])}`);
+    // export.json: the export's report and an empty slot for the OPCD build (opcd:build --status fills it).
+    const record = JSON.parse(await readFile(path.join(dir, 'export-history', kept[0], 'export.json'), 'utf-8'));
+    expect(record.report).toEqual(full.report.filter(l => !l.startsWith('kept as ')));
+    expect(record.build).toBeNull();
 });
 
 test('an SVG from a variant database reads its features from there and is not kept', async () => {

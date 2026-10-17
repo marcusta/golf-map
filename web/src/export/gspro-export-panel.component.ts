@@ -32,7 +32,7 @@ import { t } from '../theme';
 import { s, btn, primaryBtn, field, glassPanel, panelTitle, OVERLAY_W, OVERLAY_INSET } from '../css';
 import { GsproExportService, orthoSourceLabel, terrainLabel, jobLabel } from './gspro-export.service';
 import {
-    GsproSyncService, aboutLabel, rowStatusLabel, secsLabel, whenLabel,
+    GsproSyncService, aboutLabel, buildMarks, rowStatusLabel, secsLabel, whenLabel,
 } from './gspro-sync.service';
 import { JobPhasesComponent } from './job-phases.component';
 import {
@@ -357,6 +357,7 @@ const boardRow = (id: GsproTargetId) => {
                 data-testid="gspro-update-${id}">Update</button>
         </div>
         <div bind="note_${id}" class="hint gspro-export__note" data-testid="gspro-note-${id}"></div>
+        <div bind="builds_${id}" class="hint gspro-export__note gspro-export__builds" data-testid="gspro-builds-${id}"></div>
         <div bind="manual_${id}" class="hint gspro-export__manual" data-testid="gspro-manual-${id}"></div>
         <div bind="blocked_${id}" class="hint gspro-export__blocked" data-testid="gspro-blocked-${id}"></div>
     </div>`;
@@ -680,6 +681,13 @@ export class GsproExportPanelComponent extends Component {
             }
             & .gspro-export__update { min-width: 6rem; }
             & .gspro-export__note, & .gspro-export__manual, & .gspro-export__blocked { padding-left: calc(10px + ${s('sm')}); }
+            & .gspro-export__builds {
+                &:empty { display: none; }
+                & .gspro-export__build { white-space: nowrap; margin-right: ${s('xs')}; }
+                & .gspro-export__build.ok { color: ${t('color-status-positive')}; }
+                & .gspro-export__build.failed { color: ${t('color-status-negative')}; }
+                & .gspro-export__build.last-good { font-weight: 600; text-decoration: underline; }
+            }
 
             /* The update job, in the footer: one line, its phases, each target's report. */
             & .gspro-export__sync {
@@ -1170,6 +1178,14 @@ export class GsproExportPanelComponent extends Component {
                 },
             };
             out[`note_${id}`] = () => row()?.note ?? '';
+            // Shapes only: what OPCD made of each recent SVG export (✓ ✗ … ?), details in the titles.
+            out[`builds_${id}`] = {
+                innerHTML: () => {
+                    const marks = buildMarks(row()?.builds ?? []);
+                    if (!marks.length) return '';
+                    return `<span class="gspro-export__blead">OPCD</span> ${marks.map(m => `<span class="gspro-export__build ${m.outcome}${m.lastGood ? ' last-good' : ''}" title="${escapeAttr(m.title)}">${escapeAttr(m.text)}</span>`).join(' ')}`;
+                },
+            };
             out[`manual_${id}`] = () => (row()?.manual ? `then: ${row()!.manual}` : '');
             out[`blocked_${id}`] = () => row()?.blocked ?? '';
             out[`update_${id}`] = {
@@ -1955,4 +1971,9 @@ export class GsproExportPanelComponent extends Component {
 
         return frag;
     }
+}
+
+/** Text for an attribute or element body of an innerHTML binding. */
+function escapeAttr(text: string): string {
+    return text.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
 }

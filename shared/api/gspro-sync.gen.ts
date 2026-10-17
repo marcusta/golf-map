@@ -58,6 +58,7 @@ export interface GsproTargetStatus {
     manual: null | string;
     blocked: null | string;
     note: null | string;
+    builds: ExportBuild[];
 }
 
 export interface JobPhase {
@@ -100,6 +101,14 @@ export interface ShapingWorkerJob {
 export interface ChangeCount {
     count: number;
     kinds: string[];
+}
+
+export interface ExportBuild {
+    snapshot: string;
+    outcome: null | 'failed' | 'pending' | 'ok';
+    opcdCreated: null | string;
+    status: null | string;
+    lastGood: boolean;
 }
 
 export interface GsproSyncApi {

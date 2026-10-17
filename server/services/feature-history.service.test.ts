@@ -1,7 +1,7 @@
 import { test, expect } from 'bun:test';
 import * as path from 'node:path';
 import * as os from 'node:os';
-import { mkdtemp, readdir, writeFile } from 'node:fs/promises';
+import { mkdtemp, readdir, rm, writeFile } from 'node:fs/promises';
 import { Database as SqliteDatabase } from 'bun:sqlite';
 import { sql } from 'kysely';
 import { createTestDb } from '../testing/db';
@@ -133,8 +133,8 @@ test('an export snapshot keeps the SVG, its road-surface sidecar and the feature
     const state = await FeatureHistoryService.readSnapshot(folder);
 
     expect(path.relative(dir, folder)).toBe(path.join(SNAPSHOT_DIR, '2026-09-26_18-32-04'));
-    expect((await readdir(folder)).sort()).toEqual(['features.json', 'linkan-paths.json', 'linkan.svg']);
-    expect(listed.map(s => [s.name, s.features, s.svg])).toEqual([['2026-09-26_18-32-04', 4, 'linkan.svg']]);
+    expect((await readdir(folder)).sort()).toEqual(['export.json', 'features.json', 'linkan-paths.json', 'linkan.svg']);
+    expect(listed.map(s => [s.name, s.features, s.svg, s.build])).toEqual([['2026-09-26_18-32-04', 4, 'linkan.svg', null]]);
     expect(await t.history.changes(TEST_COURSE_ID, state, await t.history.current(TEST_COURSE_ID))).toEqual([]);
 });
 
@@ -282,4 +282,65 @@ test('the newest export snapshot is found without parsing every one of them', as
     const latest = (await FeatureHistoryService.latestSnapshot(dir))!;
     expect(latest.name).toBe('2026-09-27_09-00-00');
     expect(latest.exportedAt).toBe(new Date('2026-09-27T09:00:00').toISOString());
+});
+
+test('export.json records the code and the report, and takes the OPCD build later; last good is the newest ok build', async () => {
+    const t = await editedCourse();
+    const dir = await mkdtemp(path.join(os.tmpdir(), 'gspro-rec-'));
+    const svg = path.join(dir, 'linkan.svg');
+    await writeFile(svg, '<svg/>');
+    const code = { sha: 'abc123', dirty: '0123456789abcdef', dirtyFiles: ['gspro.py'] };
+    const first = await t.history.snapshot(TEST_COURSE_ID, dir, svg, new Date('2026-10-17T12:46:25'), { code, report: ['wrote linkan.svg'] });
+    const second = await t.history.snapshot(TEST_COURSE_ID, dir, svg, new Date('2026-10-17T13:10:26'));
+
+    const record = (await FeatureHistoryService.readExportRecord(first))!;
+    expect(record).toMatchObject({ code, report: ['wrote linkan.svg'], build: null, exportedAt: new Date('2026-10-17T12:46:25').toISOString() });
+    expect(FeatureHistoryService.lastGood(await FeatureHistoryService.listSnapshots(dir))).toBeNull();
+
+    const build = (outcome: 'ok' | 'failed', created: string) =>
+        ({ opcdCreated: created, job: 'linkan.svg', status: outcome === 'ok' ? 'Processing Complete' : 'Draft', outcome, checkedAt: '2026-10-17T14:00:00.000Z' });
+    await FeatureHistoryService.recordBuild(first, build('ok', '2026-10-17 06:46'));
+    await FeatureHistoryService.recordBuild(second, build('failed', '2026-10-17 07:10'));
+
+    const snaps = await FeatureHistoryService.listSnapshots(dir);
+    expect(snaps.map(s => s.build?.outcome)).toEqual(['ok', 'failed']);
+    expect(FeatureHistoryService.lastGood(snaps)!.name).toBe('2026-10-17_12-46-25');
+    expect((await FeatureHistoryService.latestSnapshot(dir))!.build!.outcome).toBe('failed');
+    // The code and the report survive the build being written.
+    expect((await FeatureHistoryService.readExportRecord(first))!.code).toEqual(code);
+});
+
+test('a snapshot from before export.json gets one when its build is recorded', async () => {
+    const t = await editedCourse();
+    const dir = await mkdtemp(path.join(os.tmpdir(), 'gspro-old-'));
+    await writeFile(path.join(dir, 'linkan.svg'), '<svg/>');
+    const folder = await t.history.snapshot(TEST_COURSE_ID, dir, path.join(dir, 'linkan.svg'), new Date('2026-10-15T22:50:19'));
+    await rm(path.join(folder, 'export.json'));
+    expect(await FeatureHistoryService.readExportRecord(folder)).toBeNull();
+
+    await FeatureHistoryService.recordBuild(folder, { opcdCreated: '2026-10-15 16:52', job: 'linkan.svg', status: 'Draft', outcome: 'failed', checkedAt: '2026-10-17T14:00:00.000Z' });
+
+    expect(await FeatureHistoryService.readExportRecord(folder)).toMatchObject({ code: null, report: [], build: { outcome: 'failed' } });
+});
+
+test('the board reads the newest exports and the last good one from export.json alone', async () => {
+    const t = await editedCourse();
+    const dir = await mkdtemp(path.join(os.tmpdir(), 'gspro-builds-'));
+    await writeFile(path.join(dir, 'linkan.svg'), '<svg/>');
+    const folders: string[] = [];
+    for (const hour of [9, 10, 11, 12, 13, 14]) {
+        folders.push(await t.history.snapshot(TEST_COURSE_ID, dir, path.join(dir, 'linkan.svg'), new Date(2026, 9, 17, hour, 0, 0)));
+    }
+    const build = (outcome: 'ok' | 'failed') => ({ opcdCreated: '2026-10-17 03:00', job: 'linkan.svg', status: outcome === 'ok' ? 'Processing Complete' : 'Draft', outcome, checkedAt: '2026-10-17T14:00:00.000Z' });
+    await FeatureHistoryService.recordBuild(folders[0], build('ok'));
+    await FeatureHistoryService.recordBuild(folders[4], build('failed'));
+    await FeatureHistoryService.recordBuild(folders[5], build('failed'));
+
+    const builds = await FeatureHistoryService.exportBuilds(dir);
+
+    expect(builds.map(b => `${b.snapshot} ${b.outcome ?? '-'}${b.lastGood ? ' last-good' : ''}`)).toEqual([
+        '2026-10-17_14-00-00 failed', '2026-10-17_13-00-00 failed', '2026-10-17_12-00-00 -', '2026-10-17_11-00-00 -',
+        '2026-10-17_09-00-00 ok last-good',
+    ]);
+    expect(await FeatureHistoryService.exportBuilds(path.join(dir, 'nowhere'))).toEqual([]);
 });

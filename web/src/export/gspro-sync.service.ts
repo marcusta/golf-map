@@ -31,7 +31,7 @@
 import { Computed, Signal } from '@basics/core/client/core';
 import { api, ApiError } from '../api';
 import type {
-    GsproSyncApi, GsproSyncStatus, GsproSyncJob, GsproTargetStatus, ChangeCount,
+    GsproSyncApi, GsproSyncStatus, GsproSyncJob, GsproTargetStatus, ChangeCount, ExportBuild,
 } from '../../../shared/api/gspro-sync.gen';
 import type { GsproTargetId } from '../../../shared/gspro-targets';
 
@@ -381,6 +381,40 @@ export function rowStatusLabel(row: GsproTargetStatus, now = Date.now()): string
     const ago = agoLabel(row.lastRun, now);
     if (row.lastRun === null) return 'never';
     return `${ago} · ${changedLabel(row.changedSince)}`;
+}
+
+const BUILD_MARK: Record<string, string> = { ok: '✓', failed: '✗', pending: '…' };
+const BUILD_WORD: Record<string, string> = { ok: 'built', failed: 'failed', pending: 'building' };
+
+/** One SVG export on the Shapes row's OPCD line. */
+export interface BuildMark {
+    /** `13:17 ✓` (today) or `16/10 17:11 ✓`. */
+    text: string;
+    title: string;
+    outcome: 'ok' | 'failed' | 'pending' | 'unknown';
+    lastGood: boolean;
+}
+
+/**
+ * The Shapes row's OPCD line, newest export first: ✓ built, ✗ failed, … still
+ * building, ? not checked yet (`opcd:build -- <course> --status` fills it in).
+ * The details go in the title; the last good export is marked.
+ */
+export function buildMarks(builds: ExportBuild[], now = new Date()): BuildMark[] {
+    return builds.map(b => {
+        const m = /^(\d{4})-(\d{2})-(\d{2})_(\d{2})-(\d{2})/.exec(b.snapshot);
+        const today = !!m && +m[1] === now.getFullYear() && +m[2] === now.getMonth() + 1 && +m[3] === now.getDate();
+        const time = m ? `${today ? '' : `${+m[3]}/${+m[2]} `}${m[4]}:${m[5]}` : b.snapshot;
+        const what = b.outcome
+            ? `OPCD ${BUILD_WORD[b.outcome]} (${b.status ?? ''}, created ${b.opcdCreated ?? '?'} OPCD time)`
+            : 'no OPCD build recorded';
+        return {
+            text: `${time} ${b.outcome ? BUILD_MARK[b.outcome] : '?'}`,
+            title: `Export ${b.snapshot}: ${what}${b.lastGood ? ' — last good' : ''}`,
+            outcome: b.outcome ?? 'unknown',
+            lastGood: b.lastGood,
+        };
+    });
 }
 
 function messageOf(e: unknown): string {

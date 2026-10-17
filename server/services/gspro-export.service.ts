@@ -84,7 +84,7 @@ import { DEFAULT_PIPELINE_DIR } from './pipeline-dir';
 import {
     digest, fingerprint, mtimeMs, recordInputs, unchangedLine, type ExportInputs,
 } from './export-fingerprint';
-import { FeatureHistoryService } from './feature-history.service';
+import { FeatureHistoryService, type CodeVersion } from './feature-history.service';
 import { CourseFeaturesService } from './course-features.service';
 import { ZoneTypesService } from './zone-types.service';
 import {
@@ -863,10 +863,14 @@ export class GsproExportService {
         const { args, out } = await this.svgCommand(courseId, opts);
         const ids = [...new Set(opts.excludeFeatureIds ?? [])];
         if (ids.length === 0) {
+            const full = !opts.variant && !opts.dbPath;
+            // The code that runs, read as it starts (an edit during a long export must not count).
+            const reading = full ? pipelineCodeVersion(this.pipelineDir) : null;
             const result = await this.run('GSPro SVG', args, out);
+            const code = await reading;
             // A full export of the course as it is: keep it, so a later broken build can be bisected against it.
-            if (!opts.variant && !opts.dbPath) {
-                const kept = await this.history.snapshot(courseId, path.dirname(out), out);
+            if (full) {
+                const kept = await this.history.snapshot(courseId, path.dirname(out), out, new Date(), { code, report: [...result.report] });
                 result.report.push(`kept as ${path.relative(path.dirname(out), kept)}`);
             }
             return result;
@@ -2730,6 +2734,42 @@ export function reportLines(stdout: string): string[] {
 export function failure(what: string, code: number, stdout: string, stderr: string): ConflictError {
     const detail = (stderr.trim() || stdout.trim() || `exit ${code}`).split('\n').slice(-4).join(' ');
     return new ConflictError(`${what} failed: ${detail}`);
+}
+
+/** What of the pipeline an SVG export runs: the files whose uncommitted edits `pipelineCodeVersion` hashes. */
+export const SVG_CODE_PATHS = ['gspro.py', 'golfpipe'];
+
+/**
+ * The pipeline code an SVG export runs, for its export.json: the commit, plus a
+ * hash of what is not committed in `SVG_CODE_PATHS` (the diff against HEAD and
+ * the untracked files' contents) — two exports with the same sha and hash ran the
+ * same code. Null where the pipeline is not a git checkout (or git is missing).
+ */
+export async function pipelineCodeVersion(pipelineDir: string): Promise<CodeVersion | null> {
+    const git = async (args: string[]): Promise<string | null> => {
+        try {
+            const proc = Bun.spawn(['git', '-C', pipelineDir, ...args], { stdout: 'pipe', stderr: 'pipe' });
+            const [out, code] = await Promise.all([new Response(proc.stdout).text(), proc.exited]);
+            return code === 0 ? out : null;
+        } catch {
+            return null;
+        }
+    };
+    const sha = (await git(['rev-parse', 'HEAD']))?.trim();
+    if (!sha) return null;
+    const [diff, status, untracked] = await Promise.all([
+        git(['diff', 'HEAD', '--', ...SVG_CODE_PATHS]),
+        git(['status', '--porcelain', '--', ...SVG_CODE_PATHS]),
+        git(['ls-files', '--others', '--exclude-standard', '--', ...SVG_CODE_PATHS]),
+    ]);
+    const dirtyFiles = (status ?? '').split('\n').map(l => l.slice(3).trim()).filter(Boolean);
+    if (!dirtyFiles.length) return { sha, dirty: null, dirtyFiles };
+    const hash = new Bun.CryptoHasher('sha256').update(diff ?? '');
+    for (const file of (untracked ?? '').split('\n').map(l => l.trim()).filter(Boolean).sort()) {
+        hash.update(`\0${file}\0`);
+        hash.update(await readFile(path.join(pipelineDir, file)).catch(() => Buffer.alloc(0)));
+    }
+    return { sha, dirty: hash.digest('hex').slice(0, 16), dirtyFiles };
 }
 
 /** Windows puts the venv interpreter in Scripts\, POSIX in bin/. */

@@ -1,6 +1,6 @@
 import { test, expect } from 'bun:test';
 import { ApiError } from '@basics/core/client/api-error';
-import { GsproSyncService, agoLabel, changedLabel, aboutLabel, rowStatusLabel } from '../src/export/gspro-sync.service';
+import { GsproSyncService, agoLabel, buildMarks, changedLabel, aboutLabel, rowStatusLabel } from '../src/export/gspro-sync.service';
 import type {
     GsproSyncApi, GsproSyncStatus, GsproSyncJob, GsproTargetStatus, JobPhase,
 } from '../../shared/api/gspro-sync.gen';
@@ -437,3 +437,13 @@ function trackRunning(svc: GsproSyncService, into: string[]): () => void {
     (timer as unknown as { unref?: () => void }).unref?.();
     return () => clearInterval(timer);
 }
+
+test('an export built today shows its time alone; an older one its day too', () => {
+    const now = new Date(2026, 9, 17, 16, 0);
+    const marks = buildMarks([
+        { snapshot: '2026-10-17_15-37-30', outcome: 'pending', opcdCreated: '2026-10-17 09:38', status: 'Processing', lastGood: false },
+        { snapshot: '2026-10-16_17-11-34', outcome: 'ok', opcdCreated: '2026-10-16 11:11', status: 'Processing Complete', lastGood: true },
+    ], now);
+    expect(marks.map(m => m.text)).toEqual(['15:37 …', '16/10 17:11 ✓']);
+    expect(marks.map(m => [m.outcome, m.lastGood])).toEqual([['pending', false], ['ok', true]]);
+});

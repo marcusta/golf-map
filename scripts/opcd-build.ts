@@ -7,6 +7,9 @@
 //
 //   bun run opcd:build -- <course> [options]      upload, build, download
 //   bun run opcd:build -- <course> --dry-run      open the SVG Jobs tab, print the jobs, submit nothing
+//   bun run opcd:build -- <course> --status       the same, and write each export snapshot's OPCD outcome
+//                                                 into its export.json (see "Which export a job built")
+//   bun run opcd:build -- <course> --submit-only  upload and submit, exit 0 without waiting (parallel bisects)
 //   bun run opcd:build -- --setup [<course>]      record a hand-run (debugging aid)
 //
 // THE FLOW, as the builder has it (every step is one function below):
@@ -52,9 +55,25 @@
 //   --opcd-name <name>  the course's Course Name in OPCD, for this run
 //   --dry-run           walk to the SVG Jobs tab, print the job table, submit nothing
 //   --attach            submit nothing: wait for the newest job already in the table and download it
+//   --submit-only       upload and submit, then exit 0 (OPCD builds up to 3 at once; --status reads them)
+//   --status            print the job table and record every export snapshot's build outcome
 //   --timeout <min>     cap on the build wait (default 8)
 //   --headed            show the browser (a real run is headless)
 //   --url <url>         override the start page (the launch proof uses `about:blank`)
+//
+// WHICH EXPORT A JOB BUILT. The table's Name is `<svg file> - <description>`, and
+// the description names the export snapshot when the SVG is one
+// (`golf-map Ombergs Golfklubb export 2026-10-17_15-37-30`: the folder under
+// `<export dir>/export-history/`, local time). Jobs from before that carry no stamp
+// and are matched by time: OPCD's Created column is US Eastern (America/New_York,
+// local Swedish time minus 6 h), and the job is the newest snapshot of that SVG
+// exported before it. `--status` writes `build: {opcdCreated, status, outcome}` into
+// the snapshot's `export.json`, which is what `gspro:bisect -- <course> snapshots`,
+// its `--from last-good` and the GSPro sync board read. Outcome: ok = a Download;
+// failed = Draft (where a failed build ends up), or still Processing 8 min after it
+// was created; pending = anything else (waiting for a builder slot, processing).
+// The Bun parent writes the records (the database half), from the table the Node
+// child leaves in `OPCD_JOBS_OUT`.
 //
 // `--svg --out --opcd-name` together say everything a run needs, and then the
 // database is never opened — and nothing of the server is even imported, since
@@ -88,9 +107,10 @@
 // constructor parameter properties, and no `Bun.*` outside `resolveCourse`).
 // `browserDiagnosis()` is what is printed when no such runtime is found at all.
 import * as path from 'node:path';
+import * as os from 'node:os';
 import { spawn } from 'node:child_process';
 import { existsSync } from 'node:fs';
-import { mkdir, readdir, rename, rm, stat, writeFile } from 'node:fs/promises';
+import { mkdir, readFile, readdir, rename, rm, stat, writeFile } from 'node:fs/promises';
 import { fileURLToPath } from 'node:url';
 import { chromium, type BrowserContext, type Download, type Locator, type Page } from '@playwright/test';
 
@@ -193,6 +213,10 @@ export interface BuildArgs {
     dryRun: boolean;
     /** `--attach`: submit nothing; wait for the newest job already in the table and download it. */
     attach: boolean;
+    /** `--submit-only`: upload and submit, then exit without waiting. */
+    submitOnly: boolean;
+    /** `--status`: print the job table and record each export snapshot's build outcome. */
+    status: boolean;
     /** `--timeout` in ms (from the submit). */
     timeoutMs: number;
     url: string | null;
@@ -203,7 +227,7 @@ export type Args = SetupArgs | BuildArgs;
 export function usageText(): string {
     return [
         'usage: bun run opcd:build -- <course> [--svg <file>] [--out <folder>] [--opcd-name <name>]',
-        '                                      [--dry-run] [--timeout <min>] [--headed]',
+        '                                      [--dry-run | --status | --submit-only] [--timeout <min>] [--headed]',
         '       bun run opcd:build -- --setup [<course>]',
         '',
         '<course>          course id, slug or a unique name substring ("vreta")',
@@ -212,6 +236,8 @@ export function usageText(): string {
         '--opcd-name       the course\'s Course Name in OPCD\'s Course Workflow list, for this run',
         '                  (kept per course as courses.opcd_course_name)',
         '--dry-run         walk to the SVG Jobs tab and print its job table; submit nothing',
+        '--status          the same, and record each export snapshot\'s OPCD outcome in its export.json',
+        '--submit-only     upload and submit, then exit 0 without waiting (up to 3 builds run at once)',
         '--timeout <min>   give up on the build after this long (default 8; a good one takes 5-6)',
         '--headed          show the browser (a real run is headless)',
         '--setup           record a hand-run for debugging: a headed browser on the kept profile,',
@@ -233,6 +259,8 @@ export function parseArgs(argv: string[]): Args | { error: string } {
     let headless: boolean | null = null;
     let dryRun = false;
     let attach = false;
+    let submitOnly = false;
+    let status = false;
     let timeoutMs = BUILD_TIMEOUT_MS;
     for (let i = 0; i < argv.length; i++) {
         const a = argv[i]!;
@@ -250,6 +278,8 @@ export function parseArgs(argv: string[]): Args | { error: string } {
         else if (a === '--headed') headless = false;
         else if (a === '--dry-run') dryRun = true;
         else if (a === '--attach') attach = true;
+        else if (a === '--submit-only') submitOnly = true;
+        else if (a === '--status') status = true;
         else if (VALUE_FLAGS.has(a)) {
             const v = value();
             if (v === null) return { error: `${a} needs a value` };
@@ -265,13 +295,16 @@ export function parseArgs(argv: string[]): Args | { error: string } {
         } else return { error: `unknown option ${a}` };
     }
     if (setup) {
-        if (svg || out || opcdName || dryRun) {
-            return { error: '--setup records a run done by hand: --svg, --out, --opcd-name and --dry-run do not apply' };
+        if (svg || out || opcdName || dryRun || status || submitOnly) {
+            return { error: '--setup records a run done by hand: --svg, --out, --opcd-name, --dry-run, --status and --submit-only do not apply' };
         }
         return { mode: 'setup', course, url };
     }
     if (!course) return { error: 'name a course (or --setup to record a hand-run)' };
-    return { mode: 'build', course, svg, out, headless: headless ?? true, opcdName, dryRun, attach, timeoutMs, url };
+    if ([dryRun, status, submitOnly, attach].filter(Boolean).length > 1) {
+        return { error: 'pick one of --dry-run, --status, --submit-only and --attach' };
+    }
+    return { mode: 'build', course, svg, out, headless: headless ?? true, opcdName, dryRun, attach, submitOnly, status, timeoutMs, url };
 }
 
 // ───────────────────────────── the recording ─────────────────────────────
@@ -768,14 +801,16 @@ export async function uploadSvg(page: Page, svgPath: string, deps: BuildDeps): P
  * BEFORE the submit, which is how the wait tells our job from the older ones
  * (they keep their own Download buttons).
  */
-export async function startBuild(page: Page, description: string, deps: BuildDeps): Promise<SvgJob[]> {
+export async function startBuild(page: Page, description: string, deps: BuildDeps): Promise<{ before: SvgJob[]; described: boolean }> {
     const before = await readJobs(page);
+    let described = false;
     // The Description box is known by its placeholder: the page's FIRST text box is the
     // global search (Alt+G), and typing there opens a popup that then covers the Submit
     // button. No placeholder, no description — never "the first input".
     const field = page.getByPlaceholder(/optional description/i).first();
     if (await visible(field, STEP_TIMEOUT_MS / 2)) {
         await field.fill(description);
+        described = true;
     } else {
         deps.log('  (no Description field found — submitting without one)');
     }
@@ -787,7 +822,7 @@ export async function startBuild(page: Page, description: string, deps: BuildDep
     await page.keyboard.press('Escape').catch(() => undefined);
     await submit.click();
     deps.log(`submitted '${description}' (${before.length} job(s) in the table before it)`);
-    return before;
+    return { before, described };
 }
 
 // ───────────────────────── the job table ─────────────────────────
@@ -854,15 +889,38 @@ export async function readJobs(page: Page): Promise<SvgJob[]> {
     return jobs;
 }
 
+/** What the submit wrote, so its row can be told from other jobs submitted at the same time. */
+export interface OurJob {
+    /** The uploaded file's name: the Name column starts with it. */
+    svg: string;
+    /** The description typed into the box; null when the box was not found (the Name is then the file alone). */
+    description: string | null;
+}
+
+/** The Name column is `<svg file> - <description>`, or the file alone when no description was given. */
+export function splitJobName(name: string): { svg: string; description: string | null } {
+    const at = name.indexOf(' - ');
+    return at < 0 ? { svg: name.trim(), description: null } : { svg: name.slice(0, at).trim(), description: name.slice(at + 3).trim() };
+}
+
 /**
- * Which row is the job we just submitted: the one that was not in the table
- * before it. A table that only grew (identical rows, e.g. the description is
- * not shown) falls back to the first row, since OPCD lists the newest first.
+ * Which row is the job we just submitted. With `ours` (a submit of this run): a
+ * row that was not in the table before and whose Name is our file and our
+ * description — never just "the newest new row", which with parallel bisect
+ * builds is another variant's job. Without (`--attach`, following a job somebody
+ * else submitted): the first row that was not there before, else the top row of a
+ * table that only grew (rows that read the same).
  */
-export function pickNewJob(before: SvgJob[], now: SvgJob[]): SvgJob | null {
+export function pickNewJob(before: SvgJob[], now: SvgJob[], ours?: OurJob): SvgJob | null {
     const seen = new Set(before.map(jobKey));
-    const unseen = now.find((job) => !seen.has(jobKey(job)));
-    if (unseen) return unseen;
+    const unseen = now.filter((job) => !seen.has(jobKey(job)));
+    if (ours) {
+        return unseen.find((job) => {
+            const name = splitJobName(job.name);
+            return name.svg === ours.svg && name.description === ours.description;
+        }) ?? null;
+    }
+    if (unseen[0]) return unseen[0];
     if (now.length > before.length) return now[0] ?? null;
     return null;
 }
@@ -881,7 +939,7 @@ export function jobTableText(jobs: SvgJob[]): string[] {
  */
 export async function waitForBuild(
     look: () => Promise<SvgJob[]>, before: SvgJob[], deps: BuildDeps,
-    opts: { timeoutMs?: number; pollMs?: number; firstLookMs?: number } = {},
+    opts: { timeoutMs?: number; pollMs?: number; firstLookMs?: number; ours?: OurJob } = {},
 ): Promise<SvgJob> {
     const timeoutMs = opts.timeoutMs ?? BUILD_TIMEOUT_MS;
     const pollMs = opts.pollMs ?? BUILD_POLL_MS;
@@ -896,7 +954,7 @@ export async function waitForBuild(
     for (;;) {
         const jobs = await look();
         // Annotated: `mine` is read inside its own assignment, which TS cannot infer (TS7022).
-        const row: SvgJob | null = pickNewJob(before, jobs)
+        const row: SvgJob | null = pickNewJob(before, jobs, opts.ours)
             ?? (mine ? jobs.find((j) => jobKey(j) === jobKey(mine!)) ?? null : null);
         if (row) mine = row;
         if (mine && isDone(mine)) {
@@ -998,9 +1056,133 @@ export async function unzip(zipPath: string, toDir: string): Promise<void> {
     });
 }
 
-/** The description the submit writes, so a job in the table can be traced back to a run. */
-export const jobDescription = (courseName: string, now = new Date()) =>
-    `golf-map ${courseName} ${now.toISOString().slice(0, 16).replace('T', ' ')}`;
+/**
+ * The description the submit writes, so a job in the table can be traced back to
+ * a run: the export snapshot when the SVG is one (`export 2026-10-17_15-37-30`),
+ * else the UTC minute of the submit.
+ */
+export const jobDescription = (courseName: string, now = new Date(), snapshot: string | null = null) =>
+    snapshot ? `golf-map ${courseName} export ${snapshot}` : `golf-map ${courseName} ${now.toISOString().slice(0, 16).replace('T', ' ')}`;
+
+// ─────────────────── which export a job built, and how it went ───────────────────
+
+/** OPCD's clock: the Created column is US Eastern (local Swedish time minus 6 h in October 2026). */
+export const OPCD_TIME_ZONE = 'America/New_York';
+/** No Download this long after Created, still Processing: failed (Marcus' rule; a good build takes 5-6 min). */
+export const BUILD_FAILED_AFTER_MS = BUILD_TIMEOUT_MS;
+/** An export snapshot folder name: local time `2026-10-17_15-37-30`. */
+export const SNAPSHOT_STAMP = /\b(\d{4}-\d{2}-\d{2}_\d{2}-\d{2}-\d{2})\b/;
+
+export type BuildOutcome = 'ok' | 'failed' | 'pending';
+
+/** What `--status` writes into a snapshot's export.json (`FeatureHistoryService.recordBuild`). */
+export interface BuildRecord {
+    opcdCreated: string;
+    job: string;
+    status: string;
+    outcome: BuildOutcome;
+    checkedAt: string;
+}
+
+/** The little of an export snapshot the linking needs (`FeatureHistoryService.listSnapshots` gives more). */
+export interface SnapshotRef {
+    name: string;
+    /** ISO (UTC). */
+    exportedAt: string;
+    svg: string | null;
+}
+
+/** A wall-clock time in `timeZone` -> the instant. Two passes, so a time next to a DST switch lands right. */
+export function zonedToUtc(local: string, timeZone: string): Date {
+    const m = /^(\d{4})-(\d{2})-(\d{2})[ T](\d{2}):(\d{2})(?::(\d{2}))?$/.exec(local.trim());
+    if (!m) throw new Error(`not a time: '${local}'`);
+    const wall = Date.UTC(+m[1]!, +m[2]! - 1, +m[3]!, +m[4]!, +m[5]!, +(m[6] ?? 0));
+    const fmt = new Intl.DateTimeFormat('en-US', {
+        timeZone, hourCycle: 'h23', year: 'numeric', month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit', second: '2-digit',
+    });
+    const offset = (t: number) => {
+        const p = Object.fromEntries(fmt.formatToParts(new Date(t)).map((x) => [x.type, x.value]));
+        return Date.UTC(+p.year!, +p.month! - 1, +p.day!, +p.hour!, +p.minute!, +p.second!) - t;
+    };
+    let t = wall - offset(wall);
+    t = wall - offset(t);
+    return new Date(t);
+}
+
+/** OPCD's Created column -> the instant. */
+export const opcdCreatedToUtc = (created: string) => zonedToUtc(created, OPCD_TIME_ZONE);
+
+/** ok = a Download; failed = Draft, or Processing 8 min after Created; else pending (queued, processing). */
+export function buildOutcome(job: SvgJob, now: Date): BuildOutcome {
+    if (isDone(job)) return 'ok';
+    if (isDraft(job)) return 'failed';
+    const age = now.getTime() - opcdCreatedToUtc(job.created).getTime();
+    if (/^processing$/i.test(job.status.trim()) && age > BUILD_FAILED_AFTER_MS) return 'failed';
+    return 'pending';
+}
+
+/** The export snapshot a job's description names, or null. */
+export const snapshotStampOf = (job: SvgJob): string | null => SNAPSHOT_STAMP.exec(splitJobName(job.name).description ?? '')?.[1] ?? null;
+
+/**
+ * Which export snapshot each job built: the one its description names, else —
+ * for jobs from before the stamp, with the plain file name — the newest snapshot
+ * of that SVG exported before the job was created (Created has whole minutes, so
+ * a job submitted in the export's own minute still counts). A snapshot built more
+ * than once takes its newest job; a stamped job beats a matched-by-time one.
+ */
+export function linkJobsToSnapshots(jobs: SvgJob[], snapshots: SnapshotRef[], now: Date): Map<string, BuildRecord> {
+    const out = new Map<string, BuildRecord>();
+    const byName = new Map(snapshots.map((s) => [s.name, s]));
+    const record = (job: SvgJob): BuildRecord => ({
+        opcdCreated: job.created, job: job.name, status: job.status, outcome: buildOutcome(job, now), checkedAt: now.toISOString(),
+    });
+    const newestFirst = [...jobs].sort((a, b) => opcdCreatedToUtc(b.created).getTime() - opcdCreatedToUtc(a.created).getTime());
+    for (const job of newestFirst) {
+        const stamp = snapshotStampOf(job);
+        if (stamp && byName.has(stamp) && !out.has(stamp)) out.set(stamp, record(job));
+    }
+    const oldestFirst = [...snapshots].sort((a, b) => a.exportedAt.localeCompare(b.exportedAt));
+    for (const job of newestFirst) {
+        // Only the course's own file with no description (or an unstamped golf-map one) is matched by time.
+        const name = splitJobName(job.name);
+        if (snapshotStampOf(job) || (name.description && !name.description.startsWith('golf-map '))) continue;
+        const created = opcdCreatedToUtc(job.created).getTime() + 60_000;
+        const snap = oldestFirst.filter((s) => s.svg === name.svg && Date.parse(s.exportedAt) <= created).pop();
+        if (snap && !out.has(snap.name)) out.set(snap.name, record(job));
+    }
+    return out;
+}
+
+/** The outcome column the CLI prints for a snapshot. */
+export const outcomeText = (build: BuildRecord | null | undefined) =>
+    (build ? `${build.outcome.padEnd(7)} (OPCD ${build.opcdCreated}, ${build.status})` : '-');
+
+/**
+ * The export snapshot an SVG is, by content: the newest `<dir>/export-history/<stamp>/`
+ * holding a file of the same name and bytes, or null (a bisect variant, an edited file).
+ */
+export async function snapshotOfSvg(svgPath: string, exportDir: string): Promise<string | null> {
+    const root = path.join(exportDir, 'export-history');
+    let names: string[];
+    let bytes: Buffer;
+    try {
+        names = (await readdir(root)).filter((n) => SNAPSHOT_STAMP.test(n)).sort().reverse();
+        bytes = await readFile(svgPath);
+    } catch {
+        return null;
+    }
+    for (const name of names) {
+        const kept = path.join(root, name, path.basename(svgPath));
+        const size = await stat(kept).then((s) => s.size, () => -1);
+        if (size !== bytes.length) continue;
+        if ((await readFile(kept)).equals(bytes)) return name;
+    }
+    return null;
+}
+
+/** The env var the Node child writes the last job table it read to, for the Bun parent's `--status`. */
+export const JOBS_OUT_ENV = 'OPCD_JOBS_OUT';
 
 // ──────────────────────────────── setup mode ────────────────────────────────
 
@@ -1171,7 +1353,7 @@ export function findNodeRuntime(): NodeRuntime | null {
 
 /** Run this same script under `runtime`, with the course already resolved, and return its exit code. */
 export async function relaunchUnderNode(
-    runtime: NodeRuntime, argv: string[], resolved: ResolvedCourse | null,
+    runtime: NodeRuntime, argv: string[], resolved: ResolvedCourse | null, extraEnv: Record<string, string> = {},
 ): Promise<number> {
     const script = fileURLToPath(import.meta.url);
     const [command, ...head] = runtime.command;
@@ -1179,7 +1361,7 @@ export async function relaunchUnderNode(
         // Inherited, so `--setup` can read the terminal and the run prints as it goes.
         stdio: 'inherit',
         env: {
-            ...process.env, ...runtime.env, [NO_RELAUNCH_ENV]: '1',
+            ...process.env, ...runtime.env, ...extraEnv, [NO_RELAUNCH_ENV]: '1',
             ...(resolved ? { [RESOLVED_ENV]: JSON.stringify(resolved) } : {}),
         },
     });
@@ -1281,7 +1463,18 @@ async function main(): Promise<void> {
             process.exit(1);
         }
         deps.log(`Playwright cannot drive Chromium under Bun here, so the run goes to ${runtime.name}`);
-        process.exit(await relaunchUnderNode(runtime, process.argv.slice(2), course));
+        // The child leaves the last job table it read here; the outcomes go into export.json from this side.
+        const records = parsed.mode === 'build' && !parsed.dryRun && course !== null;
+        const jobsOut = path.join(os.tmpdir(), `opcd-jobs-${process.pid}-${Date.now()}.json`);
+        const code = await relaunchUnderNode(runtime, process.argv.slice(2), course, records ? { [JOBS_OUT_ENV]: jobsOut } : {});
+        if (records && existsSync(jobsOut)) {
+            try {
+                await recordOutcomes(course.exportDir, JSON.parse(await readFile(jobsOut, 'utf8')) as SvgJob[], parsed.status);
+            } finally {
+                await rm(jobsOut, { force: true });
+            }
+        }
+        process.exit(code);
     }
 
     if (parsed.mode === 'setup') {
@@ -1304,6 +1497,7 @@ async function main(): Promise<void> {
     }
 
     if (!course) throw new Error('no course was resolved (a bug in this script)');
+    if (parsed.status && !process.env[JOBS_OUT_ENV]) console.log('(run under Bun to record the outcomes in export.json; this prints the table only)');
     const svg = parsed.svg ?? course.svg;
     const outDir = parsed.out ?? course.exportDir;
     const opcdName = parsed.opcdName ?? course.opcdName;
@@ -1323,17 +1517,22 @@ async function main(): Promise<void> {
         profileDir, headless: parsed.headless, downloadsTo: outDir, url: parsed.url ?? OPCD_START_URL,
     }, deps);
     const t0 = Date.now();
+    // The last job table read, for the Bun parent's records (`--status`, and after a submit or a build).
+    let lastJobs: SvgJob[] | null = null;
+    const look = svgJobsLook(page, opcdName, deps);
+    const lookAndKeep = async () => (lastJobs = await look());
     try {
         await openSvgJobsTab(page, opcdName, deps);
-        if (parsed.dryRun) {
-            const jobs = await readJobs(page);
+        if (parsed.dryRun || parsed.status) {
+            const jobs = lastJobs = await readJobs(page);
             console.log(`\nSVG Jobs for '${opcdName}' (newest first):`);
             for (const line of jobTableText(jobs)) console.log(line);
-            console.log('\ndry run: nothing was submitted');
+            if (parsed.dryRun) console.log('\ndry run: nothing was submitted');
             return;
         }
         let before: SvgJob[];
         let firstLookMs: number | undefined;
+        let ours: OurJob | undefined;
         if (parsed.attach) {
             // The newest row is the job to follow: everything under it counts as "before".
             const jobs = await readJobs(page);
@@ -1342,10 +1541,24 @@ async function main(): Promise<void> {
             before = jobs.slice(1);
             firstLookMs = 0;
         } else {
+            // The export snapshot this SVG is (byte for byte), so the job names it and --status can find it.
+            const snapshot = await snapshotOfSvg(svg, course.exportDir);
+            console.log(`snapshot: ${snapshot ?? '(none: not a kept export)'}`);
+            const description = jobDescription(course.name, new Date(), snapshot);
             await uploadSvg(page, svg, deps);
-            before = await startBuild(page, jobDescription(course.name), deps);
+            const submitted = await startBuild(page, description, deps);
+            before = submitted.before;
+            ours = { svg: path.basename(svg), description: submitted.described ? description : null };
+            if (parsed.submitOnly) {
+                const mine = pickNewJob(before, await lookAndKeep(), ours);
+                console.log(mine
+                    ? `submitted: ${mine.created}  ${mine.status}  ${mine.name}`
+                    : `submitted '${ours.svg}', but its row is not in the table yet`);
+                console.log('not waiting (--submit-only): follow it with --status');
+                return;
+            }
         }
-        const job = await waitForBuild(svgJobsLook(page, opcdName, deps), before, deps, { timeoutMs: parsed.timeoutMs, firstLookMs });
+        const job = await waitForBuild(lookAndKeep, before, deps, { timeoutMs: parsed.timeoutMs, firstLookMs, ours });
         const got = await downloadBlend(page, job, { outDir, prefix: blendPrefix(course.name) }, deps);
         const seconds = Math.round((Date.now() - t0) / 1000);
         console.log(`\ndone in ${Math.floor(seconds / 60)} min ${seconds % 60} s: ${got.file} `
@@ -1361,8 +1574,34 @@ async function main(): Promise<void> {
         console.error(`the page at the failure: ${dir} (page.png, page.html)`);
         throw e;
     } finally {
+        const jobsOut = process.env[JOBS_OUT_ENV];
+        if (jobsOut && lastJobs) await writeFile(jobsOut, JSON.stringify(lastJobs)).catch(() => undefined);
         await context.close().catch(() => undefined);
     }
+}
+
+/**
+ * The Bun parent's half of `--status` (and of a submit or a build): link the job
+ * table the Node child read to the course's export snapshots and write each
+ * outcome into the snapshot's export.json. `all` prints every snapshot (--status),
+ * else only those whose job is in the table.
+ */
+async function recordOutcomes(exportDir: string, jobs: SvgJob[], all: boolean): Promise<void> {
+    const { FeatureHistoryService } = await import('../server/services/feature-history.service');
+    const snaps = await FeatureHistoryService.listSnapshots(exportDir);
+    const linked = linkJobsToSnapshots(jobs, snaps, new Date());
+    for (const [name, build] of linked) await FeatureHistoryService.recordBuild(path.join(exportDir, 'export-history', name), build);
+    if (!snaps.length) {
+        console.log(`\nno export snapshots in ${exportDir} to record builds for`);
+        return;
+    }
+    console.log(`\nexport snapshots (${linked.size} build(s) recorded in export.json):`);
+    for (const s of snaps) {
+        const build = linked.get(s.name) ?? s.build;
+        if (all || linked.has(s.name)) console.log(`  ${s.name}  ${outcomeText(build)}`);
+    }
+    const good = FeatureHistoryService.lastGood(snaps.map((s) => ({ ...s, build: linked.get(s.name) ?? s.build })));
+    console.log(`last good: ${good?.name ?? '(none recorded)'}`);
 }
 
 // `import.meta.main` is Bun's; under Node the script's own path in argv says it.
