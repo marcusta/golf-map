@@ -28,7 +28,7 @@ ASSETS = {"1431566961": "omberg_farm_big_barn", "1431566959": "omberg_farm_north
 # Materials
 # --------------------------------------------------------------------------------------------------
 MATTE = {"omberg_barn_red", "omberg_barn_white", "omberg_barn_trim", "omberg_barn_frame_red", "omberg_barn_door_black",
-         "omberg_barn_door_green", "omberg_barn_door_grey", "omberg_barn_timber", "omberg_barn_plinth",
+         "omberg_barn_door_green", "omberg_barn_door_grey", "omberg_barn_timber", "omberg_barn_door_frame", "omberg_barn_plinth",
          "omberg_barn_apron", "omberg_barn_roof_pale", "omberg_barn_roof_fc", "omberg_barn_roof_dark",
          "omberg_barn_louvre", "omberg_barn_void", "omberg_barn_hatch", "omberg_barn_under"}
 
@@ -50,18 +50,40 @@ def tex_barnfc(bank, color="102,102,106"):
     return np.clip(alb, 0, 1), height, 3.0
 
 
+def tex_barnboard(bank, color="116,33,29", boards="10", batten="0.22"):
+    """Even, well-kept board-and-batten paint: `boards` boards per 2 m tile (0.2 m pitch), a batten (`batten` of the pitch)
+    over every joint with a thin shadow line at its edges, a few % tone change between boards, faint long grain.
+    No weathering blotches. The relief is in the normal map."""
+    S = bank.size
+    col = kit._rgb([int(c) for c in color.split(",")])
+    n, bt = int(boards), float(batten)
+    x = np.broadcast_to(np.arange(S)[None, :] / S * n, (S, S))
+    idx = np.floor(x).astype(int) % n
+    pos = x % 1
+    shade = 1 + (kit._rng(5).random(n) - 0.5) * 0.05
+    dist = np.minimum(pos, 1 - pos)                         # distance to the joint, in board pitches
+    bat = dist < bt / 2
+    edge = np.abs(dist - bt / 2) < 0.012
+    grain = np.repeat(kit._fbm((S, S // 8), 21, scales=(64, 16, 4)), 8, 1)[:, :S]
+    fine = kit._fbm((S, S), 23, scales=(4, 2, 1))
+    tone = shade[idx] * (0.96 + 0.06 * grain) * (0.985 + 0.03 * fine) * np.where(bat, 1.03, 1.0) * np.where(edge, 0.72, 1.0)
+    height = np.where(bat, 1.0, 0.45) + 0.03 * grain - np.where(edge, 0.25, 0.0)
+    return np.clip(col[None, None, :] * tone[:, :, None], 0, 1), np.clip(height, 0, 1), 3.0
+
+
 def register_materials():
     M = kit.MATERIALS
     M.update({
         # falu red, even and well kept: photo mid-tone ~ (125,35,32); the course light lifts sunlit faces 1.7x
-        "omberg_barn_red": ("boards:116,33,29:v:0.20:2.0:1", (2.0, 2.0), None, 0.1, 0.0),
-        "omberg_barn_white": ("boards:176,174,166:v:0.19:2.0:1", (2.0, 2.0), None, 0.1, 0.0),
+        "omberg_barn_red": ("barnboard:116,33,29:10:0.22", (2.0, 2.0), None, 0.1, 0.0),
+        "omberg_barn_white": ("barnboard:176,174,166:10:0.2", (2.0, 2.0), None, 0.1, 0.0),
         "omberg_barn_trim": (None, (1, 1), (176, 175, 168), 0.1, 0.0),
         "omberg_barn_frame_red": (None, (1, 1), (112, 28, 26), 0.1, 0.0),
         "omberg_barn_door_black": ("boards:30,30,33:v:0.18:2.0:1", (2.0, 2.0), None, 0.1, 0.0),
         "omberg_barn_door_green": ("boards:46,74,54:v:0.14:2.0:2", (2.0, 2.0), None, 0.1, 0.0),
         "omberg_barn_door_grey": ("boards:128,138,144:v:0.14:2.0:2", (2.0, 2.0), None, 0.1, 0.0),
         "omberg_barn_timber": (None, (1, 1), (92, 70, 52), 0.1, 0.0),
+        "omberg_barn_door_frame": (None, (1, 1), (48, 44, 42), 0.1, 0.0),
         "omberg_barn_under": (None, (1, 1), (128, 112, 96), 0.05, 0.0),
         "omberg_barn_plinth": ("plaster:112,110,104", (2.0, 2.0), None, 0.1, 0.0),
         "omberg_barn_apron": ("plaster:132,130,124", (2.0, 2.0), None, 0.1, 0.0),
@@ -75,6 +97,7 @@ def register_materials():
         "omberg_barn_roof_dark": ("seam:62,70,84:0.52:2.08:0", (2.08, 2.08), None, 0.1, 0.1),
     })
     kit.TextureBank.tex_barnfc = tex_barnfc
+    kit.TextureBank.tex_barnboard = tex_barnboard
 
 
 # --------------------------------------------------------------------------------------------------
@@ -96,6 +119,27 @@ def mean(pts):
     return tuple(float(v) for v in np.mean(np.array(pts, float), axis=0))
 
 
+def board(g, a, b, c, mat, h=0.22, t=0.04):
+    """White edge board along the roof edge a->b: hangs h below the top edge and stands t proud of the edge plane,
+    outward (in plan) from c, the slab centre. It gives eaves and rakes a visible thickness."""
+    a, b, c = Vector(a), Vector(b), Vector(c)
+    d = b - a
+    n = Vector((-d.y, d.x, 0))
+    if n.length < 1e-6:
+        return
+    n.normalize()
+    if n.dot((a + b) / 2 - c) < 0:
+        n = -n
+    o, dn = n * t, Vector((0, 0, -h))
+    ref = (a + b) / 2 + o / 2 + dn / 2
+    pts = lambda *q: [tuple(v) for v in q]
+    face(g, pts(a + o, b + o, b + o + dn, a + o + dn), mat, ref)             # outer face
+    face(g, pts(a, b, b + o, a + o), mat, ref)                                # top strip
+    face(g, pts(a + dn, b + dn, b + o + dn, a + o + dn), mat, ref)            # underside
+    face(g, pts(a, a + o, a + o + dn, a + dn), mat, ref)                      # end caps
+    face(g, pts(b, b + o, b + o + dn, b + dn), mat, ref)
+
+
 def slab(g, top, dz, mat, under, edge, fascia):
     """One roof plane: `top` polygon (up-facing, planar); the underside is the same polygon dropped by dz (a plane
     shifted by the sheet thickness), so a neighbouring plane that shares an edge shares the lowered edge too.
@@ -109,6 +153,7 @@ def slab(g, top, dz, mat, under, edge, fascia):
     for i in fascia:
         j = (i + 1) % n
         face(g, [top[i], top[j], bot[j], bot[i]], edge, cm)
+        board(g, top[i], top[j], cm, edge)
 
 
 def ridge_cap(g, x0, x1, y, z, p, mat, w=0.26, h=0.07, swap=False):
@@ -232,15 +277,55 @@ def void_bay(g, s, y_wall, x0, x1, z0, z1, depth, floor):
     face(g, [(x0, y_wall, floor), (x1, y_wall, floor), (x1, yb, floor), (x0, yb, floor)], mat, (xc, y_wall, floor - 1))
 
 
-def sliding_door(g, s, y_wall, x0, x1, z0, z1, mat, rail_x0=None, rail_x1=None):
-    """A door leaf hung in front of the wall on a timber rail with two hangers: leaf 6 cm thick, rail beam above."""
+def plank(g, a, b, w, z0, t, mat):
+    """Flat board from a to b (x, y in the current wall frame), w wide, t thick, standing out from local z0."""
+    (ax, ay), (bx, by) = a, b
+    L = math.hypot(bx - ax, by - ay)
+    ux, uy = (bx - ax) / L, (by - ay) / L
+    nx, ny = -uy * w / 2, ux * w / 2
+    c = [(ax + nx, ay + ny), (bx + nx, by + ny), (bx - nx, by - ny), (ax - nx, ay - ny)]
+    ref = ((ax + bx) / 2, (ay + by) / 2, z0 + t / 2)
+    face(g, [(x, y, z0 + t) for x, y in c], mat, ref)
+    for i in range(4):
+        j = (i + 1) % 4
+        face(g, [(*c[i], z0), (*c[j], z0), (*c[j], z0 + t), (*c[i], z0 + t)], mat, ref)
+
+
+def framed_leaf(g, xc, w, y0, h, panel, rise=1):
+    """A ledged-and-braced barn door leaf in the current wall frame: boarded panel, two stiles, bottom / middle / top rail
+    and a Z-brace rising towards the side `rise` (+1 right, -1 left). Everything stands 4 cm proud of the boards."""
+    fz, ft, fw, fr = 0.11, 0.04, 0.16, "omberg_barn_door_frame"
+    g.box((xc, y0 + h / 2, 0.085), (w, h, 0.05), panel)
+    for sx in (-1, 1):
+        g.box((xc + sx * (w / 2 - fw / 2), y0 + h / 2, fz + ft / 2), (fw, h, ft), fr)
+    for yy in (y0 + fw / 2, y0 + h / 2, y0 + h - fw / 2):
+        g.box((xc, yy, fz + ft / 2), (w - 2 * fw, fw, ft), fr)
+    plank(g, (xc - rise * (w / 2 - fw), y0 + fw), (xc + rise * (w / 2 - fw), y0 + h - fw), 0.14, fz + ft, 0.03, fr)
+
+
+def sliding_door(g, s, y_wall, x0, x1, z0, z1, mat, rail_x0=None, rail_x1=None, rise=1):
+    """A framed door leaf hung in front of the long wall y_wall on a timber rail beam with two hangers."""
     xc = (x0 + x1) / 2
-    yo = y_wall + s * 0.09
-    g.box((xc, yo, (z0 + z1) / 2), (x1 - x0, 0.06, z1 - z0), mat)
-    ra, rb = (rail_x0 if rail_x0 is not None else x0 - 0.1), (rail_x1 if rail_x1 is not None else x1 + 0.1)
-    g.box(((ra + rb) / 2, y_wall + s * 0.16, z1 + 0.14), (rb - ra, 0.14, 0.16), "omberg_barn_timber")
-    for x in (x0 + 0.25, x1 - 0.25):
-        g.box((x, y_wall + s * 0.1, z1 + 0.02), (0.08, 0.1, 0.18), "omberg_barn_timber")
+    ra = rail_x0 if rail_x0 is not None else x0 - 0.1
+    rb = rail_x1 if rail_x1 is not None else x1 + 0.1
+    g.push(ywall(s, y_wall, xc))                       # local x runs -s along the global x
+    framed_leaf(g, 0, x1 - x0, z0, z1 - z0, mat, -s * rise)
+    g.box((-s * ((ra + rb) / 2 - xc), z1 + 0.14, 0.2), (rb - ra, 0.16, 0.14), "omberg_barn_timber")
+    for lx in (-(x1 - x0) / 2 + 0.25, (x1 - x0) / 2 - 0.25):
+        g.box((lx, z1 + 0.02, 0.1), (0.08, 0.18, 0.1), "omberg_barn_timber")
+    g.pop()
+
+
+def gable_door(g, sx, x_wall, yc, w, z0, h, mat, rail_len, rail_shift):
+    """Double sliding door in a gable wall: two framed leaves with mirrored Z-braces, rail beam above (rail_shift: its
+    centre offset along the global y)."""
+    g.push(xwall(sx, x_wall, yc))                      # local x runs sx along the global y
+    framed_leaf(g, -w / 4, w / 2, z0, h, mat, 1)
+    framed_leaf(g, w / 4, w / 2, z0, h, mat, -1)
+    g.box((sx * rail_shift, z0 + h + 0.14, 0.2), (rail_len, 0.16, 0.14), "omberg_barn_timber")
+    for lx in (-w / 2 + 0.3, w / 2 - 0.3):
+        g.box((lx, z0 + h + 0.02, 0.1), (0.08, 0.18, 0.1), "omberg_barn_timber")
+    g.pop()
 
 
 def apron(g, s, y_wall, x0, x1, depth, top=0.08):
@@ -282,20 +367,17 @@ def big_barn(g):
     long_wall(g, HY, 1, FL, [(-HX, ZW), (HX, ZW)], "omberg_barn_red")
     for a, b in bays:
         void_bay(g, -1, -HY, a, b, FL, 4.25, 1.6, FL)
-    # sliding leaves beside the bays (the photo shows one parked on each side)
-    for (a, b) in [(-10.3, -6.8), (10.2, 12.9), (17.9, 20.6)]:
-        sliding_door(g, -1, -HY, a, b, 0.12, 4.25, "omberg_barn_door_black")
+    # sliding leaves beside the bays (the photo shows one parked on each side), framed and Z-braced
+    for (a, b, rise) in [(-10.3, -6.8, 1), (10.2, 12.9, -1), (17.9, 20.6, 1)]:
+        sliding_door(g, -1, -HY, a, b, 0.12, 4.25, "omberg_barn_door_black", rise=rise)
     apron(g, -1, -HY, -10.6, -1.0, 1.7)
     apron(g, -1, -HY, 9.9, 21.0, 1.7)
     # a rail tying the leaf and the bay opening together (the door runs on it)
-    g.box((-5.85, -HY - 0.16, 4.39), (9.6, 0.14, 0.16), "omberg_barn_timber")
-    g.box((15.4, -HY - 0.16, 4.39), (11.0, 0.14, 0.16), "omberg_barn_timber")
-    # south gable door: 7.2 m x 4.25 m black double sliding door, rail beam above, concrete apron (photo)
+    g.box((-5.85, -HY - 0.2, 4.39), (9.6, 0.14, 0.16), "omberg_barn_timber")
+    g.box((15.4, -HY - 0.2, 4.39), (11.0, 0.14, 0.16), "omberg_barn_timber")
+    # south gable door: 7.2 m x 4.13 m black double sliding door (photo), rail beam above, concrete apron
     yc = 0.3
-    g.box((-HX - 0.09, yc, 0.12 + 4.13 / 2), (0.06, 7.2, 4.13), "omberg_barn_door_black")
-    g.box((-HX - 0.16, yc + 0.6, 4.25 + 0.14), (0.14, 8.8, 0.16), "omberg_barn_timber")
-    for yy in (yc - 3.35, yc + 3.35):
-        g.box((-HX - 0.1, yy, 4.25 + 0.02), (0.1, 0.08, 0.18), "omberg_barn_timber")
+    gable_door(g, -1, -HX, yc, 7.2, 0.12, 4.13, "omberg_barn_door_black", 8.8, 0.6)
     g.box((-HX - 0.85, yc, 0.04 - 0.3), (1.7, 8.0, 0.6), "omberg_barn_apron")
     # windows: east side as photographed, west mirrored (inferred); small, white-framed, 1.0 x 0.9 m, sill 1.45 m
     for xw in (-28.5, -24.5, -16.7, -12.5):
@@ -412,29 +494,32 @@ def north_barn(g):
 def south_barn(g):
     HX, HY = 13.92, 5.11
     ZR, P = 7.95, 0.685               # ridge 120.7 - ground 112.75; pitch from eave 117.2 and the cross-gable ridge
-    ZD = 6.2                          # cross-gable ridge 118.95 (five lidar returns, level)
+    # Cross gable (frontispiece): a full gable wall from the eave line to its own level ridge, perpendicular to the main
+    # ridge and 0.95 m below it (Street View 7: apex at ~74 % of the eave-to-ridge rise), at 45 deg (the photos show a steep
+    # gable, the ortho a ~5 m wide triangle). The 5 lidar returns at 118.95 on it are 0.8 m under this ridge.
+    ZD, PC = 7.0, 1.0
     A0 = 1.3                          # cross-gable axis along the barn (those returns)
     T = 0.12
-    DZ = T * math.sqrt(1 + P * P)
+    DZ = T * math.sqrt(1 + P * P)     # one sheet drop for every plane, so all lowered edges (ridge, valleys) coincide
     OVH, OVG = 0.85, 0.5
     FL = 0.3
     ye = HY + OVH
     x0, x1 = -HX - OVG, HX + OVG
-    bC = (ZR - ZD) / P                # where the cross ridge meets the main roof
-    hwe = ye - bC                     # half width of the cross gable at the eave line (valleys at 45 deg: same pitch)
-    hw5 = HY - bC                     # ... and at the wall plane
+    bC = (ZR - ZD) / P                # where the cross ridge runs into the main roof
+    hwe = (P * ye - (ZR - ZD)) / PC   # half width of the cross gable at the eave line: the valleys are the plane intersections
+    hw5 = (P * HY - (ZR - ZD)) / PC   # ... and at the wall plane (the gable wall's half base)
     zm = lambda y: ZR - P * abs(y)
     under = lambda y: ZR - DZ - P * abs(y)
     dark, trim = "omberg_barn_roof_dark", "omberg_barn_trim"
     slab(g, [(x0, 0, ZR), (x1, 0, ZR), (x1, -ye, zm(ye)), (x0, -ye, zm(ye))], DZ, dark, trim, trim, [1, 2, 3])
     C, F = (A0, bC, ZD), (A0, ye, ZD)
     Vs, Vn = (A0 - hwe, ye, zm(ye)), (A0 + hwe, ye, zm(ye))
-    # west plane with the cross gable cut out along its two valleys; the valley edges are shared with the triangles
+    # west plane with the cross gable cut out along its two valleys; the valley edges are shared with the cross planes
     slab(g, [(x0, 0, ZR), (x1, 0, ZR), (x1, ye, zm(ye)), Vn, C, Vs, (x0, ye, zm(ye))], DZ, dark, trim, trim, [1, 2, 5, 6])
-    slab(g, [C, F, Vs], DZ, dark, trim, trim, [1])
+    slab(g, [C, F, Vs], DZ, dark, trim, trim, [1])      # the two cross planes: ridge C-F, rake F-V with its barge board
     slab(g, [C, Vn, F], DZ, dark, trim, trim, [1])
     ridge_cap(g, x0, x1, 0, ZR, P, dark)
-    ridge_cap(g, bC + 0.05, ye - 0.02, A0, ZD, P, dark, swap=True)
+    ridge_cap(g, bC + 0.26 * PC / P + 0.02, ye - 0.02, A0, ZD, PC, dark, swap=True)   # its ends touch the valleys
     # walls
     zu = under(HY)
     gable_wall(g, -HX, 0, HY, FL, under, "omberg_barn_white")
@@ -459,7 +544,7 @@ def south_barn(g):
     for sx in (-1.55, -0.65):
         g.box((sx, 0.12 + 1.55, 0.075), (0.04, 1.1, 0.03), red)
     g.box((0, 0.06, 0.07), (dw + 2 * fw + 0.6, 0.12, 0.14), "omberg_barn_apron")  # threshold slab at floor level
-    window(g, 1.5, 0.6, 4.5, frame=red, glass="omberg_barn_louvre", bars=(3, 1))  # slatted gable vent
+    window(g, 1.2, 0.7, 5.3, frame=red, glass="omberg_barn_louvre", bars=(3, 1))  # slatted gable vent
     g.pop()
     # east face and ends: the same arched windows (inferred, the photos do not show this side)
     for off in (-9.85, -8.2, -6.55, -4.9, 4.9, 6.55, 8.2, 9.85):
@@ -477,7 +562,7 @@ def south_barn(g):
         window(g, 1.2, 0.5, 5.0, frame=red, glass="omberg_barn_louvre", bars=(3, 1))
         g.pop()
     # cupola on the ridge (photo 6): louvred 1.6 m base and a hipped cap with a deep overhang
-    cb, cz0, cz1 = 0.8, ZR - 0.5, ZR + 1.1
+    cb, cz0, cz1 = 0.8, ZR - 0.8, ZR + 1.1
     g.box((A0, 0, (cz0 + cz1) / 2), (2 * cb, 2 * cb, cz1 - cz0), "omberg_barn_louvre")
     for sx in (-1, 1):
         for sy in (-1, 1):
