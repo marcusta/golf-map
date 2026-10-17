@@ -43,10 +43,13 @@ def materials():
     kit.MATERIALS["omberg_pale_grey"] = ("boards:207,201,189:v:0.145:2:2", (2, 2), None, .15, 0)
     kit.MATERIALS["omberg_main_grey"] = ("plaster:190,193,187", (2, 2), None, .12, 0)
     kit.MATERIALS["omberg_basement_stone"] = ("stone:119,124,119", (2, 2), None, .10, 0)
-    kit.MATERIALS["omberg_terracotta"] = ("pantile:159,75,48", (2, 2), None, .22, 0)
+    # Ortho-matched clay tile: check_survey.py, white-balanced on car-park asphalt,
+    # gives about 148,106,94 sRGB on the five tile roofs (2023: 171,121,104).
+    # The pantile texture averages ~0.9 of its input colour.
+    kit.MATERIALS["omberg_terracotta"] = ("pantile:165,116,100", (2, 2), None, .22, 0)
     # Roof relief is carried by the texture/normal map, not centimetre-scale
     # repeated mesh lips: the latter produced lighting bands in Unity 2018.
-    kit.MATERIALS["omberg_silver_roof"] = ("seam:166,170,169:0.45:1.8:0", (1.8, 1.8), None, .3, .25)
+    kit.MATERIALS["omberg_silver_roof"] = ("seam:142,146,147:0.45:1.8:0", (1.8, 1.8), None, .3, .25)  # foyer; ortho ~130,133,134
     kit.MATERIALS["omberg_entry_stone"] = ("entrystone", (3, 3), None, .09, 0)
     kit.TextureBank.tex_entrystone=entry_stone_texture
     kit.MATERIALS["omberg_red"] = ("boards:138,53,43:v:0.16:2:2", (2, 2), None, .14, 0)
@@ -505,7 +508,8 @@ def main():
             linear_solids.append(name)
     # Course-lighting calibration verified in the actual Unity scene. These
     # linear tint multipliers affect only export; texture files remain sRGB.
-    texture_tints={"omberg_main_roof":[.65,.69,.69],"omberg_basement_stone":[.65,.69,.67]}
+    # Connector roof untinted: the ortho shows pale metal (about 141,147,148 sRGB).
+    texture_tints={"omberg_main_roof":[1,1,1],"omberg_basement_stone":[.65,.69,.67]}
     for name,color in texture_tints.items():
         export_table[name]["color"]=color
     manifest={"format":"golfmap-props-v1","source":"clubhouse/model.py",
