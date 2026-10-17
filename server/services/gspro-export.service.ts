@@ -1455,6 +1455,18 @@ export class GsproExportService {
         return { path: rendered.path, report: [...plan.prepared, ...rendered.report] };
     }
 
+    /** The course's zone mask edge in px (vegetation-rules.json `zoneMaskResolution`), null = gspro.py's default. */
+    private async zoneMaskResolution(courseName: string): Promise<number | null> {
+        const file = path.join(this.courseDocsRoot, courseSlug(courseName), VEGETATION_RULES_FILE);
+        if (!await statOrNull(file)) return null;
+        const v = (JSON.parse(await readFile(file, 'utf8')) as { zoneMaskResolution?: unknown }).zoneMaskResolution;
+        if (v === undefined) return null;
+        if (typeof v !== 'number' || !Number.isInteger(v) || v < 256 || v > 8192) {
+            throw new ConflictError(`${file}: zoneMaskResolution must be a whole number of px from 256 to 8192`);
+        }
+        return v;
+    }
+
     /** `gspro.py zones` for a terrain: its command, its output, and what its fingerprint is made of. */
     private async zonesPlan(courseId: string, kind: TerrainKind) {
         const course = await this.courses.get(courseId);
@@ -1475,11 +1487,15 @@ export class GsproExportService {
             '--terrain', kind,
         ];
         if (kind === 'outer') args.push('--exclude-square', terrainArg(terrain.inner));
+        // The course's mask edge (vegetation-rules.json zoneMaskResolution): each mask is an uncompressed RGBA
+        // texture in the GSPro bundle, 64 MB at 4096, and Unity players load no serialized file over 4 GB.
+        const resolution = await this.zoneMaskResolution(course.name);
+        if (resolution !== null) args.push('--resolution', String(resolution));
         const inputs = async () => ({
             files: [sidecar],
             // The zones themselves by content (so a generator run that reproduced them counts as
             // unchanged), the zone types' bindings, and the rest of the course's features.
-            values: { ...await this.zonesStamp(courseId), features: await this.history.latestStamp(courseId) },
+            values: { ...await this.zonesStamp(courseId), features: await this.history.latestStamp(courseId), resolution },
             // The masks are only known once it has run: recorded, so a hand-deleted one is noticed.
             outputsAfter: async () => [out, ...await this.zoneMasks(dir, out)],
         });
