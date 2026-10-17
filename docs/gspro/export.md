@@ -228,6 +228,14 @@ the next 10 m (`SIDE_STEP_M`) so a hand-typed area is never a decimal-metre terr
   fill-only SVG for the Inkscape/Blender leg of OPCD. One layer per hole (`Hole1`…, the
   unpadded spelling the course files use), anything not on a hole on `Others` (not the
   reserved `Hole99` — that changes how Blender cuts).
+  **Layer order = the app's stack** (`shared/render/stack-key.ts`): `Others` at the bottom, the
+  holes and drawing groups by rank ascending (a higher rank on top, as the Draw tool paints them),
+  `Roads` last. OPCD cuts a later layer out of an earlier one, so it builds what the Draw tool
+  shows. Until 2026-10-17 the holes went descending (Hole1 topmost, OPCD's own file convention):
+  Omberg's hole-10 tees, hole 14/16/17 greens and the practice green then lay under a lower hole's
+  fairway and got no mesh while the app showed them on top; with the app's order all 314 shapes
+  built. Course-level shapes outside the Roughs layer still sit in `Others` (the app paints them
+  above the holes); the hidden-shape warning names any that a hole covers.
   (Named drawing groups use stable internal `Hole100`… layers, with their
   human name in `data-group-name`; renaming a group preserves every mesh
   name. They export as ordinary SVG shapes, but neither these groups nor

@@ -129,27 +129,27 @@ def test_drawing_group_order_between_holes_and_among_peers(tmp_path):
         _, rows = gspro._load_course_features(db, 'Testbana', 'app')
         return [r['hole_number'] for r in rows], [label for label, _ in _layers(out)]
 
-    assert export() == ([1, 101, 100, 2], ['Hole2', 'Hole100', 'Hole101', 'Hole1'])
+    assert export() == ([1, 101, 100, 2], ['Hole1', 'Hole101', 'Hole100', 'Hole2'])
     with sqlite3.connect(db) as conn:
         conn.execute('UPDATE holes SET drawing_group_after = 0 WHERE number >= 100')
-    assert export() == ([101, 100, 1, 2], ['Hole2', 'Hole1', 'Hole100', 'Hole101'])
+    assert export() == ([101, 100, 1, 2], ['Hole101', 'Hole100', 'Hole1', 'Hole2'])
     with sqlite3.connect(db) as conn:
         conn.execute('UPDATE holes SET drawing_group_order = CASE number WHEN 100 THEN 0 ELSE 1 END WHERE number >= 100')
-    assert export() == ([100, 101, 1, 2], ['Hole2', 'Hole1', 'Hole101', 'Hole100'])
+    assert export() == ([100, 101, 1, 2], ['Hole100', 'Hole101', 'Hole1', 'Hole2'])
     # The layer list can reorder holes too, without renaming their SVG layers.
     with sqlite3.connect(db) as conn:
         conn.execute('ALTER TABLE holes ADD COLUMN drawing_stack_order INTEGER')
         conn.execute('UPDATE holes SET drawing_stack_order = CASE number WHEN 100 THEN 1 WHEN 2 THEN 2 WHEN 101 THEN 3 ELSE 4 END')
-    assert export() == ([100, 2, 101, 1], ['Hole1', 'Hole101', 'Hole2', 'Hole100'])
+    assert export() == ([100, 2, 101, 1], ['Hole100', 'Hole2', 'Hole101', 'Hole1'])
 
 
 def test_layer_per_hole_and_others_for_the_rest(tmp_path):
     """One layer per hole named HoleN, features with no hole on 'Others' —
     never the reserved Hole99, which would change how Blender cuts. Document
-    order matches the OPCD course files: Others first, then the holes
-    descending, so Hole1 lands topmost in Inkscape."""
+    order is the app's stack: Others first, then the holes by rank ascending,
+    so the highest-numbered hole lands topmost, as the Draw tool paints it."""
     layers = _layers(_export(tmp_path, BASIC))
-    assert [label for label, _ in layers] == ["Others", "Hole2", "Hole1"]
+    assert [label for label, _ in layers] == ["Others", "Hole1", "Hole2"]
     assert dict(layers)["Others"] == ["others_6"]
 
 
@@ -264,7 +264,7 @@ def test_the_roughs_layer_is_written_under_the_course_level_features(tmp_path):
 
 def test_roads_get_their_own_layer_on_top_of_everything(tmp_path):
     """Roads and paths, on a hole or not and whatever their sort_order, go to
-    a 'Roads' layer written last — topmost in Inkscape, over Hole1 — the
+    a 'Roads' layer written last — topmost in Inkscape, over every hole — the
     opposite end of the stack from the Roughs."""
     feats = BASIC + [
         ("path", None, -5, [_ring((0.30, 0.50), 8)], "bspline"),
@@ -272,7 +272,7 @@ def test_roads_get_their_own_layer_on_top_of_everything(tmp_path):
     ]
     for stack in ("app", "opcd"):
         layers = _layers(_export(tmp_path / stack, feats, stack=stack))
-        assert [label for label, _ in layers] == ["Others", "Hole2", "Hole1", "Roads"]
+        assert [label for label, _ in layers] == ["Others", "Hole1", "Hole2", "Roads"]
         assert dict(layers)["Roads"] == ["roads_7", "roads_8"]  # named after their pieces' numbers
         assert "path" not in _types_in(tmp_path / stack / "course.svg", "Hole1")
 

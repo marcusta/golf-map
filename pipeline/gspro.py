@@ -3475,12 +3475,16 @@ def cmd_svg(bbox, out: Path, db_path: Path, course_ident: str,
             f' style="{PATH_STYLE.format(fill=road.fill)}"{rule} d="{" ".join(subpaths)}"/>'
         )
 
-    # Document order matches the OPCD files: the off-hole layer at the bottom,
-    # then the holes descending so Hole1 ends up topmost in Inkscape, and the
-    # roads over everything.
+    # Document order is the app's stack (shared/render/stack-key.ts): the
+    # off-hole layer at the bottom, then the holes and drawing groups by rank
+    # ascending - a higher rank on top, as the Draw tool paints them - and the
+    # roads over everything. OPCD cuts a later layer out of an earlier one, so
+    # this is what it builds. (OPCD's own course files put Hole1 topmost; that
+    # order hid Omberg's hole-10 tees under hole 1's fairway while the app
+    # showed them on top, 2026-10-17.)
     layer_ranks = {f"Hole{r['hole_number']}": r['group_rank'] for r in rows
                    if r['hole_number'] is not None and r['type'] not in ROADS_TYPES}
-    order = sorted((k for k in layers if k.startswith("Hole")), key=lambda k: -layer_ranks[k])
+    order = sorted((k for k in layers if k.startswith("Hole")), key=lambda k: layer_ranks[k])
     if COURSE_WIDE_LAYER in layers:
         order.insert(0, COURSE_WIDE_LAYER)
     if ROADS_LAYER in layers:
