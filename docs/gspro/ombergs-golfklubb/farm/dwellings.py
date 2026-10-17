@@ -608,14 +608,17 @@ def win(t, w=0.95, h=1.7, sill=0.85, **k):
     return d
 
 
-def pave_poly(g, outline, z_top, **kw):
-    """Concave outlines: ear-clip into triangles for the top, sides as usual."""
-    pts = list(outline)
-    tris = []
-    idx = list(range(len(pts)))
-    guard = 0
-    while len(idx) > 3 and guard < 500:
-        guard += 1
+TG = None           # terrain height under local (x, y) relative to the placement ground; set per asset in build()
+LIFT = 0.05         # paving sits this far above the course terrain (never below it)
+KERB = 0.25         # kerb face below the paving edge, sunk into the ground
+
+
+def earclip(pts):
+    pts = list(pts)
+    tris, idx = [], list(range(len(pts)))
+    for _ in range(500):
+        if len(idx) <= 3:
+            break
         for k in range(len(idx)):
             i0, i1, i2 = idx[k - 1], idx[k], idx[(k + 1) % len(idx)]
             a, b, c = pts[i0], pts[i1], pts[i2]
@@ -629,13 +632,43 @@ def pave_poly(g, outline, z_top, **kw):
         else:
             break
     tris.append(tuple(pts[i] for i in idx))
-    mat = kw.get("mat", "brick_paving")
-    for t in tris:
-        g.poly([(x, y, z_top) for x, y in t], mat, uv=("uv", [(x, y) for x, y in t]))
-    n = len(pts)
+    return tris
+
+
+def drape(g, outline, mat="brick_paving", kerb="granite_plinth", cell=1.0):
+    """Paving laid on the course terrain (CCW outline): the outline is ear-clipped, each triangle cut on a metre grid,
+    every vertex at terrain + LIFT, and the rim gets a kerb face sunk KERB below the paving."""
+    for tri in earclip(outline):
+        xs, ys = [p[0] for p in tri], [p[1] for p in tri]
+        for i in range(int(math.floor(min(xs) / cell)), int(math.ceil(max(xs) / cell))):
+            for j in range(int(math.floor(min(ys) / cell)), int(math.ceil(max(ys) / cell))):
+                poly = list(tri)
+                for hp in ((1, 0, -i * cell), (-1, 0, (i + 1) * cell), (0, 1, -j * cell), (0, -1, (j + 1) * cell)):
+                    poly = clip_hp(poly, *hp)
+                    if len(poly) < 3:
+                        break
+                if len(poly) < 3 or abs(area(poly)) < 1e-4:
+                    continue
+                if area(poly) < 0:
+                    poly = poly[::-1]
+                v = [(x, y, TG(x, y) + LIFT) for x, y in poly]
+                for k in range(1, len(v) - 1):
+                    g.poly([v[0], v[k], v[k + 1]], mat, uv=("uv", [(v[0][0], v[0][1]), (v[k][0], v[k][1]), (v[k + 1][0], v[k + 1][1])]))
+    n = len(outline)
     for i in range(n):
-        a, b = pts[i], pts[(i + 1) % n]
-        g.poly([(a[0], a[1], z_top - 0.6), (b[0], b[1], z_top - 0.6), (b[0], b[1], z_top), (a[0], a[1], z_top)], kw.get("kerb", "granite_plinth"))
+        a, b = outline[i], outline[(i + 1) % n]
+        L = math.dist(a, b)
+        m = max(1, int(math.ceil(L / cell)))
+        for k in range(m):
+            p0 = (a[0] + (b[0] - a[0]) * k / m, a[1] + (b[1] - a[1]) * k / m)
+            p1 = (a[0] + (b[0] - a[0]) * (k + 1) / m, a[1] + (b[1] - a[1]) * (k + 1) / m)
+            z0, z1 = TG(*p0) + LIFT, TG(*p1) + LIFT
+            g.poly([(p0[0], p0[1], z0 - KERB), (p1[0], p1[1], z1 - KERB), (p1[0], p1[1], z1), (p0[0], p0[1], z0)], kerb)
+
+
+def paved(x, y):
+    """Height of the paving surface at a point (for steps and pipes)."""
+    return TG(x, y) + LIFT
 
 
 # ---------------------------------------------------------------------------------------------
@@ -748,7 +781,6 @@ XC = -2.195     # axis of the central body (and of the veranda)
 TERRACE = [(-16, -8.3), (-10.5, -8.7), (-8, -9.5), (-5.5, -10.2), (-2.2, -10.5), (0.5, -10.0), (2.0, -9.0), (4.5, -8.6),
            (10.6, -8.3), (10.6, -5.7), (18, -5.7), (18, 7.8), (10.5, 7.8), (10.5, 5.3), (16, 5.3), (16, -2.7), (2.27, -2.7),
            (2.27, -5.9), (0.5, -5.9), (0.5, -8.06), (-4.9, -8.06), (-4.9, -5.9), (-6.66, -5.9), (-6.66, -2.7), (-16, -2.7)]
-Z_TERRACE = 0.15
 
 
 def main_roofs():
@@ -770,11 +802,7 @@ def main_roofs():
 
 
 def main_ground(x, y):
-    if y > 8.0:
-        return -0.3 + 0.025 * x
-    if pt_in_poly(TERRACE, x, y) or y < -2.5:
-        return Z_TERRACE
-    return 0.0
+    return paved(x, y) if (pt_in_poly(TERRACE, x, y) or y < -2.5) else TG(x, y)
 
 
 MAIN_PIPES = [(-15.65, -2.77, 0, -1), (-11.5, -2.77, 0, -1), (-6.86, -2.77, 0, -1), (2.55, -2.77, 0, -1), (6.1, -2.77, 0, -1),
@@ -828,9 +856,9 @@ def build_main(g):
     for x in (-5.9, 0.4):
         chimney(g, x, 1.3, 6.2, 8.6)
     veranda(g)
-    stair(g, 13.0, -2.7, (0, -1), 1.7, 0.45, Z_TERRACE)       # steps to the garden doors of the east wing
-    stair(g, 16.0, 1.3, (1, 0), 1.7, 0.45, Z_TERRACE)
-    pave_poly(g, TERRACE, Z_TERRACE)
+    stair(g, 13.0, -2.7, (0, -1), 1.7, 0.45, paved(13.0, -3.4))       # steps to the garden doors of the east wing
+    stair(g, 16.0, 1.3, (1, 0), 1.7, 0.45, paved(16.7, 1.3))
+    drape(g, TERRACE)
     return roofs
 
 
@@ -893,7 +921,7 @@ def veranda(g):
     # balustrade on the deck; it stops short of the central roof's eave gutter at the wall
     yb = -6.6
     balustrade(g, [(x0 + 0.08, yb), (x0 + 0.08, y0 - 0.03), (x1 - 0.08, y0 - 0.03), (x1 - 0.08, yb)], deck, h=0.95)
-    stair(g, XC, y0, (0, -1), 1.9, fl, Z_TERRACE, tread=0.34)
+    stair(g, XC, y0, (0, -1), 1.9, fl, paved(XC, y0 - 0.5), tread=0.34)
 
 
 # ---------------------------------------------------------------------------------------------
@@ -905,7 +933,6 @@ E_OUTLINE = [(-EX, -EY), (EX, -EY), (EX, EY), (-EX, EY)]
 E_XD = -0.45            # axis of the dormer (lidar ridge x)
 E_ZR, E_P = 7.18, 0.748
 E_DORM_Y = 3.4          # the dormer's gable wall
-E_PAVING = 0.06
 
 
 def east_roofs():
@@ -944,7 +971,7 @@ def build_east(g):
     walls.append(Wall(a, b, roofs, wm, bottom=bot, openings=[dict(t=5.6, w=0.95, h=1.3, sill=5.0, kind="window", bars=(2, 3))]))
     for w in walls[:4]:
         frieze(g, w)
-    finish(g, roofs, O, walls, "roof_tile_graphite", "roof_metal_black", E_PIPES, lambda x, y: E_PAVING if (y < -EY and -9.0 < x < -1.2) or x < -EX else 0.0)
+    finish(g, roofs, O, walls, "roof_tile_graphite", "roof_metal_black", E_PIPES, lambda x, y: paved(x, y) if (y < -EY and -9.0 < x < -1.2) or x < -EX else TG(x, y))
     # chimneys on the ridge (lidar top 8.2 at x 2.4; the ortho shows a second one over the dormer valley apex side)
     for x in (-3.4, 2.4):
         chimney(g, x, 0.0, 6.0, 8.2, sx=0.75, sy=0.75)
@@ -960,12 +987,12 @@ def build_east(g):
         g.box((px0 + 0.1, yy, (0.35 + deck - slab) / 2), (0.15, 0.15, deck - slab - 0.35), "white_trim")
     g.box(((px0 + px1) / 2 - 0.05, 0, deck - slab / 2), (px1 - px0 + 0.1, 2 * py + 0.2, slab), "white_trim", mats={"top": "wood_deck_grey"})
     balustrade(g, [(-EX - 0.1, -py + 0.03), (px0 - 0.03, -py + 0.03), (px0 - 0.03, py - 0.03), (-EX - 0.1, py - 0.03)], deck, h=0.95)
-    stair(g, px0, 0, (-1, 0), 1.7, 0.35, E_PAVING, tread=0.34)
+    stair(g, px0, 0, (-1, 0), 1.7, 0.35, paved(px0 - 0.5, 0), tread=0.34)
     # steps at the garden door on the -y side
-    stair(g, 0, -EY, (0, -1), 1.7, 0.4, E_PAVING, tread=0.34)
+    stair(g, 0, -EY, (0, -1), 1.7, 0.4, paved(0, -EY - 0.5), tread=0.34)
     # entrance forecourt and the patio strip along the -y side (ortho: brick)
-    pave_poly(g, [(-14.0, -3.2), (-EX, -3.2), (-EX, 3.2), (-14.0, 3.2)], E_PAVING)
-    pave_poly(g, [(-9.0, -6.9), (-1.2, -6.9), (-1.2, -EY), (-9.0, -EY)], E_PAVING)
+    drape(g, [(-14.0, -3.2), (-EX, -3.2), (-EX, 3.2), (-14.0, 3.2)])
+    drape(g, [(-9.0, -6.9), (-1.2, -6.9), (-1.2, -EY), (-9.0, -EY)])
 
 
 # ---------------------------------------------------------------------------------------------
@@ -975,8 +1002,12 @@ def build_east(g):
 def build(add, new, ev):
     for osm_id, aid, builder, ground in (("1431566968", "omberg_farm_main_house", build_main, 113.30),
                                          ("1431566962", "omberg_farm_east_house", build_east, 113.26)):
+        global TG
         r = ev.osm[osm_id]["properties"]["rect"]
+        yaw = (90 - r["angleDeg"]) % 180
+        sy, cy_ = math.sin(math.radians(yaw)), math.cos(math.radians(yaw))
+        # local x runs along bearing yaw, local y is 90 degrees counter-clockwise of it
+        TG = lambda x, y, r=r, ground=ground: ev.terrain(r["cx"] + x * sy - y * cy_, r["cy"] + x * cy_ + y * sy) - ground
         g = new()
         builder(g)
-        yaw = (90 - r["angleDeg"]) % 180
         add(aid, g, r["cx"], r["cy"], yaw, ground)
