@@ -196,6 +196,8 @@ export class MapService {
     readonly displayedVersion = new Signal<string | null>(null);
     /** Current zoom level, updated live (status bars, LOD decisions). */
     readonly zoom = new Signal(0);
+    /** Current bearing in degrees (0 = north up), updated live. */
+    readonly bearing = new Signal(0);
     /**
      * Terrain vertical exaggeration. Default 1.0 — flat-ish top-down 2D
      * editing; 1.5 makes relief pop for visual inspection.
@@ -381,9 +383,11 @@ export class MapService {
             batch(() => {
                 this.ready.set(true);
                 this.zoom.set(map.getZoom());
+                this.bearing.set(map.getBearing());
             });
         });
         map.on('zoom', () => this.zoom.set(map.getZoom()));
+        map.on('rotate', () => this.bearing.set(map.getBearing()));
         // Gesture-end drape repair: a zoom/pan burst mid-edit can leave
         // draped overlay layers (fills, the draft line) on stale terrain
         // render-to-texture tiles — see repairDrapedOverlays. Only gestures
@@ -574,6 +578,11 @@ export class MapService {
         const map = this.map.get();
         if (!map || !this.tiles) return;
         map.fitBounds(boundsToArray(this.tiles.manifest.bounds), { padding: 24 });
+    }
+
+    /** Turn the map back to north up, keeping centre, zoom and pitch. */
+    resetNorth(): void {
+        this.map.get()?.easeTo({ bearing: 0 });
     }
 
     /**

@@ -642,6 +642,24 @@ export class DrawToolService {
             ctx.map.map.get()?.boxZoom.disable();
         }));
         ctx.track(() => ctx.map.map.peek()?.boxZoom.enable());
+
+        // Draw is plain 2D seen from straight above: a right-drag (or
+        // Shift+arrow) tilt put clicks on the terrain behind the cursor, so
+        // shapes landed off where they were drawn. Max pitch 0 flattens the
+        // view and blocks tilting; rotating the bearing still works.
+        let savedMaxPitch: number | null = null;
+        ctx.track(effect(() => {
+            if (!ctx.map.ready.get()) return;
+            const map = ctx.map.map.get();
+            if (!map) return;
+            untrack(() => {
+                savedMaxPitch ??= map.getMaxPitch();
+                map.setMaxPitch(0);
+            });
+        }));
+        ctx.track(() => {
+            if (savedMaxPitch !== null) ctx.map.map.peek()?.setMaxPitch(savedMaxPitch);
+        });
     }
 
     deactivate(): void {

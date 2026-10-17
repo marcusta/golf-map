@@ -84,6 +84,9 @@ const tpl = template(`
                     <span class="layers-glyph"><span></span><span></span><span></span></span>Layers
                 </button>
                 <button bind="fit" type="button" class="control-pill" title="Fit view to course bounds">Fit course</button>
+                <button bind="north" type="button" class="control-pill north-pill" title="Turn the map back to north up" aria-label="Reset to north" data-testid="map-north-btn">
+                    <span bind="northGlyph" class="north-glyph">N</span>
+                </button>
             </div>
         </div>
         <div bind="status" class="map-canvas__status">
@@ -102,7 +105,7 @@ const tpl = template(`
  * The editor's map canvas: hosts the MapLibre map for the current course,
  * wires TilesetService (manifest) → MapService (map lifecycle) →
  * ElevationService (terrain sampling), and renders the surrounding chrome —
- * loading/no-tiles states, a bottom-left Layers/Fit course control cluster
+ * loading/no-tiles states, a bottom-left Layers/Fit course/north control cluster
  * (with a glass popover for hillshade/exaggeration/imagery-vintage), and a
  * bottom-right cursor status bar (lat/lon, elevation, zoom, data attribution).
  *
@@ -203,6 +206,18 @@ export class EditorCanvasComponent extends Component {
                     &:hover, &.active {
                         background: color-mix(in srgb, ${t('overlay-readout-fill')} 85%, ${t('overlay-text')} 15%);
                     }
+                }
+
+                /* Shown only while the map is rotated; the N turns with the
+                   map so it always points at true north. */
+                & .north-pill {
+                    display: none;
+                    &.show { display: flex; }
+                }
+                & .north-glyph {
+                    display: inline-block;
+                    font-weight: 700;
+                    color: ${t('color-accent-data')};
                 }
 
                 & .layers-glyph {
@@ -444,6 +459,11 @@ export class EditorCanvasComponent extends Component {
             controls: { className: () => this.mapSvc.ready.get() ? 'map-canvas__controls show' : 'map-canvas__controls' },
             status: { className: () => this.mapSvc.ready.get() ? 'map-canvas__status show' : 'map-canvas__status' },
             fit: { onclick: () => this.mapSvc.fitCourse() },
+            north: {
+                onclick: () => this.mapSvc.resetNorth(),
+                className: () => Math.abs(this.mapSvc.bearing.get()) > 0.05 ? 'control-pill north-pill show' : 'control-pill north-pill',
+            },
+            northGlyph: { style: () => `transform: rotate(${-this.mapSvc.bearing.get()}deg)` },
             layersBtn: {
                 onclick: () => this.layersOpen.set(!this.layersOpen.get()),
                 className: () => this.layersOpen.get() ? 'control-pill active' : 'control-pill',
