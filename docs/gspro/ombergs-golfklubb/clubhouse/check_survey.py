@@ -7,13 +7,40 @@ Run inside Blender 4.5 on a built model (nothing is written except into --out):
 Options after "--":
   --out DIR        output folder (images + survey-check.json), required
   --props FILE     props.json of the build (default: beside the opened .blend)
-  --data DIR       folder with lidar-crop.npz and ortho-2025.png (default <repo>/data/omberg-clubhouse)
-  --survey FILE    survey.json (default: beside this script)
+  --site FILE      site.json describing another site (see below). Without it the clubhouse site is
+                   checked exactly as before (all the hard-coded defaults below).
+  --data DIR       folder with lidar-crop.npz and ortho-2025.png (default <repo>/data/omberg-clubhouse,
+                   or the site's data folder)
+  --survey FILE    footprint source: survey.json (clubhouse default, beside this script) or an
+                   osm-buildings.json GeoJSON list (overrides the site's "footprints")
   --focus E,N,H    extra zoomed pair of images around E,N with half-width H metres
-                   (default 477805,6457674,14 = the main entrance foyer)
+                   (default 477805,6457674,14 = the main entrance foyer; site default: its "focus",
+                   else the first asset)
   --dz             also add the instance dz. Off by default: layoutZ already holds the intended
                    base height, and Unity's dz only lifts the asset from the terrain under its
                    centre to that base (white connector: probe 106.69 + dz 0.511 = base 107.2)
+
+site.json (all paths relative to the file itself; every key optional unless noted)
+  name          label used in titles
+  dataDir       folder with the lidar and orthos (default: the file's folder)
+  crop          crop.json (default "crop.json"): bounds [e0,n0,e1,n1], ortho2025/ortho2023 {file, topLeftE,
+                topLeftN, pixelM}. Instead of a file this may be the same object inline.
+  origin        [E, N, zBase] of the review scene, i.e. where model.py puts the objects and which z the
+                objects' z=0 is (default: the .blend's scene["golfmap_origin_epsg3006"])
+  assetPrefix   check every mesh object whose name starts with this (e.g. "omberg_farm_")
+  assets        explicit asset names, checked in addition to the prefix matches
+  categories    props.json asset categories that carry roofs (default ["building"]); other assets are left
+                out of the roof analysis and only get their transform compared with props.json
+  groundAssets  names excluded from the roof analysis (only their transform is checked)
+  osm           {asset: osm way id | [ids]}  (ids are the OSM way numbers, as strings or numbers)
+  footprints    osm-buildings.json (GeoJSON features, properties.osm_id) or a survey.json
+  sections      {asset: [roof-edge section ids]} (survey.json only)
+  focus         "E,N,H" like --focus
+  colors        {asset: [r,g,b]}; assets without one get distinct generated colours
+  colourReference {material, boxes:[[e0,e1,n0,n1],...]}  neutral grey asphalt used to white-balance the
+                ortho for the roof-colour check; without it roof colours are compared uncalibrated
+With --site the report also gets "lidarFacts": per OSM footprint, independent of the model, the lidar
+roof ridge/eave (absolute), ground, roof-return coverage and the unmapped >2 m roof clusters.
 
 What it does
   1. Evaluates every building mesh in world space and rasterizes a model DSM at 0.25 m: the maximum
@@ -83,6 +110,14 @@ COLORS = {  # bright outline colours
 OSM_COLOR = (255, 230, 0)
 TRACE_COLOR = (255, 0, 200)
 OTHER_COLOR = (230, 230, 230)
+TITLE = "OMBERG CLUBHOUSE AREA"
+FOOTPRINT_LABEL = "survey.json"
+COLOR_REFERENCE = dict(material="omberg_courtyard_asphalt", boxes=[
+    (477800, 477860, 6457695, 6457760), (477860, 477930, 6457690, 6457735), (477834, 477860, 6457670, 6457700)])
+VEG_ROUGHNESS = 0.8       # m, median 2 m-block std of roof-return heights above which an unmapped cluster is called vegetation
+BIG_VIEW = (477775, 6457640, 477850, 6457715, 6)      # lidar-on-ortho validation view (e0, n0, e1, n1, k)
+PALETTE = [(0, 255, 255), (255, 160, 0), (255, 90, 255), (0, 255, 120), (255, 255, 0), (120, 160, 255),
+           (255, 120, 120), (200, 255, 0), (0, 200, 255), (255, 255, 255), (255, 60, 60), (160, 255, 200)]
 
 
 def short(name):
@@ -619,7 +654,7 @@ def fit_sun(normals, lum, weights):
     return dict(azimuthDeg=az, elevationDeg=el, a=float(coef[0]), b=float(coef[1]), r2=1 - sse / max(sst, 1e-12), sun=s_)
 
 
-def colour_check(names, tris, mg, owned, dsm, union, ref_cells, orthos, props, tex_dir, out, report):
+def colour_check(names, tris, mg, owned, dsm, union, ref_cells, orthos, props, tex_dir, out, report, ref_name="omberg_courtyard_asphalt"):
     """Median ortho roof colour vs. the model's exported colour, per asset and roof material."""
     mats_tbl = props["materials"]
     tex_cache = {}
@@ -641,7 +676,7 @@ def colour_check(names, tris, mg, owned, dsm, union, ref_cells, orthos, props, t
     def clean_mask(pix, mat):
         """Drop saturated pixels, cast shadows and (terracotta only) blue-grey pixels such as real solar panels the model lacks."""
         ok = pix.max(1) < 250
-        if mat == "omberg_terracotta":
+        if mat.endswith("terracotta"):
             ok &= pix[:, 0] > pix[:, 2] + 10
         lum = pix.mean(1)
         if ok.any():
@@ -653,8 +688,9 @@ def colour_check(names, tris, mg, owned, dsm, union, ref_cells, orthos, props, t
     for name in names:
         P, mats = tris[name]
         solar = np.zeros(owned[name].shape, bool)
-        if (mats == "omberg_solar_panel").any():
-            solar = dilate(~np.isnan(raster_max(P[mats == "omberg_solar_panel"], mg)), 2)
+        is_solar = np.array([m.endswith("solar_panel") for m in mats], bool)
+        if is_solar.any():
+            solar = dilate(~np.isnan(raster_max(P[is_solar], mg)), 2)
         z = dsm[name]
         pad = np.pad(z, 1, constant_values=np.nan)
         lap = (pad[:-2, 1:-1] + pad[2:, 1:-1] + pad[1:-1, :-2] + pad[1:-1, 2:] - 4 * z)
@@ -662,7 +698,7 @@ def colour_check(names, tris, mg, owned, dsm, union, ref_cells, orthos, props, t
         gy = -(pad[2:, 1:-1] - pad[:-2, 1:-1]) / (2 * MODEL_CELL)
         planar = np.isfinite(lap) & (np.abs(lap) < .03) & np.isfinite(gx) & np.isfinite(gy)
         for m in sorted(set(mats)):
-            if m in ("", "omberg_solar_panel"):
+            if m == "" or m.endswith("solar_panel"):
                 continue
             dm = raster_max(P[mats == m], mg)
             top = ~np.isnan(dm) & (dm >= z - .03)
@@ -685,27 +721,35 @@ def colour_check(names, tris, mg, owned, dsm, union, ref_cells, orthos, props, t
         return img[y, x].astype(float)
 
     # --- neutral reference: car-park / drive asphalt (grey, no building or object near)
-    ref_name = "omberg_courtyard_asphalt"
-    asph_model_lin = np.array(mats_tbl[ref_name]["color"], float)
-    y_ref = float(asph_model_lin @ np.array([.2126, .7152, .0722]))
-    neutral = np.full(3, y_ref)                          # a neutral grey of the model asphalt's luminance
-    ref_e, ref_n = ref_cells
-    cal = dict(reference="grey asphalt of the car park and drives (low-saturation mid-grey ortho pixels away from buildings, cars and trees; %d candidate cells)" % len(ref_e),
-               assumption="that asphalt is a NEUTRAL grey with the same albedo as the model's courtyard asphalt (linear %s, sRGB %s, Y=%.3f); "
-                          "so white balance and exposure are set to make it so. The absolute lightness of every suggestion rests on that albedo, +-30 %% is realistic." % (
-                              [rnd(v, 4) for v in asph_model_lin], [int(round(v)) for v in lin_to_srgb(asph_model_lin)], y_ref),
-               note="the courtyard itself is NOT usable as a neutral: in the ortho it is red-brown brick-like paving.", years={})
+    if ref_cells is not None:
+        asph_model_lin = np.array(mats_tbl[ref_name]["color"], float)
+        y_ref = float(asph_model_lin @ np.array([.2126, .7152, .0722]))
+        neutral = np.full(3, y_ref)                          # a neutral grey of the model asphalt's luminance
+        ref_e, ref_n = ref_cells
+        cal = dict(reference="grey asphalt of the car park and drives (low-saturation mid-grey ortho pixels away from buildings, cars and trees; %d candidate cells)" % len(ref_e),
+                   assumption="that asphalt is a NEUTRAL grey with the same albedo as the model's courtyard asphalt (linear %s, sRGB %s, Y=%.3f); "
+                              "so white balance and exposure are set to make it so. The absolute lightness of every suggestion rests on that albedo, +-30 %% is realistic." % (
+                                  [rnd(v, 4) for v in asph_model_lin], [int(round(v)) for v in lin_to_srgb(asph_model_lin)], y_ref),
+                   note="the courtyard itself is NOT usable as a neutral: in the ortho it is red-brown brick-like paving.", years={})
+    else:
+        cal = dict(reference=None, note="no colourReference in the site file: the ortho is NOT white-balanced; raw ortho colours (sun-shade corrected only "
+                                        "where terracotta roofs allow a fit) are compared with the model, so a global cast/exposure of the ortho remains in dL/dE.", years={})
     year_info = {}
     for year, img in orthos.items():
-        rp = sample(img, ref_e, ref_n)
-        okp = (rp.max(1) - rp.min(1) < .18 * rp.max(1)) & (rp.mean(1) > 70) & (rp.mean(1) < 160)
-        a_pix = np.median(rp[okp], axis=0)
-        a_lin = srgb_to_lin(a_pix)
-        k = a_lin / neutral                                # per-channel white balance x exposure x horizontal illumination
+        if ref_cells is not None:
+            rp = sample(img, ref_e, ref_n)
+            okp = (rp.max(1) - rp.min(1) < .18 * rp.max(1)) & (rp.mean(1) > 70) & (rp.mean(1) < 160)
+            a_pix = np.median(rp[okp], axis=0)
+            a_lin = srgb_to_lin(a_pix)
+            k = a_lin / neutral                                # per-channel white balance x exposure x horizontal illumination
+        else:
+            okp = np.zeros(0, bool)
+            a_pix = np.zeros(3)
+            k = np.ones(3)
         # sun direction from the terracotta tile roofs (same material, many orientations)
         tn, tl, tw = [], [], []
         for g in groups:
-            if g["material"] != "omberg_terracotta":
+            if not g["material"].endswith("terracotta"):
                 continue
             pix_ = sample(img, g["e"], g["n"])
             okc = clean_mask(pix_, g["material"])
@@ -726,7 +770,7 @@ def colour_check(names, tris, mg, owned, dsm, union, ref_cells, orthos, props, t
                 sun["rejected"] = True
         use_sun = sun is not None and not sun.get("rejected")
         year_info[year] = dict(k=k, sun=sun if use_sun else None)
-        cal["years"][year] = dict(asphaltOrthoMedianSrgb=[int(v) for v in a_pix], asphaltPixels=int(okp.sum()),
+        cal["years"][year] = dict(asphaltOrthoMedianSrgb=[int(v) for v in a_pix] if ref_cells is not None else None, asphaltPixels=int(okp.sum()),
                                   asphaltOrthoVsModelRatioLinear=[rnd(v, 3) for v in k],
                                   sunFit=None if sun is None else dict(azimuthDeg=sun["azimuthDeg"], elevationDeg=sun["elevationDeg"],
                                                                       r2=rnd(sun["r2"], 3), aOverB=rnd(sun["a"] / max(sun["b"], 1e-9), 2),
@@ -813,25 +857,193 @@ def colour_check(names, tris, mg, owned, dsm, union, ref_cells, orthos, props, t
         c = r["ortho"]["2025"]["calibratedVsModel"]
         draw_text(img, 10, y + 4, "%s / %s" % (short(r["asset"]), r["material"].replace("omberg_", "")), sc, (255, 255, 255), None)
         draw_text(img, 10, y + 4 + 7 * sc + 3, "%s M2   DE %s  DL %+.0f  DC %+.0f  DH %+.0f" % (r["areaM2"], c["dE76"], c["dL"], c["dChroma"], c["dHueDeg"]), 1, (255, 220, 120), None)
-        sw = [r["ortho"]["2025"]["rawMedianSrgb"], r["ortho"]["2025"]["calibratedSrgb"], r["ortho"]["2023"]["calibratedSrgb"], r["modelSrgb"], r["suggested"]["srgb"]]
+        sw = [r["ortho"]["2025"]["rawMedianSrgb"], r["ortho"]["2025"]["calibratedSrgb"], r["ortho"].get("2023", r["ortho"]["2025"])["calibratedSrgb"], r["modelSrgb"], r["suggested"]["srgb"]]
         for q, col in enumerate(sw):
             img[y:y + rowh - 4, 560 + q * 120:560 + q * 120 + 112] = np.clip(col, 0, 255)
             draw_text(img, 564 + q * 120, y + 4, "%d,%d,%d" % tuple(int(v) for v in col), 1, (255, 255, 255), (0, 0, 0))
         y += rowh
-    draw_text(img, 10, y + 8, "CAL = WHITE-BALANCED ON GREY CAR-PARK ASPHALT (ASSUMED NEUTRAL, = MODEL ASPHALT LUMINANCE) AND SUN-SHADE CORRECTED. MODEL = MEAN ALBEDO TEXTURE x EXPORTED COLOUR.", 1, (200, 200, 200), None)
+    draw_text(img, 10, y + 8, ("CAL = WHITE-BALANCED ON GREY CAR-PARK ASPHALT (ASSUMED NEUTRAL, = MODEL ASPHALT LUMINANCE) AND SUN-SHADE CORRECTED. MODEL = MEAN ALBEDO TEXTURE x EXPORTED COLOUR." if ref_cells is not None
+                               else "CAL = NOT WHITE-BALANCED (NO NEUTRAL REFERENCE FOR THIS SITE), ONLY SUN-SHADE CORRECTED WHERE POSSIBLE. MODEL = MEAN ALBEDO TEXTURE x EXPORTED COLOUR."), 1, (200, 200, 200), None)
     write_rgb(out / "roof-colour-swatches.png", img[:y + 30])
     return rows, summary
 
 
 
+# ---- site configuration ---------------------------------------------------------------------------
+def load_site(path, scene_origin):
+    """Read a site.json. Returns a dict with resolved data folder, crop geometry, assets and polygons source."""
+    path = Path(path).resolve()
+    base = path.parent
+    cfg = json.loads(path.read_text(encoding="utf-8"))
+    data = (base / cfg.get("dataDir", ".")).resolve()
+    crop = cfg.get("crop", "crop.json")
+    if isinstance(crop, str):
+        crop = json.loads((data / crop).read_text(encoding="utf-8"))
+    o25 = crop["ortho2025"]
+    o23 = crop.get("ortho2023")
+    origin = cfg.get("origin")
+    site = dict(
+        path=path, name=cfg.get("name", path.parent.name), data=data,
+        bounds=tuple(float(v) for v in crop["bounds"]),
+        px_e=float(o25["topLeftE"]), px_n=float(o25["topLeftN"]), px=float(o25["pixelM"]),
+        ortho2025=data / o25.get("file", "ortho-2025.png"),
+        ortho2023=(data / o23.get("file", "ortho-2023.png")) if o23 else None,
+        lidar=data / cfg.get("lidar", "lidar-crop.npz"),
+        origin=[float(v) for v in origin] if origin else None,
+        categories=list(cfg.get("categories", ["building"])), prefix=cfg.get("assetPrefix"), assets=list(cfg.get("assets", [])), ground=list(cfg.get("groundAssets", [])),
+        osm={a: [str(i) for i in (v if isinstance(v, list) else [v])] for a, v in cfg.get("osm", {}).items()},
+        sections={a: list(v) for a, v in cfg.get("sections", {}).items()},
+        footprints=(base / cfg["footprints"]).resolve() if cfg.get("footprints") else None,
+        focus=cfg.get("focus"), colors={a: tuple(int(x) for x in c) for a, c in cfg.get("colors", {}).items()},
+        colour_ref=cfg.get("colourReference"))
+    if site["origin"] is None and scene_origin is None:
+        sys.exit("site file has no origin and the .blend has no golfmap_origin_epsg3006")
+    return site
+
+
+def load_footprints(path):
+    """OSM way id (str) -> list of EN rings, from a survey.json or a GeoJSON feature list (osm-buildings.json)."""
+    data = json.loads(Path(path).read_text(encoding="utf-8"))
+    out = {}
+    if isinstance(data, dict) and "buildings" in data:                      # survey.json
+        for r in data["buildings"]:
+            out[r["id"].split("/")[-1]] = [r["footprint3006"]]
+        return out, {r["id"]: r["roofEdge3006"] for r in data.get("interpretedRoofSections", [])}
+    feats = data["features"] if isinstance(data, dict) else data           # GeoJSON
+    for f in feats:
+        pr = f.get("properties", {})
+        key = str(pr.get("osm_id") or str(pr.get("id", "")).split("/")[-1])
+        g = f["geometry"]
+        polys = [g["coordinates"]] if g["type"] == "Polygon" else g["coordinates"]
+        out[key] = [[[float(c[0]), float(c[1])] for c in poly[0]] for poly in polys]
+    return out, {}
+
+
+def distinct_colors(names):
+    return {n: PALETTE[i % len(PALETTE)] if i < len(PALETTE) else tuple(int(v) for v in
+            (255 * np.array(colorsys_hsv((i * 0.381966) % 1.0, .85, 1.0)))) for i, n in enumerate(names)}
+
+
+def colorsys_hsv(h, s_, v):
+    import colorsys
+    return colorsys.hsv_to_rgb(h, s_, v)
+
+
+def lidar_facts(footprints, mapping, lg, gnd_grid, gnd, pts, rp, green_pts, cell_pts, cell_h, ortho):
+    """Model-independent lidar facts per OSM footprint plus the >ROOF_MIN_H roof clusters outside every footprint.
+
+    footprints: OSM id -> list of EN rings; mapping: OSM id -> asset name. Heights are absolute (RH2000)."""
+    bg = Grid(lg.x0, lg.y1, NO_LIDAR_BLOCK, int(math.ceil(lg.nx * lg.cell / NO_LIDAR_BLOCK)), int(math.ceil(lg.ny * lg.cell / NO_LIDAR_BLOCK)))
+    roof_j, roof_i, roof_ok = lg.idx(rp[:, 0], rp[:, 1])
+    all_j, all_i, all_ok = lg.idx(pts[:, 0], pts[:, 1])
+    gr_j, gr_i, gr_ok = lg.idx(green_pts[:, 0], green_pts[:, 1])
+    rb_j, rb_i, rb_ok = bg.idx(rp[:, 0], rp[:, 1])
+    # roughness: std of the roof-return heights per 2 m block (blocks with >= 4 returns). Planar roofs stay below ~0.5 m even
+    # on steep slopes, tree crowns are typically above 1 m, so this separates the dark/shadowed trees the ortho-green test misses.
+    flat_b = rb_j[rb_ok] * bg.nx + rb_i[rb_ok]
+    zb = rp[rb_ok, 2]
+    cnt_b = np.bincount(flat_b, minlength=bg.nx * bg.ny)
+    sum_b = np.bincount(flat_b, zb, minlength=bg.nx * bg.ny)
+    sq_b = np.bincount(flat_b, zb * zb, minlength=bg.nx * bg.ny)
+    with np.errstate(invalid="ignore", divide="ignore"):
+        mean_b = sum_b / cnt_b
+        rough_b = np.sqrt(np.maximum(sq_b / cnt_b - mean_b ** 2, 0))
+    rough_b[cnt_b < 4] = np.nan
+    rough_b = rough_b.reshape(bg.ny, bg.nx)
+    out = dict(method="Inside each OSM footprint (0.5 m cell-centre test): lidar roof = class 1, >= %.1f m above the class-2 ground surface and not green in the ortho. "
+                      "Ridge = highest roof return, eave = low quantile of the roof returns (sparse lidar: a quantile, not an exact edge). "
+                      "Coverage = share of 0.5 m cells / 2 m blocks inside the footprint with at least one roof return." % ROOF_MIN_H,
+               buildings={}, unmappedRoofClusters=[])
+    masks = {}
+    e, n = lg.centres()
+    for oid, rings in footprints.items():
+        m = poly_mask(lg, rings)
+        masks[oid] = m
+        if not m.any():
+            continue
+        inm = np.zeros(len(rp), bool)
+        inm[roof_ok] = m[roof_j[roof_ok], roof_i[roof_ok]]
+        z = rp[inm, 2]
+        jj, ii = np.nonzero(m)
+        gz = bilinear(gnd_grid, gnd, e[ii], n[jj])
+        ring = dilate(m, 8) & ~dilate(m, 2)                       # 1-4 m outside the footprint
+        in_ring = np.zeros(len(pts), bool)
+        in_ring[all_ok] = ring[all_j[all_ok], all_i[all_ok]]
+        ring_g = pts[in_ring & (pts[:, 3] == 2), 2]
+        in_all = np.zeros(len(pts), bool)
+        in_all[all_ok] = m[all_j[all_ok], all_i[all_ok]]
+        cells_with = np.zeros(m.shape, bool)
+        sel = inm[roof_ok]
+        cells_with[roof_j[roof_ok][sel], roof_i[roof_ok][sel]] = True
+        bm = poly_mask(bg, rings)
+        bcount = np.zeros(bm.shape, int)
+        np.add.at(bcount, (rb_j[rb_ok], rb_i[rb_ok]), 1)
+        area = sum(poly_area(r) for r in rings)
+        d = dict(asset=mapping.get(oid), footprintAreaM2=rnd(area, 1), roofPointsInside=int(inm.sum()),
+                 roofPointsPerM2=rnd(inm.sum() / max(area, 1e-6), 2),
+                 pctCellsWithRoofReturn=rnd(100 * cells_with[m].mean(), 1),
+                 pctBlocks2mWithRoofReturn=rnd(100 * (bcount[bm] > 0).mean(), 1) if bm.any() else None,
+                 groundSurfaceMedianAbsM=rnd(np.median(gz)),
+                 groundClass2Ring1to4mMedianAbsM=rnd(np.median(ring_g)) if len(ring_g) else None, groundClass2RingPoints=int(len(ring_g)),
+                 class2PointsInsideFootprint=int((in_all & (pts[:, 3] == 2)).sum()),
+                 greenDroppedPointsInside=int((m[gr_j[gr_ok], gr_i[gr_ok]]).sum()))
+        bj_, bi_, bok_ = bg.idx(rp[inm, 0], rp[inm, 1])
+        rv = rough_b[bj_[bok_], bi_[bok_]]
+        d["roughnessMedianM"] = rnd(np.nanmedian(rv)) if np.isfinite(rv).any() else None
+        if len(z):
+            g0 = float(np.median(gz))
+            d.update(ridgeMaxAbsM=rnd(z.max()), ridgeP99AbsM=rnd(np.percentile(z, 99)), ridgeP95AbsM=rnd(np.percentile(z, 95)),
+                     roofMedianAbsM=rnd(np.median(z)), eaveP5AbsM=rnd(np.percentile(z, 5)), eaveP10AbsM=rnd(np.percentile(z, 10)),
+                     ridgeMaxAboveGroundM=rnd(z.max() - g0), ridgeP99AboveGroundM=rnd(np.percentile(z, 99) - g0),
+                     eaveP5AboveGroundM=rnd(np.percentile(z, 5) - g0), eaveP10AboveGroundM=rnd(np.percentile(z, 10) - g0),
+                     heightAboveGroundQuantilesP5P25P50P75P95=[rnd(np.percentile(z, q) - g0) for q in (5, 25, 50, 75, 95)])
+        out["buildings"][oid] = d
+    # unmapped roof clusters: highest roof return per 0.5 m cell, more than 1 m from any footprint
+    union = np.zeros((lg.ny, lg.nx), bool)
+    for m in masks.values():
+        union |= m
+    far = ~dilate(union, 2)
+    cj, ci, cok = lg.idx(cell_pts[:, 0], cell_pts[:, 1])
+    keep = np.zeros(len(cell_pts), bool)
+    keep[cok] = far[cj[cok], ci[cok]]
+    if keep.any():
+        cp, ch = cell_pts[keep], cell_h[keep]
+        cl = clusters(np.column_stack((np.floor(cp[:, 0] / LIDAR_CELL), np.floor(cp[:, 1] / LIDAR_CELL))).astype(int), 3)
+        cl.sort(key=lambda g: -len(g))
+        for g in cl:
+            if len(g) < 6:
+                continue
+            pp = cp[g]
+            ix_ = np.clip(((pp[:, 0] - PX_E) / PX).astype(int), 0, ortho.shape[1] - 1)
+            iy_ = np.clip(((PX_N - pp[:, 1]) / PX).astype(int), 0, ortho.shape[0] - 1)
+            rgb_ = ortho[iy_, ix_].astype(float)
+            gnd_c = bilinear(gnd_grid, gnd, pp[:, 0], pp[:, 1])
+            bj_, bi_, bok_ = bg.idx(pp[:, 0], pp[:, 1])
+            rv = rough_b[bj_[bok_], bi_[bok_]]
+            rough = float(np.nanmedian(rv)) if np.isfinite(rv).any() else float("nan")
+            out["unmappedRoofClusters"].append(dict(
+                id="U%d" % (len(out["unmappedRoofClusters"]) + 1), cells=int(len(g)), areaCellsM2=rnd(len(g) * LIDAR_CELL ** 2, 1),
+                areaHullM2=rnd(hull_area(pp[:, :2]), 1), centreE=rnd(pp[:, 0].mean(), 1), centreN=rnd(pp[:, 1].mean(), 1),
+                bboxE=[rnd(pp[:, 0].min(), 1), rnd(pp[:, 0].max(), 1)], bboxN=[rnd(pp[:, 1].min(), 1), rnd(pp[:, 1].max(), 1)],
+                groundAbsM=rnd(np.median(gnd_c)), maxZAbsM=rnd(pp[:, 2].max()), p90ZAbsM=rnd(np.percentile(pp[:, 2], 90)),
+                meanAboveGroundM=rnd(ch[g].mean(), 1), maxAboveGroundM=rnd(ch[g].max(), 1), heightStdM=rnd(ch[g].std(), 2),
+                roughnessMedianM=rnd(rough), likelyVegetation=bool(not (rough < VEG_ROUGHNESS)),
+                orthoMeanRgb=[int(v) for v in rgb_.mean(0)],
+                greenishPct=rnd(100 * float(((rgb_[:, 1] > rgb_[:, 0]) & (rgb_[:, 1] > rgb_[:, 2])).mean()), 0),
+                note="no OSM footprint within 1 m; clearly green trees are already dropped; likelyVegetation = roughness >= %.1f m (or too few returns to tell)" % VEG_ROUGHNESS))
+    return out
+
+
 # ---- main -----------------------------------------------------------------------------------------
 def main():
+    global PX_E, PX_N, PX, BOUNDS, ASSETS, GROUND_ASSETS, SURVEY_OF, COLORS, TITLE, FOOTPRINT_LABEL, COLOR_REFERENCE, BIG_VIEW
     ap = argparse.ArgumentParser()
     ap.add_argument("--out", required=True)
     ap.add_argument("--props")
-    ap.add_argument("--data", default=str(ROOT / "data/omberg-clubhouse"))
-    ap.add_argument("--survey", default=str(HERE / "survey.json"))
-    ap.add_argument("--focus", default="477805,6457674,14")
+    ap.add_argument("--site")
+    ap.add_argument("--data")
+    ap.add_argument("--survey")
+    ap.add_argument("--focus")
     ap.add_argument("--dz", action="store_true")
     args = ap.parse_args(sys.argv[sys.argv.index("--") + 1:] if "--" in sys.argv else [])
     out = Path(args.out)
@@ -841,16 +1053,53 @@ def main():
     if not props_path or not props_path.exists():
         sys.exit("props.json not found (pass --props)")
     props = json.loads(props_path.read_text(encoding="utf-8"))
-    survey = json.loads(Path(args.survey).read_text(encoding="utf-8"))
-    data = Path(args.data)
-    pts = np.load(data / "lidar-crop.npz")["points"]
-    ortho = read_rgb(data / "ortho-2025.png")
     sc = bpy.context.scene
-    origin = list(sc.get("golfmap_origin_epsg3006", [477825, 6457700, Z_OFFSET_FALLBACK]))
+    scene_origin = sc.get("golfmap_origin_epsg3006")
+    site = load_site(args.site, scene_origin) if args.site else None
+    if site:
+        PX_E, PX_N, PX, BOUNDS = site["px_e"], site["px_n"], site["px"], site["bounds"]
+        GROUND_ASSETS = list(site["ground"])
+        found = list(site["assets"])
+        if site["prefix"]:
+            found += [o.name for o in sorted(bpy.data.objects, key=lambda o: o.name) if o.type == "MESH" and o.name.startswith(site["prefix"])]
+        ASSETS = [n for n in dict.fromkeys(found) if n not in GROUND_ASSETS]
+        # only roof-bearing assets: props.json category must be in the site's "categories" (default building); the rest
+        # (garden structures, props...) skip the roof checks, only their transform is compared with props.json
+        cats = set(site["categories"])
+        not_roof = [n for n in ASSETS if props["assets"].get(n, {}).get("category", "building") not in cats]
+        ASSETS = [n for n in ASSETS if n not in not_roof]
+        GROUND_ASSETS += not_roof
+        if not ASSETS:
+            sys.exit("site file selects no assets (check assetPrefix / assets)")
+        SURVEY_OF = {n: (site["osm"].get(n, []), site["sections"].get(n, [])) for n in ASSETS}
+        COLORS = {**distinct_colors(ASSETS), **site["colors"]}
+        TITLE = site["name"].upper()
+        COLOR_REFERENCE = site["colour_ref"]
+        BIG_VIEW = None
+    fp_path = Path(args.survey) if args.survey else (site["footprints"] if site else HERE / "survey.json")
+    if fp_path is not None:
+        footprints, sec_poly = load_footprints(fp_path)
+        FOOTPRINT_LABEL = fp_path.name
+    else:
+        footprints, sec_poly = {}, {}
+    if args.data:
+        data = Path(args.data)
+        lidar_path, ortho_path, ortho23_path = data / "lidar-crop.npz", data / "ortho-2025.png", data / "ortho-2023.png"
+    elif site:
+        lidar_path, ortho_path, ortho23_path = site["lidar"], site["ortho2025"], site["ortho2023"]
+    else:
+        data = ROOT / "data/omberg-clubhouse"
+        lidar_path, ortho_path, ortho23_path = data / "lidar-crop.npz", data / "ortho-2025.png", data / "ortho-2023.png"
+    pts = np.load(lidar_path)["points"]
+    ortho = read_rgb(ortho_path)
+    if site and site["origin"]:
+        origin = site["origin"]
+    else:
+        origin = list(scene_origin if scene_origin is not None else [477825, 6457700, Z_OFFSET_FALLBACK])
     ox, oy, oz = float(origin[0]), float(origin[1]), float(origin[2])
     inst = {i["asset"]: i for i in props["instances"]}
-    report = dict(tool="check_survey.py", blend=str(blend), props=str(props_path), lidar=str(data / "lidar-crop.npz"),
-                  ortho=str(data / "ortho-2025.png"),
+    report = dict(tool="check_survey.py", blend=str(blend), props=str(props_path), lidar=str(lidar_path),
+                  ortho=str(ortho_path),
                   parameters=dict(roofMinHeightM=ROOF_MIN_H, modelCellM=MODEL_CELL, lidarCellM=LIDAR_CELL,
                                   offThresholdM=OFF_TOL, footprintToleranceM=EDGE_TOL, noLidarBlockM=NO_LIDAR_BLOCK,
                                   originEN_Z=[ox, oy, oz], dzApplied=args.dz,
@@ -873,6 +1122,11 @@ def main():
                             dzInProps=i.get("dz", 0), matchesProps=bool(dloc < 1e-4 and abs(drot) < 1e-6))
     report["checks"]["blenderTransformsVsProps"] = tcheck
     report["checks"]["allTransformsMatch"] = all(v.get("matchesProps") for v in tcheck.values())
+    if site:
+        report["site"] = dict(file=str(site["path"]), name=site["name"], assets=ASSETS, excludedFromRoofChecks=GROUND_ASSETS, footprints=str(fp_path),
+                              boundsE0N0E1N1=list(BOUNDS), orthoTopLeftEN=[PX_E, PX_N], orthoPixelM=PX)
+        if scene_origin is not None:
+            report["checks"]["originMatchesBlendScene"] = bool(max(abs(float(scene_origin[k]) - origin[k]) for k in range(3)) < 1e-6)
 
     # --- 2. lidar surfaces --------------------------------------------------------------------------
     gnd_grid, gnd = ground_surface(pts, BOUNDS)
@@ -925,12 +1179,11 @@ def main():
     # --- survey polygons and 0.5 m region masks -----------------------------------------------------
     lg = Grid(BOUNDS[0], PX_N, LIDAR_CELL, int(round((BOUNDS[2] - BOUNDS[0]) / LIDAR_CELL)),
               int(math.ceil((PX_N - BOUNDS[1]) / LIDAR_CELL)))
-    osm_poly = {r["id"].split("/")[-1]: r["footprint3006"] for r in survey["buildings"]}
-    sec_poly = {r["id"]: r["roofEdge3006"] for r in survey["interpretedRoofSections"]}
+    osm_poly = footprints
     survey_polys = {}
     for name in names:
         ids, secs = SURVEY_OF[name]
-        survey_polys[name] = dict(osm=[osm_poly[i] for i in ids if i in osm_poly], sections=[sec_poly[s] for s in secs if s in sec_poly])
+        survey_polys[name] = dict(osm=[r for i in ids for r in osm_poly.get(i, [])], sections=[sec_poly[s] for s in secs if s in sec_poly])
     region_rank = {}
     for name in names:
         polys = survey_polys[name]["osm"] + survey_polys[name]["sections"]
@@ -1099,41 +1352,73 @@ def main():
                                                           meanAboveGroundM=rnd(ch[g].mean(), 1),
                                                           note="outside every asset region; trees (not green in ortho), other buildings or unmodelled structures"))
 
+    unmapped = []
+    if site:
+        mapping = {i: a for a, ids in site["osm"].items() for i in ids}
+        report["lidarFacts"] = lidar_facts(footprints, mapping, lg, gnd_grid, gnd, pts, rp, pts[veg], cell_pts, cell_h, ortho)
+        unmapped = report["lidarFacts"]["unmappedRoofClusters"]
+
     # --- 5b. roof colours ----------------------------------------------------------------------------
     if blend is not None and (blend.parent / "Textures").is_dir():
         # candidate neutral-reference cells: car park, drive and plaza boxes, away from roofs and from anything tall in the lidar
-        occ = Grid(BOUNDS[0], PX_N, 1.0, 210, 181)
-        objp = pts[(pts[:, 3] == 1) & (above > .3)]
-        oj, oi, ook = occ.idx(objp[:, 0], objp[:, 1])
-        occm = np.zeros((occ.ny, occ.nx), bool)
-        occm[oj[ook], oi[ook]] = True
-        occm = dilate(occm, 1)
-        far_from_roofs = ~dilate(union, 12)
-        ce, cn = [], []
-        for e0_, e1_, n0_, n1_ in ((477800, 477860, 6457695, 6457760), (477860, 477930, 6457690, 6457735), (477834, 477860, 6457670, 6457700)):
-            ee, nn = np.meshgrid(np.arange(e0_, e1_, .25) + .125, np.arange(n0_, n1_, .25) + .125)
-            ee, nn = ee.ravel(), nn.ravel()
-            a_, b_, c_ = occ.sample(occm, ee, nn, True), mg.sample(far_from_roofs, ee, nn, False), None
-            keep = ~a_ & b_
-            ce.append(ee[keep])
-            cn.append(nn[keep])
+        ref_cells, ref_name = None, "omberg_courtyard_asphalt"
+        if COLOR_REFERENCE is not None:
+            ref_name = COLOR_REFERENCE["material"]
+            occ = Grid(BOUNDS[0], PX_N, 1.0, int(round(BOUNDS[2] - BOUNDS[0])), int(math.ceil(PX_N - BOUNDS[1])))
+            objp = pts[(pts[:, 3] == 1) & (above > .3)]
+            oj, oi, ook = occ.idx(objp[:, 0], objp[:, 1])
+            occm = np.zeros((occ.ny, occ.nx), bool)
+            occm[oj[ook], oi[ook]] = True
+            occm = dilate(occm, 1)
+            far_from_roofs = ~dilate(union, 12)
+            ce, cn = [], []
+            for e0_, e1_, n0_, n1_ in COLOR_REFERENCE["boxes"]:
+                ee, nn = np.meshgrid(np.arange(e0_, e1_, .25) + .125, np.arange(n0_, n1_, .25) + .125)
+                ee, nn = ee.ravel(), nn.ravel()
+                a_, b_, c_ = occ.sample(occm, ee, nn, True), mg.sample(far_from_roofs, ee, nn, False), None
+                keep = ~a_ & b_
+                ce.append(ee[keep])
+                cn.append(nn[keep])
+            ref_cells = (np.concatenate(ce), np.concatenate(cn))
         orthos = {"2025": ortho}
-        if (data / "ortho-2023.png").exists():
-            orthos["2023"] = read_rgb(data / "ortho-2023.png")
-        colour_check(names, tris, mg, owned, dsm, union, (np.concatenate(ce), np.concatenate(cn)), orthos, props, blend.parent / "Textures", out, report)
+        if ortho23_path is not None and Path(ortho23_path).exists():
+            orthos["2023"] = read_rgb(ortho23_path)
+        colour_check(names, tris, mg, owned, dsm, union, ref_cells, orthos, props, blend.parent / "Textures", out, report, ref_name)
 
     # --- 6. images ----------------------------------------------------------------------------------
     # a) lidar on ortho (validation of the lidar/ortho alignment)
     K = 3
     v = View(ortho, BOUNDS[0], BOUNDS[1], BOUNDS[2], BOUNDS[3], 1)
-    big = View(ortho, 477775, 6457640, 477850, 6457715, 6)
+    if BIG_VIEW is not None:
+        big = View(ortho, *BIG_VIEW)
+    else:
+        xs_all, ys_all = [], []
+        for n_ in names:
+            ys_, xs_ = np.nonzero(foot[n_])
+            if len(xs_):
+                xs_all += [BOUNDS[0] + xs_.min() * MODEL_CELL, BOUNDS[0] + (xs_.max() + 1) * MODEL_CELL]
+                ys_all += [PX_N - (ys_.max() + 1) * MODEL_CELL, PX_N - ys_.min() * MODEL_CELL]
+            for poly in survey_polys[n_]["osm"]:
+                xs_all += [min(q[0] for q in poly), max(q[0] for q in poly)]
+                ys_all += [min(q[1] for q in poly), max(q[1] for q in poly)]
+        for u in unmapped:
+            xs_all += u["bboxE"]
+            ys_all += u["bboxN"]
+        if not xs_all:
+            xs_all, ys_all = [BOUNDS[0], BOUNDS[2]], [BOUNDS[1], BOUNDS[3]]
+        be0, be1 = max(BOUNDS[0], min(xs_all) - 15), min(BOUNDS[2], max(xs_all) + 15)
+        bn0, bn1 = max(BOUNDS[1], min(ys_all) - 15), min(BOUNDS[3], max(ys_all) + 15)
+        big = View(ortho, be0, bn0, be1, bn1, max(1, min(6, int(2400 / ((be1 - be0) / PX)))))
     allroof = pts[is_roof]
     gcol = height_color(above[is_roof], ROOF_MIN_H, 12)
     for p, c, g in zip(allroof, gcol, green[is_roof]):
         big.square(p[0], p[1], .5, c, 1.0, border=(255, 255, 255) if g else None)
     for n in names:
         big.mask_outline(mg, foot[n], COLORS[n], 2)
-    finish(big, "LIDAR ROOF POINTS ON ORTHO-2025 (WHITE BORDER = DROPPED, GREEN IN ORTHO)", [((255, 70, 30), "lidar roof, 12 m above ground"), ((40, 30, 140), "lidar roof, 2 m above ground"), ((255, 255, 255), "model outline = colour per asset")],
+    for u in unmapped:
+        big.poly([(u["bboxE"][0], u["bboxN"][0]), (u["bboxE"][1], u["bboxN"][0]), (u["bboxE"][1], u["bboxN"][1]), (u["bboxE"][0], u["bboxN"][1])],
+                 OTHER_COLOR if u["likelyVegetation"] else TRACE_COLOR, 1 if u["likelyVegetation"] else 2)
+    finish(big, "LIDAR ROOF POINTS ON ORTHO-2025 (WHITE BORDER = DROPPED, GREEN IN ORTHO)", [((255, 70, 30), "lidar roof, 12 m above ground"), ((40, 30, 140), "lidar roof, 2 m above ground"), ((255, 255, 255), "model outline = colour per asset")] + ([(TRACE_COLOR, "unmapped lidar roof cluster, not vegetation-like"), (OTHER_COLOR, "unmapped cluster, rough = vegetation")] if unmapped else []),
            out / "validate-lidar-on-ortho.png")
 
     # b) per-asset crops
@@ -1152,7 +1437,7 @@ def main():
             continue
         e0, n0, e1, n1 = asset_bounds(name)
         k = max(2, min(4, int(1600 / ((e1 - e0) / PX))))
-        legend = [(COLORS[name], "model roof outline"), (OSM_COLOR, "osm footprint (survey.json)")]
+        legend = [(COLORS[name], "model roof outline"), (OSM_COLOR, "osm footprint (%s)" % FOOTPRINT_LABEL)]
         # ortho + outlines
         v = View(ortho, e0, n0, e1, n1, k)
         for other in names:
@@ -1216,11 +1501,32 @@ def main():
             cx, cy = v.px(BOUNDS[0] + xs.mean() * MODEL_CELL, PX_N - ys.mean() * MODEL_CELL)
             tw, _ = text_size(short(n), 2)
             draw_text(v.img, cx - tw / 2, cy - 7, short(n), 2, COLORS[n])
-    finish(v, "OMBERG CLUBHOUSE AREA - MODEL ROOF OUTLINES ON ORTHO-2025", [(COLORS[n], short(n)) for n in names] + [(OSM_COLOR, "osm footprints (thin)")],
-           out / "overview.png")
+    for u in unmapped:
+        x0_, y0_ = v.px(u["bboxE"][0], u["bboxN"][1])
+        x1_, y1_ = v.px(u["bboxE"][1], u["bboxN"][0])
+        veg_ = u["likelyVegetation"]
+        draw_poly(v.img, [(x0_, y0_), (x1_, y0_), (x1_, y1_), (x0_, y1_)], OTHER_COLOR if veg_ else TRACE_COLOR, 1 if veg_ else 2)
+        if not veg_:
+            draw_text(v.img, x0_, y0_ - 16, u["id"], 2, TRACE_COLOR)
+    finish(v, TITLE + " - MODEL ROOF OUTLINES ON ORTHO-2025", [(COLORS[n], short(n)) for n in names] + [(OSM_COLOR, "osm footprints (thin)")]
+           + ([(TRACE_COLOR, "unmapped cluster, not vegetation-like"), (OTHER_COLOR, "unmapped cluster, vegetation-like")] if unmapped else []), out / "overview.png")
 
     # d) focus (main entrance foyer by default)
-    fe, fn, fh = [float(t) for t in args.focus.split(",")]
+    focus = args.focus or (site["focus"] if site else None)
+    if focus is None and site:
+        for n_ in names:
+            ys_, xs_ = np.nonzero(foot[n_])
+            if len(xs_):
+                focus = "%.1f,%.1f,%.1f" % (BOUNDS[0] + xs_.mean() * MODEL_CELL, PX_N - ys_.mean() * MODEL_CELL, 20)
+                break
+        if focus is None:                                   # nothing modelled above ground: first footprint, else the crop centre
+            polys_ = [q for n_ in names for q in survey_polys[n_]["osm"]]
+            if polys_:
+                pa = np.asarray(polys_[0])
+                focus = "%.1f,%.1f,%.1f" % (pa[:, 0].mean(), pa[:, 1].mean(), 20)
+            else:
+                focus = "%.1f,%.1f,%.1f" % ((BOUNDS[0] + BOUNDS[2]) / 2, (BOUNDS[1] + BOUNDS[3]) / 2, 40)
+    fe, fn, fh = [float(t) for t in (focus or "477805,6457674,14").split(",")]
     v = View(ortho, fe - fh, fn - fh * .8, fe + fh, fn + fh * .8, 6)
     for n in names:
         v.mask_outline(mg, foot[n], COLORS[n], 2)

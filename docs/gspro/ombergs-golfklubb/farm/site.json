@@ -1,0 +1,26 @@
+{
+  "name": "Omberg farm",
+  "dataDir": "../../../../data/omberg-farm",
+  "crop": "crop.json",
+  "origin": [
+    478320,
+    6457650,
+    100.0
+  ],
+  "assetPrefix": "omberg_farm_",
+  "groundAssets": [],
+  "osm": {
+    "omberg_farm_main_house": "1431566968",
+    "omberg_farm_east_house": "1431566962",
+    "omberg_farm_big_barn": "1431566961",
+    "omberg_farm_north_barn": "1431566959",
+    "omberg_farm_south_barn": "1431566960",
+    "omberg_farm_road_house": "1431566963",
+    "omberg_farm_road_outbuilding": "1431566964",
+    "omberg_farm_field_cottage": "1431566965"
+  },
+  "footprints": "osm-buildings.json",
+  "categories": [
+    "building"
+  ]
+}
