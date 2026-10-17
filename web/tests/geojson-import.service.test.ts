@@ -11,6 +11,7 @@ import {
     attributesFromProperties,
     centerlineFromProperties,
 } from '../src/import/geojson-import.service';
+import { alreadyImported, importedRefs, shapeAt } from '../src/import/geojson-build';
 import type { HydroApi, HydroFetchResult } from '../../shared/api/hydro.gen';
 import type { OsmApi, OsmFetchResult } from '../../shared/api/osm.gen';
 import type { TerrainGeneratorsApi, RoadsFetchResult, RoadsFetchJob } from '../../shared/api/terrain-generators.gen';
@@ -126,18 +127,16 @@ describe('GeojsonImportService', () => {
         expect(svc.parseError.get()).toMatch(/EPSG:3006/);
     });
 
-    test('assign and setPropertyKey update mapping and invalidate the preview', () => {
+    test('assign and setPropertyKey update mapping and rebuild the preview', () => {
         const { svc } = loadedService();
-        svc.build();
-        expect(svc.built.get()).not.toBeNull();
+        expect(svc.built.get()!.features.length).toBe(2); // built on load, no button
 
         svc.assign('Skogsmark, barr', 'trees');
-        expect(svc.built.get()).toBeNull(); // stale preview dropped
+        expect(svc.built.get()!.features.map(f => f.type)).toContain('trees');
         expect(svc.assignedFeatureCount.get()).toBe(4);
 
-        svc.build();
         svc.setPropertyKey('source');
-        expect(svc.built.get()).toBeNull();
+        expect(svc.built.get()!.features.length).toBe(0);
         // Re-binned by source: one bucket, no suggestion → everything skip.
         expect(svc.buckets.get().map(b => b.value)).toEqual(['lantmateriet-marktacke', '(missing)']);
         expect(svc.assignedFeatureCount.get()).toBe(0);
@@ -163,16 +162,20 @@ describe('GeojsonImportService', () => {
         expect(built.warnings.some(w => /dropped ring/.test(w))).toBe(true);
     });
 
-    test('confirmImport bulk-creates with per-type counts and clears the preview', async () => {
+    test('confirmImport bulk-creates with per-type counts; the preview stays with them on the course', async () => {
         const { svc, created } = loadedService();
         const summary = (await svc.confirmImport())!;
         expect(summary.error).toBeNull();
         expect(summary.created).toEqual({ water: 1, water_creek: 1 });
         expect(created.length).toBe(2);
         expect(created.every(c => c.courseId === 'course-1')).toBe(true);
-        expect(svc.built.get()).toBeNull();
         expect(svc.importing.get()).toBe(false);
         expect(svc.progress.get()).toEqual({ done: 2, total: 2 });
+        // No provenance in this file, yet a second Import cannot duplicate them.
+        expect(svc.onCourseCount.get()).toBe(2);
+        expect(svc.pickedFeatures.get()).toEqual([]);
+        expect(await svc.confirmImport()).toBeNull();
+        expect(created.length).toBe(2);
     });
 
     test('confirmImport aborts on failure, keeps partial counts, sets error', async () => {
@@ -750,5 +753,128 @@ describe('road centerlines (fetch-roads `centerline` + `widthM`)', () => {
         expect(line.attributes).toEqual({ surface: 'gravel' });
         expect(line.source).toBe('osm');
         expect(polygon.geometry.centerline).toBeUndefined();
+    });
+});
+
+// Importing a fetch a few shapes at a time: click shapes on the map to pick
+// or drop them; what the course already has stays out.
+describe('picking shapes to import', () => {
+    const HYDRO: HydroFetchResult = {
+        bbox: { west: 15.53, south: 58.39, east: 15.58, north: 58.42 },
+        source: 'lantmateriet-hydrografi',
+        attribution: '© Lantmäteriet, Hydrografi Direkt',
+        suggestedCreekWidthM: 2,
+        water: [
+            { sourceRef: 'StandingWater/1', rings: [square(531500, 6473000, 50)] },
+            { sourceRef: 'StandingWater/2', rings: [square(532500, 6473000, 50)] },
+            { sourceRef: 'StandingWater/3', rings: [square(533500, 6473000, 50)] },
+        ],
+        creeks: [],
+    };
+
+    function pickingService(onCourse: Array<{ source: string; sourceRef: string }> = []) {
+        const { api, created } = fakeApi();
+        api.listByCourse = async () => onCourse.map((f, i) => ({ id: `e${i}`, ...f }) as unknown as CourseFeature);
+        const hydro: HydroApi = { fetchHydro: async () => HYDRO };
+        const svc = new GeojsonImportService(api, hydro);
+        svc.openFor('course-1');
+        return { svc, created };
+    }
+    const refsOf = (created: unknown[]) => (created as Array<{ sourceRef?: string }>).map(c => c.sourceRef);
+
+    test('the shapes are on the map as soon as they are fetched, all picked', async () => {
+        const { svc } = pickingService();
+        await svc.fetchFromLantmateriet();
+        expect(svc.built.get()!.features.length).toBe(3);
+        expect(svc.pickedFeatures.get().length).toBe(3);
+    });
+
+    test('None, then a click on one shape, imports just that shape', async () => {
+        const { svc, created } = pickingService();
+        await svc.fetchFromLantmateriet();
+        svc.pickAll(false);
+        expect(svc.pickedFeatures.get()).toEqual([]);
+        const second = svc.built.get()!.features.find(f => f.sourceRef === 'StandingWater/2')!;
+        svc.togglePick(second.key!);
+        await svc.confirmImport();
+        expect(refsOf(created)).toEqual(['StandingWater/2']);
+    });
+
+    test('a click drops a picked shape; a second click picks it again', async () => {
+        const { svc } = pickingService();
+        await svc.fetchFromLantmateriet();
+        const key = svc.built.get()!.features[0].key!;
+        svc.togglePick(key);
+        expect(svc.pickedFeatures.get().length).toBe(2);
+        svc.togglePick(key);
+        expect(svc.pickedFeatures.get().length).toBe(3);
+    });
+
+    test('shapes the course already has start out and cannot be picked; the rest import', async () => {
+        const { svc, created } = pickingService([{ source: 'lantmateriet-hydrografi', sourceRef: 'StandingWater/1' }]);
+        await svc.loadImported();
+        await svc.fetchFromLantmateriet();
+        expect(svc.onCourseCount.get()).toBe(1);
+        const first = svc.built.get()!.features.find(f => f.sourceRef === 'StandingWater/1')!;
+        svc.togglePick(first.key!);
+        svc.pickAll(true);
+        await svc.confirmImport();
+        expect(refsOf(created)).toEqual(['StandingWater/2', 'StandingWater/3']);
+    });
+
+    test('after an import the next shapes are picked from the same fetch, without fetching again', async () => {
+        const { svc, created } = pickingService();
+        await svc.fetchFromLantmateriet();
+        const [a, b] = svc.built.get()!.features;
+        svc.pickAll(false);
+        svc.togglePick(a.key!);
+        await svc.confirmImport();
+        svc.togglePick(b.key!);
+        svc.togglePick(a.key!); // already on the course: stays out
+        await svc.confirmImport();
+        expect(refsOf(created)).toEqual(['StandingWater/1', 'StandingWater/2']);
+    });
+
+    test('picks survive a mapping change', async () => {
+        const { svc } = pickingService();
+        await svc.fetchFromLantmateriet();
+        const key = svc.built.get()!.features[0].key!;
+        svc.togglePick(key);
+        svc.assign('water', 'skip');
+        svc.assign('water', 'water');
+        expect(svc.pickedFeatures.get().map(f => f.key)).not.toContain(key);
+    });
+});
+
+describe('split source shapes and the map click', () => {
+    test('a shape split in parts numbers its refs, and an older bare-ref import covers every part', () => {
+        const fc = hydroToFeatureCollection({
+            bbox: { west: 0, south: 0, east: 1, north: 1 },
+            source: 'lantmateriet-hydrografi',
+            attribution: '',
+            suggestedCreekWidthM: 2,
+            water: [
+                { sourceRef: 'StandingWater/7', rings: [square(531500, 6473000, 50)] },
+                { sourceRef: 'StandingWater/7', rings: [square(531700, 6473000, 50)] },
+                { sourceRef: 'StandingWater/8', rings: [square(531900, 6473000, 50)] },
+            ],
+            creeks: [],
+        });
+        const refs = (fc.features as Array<{ properties: { source_ref?: string } }>).map(f => f.properties.source_ref);
+        expect(refs).toEqual(['StandingWater/7#1', 'StandingWater/7#2', 'StandingWater/8']);
+
+        const src = 'lantmateriet-hydrografi';
+        expect(alreadyImported({ source: src, sourceRef: 'StandingWater/7#2' }, importedRefs([{ source: src, sourceRef: 'StandingWater/7#1' }]))).toBe(false);
+        expect(alreadyImported({ source: src, sourceRef: 'StandingWater/7#2' }, importedRefs([{ source: src, sourceRef: 'StandingWater/7' }]))).toBe(true);
+        expect(alreadyImported({ source: 'osm', sourceRef: 'StandingWater/7' }, importedRefs([{ source: src, sourceRef: 'StandingWater/7' }]))).toBe(false);
+    });
+
+    test('a click lands on the smallest shape under it, not in a hole, and misses outside', () => {
+        const lake = [square(0, 0, 100), square(50, 50, 20)];
+        const pond = [square(-50, -50, 10)];
+        expect(shapeAt([lake, pond], { x: -50, y: -50 })).toBe(1);
+        expect(shapeAt([lake, pond], { x: 0, y: 0 })).toBe(0);
+        expect(shapeAt([lake, pond], { x: 50, y: 50 })).toBe(-1); // the island
+        expect(shapeAt([lake, pond], { x: 500, y: 0 })).toBe(-1);
     });
 });

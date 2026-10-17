@@ -25,6 +25,7 @@
         "grass:zones": "bun scripts/grass-zones.ts",
         "terrain:generate": "bun scripts/terrain-generate.ts",
         "water:edge": "bun scripts/water-edge.ts",
+        "water:import": "bun scripts/water-import.ts",
         "shaping": "bun scripts/shaping-apply.ts",
         "arborist": "bun scripts/arborist.ts",
         "opcd:build": "bun scripts/opcd-build.ts",

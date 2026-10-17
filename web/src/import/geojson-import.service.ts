@@ -1,9 +1,12 @@
 // GeoJSON draft-import wizard state (T43). Mirrors SvgImportService — the
 // import flow for one course at a time: load .geojson text → parse +
 // CRS-validate (geojson-parse.ts) → bucket features by a chosen property →
-// user assigns each bucket a feature type (or skip) → build straight-segment
-// FeatureGeometries (preview overlay rendered by GeojsonImportPanelComponent
-// from `built`) → bulk-create through the course-features API.
+// user assigns each bucket a feature type (or skip) → the features are built
+// at once (geojson-build.ts) and shown on the map (GeojsonImportPanelComponent
+// renders `built`), where a click picks or drops one → the picked ones are
+// bulk-created through the course-features API. Shapes the course already
+// has (same source + sourceRef) start dropped and cannot be picked, so a
+// fetch can be imported a few shapes at a time.
 //
 // Strictly feature-source-agnostic: fetch-water (T43), fetch-osm (T44) and
 // detect-trees (T46) all feed it the same EPSG:3006 typed-polygon files.
@@ -15,25 +18,20 @@
 import { Signal, Computed, batch } from '@basics/core/client/core';
 import { api } from '../api';
 import type { CourseFeaturesApi, ImportedFeatureCount } from '../../../shared/api/course-features.gen';
-import { PATH_SURFACE_ATTRIBUTE, isPathSurface } from '../../../shared/features/path-surface';
-import type { HydroApi, HydroFetchResult } from '../../../shared/api/hydro.gen';
+import type { HydroApi } from '../../../shared/api/hydro.gen';
 import type { OsmApi, OsmFetchResult } from '../../../shared/api/osm.gen';
 import type { RoadsFetchJob, TerrainGeneratorsApi } from '../../../shared/api/terrain-generators.gen';
 import type { BucketAssignment, BuiltFeature, BuildResult, ImportSummary } from './svg-import.service';
-import { bufferPolyline } from '../geo/polyline-buffer';
-import {
-    IMPORTED_CORNER_TURN_DEG,
-    autoCorners,
-    centerlineGeometry,
-    type FeatureCenterline,
-} from '../../../shared/features/centerline';
-import {
-    parseGeojsonDocument,
-    bucketByProperty,
-    polygonToGeometry,
-    type ParsedGeojson,
-    type GeojsonBucket,
-} from './geojson-parse';
+import { parseGeojsonDocument, bucketByProperty, type ParsedGeojson, type GeojsonBucket } from './geojson-parse';
+import { HYDRO_FETCH_FILENAME, alreadyImported, buildFeatures, hydroToFeatureCollection, importedRefs } from './geojson-build';
+
+export {
+    provenanceFromProperties,
+    attributesFromProperties,
+    centerlineFromProperties,
+    hydroToFeatureCollection,
+    HYDRO_FETCH_FILENAME,
+} from './geojson-build';
 
 /**
  * One clearable group of a course's imported features, as the wizard lists
@@ -102,128 +100,6 @@ export const ROADS_POLL_MS = 1500;
 /** Parallel create requests during confirm (matches SvgImportService). */
 const CREATE_CONCURRENCY = 6;
 
-/**
- * Durable provenance (T49): map a source feature's properties onto the
- * create API's provenance fields. fetch-osm output carries
- * `source: "osm"` + `osm_type`/`osm_id` (see pipeline/golfpipe/osm.py);
- * OSM data is ODbL, so when the file lacks an explicit `license` property
- * an `osm` source defaults to 'ODbL'. An explicit `source_ref` property
- * (T50: the Lantmäteriet fetch path stamps the OGC feature id) wins over
- * the OSM composite.
- */
-export function provenanceFromProperties(
-    props: Record<string, unknown>,
-): { source?: string; sourceRef?: string; license?: string } {
-    const source = typeof props['source'] === 'string' ? (props['source'] as string) : undefined;
-
-    let sourceRef: string | undefined;
-    if (typeof props['source_ref'] === 'string') {
-        sourceRef = props['source_ref'] as string;
-    } else {
-        const osmId = props['osm_id'];
-        if (typeof osmId === 'string' || typeof osmId === 'number') {
-            const osmType = props['osm_type'];
-            sourceRef = typeof osmType === 'string' ? `${osmType}/${osmId}` : String(osmId);
-        }
-    }
-
-    let license = typeof props['license'] === 'string' ? (props['license'] as string) : undefined;
-    if (license === undefined && source === 'osm') license = 'ODbL';
-
-    const result: { source?: string; sourceRef?: string; license?: string } = {};
-    if (source !== undefined) result.source = source;
-    if (sourceRef !== undefined) result.sourceRef = sourceRef;
-    if (license !== undefined) result.license = license;
-    return result;
-}
-
-/**
- * The attributes a source feature brings along for the type it is imported
- * as: a `path` keeps a valid `surface` property (fetch-roads writes one from
- * NVDB / the OSM surface tag). Everything else stays a source property only.
- * Null when there is nothing to carry. Pure — exported for tests.
- */
-export function attributesFromProperties(type: string, props: Record<string, unknown>): Record<string, string> | null {
-    if (type === 'path' && isPathSurface(props[PATH_SURFACE_ATTRIBUTE])) {
-        return { [PATH_SURFACE_ATTRIBUTE]: props[PATH_SURFACE_ATTRIBUTE] as string };
-    }
-    return null;
-}
-
-/**
- * A fetch-roads corridor that is ONE way's carries that way's clipped
- * `centerline` ([[x, y], …], EPSG:3006) and `widthM`; such a road is
- * imported as a centerline feature — the line is the shape, the corridor is
- * derived — so moving it later is moving one line. Bends of
- * IMPORTED_CORNER_TURN_DEG or more are corners (the pipeline's own rule).
- * Null when the properties carry no usable line (the polygon is imported
- * instead). Pure — exported for tests.
- */
-export function centerlineFromProperties(props: Record<string, unknown>): FeatureCenterline | null {
-    const line = props['centerline'];
-    const widthM = props['widthM'];
-    if (!Array.isArray(line) || typeof widthM !== 'number') return null;
-    const points: Array<{ x: number; y: number }> = [];
-    for (const c of line) {
-        if (!Array.isArray(c) || !Number.isFinite(c[0]) || !Number.isFinite(c[1])) return null;
-        points.push({ x: c[0] as number, y: c[1] as number });
-    }
-    const centerline = { points: autoCorners(points, IMPORTED_CORNER_TURN_DEG), widthM };
-    return centerlineGeometry('EPSG:3006', centerline) ? centerline : null;
-}
-
-/** Wizard-facing filename for the one-click Lantmäteriet fetch (T50). */
-export const HYDRO_FETCH_FILENAME = 'lantmateriet-hydrografi.geojson';
-
-/**
- * Format a fetch-hydro response as the pipeline-shaped GeoJSON document the
- * wizard already understands (EPSG:3006 crs member, `properties.type` per
- * feature, provenance properties per T49): water polygons pass through,
- * creek centerlines are buffered into `water_creek` ribbons of the
- * suggested width. Pure — exported for tests.
- */
-export function hydroToFeatureCollection(result: HydroFetchResult): {
-    type: 'FeatureCollection';
-    crs: { type: 'name'; properties: { name: string } };
-    attribution: string;
-    features: unknown[];
-} {
-    const features: unknown[] = [];
-    const properties = (type: string, sourceRef: string | null) => ({
-        type,
-        source: result.source,
-        ...(sourceRef !== null ? { source_ref: sourceRef } : {}),
-    });
-
-    for (const water of result.water) {
-        features.push({
-            type: 'Feature',
-            properties: properties('water', water.sourceRef),
-            geometry: { type: 'Polygon', coordinates: water.rings },
-        });
-    }
-    for (const creek of result.creeks) {
-        const ring = bufferPolyline(creek.points, result.suggestedCreekWidthM);
-        if (!ring) continue; // degenerate centerline run — nothing to import
-        features.push({
-            type: 'Feature',
-            // The line rides along as `centerline` + `widthM`, so the wizard
-            // imports the creek as a centerline feature (like a fetched road):
-            // the creek digs and the R.A.M. export follow its line, and it
-            // edits as one line with a width. The ribbon is the preview shape.
-            properties: { ...properties('water_creek', creek.sourceRef), centerline: creek.points, widthM: result.suggestedCreekWidthM },
-            geometry: { type: 'Polygon', coordinates: [ring] },
-        });
-    }
-
-    return {
-        type: 'FeatureCollection',
-        crs: { type: 'name', properties: { name: 'urn:ogc:def:crs:EPSG::3006' } },
-        attribution: result.attribution,
-        features,
-    };
-}
-
 /** Wizard-facing filename for the one-click OSM fetch (T53). */
 export const OSM_FETCH_FILENAME = 'openstreetmap.geojson';
 /** The wizard's file name for a road fetch (T-roads) — ODbL like the OSM fetch. */
@@ -272,8 +148,14 @@ export class GeojsonImportService {
     readonly propertyKey = new Signal<string | null>(null);
     /** bucket key → assignment. Prefilled from suggestions on load. */
     readonly assignments = new Signal<Record<string, BucketAssignment>>({});
-    /** Built features awaiting preview/confirm — set by `build()`. */
+    /** Built features on the map, to pick from — rebuilt whenever the mapping changes. */
     readonly built = new Signal<BuildResult | null>(null);
+    /** Pick key → picked (true) or dropped (false) on the map; unset is picked. Kept while the mapping changes. */
+    readonly picks = new Signal<Record<string, boolean>>({});
+    /** The course's (source, sourceRef) keys (geojson-build `importedRefs`), loaded with `imported`. */
+    readonly existingRefs = new Signal<ReadonlySet<string>>(new Set());
+    /** Pick keys created from the loaded file in this wizard — on the course even without a sourceRef. */
+    readonly importedKeys = new Signal<ReadonlySet<string>>(new Set());
     readonly importing = new Signal(false);
     readonly progress = new Signal<{ done: number; total: number } | null>(null);
     readonly summary = new Signal<ImportSummary | null>(null);
@@ -329,6 +211,39 @@ export class GeojsonImportService {
         return n;
     });
 
+    /** The built features `confirmImport` creates: picked, and not on the course yet. */
+    readonly pickedFeatures = new Computed<BuiltFeature[]>(() =>
+        (this.built.get()?.features ?? []).filter(f => this.isPicked(f)));
+
+    /** How many built features the course already has. */
+    readonly onCourseCount = new Computed(() =>
+        (this.built.get()?.features ?? []).filter(f => this.isOnCourse(f)).length);
+
+    /** The course already has this shape (same source + sourceRef, or imported from this file). */
+    isOnCourse(f: BuiltFeature): boolean {
+        return (f.key !== undefined && this.importedKeys.get().has(f.key)) || alreadyImported(f, this.existingRefs.get());
+    }
+
+    /** Picked on the map (the default) and not on the course. */
+    isPicked(f: BuiltFeature): boolean {
+        if (this.isOnCourse(f)) return false;
+        return f.key === undefined || (this.picks.get()[f.key] ?? true);
+    }
+
+    /** Pick a dropped shape or drop a picked one. A shape already on the course stays dropped. */
+    togglePick(key: string): void {
+        const f = this.built.peek()?.features.find(x => x.key === key);
+        if (!f || this.isOnCourse(f)) return;
+        this.picks.set({ ...this.picks.peek(), [key]: !this.isPicked(f) });
+    }
+
+    /** Pick every shape not on the course (true), or drop them all (false). */
+    pickAll(on: boolean): void {
+        const picks: Record<string, boolean> = {};
+        for (const f of this.built.peek()?.features ?? []) if (f.key !== undefined) picks[f.key] = on;
+        this.picks.set(picks);
+    }
+
     constructor(
         private featuresApi: CourseFeaturesApi = api.courseFeatures,
         private hydroApi: HydroApi = api.hydro,
@@ -349,6 +264,9 @@ export class GeojsonImportService {
             this.propertyKey.set(null);
             this.assignments.set({});
             this.built.set(null);
+            this.picks.set({});
+            this.importedKeys.set(new Set());
+            this.existingRefs.set(new Set());
             this.summary.set(null);
             this.progress.set(null);
             this.fetching.set(false);
@@ -361,16 +279,21 @@ export class GeojsonImportService {
         void this.loadImported();
     }
 
-    /** Refresh `imported` for the open course (a failure just leaves the list empty). */
+    /**
+     * Refresh `imported` and `existingRefs` for the open course (a failure
+     * just leaves the list, or the refs, empty).
+     */
     async loadImported(): Promise<void> {
         const courseId = this.courseId;
         if (!courseId) return;
-        try {
-            const counts = await this.featuresApi.imported({ courseId });
-            if (this.courseId === courseId) this.imported.set(importGroups(counts));
-        } catch {
-            if (this.courseId === courseId) this.imported.set([]);
-        }
+        await Promise.all([
+            this.featuresApi.imported({ courseId })
+                .then(counts => { if (this.courseId === courseId) this.imported.set(importGroups(counts)); })
+                .catch(() => { if (this.courseId === courseId) this.imported.set([]); }),
+            this.featuresApi.listByCourse({ courseId })
+                .then(features => { if (this.courseId === courseId) this.existingRefs.set(importedRefs(features)); })
+                .catch(() => { if (this.courseId === courseId) this.existingRefs.set(new Set()); }),
+        ]);
     }
 
     /**
@@ -387,6 +310,7 @@ export class GeojsonImportService {
             const { removed } = await this.featuresApi.removeImported({
                 courseId, sources: group.sources, ...(group.onlyTypes ? { types: group.onlyTypes } : {}),
             });
+            this.importedKeys.set(new Set()); // what is still on the course comes back with the refs
             await this.loadImported();
             return removed;
         } catch (e) {
@@ -512,6 +436,9 @@ export class GeojsonImportService {
                 this.propertyKey.set(key);
                 this.assignments.set(this.prefill(parsed, key));
                 this.parseError.set(null);
+                this.picks.set({});
+                this.importedKeys.set(new Set());
+                this.build();
             } catch (e) {
                 this.parsed.set(null);
                 this.propertyKey.set(null);
@@ -528,7 +455,7 @@ export class GeojsonImportService {
         batch(() => {
             this.propertyKey.set(key);
             this.assignments.set(this.prefill(parsed, key));
-            this.built.set(null); // mapping changed — stale preview
+            this.build();
         });
     }
 
@@ -542,68 +469,45 @@ export class GeojsonImportService {
 
     assign(bucketKey: string, assignment: BucketAssignment): void {
         this.assignments.set({ ...this.assignments.peek(), [bucketKey]: assignment });
-        this.built.set(null); // mapping changed — stale preview
+        this.build();
     }
 
     /**
-     * Build FeatureGeometries from the current mapping. Sets `built` (the
-     * panel renders it as the dashed preview overlay) and returns it.
-     * Degenerate rings are dropped with warnings; parse-time skips (non-
-     * polygon geometries) are carried into the warnings too.
+     * Build the features of the current mapping (geojson-build
+     * `buildFeatures`) and put them on the map. Called whenever the file or
+     * the mapping changes; picks carry over by key.
      */
     build(): BuildResult | null {
         const parsed = this.parsed.peek();
         if (!parsed) return null;
-        const assignments = this.assignments.peek();
-        const features: BuiltFeature[] = [];
-        const warnings: string[] = [...parsed.skipped];
-
-        for (const bucket of this.buckets.peek()) {
-            const type = assignments[bucket.key];
-            if (!type || type === 'skip') continue;
-            for (const feature of bucket.features) {
-                const provenance = provenanceFromProperties(feature.properties);
-                const attributes = attributesFromProperties(type, feature.properties);
-                const centerline = centerlineFromProperties(feature.properties);
-                const lineGeometry = centerline ? centerlineGeometry('EPSG:3006', centerline) : null;
-                if (lineGeometry) {
-                    features.push({ type, geometry: lineGeometry, ...provenance, ...(attributes ? { attributes } : {}) });
-                    continue;
-                }
-                feature.polygons.forEach((rings, polyIdx) => {
-                    const label = `${bucket.value} feature ${feature.index + 1}${feature.polygons.length > 1 ? `.${polyIdx + 1}` : ''}`;
-                    const { geometry, warnings: ringWarnings } = polygonToGeometry(rings, label, {
-                        exact: feature.properties['exact'] === true,
-                    });
-                    warnings.push(...ringWarnings);
-                    if (geometry) features.push({ type, geometry, ...provenance, ...(attributes ? { attributes } : {}) });
-                });
-            }
-        }
-
-        const result: BuildResult = { features, warnings };
+        const result = buildFeatures(parsed, bucketByProperty(parsed, this.propertyKey.peek()), this.assignments.peek());
         this.built.set(result);
         return result;
     }
 
     /**
-     * Bulk-create the built features (building first if needed). Reports
-     * progress; on a failed request the remaining queue is abandoned and
-     * `summary.error` is set (already-created features stay). Returns the
+     * Create the picked features (`pickedFeatures`, building first if
+     * needed). Reports progress; on a failed request the remaining queue is
+     * abandoned and `summary.error` is set (already-created features stay).
+     * The preview stays: what was created now counts as on the course, so
+     * the next shapes can be picked from the same fetch. Returns the
      * summary. The CALLER refreshes FeaturesService (`reload()`).
      */
     async confirmImport(): Promise<ImportSummary | null> {
         const courseId = this.courseId;
         const built = this.built.peek() ?? this.build();
-        if (!courseId || !built || built.features.length === 0) return null;
+        if (!courseId || !built) return null;
+        const picked = this.pickedFeatures.peek();
+        if (picked.length === 0) return null;
 
         this.importing.set(true);
-        this.progress.set({ done: 0, total: built.features.length });
+        this.progress.set({ done: 0, total: picked.length });
         const created: Record<string, number> = {};
+        const createdKeys = new Set(this.importedKeys.peek());
         let done = 0;
         let error: string | null = null;
 
-        const queue = [...built.features];
+        const queue = [...picked];
         const worker = async () => {
             for (;;) {
                 const item = queue.shift();
@@ -619,8 +523,9 @@ export class GeojsonImportService {
                         ...(item.attributes ? { attributes: item.attributes } : {}),
                     });
                     created[item.type] = (created[item.type] ?? 0) + 1;
+                    if (item.key !== undefined) createdKeys.add(item.key);
                     done++;
-                    this.progress.set({ done, total: built.features.length });
+                    this.progress.set({ done, total: picked.length });
                 } catch (e) {
                     error = e instanceof Error ? e.message : String(e);
                     return;
@@ -633,7 +538,7 @@ export class GeojsonImportService {
         batch(() => {
             this.summary.set(summary);
             this.importing.set(false);
-            this.built.set(null); // imported — preview off, real features take over
+            this.importedKeys.set(createdKeys);
         });
         await this.loadImported();
         return summary;

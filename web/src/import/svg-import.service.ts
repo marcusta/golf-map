@@ -30,6 +30,8 @@ export type BucketAssignment = FeatureType | 'skip';
 
 /** One buildable feature (pre-create). */
 export interface BuiltFeature {
+    /** The GeoJSON wizard's pick key (geojson-build `buildFeatures`); SVG imports carry none. */
+    key?: string;
     type: FeatureType;
     geometry: FeatureGeometry;
     /** Import provenance (T49) — forwarded to the create API when present.

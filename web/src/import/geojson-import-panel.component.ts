@@ -9,7 +9,8 @@
 import { TerrainEditToolService } from '../terrain-edit/terrain-edit-tool.service';
 import { terrainEditTool } from '../terrain-edit/terrain-edit-tool';
 import { EditorModeService } from '../editor/editor-mode.service';
-import { Component, effect, template } from '@basics/core/client/core';
+import type { EditorTool } from '../editor/tool';
+import { Component, effect, template, untrack } from '@basics/core/client/core';
 import type { Feature, FeatureCollection } from 'geojson';
 import { t } from '../theme';
 import { s, btn, primaryBtn, glassPanel, panelTitle, metric, OVERLAY_W, OVERLAY_INSET } from '../css';
@@ -18,7 +19,8 @@ import { FeaturesService, geometryToWgs84Rings } from '../draw/features.service'
 import { FEATURE_TYPES, FEATURE_STYLES, typeColorExpression } from '../draw/feature-palette';
 import { GeojsonImportService, OSM_FETCH_FILENAME, ROADS_FETCH_FILENAME, type ImportGroup } from './geojson-import.service';
 import { ConfirmService } from '../app/confirm-dialog.component';
-import type { BuildResult } from './svg-import.service';
+import type { BuildResult, BuiltFeature } from './svg-import.service';
+import { shapeAt } from './geojson-build';
 import type { GeojsonBucket } from './geojson-parse';
 import { icon } from '../ui/icons';
 
@@ -27,6 +29,9 @@ export const PREVIEW_OVERLAY_ID = 'geojson-import-preview';
 
 /** Dashed magenta preview styling — unmistakably "not real features yet". */
 const PREVIEW_OUTLINE = '#d63384';
+/** A dropped or already-imported shape: grey, so the picked ones stand out. */
+const DROPPED_OUTLINE = '#8a8f98';
+const DROPPED_FILL = '#c8ccd2';
 
 const tpl = template(`
     <div bind="root" class="geojson-import">
@@ -56,9 +61,15 @@ const tpl = template(`
             <div bind="buckets" class="bucket-list"></div>
         </div>
 
-        <div bind="actionsSection" class="geojson-import__section actions">
-            <button bind="preview" type="button" class="secondary"></button>
-            <button bind="confirm" type="button" class="primary"></button>
+        <div bind="actionsSection" class="geojson-import__section">
+            <div class="pick-row">
+                <span bind="pickInfo" class="pick-info" data-testid="geojson-pick-info"></span>
+                <button bind="pickAll" type="button" class="secondary" data-testid="geojson-pick-all">All</button>
+                <button bind="pickNone" type="button" class="secondary" data-testid="geojson-pick-none">None</button>
+            </div>
+            <div class="actions">
+                <button bind="confirm" type="button" class="primary" data-testid="geojson-import-confirm"></button>
+            </div>
         </div>
 
         <div bind="summarySection" class="geojson-import__section">
@@ -73,7 +84,7 @@ const tpl = template(`
 
         <div bind="importedSection" class="geojson-import__section" data-testid="geojson-imported">
             <h4 class="section-title">Imported on this course</h4>
-            <div class="hint">Remove an earlier import to fetch and import it again. Hand-drawn features are kept.</div>
+            <div class="hint">Remove an earlier import to import it again. Hand-drawn features are kept.</div>
             <div bind="importedList" class="imported-list"></div>
             <div bind="clearError" class="error"></div>
         </div>
@@ -98,15 +109,21 @@ const bucketRowTpl = template(`
     </div>
 `);
 
-function builtToGeojson(built: BuildResult | null): FeatureCollection {
+/** How a built shape shows on the map: to be imported, left out, or already on the course. */
+type PickState = 'picked' | 'dropped' | 'on-course';
+
+function builtToGeojson(built: BuildResult | null, stateOf: (f: BuiltFeature) => PickState): FeatureCollection {
     const features: Feature[] = (built?.features ?? []).map((f, i) => ({
         type: 'Feature',
         id: i,
-        properties: { type: f.type },
+        properties: { type: f.type, state: stateOf(f) },
         geometry: { type: 'Polygon', coordinates: geometryToWgs84Rings(f.geometry) },
     }));
     return { type: 'FeatureCollection', features };
 }
+
+/** The map mode the wizard claims while its shapes are on the map (clicks pick them). */
+const PICK_MODE = 'geojson-import-pick';
 
 export class GeojsonImportPanelComponent extends Component {
     static styles = `
@@ -207,7 +224,16 @@ export class GeojsonImportPanelComponent extends Component {
                 & select { font-size: 0.72rem; padding: 1px 2px; max-width: 110px; }
             }
 
+            & .pick-row {
+                display: flex;
+                align-items: center;
+                gap: ${s('xs')};
+                & .pick-info { flex: 1; font-size: 0.72rem; color: ${t('color-text-secondary')}; ${metric()} }
+                & .secondary { padding: 1px ${s('sm')}; font-size: 0.72rem; ${btn()} }
+            }
+
             & .actions {
+                display: flex;
                 flex-direction: row;
                 gap: ${s('sm')};
                 & .secondary { flex: 1; padding: ${s('xs')} ${s('sm')}; font-size: 0.78rem; ${btn()} }
@@ -303,18 +329,27 @@ export class GeojsonImportPanelComponent extends Component {
                     this.svc.setPropertyKey(v === '' ? null : v);
                 },
             },
-            actionsSection: { className: () => parsed() ? 'geojson-import__section actions' : 'geojson-import__section actions hidden' },
-            preview: {
-                textContent: () => this.svc.built.get() ? 'Refresh preview' : 'Preview on map',
-                onclick: () => this.svc.build(),
+            actionsSection: { className: () => parsed() ? 'geojson-import__section' : 'geojson-import__section hidden' },
+            // One line: what the import takes; the map is where shapes are picked.
+            pickInfo: {
+                textContent: () => {
+                    const total = this.svc.built.get()?.features.length ?? 0;
+                    const onCourse = this.svc.onCourseCount.get();
+                    const picked = this.svc.pickedFeatures.get().length;
+                    return `${picked} of ${total - onCourse} picked${onCourse > 0 ? ` · ${onCourse} on the course` : ''}`;
+                },
+                title: 'Click a shape on the map to pick or drop it. Shapes the course already has are grey and stay out.',
             },
+            pickAll: { onclick: () => this.svc.pickAll(true), disabled: () => this.svc.importing.get() },
+            pickNone: { onclick: () => this.svc.pickAll(false), disabled: () => this.svc.importing.get() },
             confirm: {
                 textContent: () => {
                     const progress = this.svc.progress.get();
                     if (this.svc.importing.get() && progress) return `Importing ${progress.done}/${progress.total}…`;
-                    return `Import ${this.svc.assignedFeatureCount.get()} features`;
+                    const n = this.svc.pickedFeatures.get().length;
+                    return `Import ${n} feature${n === 1 ? '' : 's'}`;
                 },
-                disabled: () => this.svc.importing.get() || this.svc.assignedFeatureCount.get() === 0,
+                disabled: () => this.svc.importing.get() || this.svc.pickedFeatures.get().length === 0,
                 onclick: async () => {
                     const summary = await this.svc.confirmImport();
                     // reloadOrLoad, not reload(): the store may never have
@@ -463,37 +498,41 @@ export class GeojsonImportPanelComponent extends Component {
 
     onMount(): void {
         // Dashed preview overlay driven by `built` (dies with the map;
-        // re-added when the map is ready again).
+        // re-added when the map is ready again). The shapes carry their pick
+        // state, so the overlay follows every pick.
+        const stateOf = (f: BuiltFeature): PickState =>
+            this.svc.isOnCourse(f) ? 'on-course' : this.svc.isPicked(f) ? 'picked' : 'dropped';
         this.track(effect(() => {
             const ready = this.mapSvc.ready.get();
             const built = this.svc.built.get();
+            const data = builtToGeojson(built, stateOf);
             if (!ready) {
                 this.previewAdded = false;
                 return;
             }
             if (built && !this.previewAdded) {
-                this.mapSvc.addOverlayLayer(PREVIEW_OVERLAY_ID, builtToGeojson(built), [
+                this.mapSvc.addOverlayLayer(PREVIEW_OVERLAY_ID, data, [
                     {
                         id: 'geojson-import-preview-fill',
                         type: 'fill',
                         paint: {
-                            'fill-color': typeColorExpression('fill') as never,
-                            'fill-opacity': 0.3,
+                            'fill-color': ['case', ['==', ['get', 'state'], 'picked'], typeColorExpression('fill'), DROPPED_FILL] as never,
+                            'fill-opacity': ['match', ['get', 'state'], 'picked', 0.35, 'dropped', 0.12, 0] as never,
                         },
                     },
                     {
                         id: 'geojson-import-preview-outline',
                         type: 'line',
                         paint: {
-                            'line-color': PREVIEW_OUTLINE,
-                            'line-width': 1.5,
+                            'line-color': ['match', ['get', 'state'], 'picked', PREVIEW_OUTLINE, DROPPED_OUTLINE] as never,
+                            'line-width': ['match', ['get', 'state'], 'picked', 2, 1.2] as never,
                             'line-dasharray': [2, 2],
                         },
                     },
                 ]);
                 this.previewAdded = true;
             } else if (built && this.previewAdded) {
-                this.mapSvc.updateOverlayData(PREVIEW_OVERLAY_ID, builtToGeojson(built));
+                this.mapSvc.updateOverlayData(PREVIEW_OVERLAY_ID, data);
             } else if (!built && this.previewAdded) {
                 this.mapSvc.removeOverlayLayer(PREVIEW_OVERLAY_ID);
                 this.previewAdded = false;
@@ -502,5 +541,35 @@ export class GeojsonImportPanelComponent extends Component {
         this.track(() => {
             if (this.previewAdded) this.mapSvc.removeOverlayLayer(PREVIEW_OVERLAY_ID);
         });
+
+        // While the wizard's shapes are on the map, a click picks or drops
+        // the one under it: the wizard takes the map's clicks from the tool,
+        // and gives them back to that tool when it closes.
+        let release: (() => void) | null = null;
+        let toolBefore: EditorTool | null = null;
+        this.track(effect(() => {
+            const picking = this.svc.open.get() && this.svc.built.get() !== null;
+            untrack(() => {
+                if (picking && !release) {
+                    toolBefore = this.editorMode.peekActiveTool();
+                    this.editorMode.deactivate();
+                    release = this.mapSvc.claimInteraction(PICK_MODE);
+                } else if (!picking && release) {
+                    const stillMine = this.mapSvc.interactionMode.peek() === PICK_MODE;
+                    release();
+                    release = null;
+                    if (stillMine && toolBefore) this.editorMode.activate(toolBefore);
+                    toolBefore = null;
+                }
+            });
+        }));
+        this.track(() => release?.());
+        this.track(this.mapSvc.onClick(e => {
+            if (this.mapSvc.interactionMode.peek() !== PICK_MODE || this.svc.importing.peek()) return;
+            const features = this.svc.built.peek()?.features ?? [];
+            const hit = shapeAt(features.map(f => geometryToWgs84Rings(f.geometry)), { x: e.lngLat.lng, y: e.lngLat.lat });
+            const key = hit >= 0 ? features[hit].key : undefined;
+            if (key !== undefined) this.svc.togglePick(key);
+        }));
     }
 }
