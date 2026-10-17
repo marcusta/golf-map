@@ -626,18 +626,37 @@ def build_architecture():
     ws=[to_st(*p) for p in wallpoly]
     line=lambda i,j,k: (ws[i][k]+ws[j][k])/2
     T_COURT,S_NOTCH,T_NOTCH=line(2,3,1),line(3,4,0),line(4,5,1)   # courtyard wall, notch wall, notch end
-    S_EAST,T_SOUTH,S_TALLW=line(5,6,0),line(8,9,1),line(9,10,0)    # east wall, south wall, tall west wall
+    S_TALLW=line(9,10,0)                                           # tall west wall
+    OVER=.5          # one overhang on every eave and gable of the tall block, and on the wing's courtyard eave
+    # East wall and south wall of the tall block: the OSM lines (s 16.2, t -23.53) put
+    # the roof 2.2 m / 1.9 m past the wall, but the lidar roof edge is at s 18.45 (outermost
+    # returns, E 825.9-827.3) and t -24.7, while the courtyard-side edges agree with OSM to
+    # 0.4 m. A 2 m cantilevered eave with no posts in the lidar is not credible, so the walls
+    # are taken to be OVER inside the lidar roof edge. (The OSM outline was traced from a
+    # leaning ortho.) Everything below follows from these two lines.
+    S_EAST=18.45-OVER
+    T_SOUTH=-24.7+OVER
+    # The courtyard notch is smaller than the OSM trace says. Lidar roof (class 1, on the tall
+    # planes) covers s 5.5..18.5 and runs north to t 12.0 (ground returns begin at s 5.35 and
+    # t 12.1), against OSM walls at s 9.04 / t 10.9; the courtyard-side gable stays on OSM.
+    S_NOTCH=5.5+OVER
+    T_NOTCH=12.0-OVER
     S_WINGE=(ws[1][0]+ws[2][0])/2                                  # east wall of the low wing, north of the courtyard
-    # The wing meets the white connector, whose south wall is the plane N 6457679.16
-    # (main_building). The lidar roof of the wing stops there too. The wing's walls
+    # The wing meets the white connector, whose south wall is the plane
+    # main_building.SOUTH_WALL_N (N 6457679.16 before the connector moved). The lidar roof of the wing stops there too. The wing's walls
     # and roof end on that plane (1 cm inside it), so nothing shows between them
     # and nothing pokes through. The end edges follow N, not the roof axis.
-    Y_END=6457679.17-origin[1]
+    Y_END=getattr(main_building,"SOUTH_WALL_N",6457679.16)+.01-origin[1]
     t_end=lambda s: (Y_END+s*math.sin(AXIS))/math.cos(AXIS)
     # One square outline for the tall block: the OSM south wall steps 1.6 m at
     # the east end, which made two gable planes under one roof. Straighten it.
     new_wall=list(wallpoly)
+    new_wall[3]=from_st(S_NOTCH,T_COURT)
+    new_wall[4]=from_st(S_NOTCH,T_NOTCH)
+    new_wall[5]=from_st(S_EAST,T_NOTCH)
     new_wall[6]=from_st(S_EAST,T_SOUTH)
+    new_wall[8]=from_st(ws[8][0],T_SOUTH)
+    new_wall[9]=from_st(ws[9][0],T_SOUTH)
     for i in (12,13):      # north corners of the wing
         new_wall[i]=from_st(ws[i][0],t_end(ws[i][0]))
     del new_wall[7]
@@ -649,8 +668,7 @@ def build_architecture():
     # (planes cross at z 113.2) with the low roof running into the tall one.
     SV=(low.zr+low.m*low.sr-tall.zr+tall.m*tall.sr)/(low.m+tall.m)
     ZV=low.z(SV)
-    OVER=.5          # one overhang on every eave and gable of the tall block, and on the wing's courtyard eave
-    T_S=T_SOUTH-OVER # south ends: the lidar roof edge is -24.2 (low) / -25.2 (tall)
+    T_S=T_SOUTH-OVER # south ends: lidar roof edge -24.2 (low wing) / -24.7 (tall)
     S_LW=sum(to_st(e-origin[0],n-origin[1])[0] for e,n in [sections["clubhouse-west-low"]["roofEdge3006"][i] for i in (0,3)])/2
     S_LE=S_WINGE+OVER                # low east eave, north of the tall roof
     S_TE=S_EAST+OVER                 # tall east eave
@@ -725,22 +743,36 @@ def build_architecture():
     # Sheltered western dining terrace, clearly visible in both ortho vintages.
     deckx=477785.5-origin[0]
     deckx1=477791.7-origin[0]
-    # The ortho shows the deck ending at the south wall line (N 6457635.8), not at the traced 6457633.4.
-    y0,y1=6457635.8-origin[1],6457679-origin[1]
+    # The deck ends at the south wall line (the ortho agrees: N 6457635.7), not at the traced 6457633.4.
+    y0,y1=(T_SOUTH-(deckx-.5)*math.sin(AXIS))/math.cos(AXIS),6457679-origin[1]
     g.box(((deckx+deckx1)/2,(y0+y1)/2,.08),(deckx1-deckx,y1-y0,.28),"omberg_deck")
     framed_face(g,(477787.9-origin[0],y1,0),(477787.9-origin[0],y0,0),.25,2.65,23,"omberg_dark_brown",bars=1)
     for y in [y0+i*(y1-y0)/12 for i in range(13)]:
         g.box((477787.9-origin[0],y,1.47),(.11,.11,2.5),"omberg_dark_brown")
+    # West terrace awning: lidar sees a roof 2.6-2.8 m above ground, falling outwards, on the
+    # outer side of the glazing (E 477785.9-786.8, N 6457648.7-678). The course-side photo shows
+    # striped awnings, so it is a light striped canopy on the glazing line, no posts.
+    ax0,ax1=xg-.0,xg-1.75
+    ay0,ay1=6457648.5-origin[1],6457678.2-origin[1]
+    nstripe=20
+    for i in range(nstripe):
+        ya,yb=ay0+(ay1-ay0)*i/nstripe,ay0+(ay1-ay0)*(i+1)/nstripe
+        m="omberg_sage" if i%2 else "omberg_ivory_trim"
+        g.poly([(ax0,ya,2.85),(ax1,ya,2.55),(ax1,yb,2.55),(ax0,yb,2.85)][::-1],m)
+        g.poly([(ax0,ya,2.82),(ax1,ya,2.52),(ax1,yb,2.52),(ax0,yb,2.82)],"omberg_dark_brown")
+        g.poly([(ax1,ya,2.55),(ax1,ya,2.38),(ax1,yb,2.38),(ax1,yb,2.55)][::-1],m)
     # Main east elevation, upper accommodation floor and lower restaurant bays.
     fp=[(-16,-24),(16,24)]
     for n in [6457640,6457644.5,6457649,6457653.5,6457658,6457663.5,6457667.5]:
         for sill in [.95,3.95]:
-            facade_e=477823.68+(n-6457636.87)*(.88/32.84)+.045
-            kit.opening(g,opening("+x",n-origin[1],w=1.5,h=1.5,sill=sill,plane=facade_e-origin[0]),fp,None,"omberg_ivory_trim")
+            # the east wall line s=S_EAST: x = S/cos + y*tan (axis skew)
+            facade_x=S_EAST/math.cos(AXIS)+(n-origin[1])*math.tan(AXIS)+.045
+            kit.opening(g,opening("+x",n-origin[1],w=1.5,h=1.5,sill=sill,plane=facade_x),fp,None,"omberg_ivory_trim")
     for e in [477805,477809,477813,477817,477821]:
         for sill in [.95,4.0]:
-            facade_n=6457635.86+(e-477802.08)*(-.38/14.36)   # one south wall line (the OSM step is straightened)
-            kit.opening(g,opening("-y",e-origin[0],w=1.45,h=1.45,sill=sill,plane=facade_n-origin[1]-.045),fp,None,"omberg_ivory_trim")
+            # the south wall line t=T_SOUTH: y = (t - x sin)/cos
+            facade_y=(T_SOUTH-(e-origin[0])*math.sin(AXIS))/math.cos(AXIS)
+            kit.opening(g,opening("-y",e-origin[0],w=1.45,h=1.45,sill=sill,plane=facade_y-.045),fp,None,"omberg_ivory_trim")
     # West terrace tables and chairs, kept deliberately light in triangle count.
     for n in [6457638,6457643,6457648,6457653,6457658,6457673]:
         cx,cy=477786.1-origin[0],n-origin[1]
