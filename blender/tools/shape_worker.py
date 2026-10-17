@@ -564,7 +564,9 @@ class Worker:
                 entry = app.apply_op(j, rec["layer"], rec["path"], rec["op"])
             self.entries[rec["key"]] = entry
             ran.append(rec["key"])
-            for uid in runner.op_units:
+            # An op that selected nothing (a feature not in this .blend) never began: op_units are the last op's.
+            units_run = runner.op_units if runner.op_key == rec["key"] else []
+            for uid in units_run:
                 out = footprint(runner.records[rec["key"]][uid]) - affected
                 if out:
                     self.ops = new

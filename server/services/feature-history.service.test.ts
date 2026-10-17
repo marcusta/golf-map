@@ -121,18 +121,19 @@ test('a variant database holds the chosen mix for the course and leaves everythi
     expect((await t.history.current(TEST_COURSE_ID)).has(t.added.id)).toBe(true);
 });
 
-test('an export snapshot keeps the SVG and the features, and reads back as the state it was taken from', async () => {
+test('an export snapshot keeps the SVG, its road-surface sidecar and the features, and reads back as the state it was taken from', async () => {
     const t = await editedCourse();
     const dir = await mkdtemp(path.join(os.tmpdir(), 'gspro-out-'));
     const svg = path.join(dir, 'linkan.svg');
     await writeFile(svg, '<svg/>');
+    await writeFile(path.join(dir, 'linkan-paths.json'), '{}');
 
     const folder = await t.history.snapshot(TEST_COURSE_ID, dir, svg, new Date(2026, 8, 26, 18, 32, 4));
     const listed = await FeatureHistoryService.listSnapshots(dir);
     const state = await FeatureHistoryService.readSnapshot(folder);
 
     expect(path.relative(dir, folder)).toBe(path.join(SNAPSHOT_DIR, '2026-09-26_18-32-04'));
-    expect((await readdir(folder)).sort()).toEqual(['features.json', 'linkan.svg']);
+    expect((await readdir(folder)).sort()).toEqual(['features.json', 'linkan-paths.json', 'linkan.svg']);
     expect(listed.map(s => [s.name, s.features, s.svg])).toEqual([['2026-09-26_18-32-04', 4, 'linkan.svg']]);
     expect(await t.history.changes(TEST_COURSE_ID, state, await t.history.current(TEST_COURSE_ID))).toEqual([]);
 });

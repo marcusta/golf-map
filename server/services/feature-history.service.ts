@@ -195,7 +195,11 @@ export class FeatureHistoryService {
         return `${Number(touched?.n ?? 0)}:${touched?.at ?? 'none'}:${history?.id ?? 0}`;
     }
 
-    /** Keep a full SVG export: the SVG and the features it was made from, under <dir>/export-history/<local time>/. */
+    /**
+     * Keep a full SVG export: the SVG, its road-surface sidecar `<stem>-paths.json` and the features it was made
+     * from, under <dir>/export-history/<local time>/. Blender reads the sidecar next to the SVG that built a .blend,
+     * so a .blend built from an older export still splits its roads by surface after a newer export.
+     */
     async snapshot(courseId: string, dir: string, svgPath: string, when = new Date()): Promise<string> {
         const name = localStamp(when);
         const folder = path.join(dir, SNAPSHOT_DIR, name);
@@ -204,6 +208,8 @@ export class FeatureHistoryService {
         if (await exists(svgPath)) {
             svg = path.basename(svgPath);
             await copyFile(svgPath, path.join(folder, svg));
+            const sidecar = svgPath.replace(/\.svg$/i, '') + '-paths.json';
+            if (await exists(sidecar)) await copyFile(sidecar, path.join(folder, path.basename(sidecar)));
         }
         const features = [...(await this.current(courseId)).values()];
         await writeFile(path.join(folder, 'features.json'), JSON.stringify({
