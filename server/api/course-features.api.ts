@@ -21,6 +21,16 @@ const PathRingSchema = Type.Object({
     points: Type.Array(AnchorPointSchema),
 });
 
+// The shape of one end of a centerline road (shared/features/centerline.ts
+// CenterlineCap); the service checks the sizes (capError).
+const CenterlineCapSchema = Type.Object({
+    shape: Type.Union([Type.Literal('rounded'), Type.Literal('turning'), Type.Literal('taper')]),
+    rounding: Type.Optional(Type.Number()),
+    diameterM: Type.Optional(Type.Number()),
+    lengthM: Type.Optional(Type.Number()),
+    endWidthM: Type.Optional(Type.Number()),
+});
+
 // A road/path as its middle line plus a width; the server derives `rings`
 // (the corridor) from it, so a client sending one may send any rings.
 const CenterlineSchema = Type.Object({
@@ -30,6 +40,8 @@ const CenterlineSchema = Type.Object({
         corner: Type.Optional(Type.Boolean()),
     })),
     widthM: Type.Number(),
+    startCap: Type.Optional(CenterlineCapSchema),
+    endCap: Type.Optional(CenterlineCapSchema),
 });
 
 const FeatureGeometrySchema = Type.Object({

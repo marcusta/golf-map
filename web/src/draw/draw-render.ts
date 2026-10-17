@@ -15,6 +15,7 @@ import {
     DRAWN_CORNER_TURN_DEG,
     autoCorners,
     centerlineGeometry,
+    DEFAULT_DRAWN_CAP,
     flattenCenterline,
 } from '../../../shared/features/centerline';
 import { editViewOf, rectFromCorners, vertexKey, type DrawState } from './draw-state';
@@ -37,11 +38,14 @@ const PATH_CORNER_TURN_DEG = DRAWN_CORNER_TURN_DEG;
 /**
  * The geometry a path draft commits as: the clicked centerline — Shift-clicked
  * points and bends of PATH_CORNER_TURN_DEG or more are corners — at `widthM`,
- * its corridor derived. Null for fewer than two distinct points or an
- * unusable width. Pure; the tool commits a path through it.
+ * its corridor derived. A new road (`type` 'path') ends straight with soft
+ * corners at both ends (DEFAULT_DRAWN_CAP); creeks and power lines keep round
+ * ends. Null for fewer than two distinct points or an unusable width. Pure;
+ * the tool commits a path through it.
  */
-export function draftCenterlineGeometry(points: AnchorPoint[], widthM: number): FeatureGeometry | null {
-    return centerlineGeometry('EPSG:3006', { points: autoCorners(points, PATH_CORNER_TURN_DEG), widthM });
+export function draftCenterlineGeometry(points: AnchorPoint[], widthM: number, type?: string): FeatureGeometry | null {
+    const caps = type === 'path' ? { startCap: DEFAULT_DRAWN_CAP, endCap: DEFAULT_DRAWN_CAP } : {};
+    return centerlineGeometry('EPSG:3006', { points: autoCorners(points, PATH_CORNER_TURN_DEG), widthM, ...caps });
 }
 
 /** A reactive read: `get()` registers the dependency. */
@@ -64,6 +68,8 @@ export interface DrawRenderHost {
     readonly pathMode: Readable<boolean>;
     /** Total width in metres of the previewed corridor. */
     readonly pathWidthM: Readable<number>;
+    /** The feature type being drawn (a road's draft gets its default end shapes). */
+    readonly drawType?: Readable<string>;
 }
 
 /**
@@ -132,7 +138,7 @@ export function drawPreviewGeojson(host: DrawRenderHost): FeatureCollection {
         }
         // Path mode: the corridor Enter will commit, around the centerline.
         if (path) {
-            const corridor = draftCenterlineGeometry(controls, host.pathWidthM.get());
+            const corridor = draftCenterlineGeometry(controls, host.pathWidthM.get(), host.drawType?.get());
             for (const ring of corridor?.rings ?? []) {
                 const coords = ring.points.map(q => toLngLat(q));
                 coords.push(coords[0]);

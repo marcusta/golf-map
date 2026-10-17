@@ -27,6 +27,15 @@ export const PathRingSchema = Type.Object({
     points: Type.Array(AnchorPointSchema),
 });
 
+/** One end's shape (shared/features/centerline.ts CenterlineCap; sizes checked by capError). */
+export const CenterlineCapSchema = Type.Object({
+    shape: Type.Union([Type.Literal('rounded'), Type.Literal('turning'), Type.Literal('taper')]),
+    rounding: Type.Optional(Type.Number()),
+    diameterM: Type.Optional(Type.Number()),
+    lengthM: Type.Optional(Type.Number()),
+    endWidthM: Type.Optional(Type.Number()),
+});
+
 export const CenterlineSchema = Type.Object({
     points: Type.Array(Type.Object({
         x: Type.Number(),
@@ -34,6 +43,8 @@ export const CenterlineSchema = Type.Object({
         corner: Type.Optional(Type.Boolean()),
     })),
     widthM: Type.Number(),
+    startCap: Type.Optional(CenterlineCapSchema),
+    endCap: Type.Optional(CenterlineCapSchema),
 });
 
 /** Curve interpretation of a geometry's rings. Absent = 'bezier' (legacy). */

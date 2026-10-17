@@ -445,8 +445,8 @@ export function translateGeometry(geometry: FeatureGeometry, dx: number, dy: num
     const next = cloneGeometry(geometry);
     if (geometry.centerline) {
         next.centerline = {
+            ...geometry.centerline,
             points: geometry.centerline.points.map(p => ({ ...p, x: p.x + dx, y: p.y + dy })),
-            widthM: geometry.centerline.widthM,
         };
     }
     for (const ring of next.rings) {
@@ -673,7 +673,7 @@ export function simplifyGeometry(geometry: FeatureGeometry, epsilon: number): Fe
     if (geometry.centerline) {
         // A road simplifies its line (ends kept); the corridor follows.
         const points = rdpSimplify(geometry.centerline.points, epsilon);
-        return withCenterline(geometry, { points, widthM: geometry.centerline.widthM }) ?? geometry;
+        return withCenterline(geometry, { ...geometry.centerline, points }) ?? geometry;
     }
     const next = cloneGeometry(geometry);
     next.rings = next.rings.map(ring => {
@@ -834,7 +834,7 @@ export function editViewOf(geometry: FeatureGeometry): FeatureGeometry {
 export function fromEditView(original: FeatureGeometry, edited: FeatureGeometry): FeatureGeometry | null {
     if (!original.centerline) return edited;
     const points = (edited.rings[0]?.points ?? []).map(p => (p.corner ? { x: p.x, y: p.y, corner: true } : { x: p.x, y: p.y }));
-    return withCenterline(original, { points, widthM: original.centerline.widthM });
+    return withCenterline(original, { ...original.centerline, points });
 }
 
 /**

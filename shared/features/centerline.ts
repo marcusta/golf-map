@@ -12,9 +12,12 @@
 // chord-scaled tangents (evenly spaced clicks on an arc hug the arc; unevenly
 // spaced ones — a long straight into a tight bend — do not overshoot). A
 // `corner` point breaks the curve: straight in, straight out. The corridor is
-// that curve buffered by half the width with round joins and round caps: two
-// roads meeting end to end, or a branch ending on another road, join without
-// a notch.
+// that curve buffered by half the width with round joins. Each end has a shape
+// of its own (`startCap` / `endCap`, CenterlineCap): a straight cut whose
+// corners are rounded by `rounding` (0 straight .. 1 half circle, reaching that
+// radius beyond the end like a round line cap), a turning circle (vändplan) or
+// a taper. A road without one keeps the half circle it always had: two roads
+// meeting end to end, or a branch ending on another road, join without a notch.
 
 import polygonClipping, { type Geom, type MultiPolygon, type Pair, type Ring } from 'polygon-clipping';
 
@@ -25,10 +28,108 @@ export interface CenterlinePoint {
     corner?: boolean;
 }
 
+export type CenterlineCapShape = 'rounded' | 'turning' | 'taper';
+
+/**
+ * The shape of one end. Sizes left out follow the road's width, so a wider
+ * road keeps its proportions.
+ */
+export interface CenterlineCap {
+    shape: CenterlineCapShape;
+    /** rounded: corner radius as a fraction of half the width (0 straight cut .. 1 half circle). */
+    rounding?: number;
+    /** turning: the circle's diameter (m); default TURNING_DIAMETER_FACTOR × width. */
+    diameterM?: number;
+    /** taper: how long the narrowing is (m); default TAPER_LENGTH_FACTOR × width. */
+    lengthM?: number;
+    /** taper: the width at the tip (m); default TAPER_END_WIDTH_FACTOR × width. */
+    endWidthM?: number;
+}
+
 export interface FeatureCenterline {
     points: CenterlinePoint[];
     /** Total corridor width in metres. */
     widthM: number;
+    /** The shape at the first point; absent = half circle. */
+    startCap?: CenterlineCap;
+    /** The shape at the last point; absent = half circle. */
+    endCap?: CenterlineCap;
+}
+
+/** The end every road had before cap shapes: a half circle. */
+export const ROUND_CAP: CenterlineCap = { shape: 'rounded', rounding: 1 };
+/** Newly drawn roads: a straight end with soft corners. */
+export const DEFAULT_DRAWN_CAP: CenterlineCap = { shape: 'rounded', rounding: 0.4 };
+export const TURNING_DIAMETER_FACTOR = 2.5;
+export const TAPER_LENGTH_FACTOR = 2;
+export const TAPER_END_WIDTH_FACTOR = 0.4;
+export const MAX_TURNING_DIAMETER_M = 120;
+export const MAX_TAPER_LENGTH_M = 200;
+
+/** The named end shapes the editor offers, in order. */
+export const CAP_PRESETS = [
+    { id: 'straight', label: 'Straight', cap: { shape: 'rounded', rounding: 0 } },
+    { id: 'soft', label: 'Soft corners', cap: DEFAULT_DRAWN_CAP },
+    { id: 'rounded', label: 'Rounded', cap: { shape: 'rounded', rounding: 0.7 } },
+    { id: 'round', label: 'Round', cap: ROUND_CAP },
+    { id: 'turning', label: 'Turning circle', cap: { shape: 'turning' } },
+    { id: 'taper', label: 'Taper', cap: { shape: 'taper' } },
+] as const satisfies ReadonlyArray<{ id: string; label: string; cap: CenterlineCap }>;
+
+export type CapPresetId = (typeof CAP_PRESETS)[number]['id'];
+
+/** The preset a cap is (absent = round), or null for one with its own sizes. */
+export function capPresetOf(cap: CenterlineCap | undefined): CapPresetId | null {
+    const c = cap ?? ROUND_CAP;
+    for (const preset of CAP_PRESETS) {
+        const p: CenterlineCap = preset.cap;
+        if (p.shape !== c.shape) continue;
+        if (c.shape === 'rounded' ? p.rounding === c.rounding : c.diameterM === undefined && c.lengthM === undefined && c.endWidthM === undefined) return preset.id;
+    }
+    return null;
+}
+
+/** A cap's sizes with the width-following defaults filled in. */
+export function resolveCap(cap: CenterlineCap | undefined, widthM: number): Required<CenterlineCap> {
+    const c = cap ?? ROUND_CAP;
+    return {
+        shape: c.shape,
+        rounding: c.rounding ?? 1,
+        diameterM: c.diameterM ?? TURNING_DIAMETER_FACTOR * widthM,
+        lengthM: c.lengthM ?? TAPER_LENGTH_FACTOR * widthM,
+        endWidthM: c.endWidthM ?? TAPER_END_WIDTH_FACTOR * widthM,
+    };
+}
+
+/** Why a cap is unusable, or null when it is fine. */
+export function capError(cap: unknown, widthM: number): string | null {
+    if (!cap || typeof cap !== 'object') return 'Cap must be an object';
+    const c = cap as Partial<Record<keyof CenterlineCap, unknown>>;
+    const num = (v: unknown) => v === undefined || (typeof v === 'number' && Number.isFinite(v));
+    if (!num(c.rounding) || !num(c.diameterM) || !num(c.lengthM) || !num(c.endWidthM)) return 'Cap sizes must be numbers';
+    if (c.shape === 'rounded') {
+        if (c.rounding === undefined || (c.rounding as number) < 0 || (c.rounding as number) > 1) return 'Cap rounding must be 0..1';
+    } else if (c.shape === 'turning') {
+        const d = c.diameterM as number | undefined;
+        if (d !== undefined && (d < widthM || d > MAX_TURNING_DIAMETER_M)) return `Turning circle diameter must be the road width..${MAX_TURNING_DIAMETER_M} m`;
+    } else if (c.shape === 'taper') {
+        const l = c.lengthM as number | undefined, w = c.endWidthM as number | undefined;
+        if (l !== undefined && (l <= 0 || l > MAX_TAPER_LENGTH_M)) return `Taper length must be 0..${MAX_TAPER_LENGTH_M} m`;
+        if (w !== undefined && (w < 0 || w >= widthM)) return 'Taper end width must be at least 0 and under the road width';
+    } else {
+        return 'Cap shape must be rounded, turning or taper';
+    }
+    return null;
+}
+
+/** Only the cap's known fields (what is stored). */
+function cleanCap(cap: CenterlineCap): CenterlineCap {
+    const out: CenterlineCap = { shape: cap.shape };
+    if (cap.shape === 'rounded') out.rounding = cap.rounding;
+    if (cap.shape === 'turning' && cap.diameterM !== undefined) out.diameterM = cap.diameterM;
+    if (cap.shape === 'taper' && cap.lengthM !== undefined) out.lengthM = cap.lengthM;
+    if (cap.shape === 'taper' && cap.endWidthM !== undefined) out.endWidthM = cap.endWidthM;
+    return out;
 }
 
 export interface CorridorRing {
@@ -87,6 +188,11 @@ export function centerlineError(centerline: unknown): string | null {
         if (!p || !Number.isFinite(p.x) || !Number.isFinite(p.y)) return 'Centerline points must have finite x/y coordinates';
     }
     if (distinctControls(c.points as CenterlinePoint[]).length < 2) return 'Centerline needs at least 2 distinct points';
+    for (const key of ['startCap', 'endCap'] as const) {
+        const cap = (centerline as Partial<FeatureCenterline>)[key];
+        const error = cap === undefined ? null : capError(cap, c.widthM);
+        if (error) return `Centerline ${key}: ${error}`;
+    }
     return null;
 }
 
@@ -283,21 +389,74 @@ function ringArea(ring: Pair[]): number {
     return a / 2;
 }
 
+/** The ends' shapes for `bufferCenterlinePolyline` (absent = half circle). */
+export interface CenterlineCaps {
+    start?: CenterlineCap;
+    end?: CenterlineCap;
+}
+
+/** A point `d` m along `line` (0 = its start), splitting that segment: the line gets a vertex there. */
+function withVertexAt(line: Pair[], d: number): Pair[] {
+    let run = 0;
+    for (let i = 0; i < line.length - 1; i++) {
+        const [ax, ay] = line[i], [bx, by] = line[i + 1];
+        const l = Math.hypot(bx - ax, by - ay);
+        if (d <= run + l) {
+            const t = (d - run) / l;
+            if (t < 1e-6 || t > 1 - 1e-6) return line; // on a vertex already
+            return [...line.slice(0, i + 1), [ax + t * (bx - ax), ay + t * (by - ay)], ...line.slice(i + 1)];
+        }
+        run += l;
+    }
+    return line;
+}
+
+/** Signed sweep from angle a0 to a1, the short way round (-π..π). */
+function shortSweep(a0: number, a1: number): number {
+    let s = a1 - a0;
+    while (s > Math.PI) s -= 2 * Math.PI;
+    while (s < -Math.PI) s += 2 * Math.PI;
+    return s;
+}
+
 /**
- * A polyline buffered by `halfWidth` with round joins and caps: the union of
- * one rectangle per segment, one pie per join and a half disc per end (always
- * right, however tight the bend or wherever the line crosses itself). Rings in
- * the polyline's own coordinates, exterior first, then holes; closing point
- * dropped. Null when the line has no length.
+ * A polyline buffered by `halfWidth` with round joins and the ends' shapes
+ * (`caps`, a half circle each by default): the union of one quad per segment,
+ * one pie per join and a piece per end (always right, however tight the bend
+ * or wherever the line crosses itself). A taper narrows the segments near its
+ * end, so the half width varies along the line. Rings in the polyline's own
+ * coordinates, exterior first, then holes; closing point dropped. Null when
+ * the line has no length.
  */
-export function bufferCenterlinePolyline(line: readonly XY[], halfWidth: number): Pair[][] | null {
+export function bufferCenterlinePolyline(line: readonly XY[], halfWidth: number, caps: CenterlineCaps = {}): Pair[][] | null {
     const pts = distinctControls(line);
     if (pts.length < 2 || !(halfWidth > 0)) return null;
     // Work near the origin: EPSG:3006 northings (~6.4e6) cost the clipper
     // precision it needs for centimetre slivers.
     const ox = pts[0].x, oy = pts[0].y;
-    const local: Pair[] = pts.map(p => [p.x - ox, p.y - oy]);
+    let local: Pair[] = pts.map(p => [p.x - ox, p.y - oy]);
     const r = halfWidth;
+    const widthM = 2 * r;
+    const start = resolveCap(caps.start, widthM), end = resolveCap(caps.end, widthM);
+
+    // Tapers: a vertex where each narrowing begins, then the half width per vertex.
+    const lengthOf = (l: Pair[]) => l.slice(1).reduce((sum, p, i) => sum + Math.hypot(p[0] - l[i][0], p[1] - l[i][1]), 0);
+    const total = lengthOf(local);
+    const share = start.shape === 'taper' && end.shape === 'taper' ? total / 2 : total;
+    const startTaper = start.shape === 'taper' ? Math.min(start.lengthM, share) : 0;
+    const endTaper = end.shape === 'taper' ? Math.min(end.lengthM, share) : 0;
+    if (startTaper > 0) local = withVertexAt(local, startTaper);
+    if (endTaper > 0) local = withVertexAt(local, total - endTaper);
+    const along: number[] = [0];
+    for (let i = 1; i < local.length; i++) along.push(along[i - 1] + Math.hypot(local[i][0] - local[i - 1][0], local[i][1] - local[i - 1][1]));
+    const radius = along.map(d => {
+        let h = r;
+        if (startTaper > 0 && d < startTaper) h = Math.min(h, start.endWidthM / 2 + (r - start.endWidthM / 2) * (d / startTaper));
+        const back = total - d;
+        if (endTaper > 0 && back < endTaper) h = Math.min(h, end.endWidthM / 2 + (r - end.endWidthM / 2) * (back / endTaper));
+        return h;
+    });
+
     const pieces: Pair[][] = [];
     const dirs: Pair[] = [];
     // Per segment: its left/right kerb corners at the start (0) and end (1).
@@ -308,19 +467,20 @@ export function bufferCenterlinePolyline(line: readonly XY[], halfWidth: number)
         const [ax, ay] = local[i], [bx, by] = local[i + 1];
         const l = Math.hypot(bx - ax, by - ay);
         dirs.push([(bx - ax) / l, (by - ay) / l]);
-        const nx = (-(by - ay) / l) * r, ny = ((bx - ax) / l) * r;
-        left0.push([ax + nx, ay + ny]);
-        left1.push([bx + nx, by + ny]);
-        right1.push([bx - nx, by - ny]);
-        right0.push([ax - nx, ay - ny]);
+        const nx = -(by - ay) / l, ny = (bx - ax) / l;
+        const ra = radius[i], rb = radius[i + 1];
+        left0.push([ax + nx * ra, ay + ny * ra]);
+        left1.push([bx + nx * rb, by + ny * rb]);
+        right1.push([bx - nx * rb, by - ny * rb]);
+        right0.push([ax - nx * ra, ay - ny * ra]);
         // The centerline ends are vertices too: the joins and caps meet the
         // rectangle there, and a vertex landing mid-edge (a T-junction) is
         // where the clipper leaves a hairline slit down to the centerline.
         pieces.push([left0[i], left1[i], local[i + 1], right1[i], right0[i], local[i], left0[i]]);
     }
     // An arc from kerb corner `from` to `to` about `c`, its ends exactly those corners.
-    const fan = (c: Pair, from: Pair, to: Pair, sweep: number): Pair[] => {
-        const pts = arc(c, r, Math.atan2(from[1] - c[1], from[0] - c[0]), sweep);
+    const fan = (c: Pair, from: Pair, to: Pair, sweep: number, rad: number): Pair[] => {
+        const pts = arc(c, rad, Math.atan2(from[1] - c[1], from[0] - c[0]), sweep);
         pts[0] = from;
         pts[pts.length - 1] = to;
         return pts;
@@ -331,14 +491,82 @@ export function bufferCenterlinePolyline(line: readonly XY[], halfWidth: number)
         if (Math.abs(turn) < 1e-9) continue;
         // The gap opens on the outside of the bend: right of a left turn.
         const c = local[i];
-        const outer = turn > 0 ? fan(c, right1[i - 1], right0[i], turn) : fan(c, left1[i - 1], left0[i], turn);
+        const outer = turn > 0 ? fan(c, right1[i - 1], right0[i], turn, radius[i]) : fan(c, left1[i - 1], left0[i], turn, radius[i]);
         pieces.push([c, ...outer, c]);
     }
+
+    // One end: E the end point, A and B its kerb corners (B = E - (A - E)),
+    // u pointing out of the road. Arcs run anticlockwise from A over u to B.
+    const capPieces = (cap: Required<CenterlineCap>, E: Pair, A: Pair, B: Pair, u: Pair, inward: Pair[]): Pair[][] => {
+        const rE = Math.hypot(A[0] - E[0], A[1] - E[1]);
+        const a: Pair = rE > 0 ? [(A[0] - E[0]) / rE, (A[1] - E[1]) / rE] : [-u[1], u[0]];
+        const angle = (v: Pair) => Math.atan2(v[1], v[0]);
+        const rounded = (rho: number): Pair[][] => {
+            if (rho >= 1) {
+                // The half circle exactly as before cap shapes (byte-identical rings).
+                const half = fan(E, A, B, Math.PI, rE);
+                return [[...half, half[0]]];
+            }
+            const c = rho * rE;
+            if (c < 1e-4) return [];
+            const c1: Pair = [E[0] + a[0] * (rE - c), E[1] + a[1] * (rE - c)];
+            const c2: Pair = [E[0] - a[0] * (rE - c), E[1] - a[1] * (rE - c)];
+            const arc1 = arc(c1, c, angle(a), Math.PI / 2);
+            const arc2 = arc(c2, c, angle(u), Math.PI / 2);
+            arc1[0] = A;
+            arc2[arc2.length - 1] = B;
+            return [[...arc1, ...arc2, E, A]];
+        };
+        if (cap.shape === 'rounded') return rounded(Math.max(0, Math.min(1, cap.rounding)));
+        if (cap.shape === 'taper') return rounded(1);
+        // Turning circle about the end point, with kerb fillets where it meets the road.
+        const R = cap.diameterM / 2;
+        if (!(R > rE + 1e-3)) return rounded(1);
+        const circle = arc(E, R, 0, 2 * Math.PI);
+        circle[circle.length - 1] = circle[0];
+        const out: Pair[][] = [circle];
+        const f = rE;
+        const s = Math.sqrt((R + f) ** 2 - (rE + f) ** 2);
+        // Fillets need the road to run (near enough) straight back from E for
+        // `s` m: P is where it is `s` from E, and the fillets sit square to EP.
+        let P: Pair | null = null;
+        let prev = E;
+        const between: Pair[] = [];
+        for (const p of inward) {
+            const dp = Math.hypot(p[0] - E[0], p[1] - E[1]);
+            if (dp >= s) {
+                const d0 = Math.hypot(prev[0] - E[0], prev[1] - E[1]);
+                const t = (s - d0) / (dp - d0);
+                P = [prev[0] + t * (p[0] - prev[0]), prev[1] + t * (p[1] - prev[1])];
+                break;
+            }
+            between.push(p);
+            prev = p;
+        }
+        if (!P) return out;
+        const uf: Pair = [(E[0] - P[0]) / s, (E[1] - P[1]) / s];
+        const af: Pair = -uf[1] * a[0] + uf[0] * a[1] >= 0 ? [-uf[1], uf[0]] : [uf[1], -uf[0]];
+        const tolerance = 0.05 * rE + 0.02;
+        if (between.some(p => Math.abs((p[0] - E[0]) * af[0] + (p[1] - E[1]) * af[1]) > tolerance)) return out;
+        for (const side of [1, -1]) {
+            const n: Pair = [af[0] * side, af[1] * side];
+            const F: Pair = [P[0] + n[0] * (rE + f), P[1] + n[1] * (rE + f)];
+            const T1: Pair = [P[0] + n[0] * rE, P[1] + n[1] * rE];
+            const toE: Pair = [(E[0] - F[0]) / (R + f), (E[1] - F[1]) / (R + f)];
+            const T2: Pair = [F[0] + toE[0] * f, F[1] + toE[1] * f];
+            const a0 = angle([-n[0], -n[1]]);
+            const fillet = arc(F, f, a0, shortSweep(a0, angle(toE)));
+            fillet[0] = T1;
+            fillet[fillet.length - 1] = T2;
+            out.push([P, ...fillet, E, P]);
+        }
+        return out;
+    };
     const last = dirs.length - 1;
-    const startCap = fan(local[0], left0[0], right0[0], Math.PI);
-    pieces.push([...startCap, startCap[0]]);
-    const endCap = fan(local[local.length - 1], right1[last], left1[last], Math.PI);
-    pieces.push([...endCap, endCap[0]]);
+    const n = local.length - 1;
+    const startU: Pair = [-dirs[0][0], -dirs[0][1]];
+    pieces.push(...capPieces(start, local[0], left0[0], right0[0], startU, local.slice(1)));
+    pieces.push(...capPieces(end, local[n], right1[last], left1[last], dirs[last], local.slice(0, n).reverse()));
 
     const union = unionRobust(pieces);
     if (union.length === 0) return null;
@@ -355,21 +583,23 @@ export function bufferCenterlinePolyline(line: readonly XY[], halfWidth: number)
 /** The corridor rings of a centerline (straight-edged anchors), or null when degenerate. */
 export function corridorRings(centerline: FeatureCenterline): CorridorRing[] | null {
     if (centerlineError(centerline) !== null) return null;
-    const rings = bufferCenterlinePolyline(flattenCenterline(centerline.points), centerline.widthM / 2);
+    const rings = bufferCenterlinePolyline(flattenCenterline(centerline.points), centerline.widthM / 2, { start: centerline.startCap, end: centerline.endCap });
     if (!rings || rings.length === 0) return null;
     return rings.map(ring => ({ points: ring.map(([x, y]) => ({ x, y })) }));
 }
 
 /**
  * A centerline feature's full geometry: the cleaned centerline (distinct
- * points, `corner` only where set) and its derived corridor rings. Null when
- * the centerline is unusable.
+ * points, `corner` only where set, the caps' known fields) and its derived
+ * corridor rings. Null when the centerline is unusable.
  */
 export function centerlineGeometry(crs: string, centerline: FeatureCenterline): CenterlineGeometry | null {
     const clean: FeatureCenterline = {
         points: distinctControls(centerline.points).map(p => (p.corner ? { x: p.x, y: p.y, corner: true } : { x: p.x, y: p.y })),
         widthM: centerline.widthM,
     };
+    if (centerline.startCap) clean.startCap = cleanCap(centerline.startCap);
+    if (centerline.endCap) clean.endCap = cleanCap(centerline.endCap);
     const rings = corridorRings(clean);
     if (!rings) return null;
     return { crs, curveType: 'bezier', rings, centerline: clean };

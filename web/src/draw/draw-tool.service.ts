@@ -36,8 +36,10 @@ import {
     fromEditView,
     minVertexCount,
     withCenterlineWidth,
+    withCenterline,
     parseVertexKey,
 } from './draw-state';
+import { capPresetOf, type CenterlineCap } from '../../../shared/features/centerline';
 import { EditHistory, snapshotOf, type HistoryEntry } from './history';
 import {
     FEATURE_TYPES,
@@ -913,7 +915,7 @@ export class DrawToolService {
         if (this.state.mode.peek() !== 'draw' || !this.features) return false;
         const type = this.drawType.peek();
         // A power line's corridor is its own width, not the last road's.
-        const geometry = draftCenterlineGeometry(points, type === POWER_LINE_TYPE ? DEFAULT_POWER_LINE_WIDTH_M : widthM);
+        const geometry = draftCenterlineGeometry(points, type === POWER_LINE_TYPE ? DEFAULT_POWER_LINE_WIDTH_M : widthM, type);
         if (!geometry) return false;
         this.cursor.set(null);
         this.state.disarm();
@@ -939,6 +941,38 @@ export class DrawToolService {
         if (!selected?.geometry.centerline || widthM === selected.geometry.centerline.widthM) return;
         const geometry = withCenterlineWidth(selected.geometry, widthM);
         if (geometry) this.commitGeometry(selected.id, geometry);
+    }
+
+    /**
+     * Set the end shape (selection panel) of every selected centerline road:
+     * its first point's end, its last point's or both. The half circle is
+     * stored as no cap (a road's end before cap shapes). One history entry.
+     */
+    setSelectedCenterlineCaps(ends: 'start' | 'end' | 'both', cap: CenterlineCap): void {
+        const features = this.features;
+        if (!features) return;
+        const keys = ends === 'both' ? ['startCap', 'endCap'] as const : [ends === 'start' ? 'startCap' : 'endCap'] as const;
+        const changes: Array<{ feature: CourseFeature; geometry: FeatureGeometry }> = [];
+        for (const feature of features.editableSelectedFeatures.peek()) {
+            const line = feature.type === 'path' ? feature.geometry.centerline : undefined;
+            if (!line) continue;
+            const next = { ...line };
+            for (const key of keys) {
+                if (capPresetOf(cap) === 'round') delete next[key];
+                else next[key] = cap;
+            }
+            const geometry = withCenterline(feature.geometry, next);
+            if (!geometry || JSON.stringify(geometry.centerline) === JSON.stringify(line)) continue;
+            changes.push({ feature, geometry });
+        }
+        if (changes.length === 0) return;
+        this.record(changes.map(({ feature, geometry }) => ({
+            featureId: feature.id,
+            before: snapshotOf(feature),
+            after: { geometry, type: feature.type, holeId: feature.holeId },
+            beforeVersion: feature.version,
+        })));
+        void features.updateMany(changes.map(({ feature, geometry }) => ({ id: feature.id, patch: { geometry } })), { local: true });
     }
 
     /**

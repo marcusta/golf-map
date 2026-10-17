@@ -1666,6 +1666,19 @@ describe('CourseFeaturesService — centerline paths', () => {
         await expect(bad({ points: [{ x: X, y: Y }], widthM: 3 })).rejects.toThrow(InvalidFeatureError);
         await expect(bad({ points: [{ x: X, y: Y }, { x: X + 5, y: Y }], widthM: 0 })).rejects.toThrow(InvalidFeatureError);
         await expect(bad({ points: [{ x: X, y: Y }, { x: Number.NaN, y: Y }], widthM: 3 })).rejects.toThrow(InvalidFeatureError);
+        await expect(bad({ points: [{ x: X, y: Y }, { x: X + 5, y: Y }], widthM: 3, endCap: { shape: 'rounded', rounding: 2 } })).rejects.toThrow(InvalidFeatureError);
+    });
+    test('the end shapes are kept on the line and shape the rings', async () => {
+        const { db } = await createTestDb(seedCourse);
+        const svc = new CourseFeaturesService(db);
+        const centerline = { points: [{ x: X, y: Y }, { x: X + 40, y: Y }], widthM: 4, startCap: { shape: 'rounded' as const, rounding: 0 }, endCap: { shape: 'turning' as const } };
+        const f = await svc.create({ courseId: TEST_COURSE_ID, type: 'path', geometry: { crs: 'EPSG:3006', rings: [], centerline } });
+        expect(f.geometry.centerline).toEqual(centerline);
+        expect(Math.min(...xs(f))).toBeCloseTo(X, 3); // straight cut at the first point
+        expect(Math.max(...xs(f))).toBeCloseTo(X + 45, 2); // a 10 m turning circle about the last
+        const round = await svc.update(f.id, f.version, { geometry: { ...f.geometry, centerline: { points: centerline.points, widthM: 4 } } });
+        expect(round.geometry.centerline!.endCap).toBeUndefined();
+        expect(Math.max(...xs(round))).toBeCloseTo(X + 42, 2);
     });
 });
 

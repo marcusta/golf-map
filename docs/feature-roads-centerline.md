@@ -61,7 +61,7 @@ A `path` drawn in path mode (`P`) or imported from Fetch roads is a
 **centerline feature**: `geometry.centerline` (`points`, with `corner` flags,
 and `widthM`) is the shape, and `geometry.rings` is the corridor derived from
 it by `shared/features/centerline.ts` (Catmull-Rom curve through the points,
-buffered with round joins/caps). The server re-derives the rings on every
+buffered with round joins and each end's shape, see End shapes). The server re-derives the rings on every
 write, so every ring consumer (render, lie, surface stack, GSPro SVG, iOS) is
 unchanged. In the draw tool the vertex ops run on an **edit view**
 (`draw-state` `editViewOf` / `applyVertexEdit` / `fromEditView`): the control
@@ -80,3 +80,28 @@ live into the map collection (not selectable), and the server's stored copies
 Per road, the selection panel's "Round kerbs at junctions" box sets the
 `kerbFillets` attribute (`false` = off, absent = on); a corner is rounded only
 when both roads meeting there have it on. Tapers ignore it.
+
+### End shapes
+
+Each end of a centerline road has a shape of its own: `centerline.startCap` /
+`endCap` (`{ shape, rounding?, diameterM?, lengthM?, endWidthM? }`,
+`CenterlineCap` in `shared/features/centerline.ts`, checked by `capError`).
+
+- `rounded` with `rounding` 0..1: corner radius as a share of half the width,
+  reaching that far past the end point like a line cap. 0 = straight cut at the
+  point, 0.4 = soft corners (`DEFAULT_DRAWN_CAP`, what a newly drawn road gets
+  at both ends), 0.7 = rounded, 1 = half circle.
+- `turning`: a turning circle (vändplan) about the end point, `diameterM`
+  across (default 2.5 × width), meeting the kerbs with fillets of half the
+  width where the last stretch of road is near enough straight.
+- `taper`: the last `lengthM` (default 2 × width) narrows to `endWidthM`
+  (default 40 % of the width) and ends in a round tip.
+
+No cap is the half circle every road had before: such roads derive
+byte-identical rings, and choosing Round stores no cap. Imported roads, creeks
+and power lines keep it. In the selection panel, Start / Both / End picks the
+end (Start = where the road was drawn from) and the six shape buttons set it
+on every selected centerline road as one undoable edit
+(`DrawToolService.setSelectedCenterlineCaps`); a turning circle or taper shows
+its one size. From the API or CLI, send the caps in `geometry.centerline` on
+`/api/features/update`; the server re-derives the rings.

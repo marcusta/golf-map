@@ -2,6 +2,7 @@ import { describe, expect, test } from 'bun:test';
 import {
     autoCorners,
     bufferCenterlinePolyline,
+    capPresetOf,
     centerlineError,
     centerlineGeometry,
     corridorRings,
@@ -66,6 +67,93 @@ describe('centerline corridor', () => {
     test('bufferCenterlinePolyline rejects a line with no length', () => {
         expect(bufferCenterlinePolyline([{ x: X, y: Y }, { x: X, y: Y }], 2)).toBeNull();
         expect(bufferCenterlinePolyline([{ x: X, y: Y }, { x: X + 1, y: Y }], 0)).toBeNull();
+    });
+});
+
+describe('centerline end shapes', () => {
+    const line = [p(0, 0), p(100, 0)];
+    const ring = (startCap?: object, endCap?: object) => corridorRings({ points: line, widthM: 4, ...(startCap ? { startCap } : {}), ...(endCap ? { endCap } : {}) } as never)!;
+    const xs = (r: ReturnType<typeof ring>) => r[0].points.map(q => q.x - X);
+    const halfWidthNear = (r: ReturnType<typeof ring>, x0: number, x1: number) =>
+        Math.max(...r[0].points.filter(q => q.x - X >= x0 && q.x - X <= x1).map(q => Math.abs(q.y - Y)));
+
+    test('a road without caps and one with rounding 1 are the same half circles', () => {
+        expect(JSON.stringify(ring({ shape: 'rounded', rounding: 1 }, { shape: 'rounded', rounding: 1 }))).toBe(JSON.stringify(ring()));
+    });
+
+    test('rounding 0 cuts the road straight at its end points', () => {
+        const r = ring({ shape: 'rounded', rounding: 0 }, { shape: 'rounded', rounding: 0 });
+        expect(area(r[0].points)).toBeCloseTo(400, 6);
+        expect(Math.min(...xs(r))).toBeCloseTo(0, 6);
+        expect(Math.max(...xs(r))).toBeCloseTo(100, 6);
+    });
+
+    test('soft corners reach rounding × half width beyond the end, full width at the end point', () => {
+        const r = ring({ shape: 'rounded', rounding: 0.4 }, { shape: 'rounded', rounding: 0.4 });
+        expect(Math.min(...xs(r))).toBeCloseTo(-0.8, 6);
+        expect(Math.max(...xs(r))).toBeCloseTo(100.8, 6);
+        expect(halfWidthNear(r, 99.999, 100.001)).toBeCloseTo(2, 6);
+        expect(area(r[0].points)).toBeGreaterThan(400 + 2 * 4 * 0.8 - 2 * 0.8 * 0.8);
+        expect(area(r[0].points)).toBeLessThan(400 + 2 * 4 * 0.8);
+    });
+
+    test('a turning circle is a disc of the diameter about the end point, 2.5 × width by default', () => {
+        const r = ring(undefined, { shape: 'turning' });
+        expect(r).toHaveLength(1);
+        expect(Math.max(...xs(r))).toBeCloseTo(105, 3);
+        expect(halfWidthNear(r, 95, 105)).toBeCloseTo(5, 3);
+        expect(Math.max(...xs(ring(undefined, { shape: 'turning', diameterM: 16 })))).toBeCloseTo(108, 3);
+    });
+
+    test('a turning circle meets the road with fillets: no sharp inside corner where it leaves the kerb', () => {
+        const r = ring(undefined, { shape: 'turning' });
+        // Without fillets the kerb (y = ±2) would run straight into the circle at x = 100 - √21 ≈ 95.42;
+        // a fillet of radius 2 leaves it at 100 - √((5+2)² - (2+2)²) = 100 - √33.
+        const kerbEnd = Math.max(...r[0].points.filter(q => Math.abs(Math.abs(q.y - Y) - 2) < 1e-6).map(q => q.x - X));
+        expect(kerbEnd).toBeCloseTo(100 - Math.sqrt(33), 3);
+    });
+
+    test('a taper narrows the last 2 × width to 40 % and ends in a round tip', () => {
+        const r = ring(undefined, { shape: 'taper' });
+        expect(halfWidthNear(r, 80, 92)).toBeCloseTo(2, 6);
+        expect(halfWidthNear(r, 99.9, 101)).toBeCloseTo(0.8, 3);
+        expect(Math.max(...xs(r))).toBeCloseTo(100.8, 3);
+        expect(halfWidthNear(r, 91.999, 92.001)).toBeCloseTo(2, 6); // the narrowing starts 8 m from the end
+    });
+
+    test('tapers on both ends of a short road share its length', () => {
+        const r = corridorRings({ points: [p(0, 0), p(6, 0)], widthM: 4, startCap: { shape: 'taper' }, endCap: { shape: 'taper' } })!;
+        expect(r).toHaveLength(1);
+        expect(halfWidthNear(r, 2.999, 3.001)).toBeCloseTo(2, 6);
+    });
+
+    test('caps are validated', () => {
+        const c = (cap: object) => centerlineError({ points: line, widthM: 4, endCap: cap });
+        expect(c({ shape: 'rounded', rounding: 0.4 })).toBeNull();
+        expect(c({ shape: 'turning' })).toBeNull();
+        expect(c({ shape: 'taper', lengthM: 10, endWidthM: 0 })).toBeNull();
+        expect(c({ shape: 'rounded' })).toContain('rounding');
+        expect(c({ shape: 'rounded', rounding: 1.5 })).toContain('rounding');
+        expect(c({ shape: 'turning', diameterM: 3 })).toContain('diameter');
+        expect(c({ shape: 'taper', endWidthM: 4 })).toContain('end width');
+        expect(c({ shape: 'square' })).toContain('shape');
+        expect(c({ shape: 'taper', lengthM: 'long' })).toContain('numbers');
+    });
+
+    test('centerlineGeometry keeps the caps, without unknown fields', () => {
+        const g = centerlineGeometry('EPSG:3006', { points: line, widthM: 4, startCap: { shape: 'rounded', rounding: 0, diameterM: 9 } as never, endCap: { shape: 'turning', diameterM: 12 } })!;
+        expect(g.centerline.startCap).toEqual({ shape: 'rounded', rounding: 0 });
+        expect(g.centerline.endCap).toEqual({ shape: 'turning', diameterM: 12 });
+        expect(centerlineGeometry('EPSG:3006', { points: line, widthM: 4 })!.centerline).toEqual({ points: line, widthM: 4 });
+    });
+
+    test('capPresetOf names the preset a cap is', () => {
+        expect(capPresetOf(undefined)).toBe('round');
+        expect(capPresetOf({ shape: 'rounded', rounding: 0.4 })).toBe('soft');
+        expect(capPresetOf({ shape: 'rounded', rounding: 0 })).toBe('straight');
+        expect(capPresetOf({ shape: 'turning' })).toBe('turning');
+        expect(capPresetOf({ shape: 'turning', diameterM: 14 })).toBeNull();
+        expect(capPresetOf({ shape: 'rounded', rounding: 0.55 })).toBeNull();
     });
 });
 

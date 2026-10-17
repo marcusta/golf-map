@@ -19,7 +19,7 @@ import {
     toggleVertexCorner,
     translateGeometry,
 } from '../src/draw/draw-state';
-import { centerlineGeometry, flattenCenterline } from '../../shared/features/centerline';
+import { DEFAULT_DRAWN_CAP, centerlineGeometry, flattenCenterline } from '../../shared/features/centerline';
 import type { CourseFeature, CourseFeaturesApi } from '../../shared/api/course-features.gen';
 
 // Cart paths and roads: a centerline of clicks plus a width commits as one
@@ -150,14 +150,23 @@ describe('path drawing (centerline + width)', () => {
         expect(items[0].type).toBe('path');
         const geometry = items[0].geometry;
         // The clicks ARE the stored line; the 90° bend is a corner.
-        expect(geometry.centerline).toEqual({ points: [line[0], { ...line[1], corner: true }, line[2]], widthM: 3 });
+        // A new road ends straight with soft corners at both ends.
+        expect(geometry.centerline).toEqual({
+            points: [line[0], { ...line[1], corner: true }, line[2]], widthM: 3,
+            startCap: DEFAULT_DRAWN_CAP, endCap: DEFAULT_DRAWN_CAP,
+        });
         // A corner means straight legs, so the curve is the clicks themselves.
         const curve = flattenCenterline(geometry.centerline!.points);
         expect(curve).toEqual(line);
         // The rings are its corridor: every kerb point 1.5 m from the line
         // (round joins and caps, within the arcs' polygon sagitta).
         expect(geometry.rings).toHaveLength(1);
-        for (const q of geometry.rings[0].points) expect(Math.abs(distToPolyline(q, curve) - 1.5)).toBeLessThan(0.01);
+        // Along the road, that is; the soft-cornered ends sit inside 1.5 m of the end points.
+        const nearEnd = (q: { x: number; y: number }) => [line[0], line[2]].some(e => Math.hypot(q.x - e.x, q.y - e.y) < 1.6);
+        for (const q of geometry.rings[0].points) {
+            if (nearEnd(q)) expect(distToPolyline(q, curve)).toBeLessThan(1.51);
+            else expect(Math.abs(distToPolyline(q, curve) - 1.5)).toBeLessThan(0.01);
+        }
         // Committing leaves drawing mode, draft cleared.
         expect(tool.state.mode.peek()).toBe('select');
         expect(tool.state.draft.peek()).toHaveLength(0);
@@ -302,6 +311,31 @@ describe('editing a centerline path', () => {
         await tool.history.undo(features);
         await tick();
         expect(features.store.items.peek()[0].geometry.centerline!.widthM).toBe(2.5);
+    });
+
+    test('an end shape is one undoable edit; the other end keeps its own, round is no cap', async () => {
+        const { tool, features } = await loadedTool();
+        tool.armPath();
+        tool.commitCenterline([p(538_000, 6_398_000), p(538_050, 6_398_000)], 4);
+        await tick();
+        const line = () => features.store.items.peek()[0].geometry.centerline!;
+        const maxX = () => Math.max(...features.store.items.peek()[0].geometry.rings[0].points.map(q => q.x));
+        features.select(features.store.items.peek()[0].id);
+        tool.setSelectedCenterlineCaps('end', { shape: 'turning' });
+        await tick();
+        expect(line().endCap).toEqual({ shape: 'turning' });
+        expect(line().startCap).toEqual(DEFAULT_DRAWN_CAP);
+        expect(maxX()).toBeCloseTo(538_055, 2); // a 10 m circle about the last point
+        tool.setSelectedCenterlineCaps('both', { shape: 'rounded', rounding: 1 });
+        await tick();
+        expect(line().startCap).toBeUndefined();
+        expect(line().endCap).toBeUndefined();
+        await tool.history.undo(features);
+        await tick();
+        expect(line().endCap).toEqual({ shape: 'turning' });
+        await tool.history.undo(features);
+        await tick();
+        expect(line().endCap).toEqual(DEFAULT_DRAWN_CAP);
     });
 });
 

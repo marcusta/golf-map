@@ -1,4 +1,4 @@
-import { Component, effect, template, untrack } from '@basics/core/client/core';
+import { Component, Signal, effect, template, untrack } from '@basics/core/client/core';
 import { t } from '../theme';
 import { s, btn, primaryBtn, field, panelTitle } from '../css';
 import { CourseDetailService } from '../course-detail/course-detail.service';
@@ -13,6 +13,23 @@ import {
     PATH_SURFACE_ATTRIBUTE, PATH_SURFACE_LABELS, PATH_SURFACES, isLoosePathSurface, pathSurfaceOf, type PathSurface,
 } from '../../../shared/features/path-surface';
 import { KERB_FILLETS_ATTRIBUTE, kerbFilletsOn } from '../../../shared/features/road-junctions';
+import { CAP_PRESETS, capPresetOf, resolveCap, type CapPresetId, type CenterlineCap } from '../../../shared/features/centerline';
+
+type CapEnds = 'start' | 'end' | 'both';
+
+/** Small pictures of each end shape: a road stub running right into the end. */
+const CAP_ICONS: Record<CapPresetId, string> = (() => {
+    const svg = (shape: string) => `<svg viewBox="0 0 28 16" aria-hidden="true"><path d="${shape}" fill="currentColor"/></svg>`;
+    const rounded = (r: number) => `M2 4 H${20 - r} A${r} ${r} 0 0 1 20 ${4 + r} V${12 - r} A${r} ${r} 0 0 1 ${20 - r} 12 H2 Z`;
+    return {
+        straight: svg('M2 4 H20 V12 H2 Z'),
+        soft: svg(rounded(1.6)),
+        rounded: svg(rounded(2.8)),
+        round: svg('M2 4 H20 A4 4 0 0 1 20 12 H2 Z'),
+        turning: svg('M2 4 H14 A6.5 6.5 0 1 1 14 12 H2 Z'),
+        taper: svg('M2 4 H10 L23 7 A1 1 0 0 1 23 9 L10 12 H2 Z'),
+    };
+})();
 import { MapService } from '../map/map.service';
 import { mountPathTransitions } from './path-transitions-panel';
 import {
@@ -138,6 +155,17 @@ const tpl = template(`
             <label bind="pathWidthField" class="zone-field path-width-field">Width (m)
                 <input bind="pathWidth" type="number" min="0.2" max="60" step="0.5" data-testid="path-width" />
             </label>
+            <div bind="pathEndsField" class="path-ends-field" data-testid="path-ends">
+                <div class="path-ends-which" title="Which end the shapes set: the end you started drawing at, the end you finished at, or both">
+                    <button type="button" class="cap-which" data-end="start" data-testid="path-ends-start">Start</button>
+                    <button type="button" class="cap-which" data-end="both" data-testid="path-ends-both">Both</button>
+                    <button type="button" class="cap-which" data-end="end" data-testid="path-ends-end">End</button>
+                </div>
+                <div bind="pathEndsShapes" class="path-ends-shapes"></div>
+                <label bind="pathEndSizeField" class="zone-field path-end-size-field"><span bind="pathEndSizeLabel"></span>
+                    <input bind="pathEndSize" type="number" min="0" max="200" step="0.5" data-testid="path-end-size" />
+                </label>
+            </div>
             <label bind="pathKerbsField" class="path-kerbs-field" title="Round the kerb corners where this road meets another (both roads need it on)">
                 <input bind="pathKerbs" type="checkbox" data-testid="path-kerbs" />
                 Round kerbs at junctions
@@ -412,6 +440,34 @@ export class SelectionPanelComponent extends Component {
                     line-height: 1;
                     ${btn(t('radius-sm'))}
                 }
+            }
+            & .path-ends-field {
+                display: none;
+                flex-direction: column;
+                gap: ${s('xs')};
+                &.show { display: flex; }
+            }
+            & .path-ends-which, & .path-ends-shapes { display: flex; gap: 2px; }
+            & .cap-which {
+                flex: 1 1 0;
+                padding: 2px ${s('xs')};
+                font-size: 0.72rem;
+                ${btn(t('radius-sm'))}
+                &.active { outline: 2px solid ${t('color-accent-primary')}; outline-offset: -2px; }
+            }
+            & .cap-btn {
+                flex: 1 1 0;
+                display: flex;
+                align-items: center;
+                justify-content: center;
+                padding: 3px 0;
+                ${btn(t('radius-sm'))}
+                & svg { width: 28px; height: 16px; display: block; }
+                &.active { outline: 2px solid ${t('color-accent-primary')}; outline-offset: -2px; }
+            }
+            & .path-end-size-field {
+                display: none;
+                &.show { display: flex; }
             }
             & .path-kerbs-field {
                 display: none;
@@ -825,6 +881,57 @@ export class SelectionPanelComponent extends Component {
             kerbsField.className = this.centerlineSelection().length > 0 ? 'path-kerbs-field show' : 'path-kerbs-field';
         }));
 
+        // End shapes (shared/features/centerline.ts CenterlineCap): pick which
+        // end, then a shape; every selected centerline road at once. A shape
+        // button is lit when every chosen end of the selection has it.
+        const endsField = this.ref(frag, 'pathEndsField');
+        const whichButtons = [...endsField.querySelectorAll<HTMLButtonElement>('.cap-which')];
+        for (const b of whichButtons) b.addEventListener('click', () => this.capEnds.set(b.dataset['end'] as CapEnds));
+        const shapeHost = this.ref(frag, 'pathEndsShapes');
+        const shapeButtons = CAP_PRESETS.map(preset => {
+            const b = document.createElement('button');
+            b.type = 'button';
+            b.className = 'cap-btn';
+            b.title = preset.label;
+            b.dataset['testid'] = `path-cap-${preset.id}`;
+            b.innerHTML = CAP_ICONS[preset.id];
+            b.addEventListener('click', () => this.tool.setSelectedCenterlineCaps(this.capEnds.peek(), preset.cap));
+            shapeHost.append(b);
+            return { preset, b };
+        });
+        const sizeField = this.ref(frag, 'pathEndSizeField');
+        const sizeLabel = this.ref(frag, 'pathEndSizeLabel');
+        const sizeInput = this.ref(frag, 'pathEndSize') as HTMLInputElement;
+        sizeInput.addEventListener('change', () => {
+            const value = Number(sizeInput.value);
+            const shape = this.chosenCaps()[0]?.shape;
+            if (!Number.isFinite(value) || value <= 0) return;
+            if (shape === 'turning') this.tool.setSelectedCenterlineCaps(this.capEnds.peek(), { shape, diameterM: value });
+            if (shape === 'taper') this.tool.setSelectedCenterlineCaps(this.capEnds.peek(), { shape, lengthM: value });
+        });
+        this.track(effect(() => {
+            const roads = this.centerlineSelection();
+            endsField.className = roads.length > 0 ? 'path-ends-field show' : 'path-ends-field';
+            const ends = this.capEnds.get();
+            for (const b of whichButtons) b.classList.toggle('active', b.dataset['end'] === ends);
+            const caps = this.chosenCaps();
+            const presets = new Set(caps.map(c => capPresetOf(c)));
+            for (const { preset, b } of shapeButtons) b.classList.toggle('active', presets.size === 1 && presets.has(preset.id));
+            // Turning circle / taper: their one size, when every chosen end has that shape.
+            const shapes = new Set(caps.map(c => c?.shape ?? 'rounded'));
+            const shape = shapes.size === 1 ? [...shapes][0] : null;
+            const sized = roads.length > 0 && (shape === 'turning' || shape === 'taper');
+            sizeField.className = sized ? 'zone-field path-end-size-field show' : 'zone-field path-end-size-field';
+            if (!sized) return;
+            sizeLabel.textContent = shape === 'turning' ? 'Diameter (m)' : 'Taper length (m)';
+            sizeField.title = shape === 'turning' ? 'The turning circle across (default 2.5 × the road width)' : 'How long the road narrows (default 2 × the road width)';
+            const sizes = new Set(roads.flatMap(f => this.capKeys().map(key => {
+                const r = resolveCap(f.geometry.centerline![key], f.geometry.centerline!.widthM);
+                return shape === 'turning' ? r.diameterM : r.lengthM;
+            })));
+            if (document.activeElement !== sizeInput) sizeInput.value = sizes.size === 1 ? String(Math.round([...sizes][0] * 100) / 100) : '';
+        }));
+
         // Zone-type picker: options from the course's table, value from the
         // selected zone. A zone naming a type the table no longer has keeps
         // an explicit option of its own, so saving weight never silently
@@ -1172,6 +1279,20 @@ export class SelectionPanelComponent extends Component {
     /** The editable `path` features in the selection (others in a mixed selection are left alone). */
     private pathSelection(): CourseFeature[] {
         return this.features.editableSelectedFeatures.get().filter(f => f.type === 'path');
+    }
+
+    /** Which end the end-shape buttons set. */
+    private capEnds = new Signal<CapEnds>('both');
+
+    private capKeys(): Array<'startCap' | 'endCap'> {
+        const ends = this.capEnds.get();
+        return ends === 'both' ? ['startCap', 'endCap'] : [ends === 'start' ? 'startCap' : 'endCap'];
+    }
+
+    /** The chosen ends' caps across the selected centerline roads (undefined = half circle). */
+    private chosenCaps(): Array<CenterlineCap | undefined> {
+        const keys = this.capKeys();
+        return this.centerlineSelection().flatMap(f => keys.map(key => f.geometry.centerline![key]));
     }
 
     /** The selected paths drawn/imported as centerlines (the ones kerb rounding applies to). */
