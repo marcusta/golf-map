@@ -73,6 +73,7 @@ const ParamsSchema = Type.Object({
     cliffHoldM: Type.Optional(Type.Number()),
     cliffFadeM: Type.Optional(Type.Number()),
     cliffSmoothM: Type.Optional(Type.Number()),
+    innerDepthM: Type.Optional(Type.Number()),
     // delta (a Unity sculpt layer, "Pull from Unity"): its GeoTIFF's name and what it holds.
     raster: Type.Optional(Type.String()),
     changedM2: Type.Optional(Type.Number()),

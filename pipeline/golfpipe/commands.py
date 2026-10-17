@@ -881,7 +881,7 @@ def water_levels_path(dem_path: Path) -> Path:
     return dem_path.with_suffix(".water-levels.json")
 
 
-def cmd_apply_dem_edits(input_path: Path, edits_paths: Path | list[Path], out_path: Path) -> Path:
+def cmd_apply_dem_edits(input_path: Path, edits_paths: Path | list[Path], out_path: Path, terrain: str = "inner") -> Path:
     """Replays vector terrain edits (plane-fit flatten / circular-median
     smooth, both feathered — see golfpipe/dem_edit.py) onto a DEM GeoTIFF.
 
@@ -923,7 +923,7 @@ def cmd_apply_dem_edits(input_path: Path, edits_paths: Path | list[Path], out_pa
         profile = src.profile.copy()
         reprojected = dem_edit_mod.reproject_edits(edits, src.crs)
         water_levels: dict = {}
-        edited = dem_edit_mod.apply_edits(dem, src.transform, src.nodata, reprojected, water_levels=water_levels)
+        edited = dem_edit_mod.apply_edits(dem, src.transform, src.nodata, reprojected, water_levels=water_levels, terrain=terrain)
     # The water levels of the ponds whose outline is the water's edge, next to the DEM (the GSPro export puts
     # each one's water plane there: <prefix>-inner-water-levels.json).
     levels_path = water_levels_path(out_path)

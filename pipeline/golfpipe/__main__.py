@@ -214,6 +214,7 @@ def build_parser() -> argparse.ArgumentParser:
         help="Replay vector terrain edits (plane-fit flatten / median smooth, feathered) onto a DEM GeoTIFF",
     )
     p.add_argument("--input", required=True, help="input DEM GeoTIFF (grid-dem output) — never modified")
+    p.add_argument("--terrain", choices=("inner", "outer"), default="inner", help="which terrain's DEM this is: a shore's innerDepthM caps the inner only")
     p.add_argument(
         "--edits", required=True, action="append",
         help="edits GeoJSON FeatureCollection (WGS84; per-feature properties op/featherM/radiusM/flat, createdAt order); "
@@ -837,7 +838,7 @@ def main(argv: list[str] | None = None) -> int:
             )
 
         elif args.command == "apply-dem-edits":
-            commands.cmd_apply_dem_edits(Path(args.input), [Path(p) for p in args.edits], Path(args.out))
+            commands.cmd_apply_dem_edits(Path(args.input), [Path(p) for p in args.edits], Path(args.out), terrain=args.terrain)
 
         elif args.command == "sculpt-tif":
             from golfpipe import sculpt as sculpt_mod

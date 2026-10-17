@@ -243,6 +243,10 @@ class DemEdit:
     cliff_hold_m: float = 15.0
     cliff_fade_m: float = 45.0
     cliff_smooth_m: float = 6.0
+    # shore: the depth cap on the inner terrain (innerDepthM; None = depth_m there too). The inner heightmap's
+    # zero is its lowest point, and every mesh, wall and water plane stands in that frame: a lake dug deeper
+    # there moves them all. The outer terrain (apply_edits terrain="outer") takes the full depth_m.
+    inner_depth_m: float | None = None
 
 
 def load_edits(path: Path, log=print) -> list[DemEdit]:
@@ -452,6 +456,11 @@ def _shore_params(props: dict) -> dict:
             raise ValueError("cliffRunM and cliffSlope must be > 0 (or cliffDepthM 0)")
         if out["cliff_rise_high_m"] <= out["cliff_rise_low_m"]:
             raise ValueError("cliffRiseHighM must be > cliffRiseLowM")
+    if props.get("innerDepthM") is not None:
+        inner = num("innerDepthM")
+        if inner <= 0:
+            raise ValueError("innerDepthM must be > 0")
+        out["inner_depth_m"] = inner
     return out
 
 
@@ -544,9 +553,12 @@ def apply_edits(
     edits: list[DemEdit],
     log=print,
     water_levels: dict | None = None,
+    terrain: str = "inner",
 ) -> np.ndarray:
     """Replays `edits` (geometries already in the DEM's CRS, already sorted
-    per D-TE4) onto `dem`, returning a new float32 grid. The input array is
+    per D-TE4) onto `dem`, returning a new float32 grid. `terrain` is which
+    DEM this is ("inner" or "outer"): a shore's `innerDepthM` caps it on the
+    inner only. The input array is
     never modified. Cells outside every mask — and every nodata cell — come
     back bit-identical. `water_levels`, when given, collects the water level
     of every pond dug with `bankAboveDeg` (its outline is the water's edge,
@@ -558,6 +570,8 @@ def apply_edits(
         valid &= current != nodata
 
     for index, edit in enumerate(edits):
+        if edit.op == "shore" and terrain == "inner" and edit.inner_depth_m is not None:
+            edit = replace(edit, depth_m=min(edit.depth_m, edit.inner_depth_m))
         _apply_one(current, valid, transform, edit, index, log, water_levels)
 
     return current.astype(np.float32)

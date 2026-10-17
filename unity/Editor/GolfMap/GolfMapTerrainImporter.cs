@@ -443,7 +443,8 @@ namespace GolfMap.Editor
             args = "terrain=inner|outer|both (default both; both skips an outer the folder lacks), folder (default: the active course's export folder), outerSink (m below its sidecar position; default: keep the plot's current sink), dryRun=false, " + GolfMapSceneSave.Arg)]
         static object UpdateCommand(BridgeArgs a)
         {
-            return UpdateHeights(a.String("terrain", "both"), a.String("folder"), (float)a.Number("outerSink", double.NaN), a.Bool("dryRun", false));
+            return UpdateHeights(a.String("terrain", "both"), a.String("folder"), (float)a.Number("outerSink", double.NaN), a.Bool("dryRun", false),
+                a.Number("outerMinBefore", double.NaN));
         }
 
         // The course meshes' satellite (OPCD MAHS _Satellite) and the Stix grass colour map (_ColorMap) are a copy of the
@@ -635,7 +636,10 @@ namespace GolfMap.Editor
             return new Dictionary<string, object> { { "file", file }, { "texture", assetPath }, { "terrainSize", side }, { "dryRun", dryRun }, { "materials", rows.Count }, { "first", rows.Take(a.Bool("list", false) ? rows.Count : 10).ToList() } };
         }
 
-        public static Dictionary<string, object> UpdateHeights(string which, string folder, float outerSinkM, bool dryRun)
+        // outerMinBefore: the outer sidecar's minM the plot was placed from (golf-map passes it when it exports a new
+        // one); without it a moved outer zero is read as a changed sink and the sink is lost.
+        public static Dictionary<string, object> UpdateHeights(string which, string folder, float outerSinkM, bool dryRun,
+            double outerMinBefore = double.NaN)
         {
             var course = GolfMapCourses.Require();
             var courseFolder = GolfMapCourses.Folder(course);   // before any asset work (see GolfMapTerrainSculpt)
@@ -677,7 +681,9 @@ namespace GolfMap.Editor
                     // whatever it is now (set by the importer or lowered by hand)
                     // unless one is given.
                     var placed = OuterPosition(innerFound.sidecar, sc);
-                    sink = float.IsNaN(outerSinkM) ? Mathf.Max(0f, placed.y - terrain.transform.position.y) : outerSinkM;
+                    // where the plot was placed from before: the old sidecar's zero, when the outer one moved
+                    float placedBefore = double.IsNaN(outerMinBefore) ? placed.y : placed.y - (float)(sc.minM - outerMinBefore);
+                    sink = float.IsNaN(outerSinkM) ? Mathf.Max(0f, placedBefore - terrain.transform.position.y) : outerSinkM;
                     newPos = placed - new Vector3(0, sink, 0);
                 }
 

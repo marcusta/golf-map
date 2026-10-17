@@ -119,6 +119,8 @@ export interface TerrainEditParams {
     cliffHoldM?: number;
     cliffFadeM?: number;
     cliffSmoothM?: number;
+    /** shore: the depth cap on the inner terrain, whose zero is its lowest point (deeper moves every mesh); the outer takes depthM. */
+    innerDepthM?: number;
     /** delta: the sculpt GeoTIFF's file name in `sources/<siteId>/terrain-sculpt/`, and what it holds (for the panel). */
     raster?: string;
     changedM2?: number;
@@ -142,6 +144,7 @@ export const SHORE_PARAM_KEYS = [
     'levelM', 'edgeSlope', 'edgeM', 'edgeEaseM', 'shelfSlope', 'shelfEndM', 'shelfEaseM', 'slope', 'depthM', 'floorRoundM',
     'channelDepthM', 'channelRatio', 'channelFullM', 'channelGoneM',
     'cliffRunM', 'cliffRiseLowM', 'cliffRiseHighM', 'cliffSlope', 'cliffDepthM', 'cliffHoldM', 'cliffFadeM', 'cliffSmoothM',
+    'innerDepthM',
 ] as const;
 
 export interface TerrainEdit {

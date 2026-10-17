@@ -1263,7 +1263,11 @@ export class GsproExportService {
         const after = await readSidecarMin(sidecar);
         let result: any;
         try {
-            result = await editor.run('golfmap.terrain.update', { terrain: kind, ...(save ? { save: true } : {}) }, 600);
+            result = await editor.run('golfmap.terrain.update', {
+                terrain: kind, ...(save ? { save: true } : {}),
+                // the outer plot keeps its sink when its zero moved (a deeper lake): Unity measures it from the old zero
+                ...(kind === 'outer' && before !== null ? { outerMinBefore: before } : {}),
+            }, 600);
         } catch (e) {
             throw new ConflictError(`The heightmap was exported, but Unity (${editor.projectName}) could not take it: ${(e as Error).message.split('\n')[0]}`);
         }
@@ -2283,7 +2287,7 @@ export class GsproExportService {
         try {
             const editsPath = path.join(work, 'terrain-edits.geojson');
             await writeFile(editsPath, JSON.stringify(terrainEditsGeojson(edits, { sculptDir: path.join(this.sourcesDir(siteId), SCULPT_DIR) })));
-            const r = await this.runner(['-m', 'golfpipe', 'apply-dem-edits', '--input', src, '--edits', editsPath, '--out', out], this.pipelineDir);
+            const r = await this.runner(['-m', 'golfpipe', 'apply-dem-edits', '--input', src, '--edits', editsPath, '--out', out, '--terrain', 'outer'], this.pipelineDir);
             if (r.code !== 0) throw failure('GSPro outer DEM terrain edits', r.code, r.stdout, r.stderr);
             return { path: out, report: [`replayed ${edits.length} terrain edit(s) onto the outer DEM`] };
         } finally {
