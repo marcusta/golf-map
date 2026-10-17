@@ -1,0 +1,17 @@
+{
+  "name": "Omberg car parks",
+  "dataDir": "../../../../data/omberg-parking",
+  "crop": "crop.json",
+  "origin": [
+    477870,
+    6457730,
+    100.0
+  ],
+  "assetPrefix": "omberg_park_",
+  "groundAssets": [],
+  "osm": {},
+  "footprints": "../../../../data/omberg-parking/osm-buildings.json",
+  "categories": [
+    "building"
+  ]
+}
