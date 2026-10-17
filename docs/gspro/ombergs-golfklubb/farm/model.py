@@ -5,7 +5,8 @@ Output is a golfmap-props-v1 folder (Models/, Textures/, props.json, build-repor
 omberg-farm-authored.blend), installed beside the clubhouse set by
 clubhouse/install.ps1 (it merges by asset id). Evidence: data/omberg-farm/ (crop.py).
 
-dwellings.py, barns.py, garden.py and neighbours.py each define register_materials() and build(add, new, ev).
+dwellings.py, barns.py, garden.py and neighbours.py each define register_materials() and build(add, new, ev);
+ev.add_prefab places course-project prefabs (e.g. CESimgolf boxwood) as manifest instances.
 Every material here is exported as omberg_farm_<name>, so nothing collides with the
 clubhouse set's materials in the shared Unity props.json.
 """
@@ -71,6 +72,21 @@ def main():
         instances.append(dict(asset=aid, e=e, n=n, yawDeg=yaw, ground="centre", dz=dz,
                               layoutZ=round(ground_abs - BASE_Z, 3)))
 
+    prefabs, proxies = {}, []
+
+    def add_prefab(aid, prefab, e, n, yaw, ground_abs, scale=(1, 1, 1), size=None, dz=0.0, category="prop"):
+        """Place a Unity prefab from the course project (e.g. the CESimgolf boxwood) instead of
+        authored geometry. Unity scales it by `scale` in its local axes (x along yawDeg) and sets
+        each instance's centre on the terrain + dz. `size` (local x, y, z metres before scaling) only
+        draws a review box in the .blend; prefabs are not exported."""
+        assert aid.startswith("omberg_farm_"), aid
+        prefabs.setdefault(aid, dict(prefab=prefab, category=category, collider="keep"))
+        instances.append(dict(asset=aid, e=e, n=n, yawDeg=yaw, ground="centre", dz=dz,
+                              scale=[round(v, 4) for v in scale], layoutZ=round(ground_abs - BASE_Z, 3)))
+        if size:
+            proxies.append((aid, e, n, yaw, ground_abs + dz, [s * k for s, k in zip(size, scale)]))
+
+    ev.add_prefab = add_prefab
     dwellings.build(add, kit.Geo, ev)
     barns.build(add, kit.Geo, ev)
     garden.build(add, kit.Geo, ev)
@@ -114,14 +130,33 @@ def main():
                                         tris=sum(len(p.vertices) - 2 for p in ob.data.polygons),
                                         materials=[m.name for m in ob.data.materials])
         print(name, manifest["assets"][name]["tris"], "triangles", flush=True)
+    manifest["assets"].update(prefabs)
     (out / "props.json").write_text(json.dumps(manifest, indent=2), encoding="utf-8")
     report = dict(format="omberg-farm-build-v1", source="farm/model.py", assets=len(assets),
                   triangles=sum(v["tris"] for v in manifest["assets"].values()), perAsset=manifest["assets"])
     (out / "build-report.json").write_text(json.dumps(report, indent=2), encoding="utf-8")
     for i in instances:
+        if i["asset"] not in objects:
+            continue
         ob = objects[i["asset"]]
         ob.location = (i["e"] - ORIGIN[0], i["n"] - ORIGIN[1], i["layoutZ"])
         ob.rotation_euler.z = math.radians(90 - i["yawDeg"])
+    # Review-only boxes where prefab instances stand (Unity supplies the real foliage).
+    if proxies:
+        pc = bpy.data.collections.new("Prefab proxies (not exported)")
+        sc.collection.children.link(pc)
+        mat = bpy.data.materials.new("prefab proxy")
+        mat.diffuse_color = (.16, .32, .12, 1)
+        for aid, e, n, yaw, z, (sx, sy, sz) in proxies:
+            bpy.ops.mesh.primitive_cube_add(size=1, location=(e - ORIGIN[0], n - ORIGIN[1], z - BASE_Z + sz / 2))
+            ob = bpy.context.object
+            ob.name = aid + " proxy"
+            ob.scale = (sx, sy, sz)
+            ob.rotation_euler.z = math.radians(90 - yaw)
+            ob.data.materials.append(mat)
+            for c in ob.users_collection:
+                c.objects.unlink(ob)
+            pc.objects.link(ob)
     exporter.setup_render(sc, 1600, 1200)
     sc.render.image_settings.file_format = "PNG"
     sc["golfmap_origin_epsg3006"] = [ORIGIN[0], ORIGIN[1], BASE_Z]
