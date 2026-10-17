@@ -1,5 +1,5 @@
-"""Omberg's stone edges, for Unity's golfmap.walls.build (GolfMapWalls.cs): the rough boulder revetment along the
-hole 14 pond's edge towards the green.
+"""Omberg's stone edges, for Unity's golfmap.walls.build (GolfMapWalls.cs): the rough boulder revetments along the
+hole 14 pond's edge towards the green, and along the pond between holes 18 and 1 (south and west sides, north tip).
 
     pipeline/.venv/Scripts/python.exe docs/gspro/ombergs-golfklubb/stone-walls.gen.py [--out <Unity course folder>]
         -> docs/gspro/ombergs-golfklubb/stone-walls.json (+ <out>/stone-walls.json): the walls, for golfmap.walls.build
@@ -93,6 +93,14 @@ WALLS = [
      "start": (477339.0, 6457146.5), "via": (477336.6, 6457150.5), "end": (477358.0, 6457157.5),
      "note": "Hole 14 pond: the rough stone edge towards the green, round the west tip (the creek's outlet) and "
              "along the north edge to E 477358 (2025 and 2023 orthos)."},
+    # The pond between holes 18, 1 and tee 10 (water feature 77, others_4d; Deep Water, 2 m, 34 deg, 45 deg above).
+    {"id": "p77-south-west", "feature": "4530bf16-35ec-4c82-b78b-f139db337b9e",
+     "start": (477682.7, 6457395.2), "via": (477652.3, 6457383.8), "end": (477643.7, 6457447.0),
+     "note": "Pond between 18 and 1: rounded boulders along the south edge (dark in the 2023 ortho, grey in 2025), "
+             "round the south-west corner and up the west side past the bulge to N 6457447."},
+    {"id": "p77-north-tip", "feature": "4530bf16-35ec-4c82-b78b-f139db337b9e",
+     "start": (477675.8, 6457494.0), "via": (477683.8, 6457497.0), "end": (477694.5, 6457487.4),
+     "note": "Pond between 18 and 1: the grey stone rim round the north tip (2025 and 2023 orthos)."},
 ]
 
 
