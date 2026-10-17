@@ -131,6 +131,12 @@ def main():
     for d in export_table.values():
         if not d.get("albedo"):
             d["color"] = [round(((v + .055) / 1.055) ** 2.4 if v > .04045 else v / 12.92, 7) for v in d["color"]]
+    # Roof tints calibrated in Unity (export only): a top-down capture of each roof, both slopes
+    # averaged, should read like the raw 2025 ortho. Unity's light lifted these roofs 20-50 levels.
+    for name, tint in {"omberg_farm_barn_roof_fc": [.65, .72, .82], "omberg_farm_barn_roof_pale": [.77, .81, .85],
+                       "omberg_farm_roof_tile_graphite": [.77, .85, .93], "omberg_farm_roof_dark_seam": [.62, .72, .78]}.items():
+        if name in export_table:
+            export_table[name]["color"] = [round(c * t, 4) for c, t in zip(export_table[name]["color"], tint)]
     lib = bpy.data.collections.new("Farm architecture")
     sc.collection.children.link(lib)
     manifest = {"format": "golfmap-props-v1", "source": "farm/model.py", "materials": export_table,
