@@ -972,7 +972,10 @@ of 1.4 m or wider - two tracks from 1.8 m, one trodden middle below. Vreta's gra
 a repeat instead of 3.5, flatter normals, tint `#66625a`, the Ground032 height map so stones show through. A worn piece carries green paint, so it wears its road's
 strip material; with no red on it, it gets no Stix renderer. A gravel track (gravel with a grass middle) has red down
 its middle, so it gets both: the strip material's red is the rough beside the road and `golfmap.roughgrass.plant`
-grows Stix blades there (blade chance = red). A gravel path drawn as an outline has no
+grows Stix blades there (blade chance = red). A hard road's strip rounded by Blender's `golfmap.path_kerb` is
+painted green road / red grass with a band on black in the angle of the lip: for asphalt, concrete and paving
+`golfmap.paths.materials` draws that black with the `dirt` look tinted `KerbShadowTint` (dark dirt in the lip's
+shadow; the neighbour's own black is a pale dirt base). A gravel path drawn as an outline has no
 centreline and stays unworn.
 
 ## Vertex paint

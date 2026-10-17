@@ -62,7 +62,10 @@ namespace GolfMap.Editor
         const int BaseSlice = 6;
         const float BaseTilingM = 2580f;
         const float SeamToleranceM = 0.05f;   // a blend vertex this close to its road's boundary is on the path edge
-        const float ProbeOutM = 0.15f;        // the neighbour is looked for this far past the strip's far edge
+        const float ProbeOutM = 0.15f;
+        // golfmap.path_kerb's surfaces (blender/tools/shape_kerb.py SURFACES) and the shadow band's tint
+        static readonly HashSet<string> KerbSurfaces = new HashSet<string> { "asphalt", "concrete", "paving" };
+        static readonly Color KerbShadowTint = new Color(0.30f, 0.27f, 0.24f);        // the neighbour is looked for this far past the strip's far edge
         const int ProbeRays = 40;
 
         [BridgeCommand("golfmap.paths.materials", "Cart path look on the path meshes (*Concrete* course meshes and blends): look=surface (default) = each path mesh's surface (from the SVG export's <prefix>-paths.json) on OPCD's MAHS shader with satellite off (copy of OPCD MAHS Concrete - Asphalt default, all four channels the surface's tiled textures appended to OPCD's arrays), looks from <course>/Paths/path-surfaces.json (golfmap-path-looks-v2, written with defaults on the first run); every fringe blend fades from the surface into the material of the mesh beside it (a copy of that material, its path channel swapped), road-to-road strips into the other road's surface (spec sharpPairs keep a hard edge); look=photo = OPCD's own satellite materials and physics back. OPCD's originals are never edited. Marks the scene dirty, does not save it.",
@@ -944,6 +947,19 @@ namespace GolfMap.Editor
                 {
                     SetSurfaceChannel(m, BunkerPaintChannel.Black, p.surface + TracksSuffix, lk.tracks, s);
                     m.SetFloat("_BlackBlendStrength", (float)lk.tracksBlendStrength);
+                }
+                // A hard road's strip rounded into a lip (Blender golfmap.path_kerb, green road / red grass) paints a
+                // band on black in the angle of the lip: dark dirt in its shadow, not the neighbour's pale dirt base.
+                else if (KerbSurfaces.Contains(p.surface) && p.pathCh == BunkerPaintChannel.Green && p.farCh == BunkerPaintChannel.Red)
+                {
+                    Look dirt;
+                    if (spec.looks.TryGetValue("dirt", out dirt) && s.index.ContainsKey("dirt"))
+                    {
+                        SetSurfaceChannel(m, BunkerPaintChannel.Black, "dirt", dirt, s);
+                        m.SetColor("_BlackDetailColorTint", KerbShadowTint);
+                        m.SetColor("_BlackBaseColorTint", KerbShadowTint);
+                        m.SetFloat("_BlackBlendStrength", 1.5f);
+                    }
                 }
                 if (p.transition)
                 {
