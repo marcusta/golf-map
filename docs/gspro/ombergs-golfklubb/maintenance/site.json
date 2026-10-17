@@ -1,0 +1,20 @@
+{
+  "name": "Omberg greenkeeping yard",
+  "dataDir": "../../../../data/omberg-maintenance",
+  "crop": "crop.json",
+  "origin": [
+    477710,
+    6457920,
+    100.0
+  ],
+  "assetPrefix": "omberg_maint_",
+  "groundAssets": [],
+  "osm": {
+    "omberg_maint_hall": "737322222",
+    "omberg_maint_cabin": "1431573559"
+  },
+  "footprints": "../../../../data/omberg-maintenance/osm-buildings.json",
+  "categories": [
+    "building"
+  ]
+}
