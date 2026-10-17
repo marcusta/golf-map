@@ -142,7 +142,7 @@ def main():
         objects[name] = ob
         exporter.export_fbx(ob, str(out / "Models" / (name + ".fbx")))
         category = getattr(g, "category", "building")  # garden parts set g.category = "structure" or "prop"
-        manifest["assets"][name] = dict(fbx="Models/" + name + ".fbx", category=category, collider="mesh",
+        manifest["assets"][name] = dict(fbx="Models/" + name + ".fbx", category=category, collider="none" if category == "marking" else "mesh",
                                         bounds=exporter.bounds(ob),
                                         tris=sum(len(p.vertices) - 2 for p in ob.data.polygons),
                                         materials=[m.name for m in ob.data.materials])
