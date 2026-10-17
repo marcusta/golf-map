@@ -7,7 +7,6 @@ course-side photograph. Unseen elevations use restrained inferred windows.
 import math
 
 from mathutils import Matrix, Vector
-from mathutils.geometry import tessellate_polygon
 import props_kit as kit
 
 
@@ -68,11 +67,6 @@ def metal_texture(bank):
     return rgb,height,.6
 
 
-def ccw(p):
-    area=sum(a[0]*b[1]-b[0]*a[1] for a,b in zip(p,p[1:]+p[:1]))
-    return p if area>0 else list(reversed(p))
-
-
 def clip_scalar(poly, value):
     """Keep the half-plane where a linear scalar function is nonnegative."""
     out=[]
@@ -87,49 +81,48 @@ def clip_scalar(poly, value):
     return out
 
 
-def subtract_convex(poly,cutter):
-    """Disjoint convex pieces of poly outside a convex cutter."""
-    remaining=poly
-    result=[]
-    for a,b in zip(cutter,cutter[1:]+cutter[:1]):
-        def side(p):
-            return (b[0]-a[0])*(p[1]-a[1])-(b[1]-a[1])*(p[0]-a[0])
-        outside=clip_scalar(remaining,lambda p:-side(p))
-        if len(outside)>=3:
-            result.append(outside)
-        remaining=clip_scalar(remaining,side)
-        if len(remaining)<3:
-            break
-    return result
+# Roof. The two wings share ONE ridge height and ONE eave height (lidar P99 of
+# both sections is 120.95-121.01 m, so the ridge is measured, not invented).
+# Where the 24.3 m diagonal wing ends on the straight wing, the end of the
+# diagonal is not a gable but a shared interface line: the ridges meet in one
+# bent ridge, the inside of the bend (course side) is a valley and the outside
+# a hip. For that line to be the exact plane-plane intersection (no step, no
+# sliver, no gable wall above the other roof) the straight wing needs
+# W_straight = W_diagonal*cos(bend) and pitch_straight = pitch_diagonal/cos(bend);
+# the survey's 12.7 m traced width is within 0.12 m of that (12.58 m).
+RIDGE,EAVE=121.0,118.4
+OVER=.4        # roof overhang past the wall: gables and the diagonal's eaves
+THICK=.16      # roof slab thickness = fascia height; wall tops stop at the soffit
+GUTTER_R,PIPE_R=.06,.045
 
 
-def inside(p,poly):
-    return all((b[0]-a[0])*(p[1]-a[1])-(b[1]-a[1])*(p[0]-a[0])>1e-6
-               for a,b in zip(poly,poly[1:]+poly[:1]))
-
-
-def intersection_t(a,b,c,d):
-    ab=(b[0]-a[0],b[1]-a[1])
-    cd=(d[0]-c[0],d[1]-c[1])
-    den=ab[0]*cd[1]-ab[1]*cd[0]
-    if abs(den)<1e-9:
-        return None
-    ac=(c[0]-a[0],c[1]-a[1])
-    t=(ac[0]*cd[1]-ac[1]*cd[0])/den
-    u=(ac[0]*ab[1]-ac[1]*ab[0])/den
-    return t if 0<t<1 and -1e-8<=u<=1+1e-8 else None
+def clean(poly):
+    out=[]
+    for p in poly:
+        if not out or math.dist(p,out[-1])>1e-6:
+            out.append(p)
+    if len(out)>1 and math.dist(out[0],out[-1])<=1e-6:
+        out.pop()
+    return out
 
 
 class Volume:
-    def __init__(self,centre,length,width,yaw,base,course_side):
+    """Gable prism: ridge along local x, roof falling to EAVE at +-W/2.
+
+    x1 is the roof end on the interface side; `keep` (scalar, >=0 inside)
+    trims a wing that runs past the interface. Walls are inset by OVER at the
+    free gable end and by oy on the eaves, and run right up to the interface."""
+    def __init__(self,centre,length,width,yaw,base,course_side,x1,oy,keep=None):
         self.c=centre
         self.L,self.W=length,width
         self.angle=math.radians(90-yaw)
         self.cos,self.sin=math.cos(self.angle),math.sin(self.angle)
         self.base=base
         self.course_side=course_side
-        self.roof=self.rectangle(length,width)
-        self.wall=self.rectangle(length-.65,width-.65)
+        self.oy=oy
+        self.x0,self.x1=-length/2,x1
+        self.roof=self.rectangle(self.x0,x1,width/2,keep)
+        self.wall=self.rectangle(self.x0+OVER,x1,width/2-oy,keep)
 
     def world(self,x,y):
         return (self.c[0]+self.cos*x-self.sin*y,self.c[1]+self.sin*x+self.cos*y)
@@ -138,42 +131,116 @@ class Volume:
         dx,dy=p[0]-self.c[0],p[1]-self.c[1]
         return (dx*self.cos+dy*self.sin,-dx*self.sin+dy*self.cos)
 
-    def rectangle(self,L,W):
-        return [self.world(x,y) for x,y in [(-L/2,-W/2),(L/2,-W/2),(L/2,W/2),(-L/2,W/2)]]
+    def rectangle(self,xa,xb,y,keep):
+        poly=[self.world(x,yy) for x,yy in [(xa,-y),(xb,-y),(xb,y),(xa,y)]]
+        return clean(clip_scalar(poly,keep)) if keep else poly
 
     def height(self,p):
-        y=self.local(p)[1]
-        return 121-self.base-(121-118.2)*abs(y)/(self.W/2)
+        return RIDGE-self.base-(RIDGE-EAVE)*abs(self.local(p)[1])/(self.W/2)   # relative to base
+
+    def label(self,a,b,x0,yh):
+        """0/2: eave at -y/+y, 3: free gable end. None: ridge or interface."""
+        (ax,ay),(bx,by)=self.local(a),self.local(b)
+        near=lambda u,v:abs(u-v)<1e-4
+        if near(ay,-yh) and near(by,-yh): return 0
+        if near(ay,yh) and near(by,yh): return 2
+        if near(ax,x0) and near(bx,x0): return 3
+        return None
+
+    def edges(self,roof):
+        poly=self.roof if roof else self.wall
+        x0=self.x0 if roof else self.x0+OVER
+        yh=self.W/2 if roof else self.W/2-self.oy
+        for a,b in zip(poly,poly[1:]+poly[:1]):
+            lab=self.label(a,b,x0,yh)
+            if lab is not None:
+                yield lab,a,b
 
     def roof_faces(self):
         for sign in [-1,1]:
-            poly=[self.world(x,y) for x,y in [(-self.L/2,sign*self.W/2),(self.L/2,sign*self.W/2),
-                                             (self.L/2,0),(-self.L/2,0)]]
-            poly=ccw(poly)
-            def z(p,side=sign):
-                return 121-self.base-(121-118.2)*self.local(p)[1]*side/(self.W/2)
-            yield poly,z
+            poly=clean(clip_scalar(self.roof,lambda p:sign*self.local(p)[1]))
+            if len(poly)>=3:
+                yield poly
 
-    def exposed_edges(self,others,roof=False):
-        own=self.roof if roof else self.wall
-        for edge,(a,b) in enumerate(zip(own,own[1:]+own[:1])):
-            cuts=[0.,1.]
-            for other in others:
-                poly=other.roof if roof else other.wall
-                for c,d in zip(poly,poly[1:]+poly[:1]):
-                    t=intersection_t(a,b,c,d)
-                    if t is not None:
-                        cuts.append(t)
-            cuts=sorted(set(round(t,8) for t in cuts))
-            for lo,hi in zip(cuts[:-1],cuts[1:]):
-                mid=(lo+hi)/2
-                p=(a[0]+(b[0]-a[0])*mid,a[1]+(b[1]-a[1])*mid)
-                if any(inside(p,o.roof if roof else o.wall) for o in others):
-                    continue
-                p0=(a[0]+(b[0]-a[0])*lo,a[1]+(b[1]-a[1])*lo)
-                p1=(a[0]+(b[0]-a[0])*hi,a[1]+(b[1]-a[1])*hi)
-                if math.dist(p0,p1)>.02:
-                    yield edge,p0,p1
+
+def unit(v):
+    n=math.hypot(*v)
+    return (v[0]/n,v[1]/n)
+
+
+def outward(a,b):
+    """Outward normal of an edge of a counter-clockwise polygon."""
+    return unit((b[1]-a[1],-(b[0]-a[0])))
+
+
+class Neighbour:
+    """A roof the connector abuts, as a heightfield over its footprint. Constants are
+    ray-cast from the built omberg_clubhouse / omberg_west_lodge meshes (2026-10-17):
+    the tile wing is open to the south and ends at N 681.55 under the connector's
+    south gable; the west lodge's south-east end reaches 1.5 m past the connector's
+    north-west gable. Re-measure if either roof moves. Absolute EN and z."""
+    def __init__(self,centre,axis,half_len,half_wid,ridge,pitch):
+        self.c,self.ax=centre,axis
+        self.hl,self.hw,self.ridge,self.pitch=half_len,half_wid,ridge,pitch
+
+    def top(self,e,n):
+        dx,dy=e-self.c[0],n-self.c[1]
+        s=dx*self.ax[0]+dy*self.ax[1]
+        l=-dx*self.ax[1]+dy*self.ax[0]
+        if abs(s)<=self.hl and abs(l)<=self.hw:
+            return self.ridge-self.pitch*abs(l)
+        return None
+
+
+NEIGHBOURS=[Neighbour((477796.75,6457670.0),(0.,1.),11.55,7.0,115.05,.416),
+            Neighbour((477780.1,6457724.03),(.5240,-.8517),12.6,7.3,114.8,.4217)]
+
+
+def neighbour_top(e,n):
+    tops=[t for t in (nb.top(e,n) for nb in NEIGHBOURS) if t is not None]
+    return max(tops) if tops else None
+
+
+def cap(g,pts,roof_z,mat,half=.16,rise=.075,sink=.02,ext=(0,0),taper=False):
+    """Ridge/hip cap along a 3D polyline: a low prism whose lower edges sit on the
+    roof surface (roof_z) either side, mitred at bends so it stays one piece."""
+    pts=[Vector(p) for p in pts]
+    if ext[0]: pts[0]=pts[0]+(pts[0]-pts[1]).normalized()*ext[0]
+    if ext[1]: pts[-1]=pts[-1]+(pts[-1]-pts[-2]).normalized()*ext[1]
+    rings=[]
+    for i,p in enumerate(pts):
+        segs=[]
+        if i>0: segs.append(unit((p.x-pts[i-1].x,p.y-pts[i-1].y)))
+        if i<len(pts)-1: segs.append(unit((pts[i+1].x-p.x,pts[i+1].y-p.y)))
+        t=unit((sum(s[0] for s in segs),sum(s[1] for s in segs)))
+        m=(-t[1],t[0])
+        w=half/max(.5,abs(m[0]*-segs[0][1]+m[1]*segs[0][0]))   # mitre widening
+        l=(p.x+m[0]*w,p.y+m[1]*w)
+        r=(p.x-m[0]*w,p.y-m[1]*w)
+        rz=.01 if taper and i==len(pts)-1 else rise    # a cap that ends at an eave runs out flat, not as a block
+        rings.append(((l[0],l[1],roof_z(l)-sink),(p.x,p.y,p.z+rz),(r[0],r[1],roof_z(r)-sink)))
+    for r0,r1 in zip(rings,rings[1:]):
+        g.poly([r0[0],r0[1],r1[1],r1[0]],mat)
+        g.poly([r0[1],r0[2],r1[2],r1[1]],mat)
+    g.poly([rings[0][0],rings[0][2],rings[0][1]],mat)
+    g.poly([rings[-1][0],rings[-1][1],rings[-1][2]],mat)
+
+
+def downpipe(g,wall,out,gutter,base,origin):
+    """Elbow under the soffit from the gutter outlet to the wall, then straight down.
+    Over a neighbour's roof it ends in a short spout just above that roof instead."""
+    top=(gutter[0],gutter[1],EAVE-.16-base)
+    knee=(wall[0]+out[0]*.07,wall[1]+out[1]*.07)
+    g.pipe(top,(knee[0],knee[1],EAVE-.62-base),PIPE_R,"omberg_main_gutter",seg=8)
+    roof=neighbour_top(knee[0]+origin[0],knee[1]+origin[1])
+    if roof is None:
+        g.pipe((knee[0],knee[1],EAVE-.62-base),(knee[0],knee[1],105.5-base),PIPE_R,"omberg_main_gutter",seg=8)
+        return
+    tip=(knee[0]+out[0]*.3,knee[1]+out[1]*.3)
+    tip_roof=neighbour_top(tip[0]+origin[0],tip[1]+origin[1])
+    z=max(roof+.45,(tip_roof if tip_roof is not None else roof)+.3+.12)-base
+    g.pipe((knee[0],knee[1],EAVE-.62-base),(knee[0],knee[1],z),PIPE_R,"omberg_main_gutter",seg=8)
+    g.pipe((knee[0],knee[1],z),(tip[0],tip[1],z-.3),PIPE_R,"omberg_main_gutter",seg=8)
 
 
 def window(g,t,z,w,h,cols,rows):
@@ -202,7 +269,7 @@ def window(g,t,z,w,h,cols,rows):
     g.box((t,y1+.012,-.03),(w+.075,.025,.11),"omberg_main_sill")
 
 
-def facade(g,volume,edge,a,b,openings):
+def facade(g,volume,edge,a,b,openings,buried=None):
     dx,dy=b[0]-a[0],b[1]-a[1]
     length=math.hypot(dx,dy)
     ux,uy=dx/length,dy/length
@@ -214,11 +281,15 @@ def facade(g,volume,edge,a,b,openings):
     for p,z,w,h,cols,rows in openings:
         t=(p[0]-a[0])*ux+(p[1]-a[1])*uy
         if t-w/2>.12 and t+w/2<length-.12:
+            # A window whose reveal, frame or sill touches a neighbouring roof or wall is dropped.
+            if buried and any(buried((a[0]+ux*(t+dt)+nx*d,a[1]+uy*(t+dt)+ny*d),z+dz)
+                              for dt in (-w/2-.1,w/2+.1) for dz in (-.12,h+.12) for d in (0,.35)):
+                continue
             os.append((t,z,w,h,cols,rows))
     xs=sorted(set([0.,length]+[v for t,z,w,h,c,r in os for v in [t-w/2,t+w/2]]))
-    zs=sorted(set([bottom,band,121-volume.base]+[v for t,z,w,h,c,r in os for v in [z,z+h]]))
+    zs=sorted(set([bottom,band,RIDGE-volume.base]+[v for t,z,w,h,c,r in os for v in [z,z+h]]))
     def top(t):
-        return volume.height((a[0]+ux*t,a[1]+uy*t))-.16
+        return volume.height((a[0]+ux*t,a[1]+uy*t))-THICK
     # End gables must split at the ridge, independent of the glazing grid.
     la,lb=volume.local(a),volume.local(b)
     if la[1]*lb[1]<0:
@@ -241,13 +312,14 @@ def facade(g,volume,edge,a,b,openings):
     if edge==volume.course_side:
         for frac in [.2,.4,.6,.8]:
             t=length*frac
-            if not any(abs(t-ot)<w/2+.1 for ot,z,w,h,c,r in os):
+            if not any(abs(t-ot)<w/2+.1 for ot,z,w,h,c,r in os) and not (
+                    buried and buried((a[0]+ux*t,a[1]+uy*t),band)):
                 g.box((t,(band+top(t))/2,.001),(.014,top(t)-band,.0015),"omberg_main_panel_joint")
     g.pop()
 
 
 def window_layout(volume,edge,diagonal,segment=None):
-    L,W=volume.L-.65,volume.W-.65
+    L,W=volume.L-2*OVER,volume.W-2*volume.oy
     out=[]
     def at(x,y,z,w,h,cols=2,rows=2):
         out.append((volume.world(x,y),z-volume.base,w,h,cols,rows))
@@ -279,75 +351,78 @@ def window_layout(volume,edge,diagonal,segment=None):
     return out
 
 
-def clipped_line(a,b,poly):
-    lo,hi=0.,1.
-    for c,d in zip(poly,poly[1:]+poly[:1]):
-        def side(p):
-            return (d[0]-c[0])*(p[1]-c[1])-(d[1]-c[1])*(p[0]-c[0])
-        va,vb=side(a),side(b)
-        if va<0 and vb<0:
-            return None
-        if (va<0)!=(vb<0):
-            t=va/(va-vb)
-            if va<0: lo=max(lo,t)
-            else: hi=min(hi,t)
-        if lo>=hi:
-            return None
-    return ((a[0]+(b[0]-a[0])*lo,a[1]+(b[1]-a[1])*lo),
-            (a[0]+(b[0]-a[0])*hi,a[1]+(b[1]-a[1])*hi))
-
-
 def build(sections,origin,base):
     g=kit.Geo()
-    volumes=[]
-    for key,L,W,yaw,side in [("white-diagonal-link",24.3,14.6,149.5,0),("white-straight-link",16.1,12.7,0,2)]:
+    def centre(key):
         pts=sections[key]["roofEdge3006"]
-        centre=(sum(p[0] for p in pts)/4-origin[0],sum(p[1] for p in pts)/4-origin[1])
-        volumes.append(Volume(centre,L,W,yaw,base,side))
+        return (sum(p[0] for p in pts)/4-origin[0],sum(p[1] for p in pts)/4-origin[1])
+    cd,cs=centre("white-diagonal-link"),centre("white-straight-link")
+    A=math.radians(90-149.5)
+    a=(math.cos(A),math.sin(A))              # diagonal ridge direction, towards the straight wing
+    lat=(-a[1],a[0])                          # its lateral direction (+y, east side)
+    # Straight wing: yaw 0, ridge due north (x=cs[0]). The bend is where the ridges cross.
+    t=(cs[0]-cd[0])/a[0]
+    X=(cd[0]+a[0]*t,cd[1]+a[1]*t)
+    k=abs(lat[0])                             # cos(bend)
+    diag=Volume(cd,24.3,14.6,149.5,base,0,t,OVER)
+    straight=Volume(cs,16.1,14.6*k,0,base,2,16.1/2+6,OVER*k,
+                    keep=lambda p:(p[0]-X[0])*a[0]+(p[1]-X[1])*a[1])
+    volumes=[diag,straight]
+    iw=(X[0]-lat[0]*14.6/2,X[1]-lat[1]*14.6/2)   # interface ends: west (inner) and east (outer) eave corners
+    ie=(X[0]+lat[0]*14.6/2,X[1]+lat[1]*14.6/2)
+    def roof_z(p):
+        v=straight if (p[0]-X[0])*a[0]+(p[1]-X[1])*a[1]>=0 else diag
+        return v.height(p)
+    def buried(p,z):
+        top=neighbour_top(p[0]+origin[0],p[1]+origin[1])
+        return top is not None and z+base<top+.1
     for index,v in enumerate(volumes):
-        others=[o for o in volumes if o is not v]
-        for edge,a,b in v.exposed_edges(others):
-            facade(g,v,edge,a,b,window_layout(v,edge,index==0,(a,b)))
-        for poly,z in v.roof_faces():
-            pieces=[poly]
-            for other in others:
-                for cutter,oz in other.roof_faces():
-                    cutter=clip_scalar(cutter,lambda p:oz(p)-z(p)-.00001)
-                    if len(cutter)<3:
-                        continue
-                    pieces=[q for piece in pieces for q in subtract_convex(piece,cutter)]
-            for piece in pieces:
-                pts=[Vector((x,y,z((x,y)))) for x,y in piece]
-                for tri in tessellate_polygon([pts]):
-                    tri=[pts[t] if isinstance(t,int) else t for t in tri]
-                    uv=[(v.local((p.x,p.y))[0]+v.L/2,abs(v.local((p.x,p.y))[1])) for p in tri]
-                    g.poly([tuple(p) for p in tri],"omberg_main_roof",uv=("uv",uv))
-                    g.poly([(p.x,p.y,p.z-.12) for p in reversed(tri)],"omberg_main_reveal")
-                # Standing seams are in the phase-aligned albedo/normal only.
-                # Millimetre-scale physical strips alias in Unity's course views.
-        r0,r1=v.world(-v.L/2+.04,0),v.world(v.L/2-.04,0)
-        g.beam((r0[0],r0[1],121-base+.015),(r1[0],r1[1],121-base+.015),.14,.05,"omberg_main_gutter")
-        for edge,a,b in v.exposed_edges(others,roof=True):
-            za,zb=v.height(a),v.height(b)
-            # Split cross-gables at their ridge so fascia follows both slopes.
-            cuts=[a,b]
-            la,lb=v.local(a),v.local(b)
-            if la[1]*lb[1]<0:
-                f=-la[1]/(lb[1]-la[1])
-                cuts=[a,(a[0]+(b[0]-a[0])*f,a[1]+(b[1]-a[1])*f),b]
-            for aa,bb in zip(cuts[:-1],cuts[1:]):
-                az,bz=v.height(aa),v.height(bb)
-                g.poly([(aa[0],aa[1],az-.14),(bb[0],bb[1],bz-.14),(bb[0],bb[1],bz),(aa[0],aa[1],az)],"omberg_main_gutter")
-            if edge in [0,2]:
-                g.pipe((a[0],a[1],za-.13),(b[0],b[1],zb-.13),.055,"omberg_main_gutter",seg=8)
-        # Small round downpipes at exposed long-wall ends; no invented ornaments.
-        for edge,a,b in v.exposed_edges(others):
-            if edge not in [0,2] or math.dist(a,b)<4:
+        for edge,a_,b_ in v.edges(False):
+            facade(g,v,edge,a_,b_,window_layout(v,edge,index==0,(a_,b_)),buried)
+        for poly in v.roof_faces():
+            pts=[Vector((x,y,v.height((x,y)))) for x,y in poly]
+            uv=[(v.local((p.x,p.y))[0]+v.L/2,abs(v.local((p.x,p.y))[1])) for p in pts]
+            # Standing seams are in the phase-aligned albedo/normal only.
+            # Millimetre-scale physical strips alias in Unity's course views.
+            g.poly([tuple(p) for p in pts],"omberg_main_roof",uv=("uv",uv))
+            g.poly([(p.x,p.y,p.z-THICK) for p in reversed(pts)],"omberg_main_reveal")
+            # Fascia / bargeboard: the slab edge on eaves and verges, closed at every corner.
+            for p,q in zip(pts,pts[1:]+pts[:1]):
+                if v.label((p.x,p.y),(q.x,q.y),v.x0,v.W/2) is not None:
+                    g.poly([(p.x,p.y,p.z-THICK),(q.x,q.y,q.z-THICK),(q.x,q.y,q.z),(p.x,p.y,p.z)],"omberg_main_gutter")
+        # Gutters on the eaves only; the verges have none.
+        for edge,p,q in v.edges(True):
+            if edge==3:
                 continue
-            ux,uy=(b[0]-a[0])/math.dist(a,b),(b[1]-a[1])/math.dist(a,b)
-            for p,sgn in [(a,1),(b,-1)]:
-                x=p[0]+sgn*ux*.22+uy*.075
-                y=p[1]+sgn*uy*.22-ux*.075
-                z=v.height((x,y))-.22
-                g.pipe((x,y,z),(x,y,106.1-base),.045,"omberg_main_gutter",seg=8)
+            n=outward(p,q)
+            d=unit((q[0]-p[0],q[1]-p[1]))
+            off=GUTTER_R+.015
+            ex=[0,0]
+            for i,e in enumerate([p,q]):          # run a little into the corner joint at the interface
+                if abs(v.local(e)[0]-v.x0)>.01: ex[i]=.04
+            pa=(p[0]+n[0]*off-d[0]*ex[0],p[1]+n[1]*off-d[1]*ex[0],EAVE-base-.09)
+            pb=(q[0]+n[0]*off+d[0]*ex[1],q[1]+n[1]*off+d[1]*ex[1],EAVE-base-.09)
+            g.pipe(pa,pb,GUTTER_R,"omberg_main_gutter",seg=8)
+        # Downpipes at the free ends of the eave walls.
+        for edge,p,q in v.edges(False):
+            if edge not in [0,2]:
+                continue
+            n=outward(p,q)
+            d=unit((q[0]-p[0],q[1]-p[1]))
+            free,sgn=(p,1) if abs(v.local(p)[0]-(v.x0+OVER))<.01 else (q,-1)
+            w=(free[0]+sgn*d[0]*.25,free[1]+sgn*d[1]*.25)
+            reach=v.oy+GUTTER_R+.015
+            downpipe(g,w,n,(w[0]+n[0]*reach,w[1]+n[1]*reach),base,origin)
+    # One downpipe in the inner corner of the bend, where the valley drains.
+    n1,n2=(-lat[0],-lat[1]),(-1.,0.)
+    bis=unit((n1[0]+n2[0],n1[1]+n2[1]))
+    cw=(X[0]-lat[0]*(14.6/2-OVER),X[1]-lat[1]*(14.6/2-OVER))
+    reach=(GUTTER_R+.015)/.96
+    downpipe(g,cw,bis,(iw[0]+bis[0]*reach,iw[1]+bis[1]*reach),base,origin)
+    # Caps: one bent ridge cap, and a hip cap down the outside of the bend.
+    r0,r1=diag.world(diag.x0,0),straight.world(straight.x0,0)
+    z=RIDGE-base
+    cap(g,[(r0[0],r0[1],z),(X[0],X[1],z),(r1[0],r1[1],z)],roof_z,"omberg_main_gutter",ext=(.04,.04))
+    tip=.25/math.dist(X,ie)       # stop the hip cap short of the eave and run it out flat
+    cap(g,[(X[0],X[1],z),(ie[0]+(X[0]-ie[0])*tip,ie[1]+(X[1]-ie[1])*tip,EAVE-base+(z-EAVE+base)*tip)],roof_z,"omberg_main_gutter",taper=True)
     return g
