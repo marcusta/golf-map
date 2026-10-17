@@ -14,6 +14,7 @@ import { sql } from 'kysely';
 import { createTestDb } from '../testing/db';
 import { seedCourse, TEST_COURSE_ID, TEST_GREEN_1_ID } from '../db/seeds/course';
 import { CoursesService } from './courses.service';
+import { HolesService } from './holes.service';
 import { AssetsService } from './assets.service';
 import { CourseFeaturesService } from './course-features.service';
 import { PinsService } from './pins.service';
@@ -506,6 +507,21 @@ test('"changed since" counts the edits each target is made of', async () => {
     expect(row(s, 'creeks').changedSince).toEqual({ count: 0, kinds: [] });
     expect(row(s, 'buildings').changedSince).toEqual({ count: 0, kinds: [] });
     expect(s.targets.filter(r => r.stale).map(r => r.id)).toEqual(['terrain', 'shapes', 'meshes', 'vegetation', 'course-file']);
+});
+
+test('changing the layer list marks Shapes stale even when no geometry changed', async () => {
+    const t = await setup();
+    await buildSite(t);
+    await backdate(t);
+    await writeRecord(t.exportDir, new Date(Date.now() - 3600_000).toISOString());
+    expect(row(await t.svc.status(TEST_COURSE_ID), 'shapes').changedSince.count).toBe(0);
+    const holes = new HolesService(t.db);
+    const first = (await holes.listByCourse(TEST_COURSE_ID))[0]!;
+    await holes.update(first.id, first.version, { layerBeforeId: null });
+    const shapes = row(await t.svc.status(TEST_COURSE_ID), 'shapes');
+    expect(shapes.stale).toBe(true);
+    expect(shapes.changedSince.kinds).toContain('layers');
+    expect(shapes.changedSince.count).toBeGreaterThan(0);
 });
 
 test('a touched cleaned photo makes the Photo row stale', async () => {

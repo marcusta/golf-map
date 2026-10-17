@@ -1523,6 +1523,24 @@ def tee_sign(g, s):
         g.poly([fa[0], ba[0], ba[1], fa[1]], ink)
 
 
+def plank_sign(g, s):
+    """Tee sign on a square wooden post (Omberg's, hole 14 photo): a lacquered plank of width x height in the
+    x-z plane, screwed to the post's front (-y) with its bottom `bottom` m above the ground; the post stands
+    `stub` m proud of the plank. `face` = the material printed on the front, mapped once over it (UV 0..1);
+    `back` = the plank's back, also mapped once; `mat` = the post and the plank's edges."""
+    W, H, t = s["width"], s["height"], s.get("thick", 0.035)
+    z0, ps, stub = s.get("bottom", 0.55), s.get("post", 0.09), s.get("stub", 0.04)
+    wood = s.get("mat", "wood_post")
+    top = z0 + H + stub
+    g.box((0, 0, (top - 0.5) / 2), (ps, ps, top + 0.5), wood)
+    g.box((0, 0, top + 0.004), (ps - 0.01, ps - 0.01, 0.008), wood)  # eased top
+    y = -ps / 2 - t / 2
+    g.box((0, y, z0 + H / 2), (W, t, H), wood, skip=("-y", "+y"))
+    x0, x1, yf, yb = -W / 2, W / 2, y - t / 2, y + t / 2
+    g.poly([(x0, yf, z0), (x1, yf, z0), (x1, yf, z0 + H), (x0, yf, z0 + H)], s["face"], uv=("uv", [(0, 0), (1, 0), (1, 1), (0, 1)]))
+    g.poly([(x1, yb, z0), (x0, yb, z0), (x0, yb, z0 + H), (x1, yb, z0 + H)], s.get("back", wood), uv=("uv", [(0, 0), (1, 0), (1, 1), (0, 1)]))
+
+
 def bin_(g, s):
     g.box((0, 0, 0.5), (0.6, 0.55, 1.0), s.get("mat", "wood_grey"))
     g.box((0, 0, 1.03), (0.66, 0.6, 0.06), "paint_green")
@@ -2310,7 +2328,7 @@ def trolley_rack(g, s):
 BUILDERS = {
     "building": building, "veranda": veranda, "steps": steps, "shelter": shelter, "gazebo": gazebo,
     "flagpole": flagpole, "bench": bench, "picnic_table": picnic_table, "bollard_light": bollard_light,
-    "signpost": signpost, "hole_sign": hole_sign, "tee_sign": tee_sign, "bin": bin_, "hedge": hedge, "rock_pile": rock_pile,
+    "signpost": signpost, "hole_sign": hole_sign, "tee_sign": tee_sign, "plank_sign": plank_sign, "bin": bin_, "hedge": hedge, "rock_pile": rock_pile,
     "rock": rock, "boulder": boulder, "stones": stones, "drape": drape, "markings": markings, "range_mat": range_mat, "net_poles": net_poles, "target_flag": target_flag,
     "distance_board": distance_board, "banner": banner, "power_pole": power_pole, "car": car,
     "golf_cart": golf_cart, "car2": car2, "bridge_wood": bridge_wood, "bridge_brick": bridge_brick,

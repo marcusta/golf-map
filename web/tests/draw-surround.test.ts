@@ -4,7 +4,7 @@ import { di, Signal } from '@basics/core/client/core';
 import type { ToolContext } from '../src/editor/tool';
 import { ConfirmService } from '../src/app/confirm-dialog.component';
 import { DrawToolService, DRAW_TOOL_ID, planSurrounds, type SurroundSource } from '../src/draw/draw-tool.service';
-import { FeaturesService } from '../src/draw/features.service';
+import { FeaturesService, sameScope, scopeOf } from '../src/draw/features.service';
 import { mergedSurroundGeometries, offsetGeometry } from '../src/draw/draw-state';
 import { flattenRing, type FeatureGeometry } from '../src/geo/bezier';
 import type { CourseFeature, CourseFeaturesApi } from '../../shared/api/course-features.gen';
@@ -27,17 +27,24 @@ afterEach(() => {
 /** A create-echoing fake API: assigns fresh ids and mirrors the input back. */
 function fakeApi() {
     let n = 0;
+    let rows: CourseFeature[] = [];
     const reject = () => Promise.reject(new Error('not under test'));
     const api: CourseFeaturesApi = {
-        listByCourse: async () => [],
+        listByCourse: async () => rows.map(row => ({ ...row })),
         listByHole: reject,
         geojsonByCourse: reject,
         create: async input => {
             n += 1;
-            return { id: `f${n}`, version: 1, ...input } as CourseFeature;
+            const scope = scopeOf({ holeId: input.holeId ?? null, layer: input.layer });
+            const peers = rows.filter(row => sameScope(scopeOf(row), scope));
+            const sortOrder = input.sortOrder ?? Math.max(-1, ...peers.map(row => row.sortOrder)) + 1;
+            for (const peer of peers) if (peer.sortOrder >= sortOrder) peer.sortOrder++;
+            const row = { ...input, ...scope, id: `f${n}`, version: 1, sortOrder } as CourseFeature;
+            rows.push(row);
+            return { ...row };
         },
         update: reject,
-        remove: async () => ({}) as never,
+        remove: async ({ id }) => { rows = rows.filter(row => row.id !== id); return {} as never; },
         reorder: reject,
         imported: async () => [],
         removeImported: async () => ({ removed: 0 }),
@@ -45,7 +52,11 @@ function fakeApi() {
     api.createMany = async ({ courseId, items }) => {
         const created: CourseFeature[] = [];
         for (const item of items) created.push(await api.create({ courseId, ...item }));
-        return created;
+        return created.map(c => ({ ...rows.find(row => row.id === c.id)! }));
+    };
+    api.removeMany = async ({ items }) => {
+        for (const item of items) await api.remove(item);
+        return {} as never;
     };
     return api;
 }
@@ -206,10 +217,43 @@ describe('DrawToolService.autoSurroundSelection (T41)', () => {
         expect(items.slice(1).every(f => f.holeId === 'hole-7')).toBe(true);
         const newIds = items.slice(1).map(f => f.id);
         expect([...features.selectedIds.peek()]).toEqual(newIds);
+        expect(features.stackFor({ holeId: 'hole-7', layer: null }).map(f => f.type))
+            .toEqual(['deep_rough', 'rough', 'semi_rough', 'fairway', 'green']);
         // ONE history entry: a single undo removes the entire chain.
         await tool.history.undo(features);
         expect(features.store.items.peek().map(f => f.type)).toEqual(['green']);
         expect(tool.history.canUndo.peek()).toBe(false);
+        await tool.history.redo(features);
+        expect(features.stackFor({ holeId: 'hole-7', layer: null }).map(f => f.type))
+            .toEqual(['deep_rough', 'rough', 'semi_rough', 'fairway', 'green']);
+    });
+
+    test('surround goes immediately below its source with other shapes on both sides, including redo', async () => {
+        const { tool, features } = await loadedTool();
+        const below = await features.create({ type: 'green', holeId: null, geometry: square(100, 0, 10) });
+        const source = await features.create({ type: 'green', holeId: null, geometry: square(0, 0, 10) });
+        const above = await features.create({ type: 'rough', holeId: null, geometry: square(200, 0, 10) });
+        features.setSelection([source!.id]);
+        const order = () => features.stackFor({ holeId: null, layer: null });
+
+        await tool.autoSurroundSelection();
+        expect(order().map(f => f.type)).toEqual(['green', 'fairway', 'green', 'rough']);
+        expect(order().map(f => f.sortOrder)).toEqual([0, 1, 2, 3]);
+        expect(order()[0].id).toBe(below!.id);
+        expect(order()[2].id).toBe(source!.id);
+        expect(order()[3].id).toBe(above!.id);
+        await tool.history.undo(features);
+        await tool.history.redo(features);
+        expect(order().map(f => f.type)).toEqual(['green', 'fairway', 'green', 'rough']);
+    });
+
+    test('Roughs surrounds stay in the Roughs stack directly below the source', async () => {
+        const { tool, features } = await loadedTool();
+        const source = await features.create({ type: 'semi_rough', holeId: null, layer: 'roughs', geometry: square(0, 0, 10) });
+        features.setSelection([source!.id]);
+        await tool.autoSurroundSelection();
+        expect(features.stackFor({ holeId: null, layer: 'roughs' }).map(f => f.type)).toEqual(['rough', 'semi_rough']);
+        expect(features.stackFor({ holeId: null, layer: null })).toHaveLength(0);
     });
 
     test('two overlapping fairways yield ONE merged semi_rough', async () => {
@@ -228,7 +272,29 @@ describe('DrawToolService.autoSurroundSelection (T41)', () => {
         expect(bbox.maxX).toBeCloseTo(16, 6);
     });
 
-    test('disjoint sources yield two surrounds; mixed holeIds fall back to null', async () => {
+    test('disjoint surrounds go below their own sources with an unrelated shape between them', async () => {
+        const { tool, features } = await loadedTool();
+        const a = await features.create({ type: 'fairway', holeId: null, geometry: square(0, 0, 10) });
+        const middle = await features.create({ type: 'bunker', holeId: null, geometry: square(50, 50, 5) });
+        const b = await features.create({ type: 'fairway', holeId: null, geometry: square(100, 100, 10) });
+        // Reverse selection order to cover insertion shifts in either direction.
+        features.setSelection([b!.id, a!.id]);
+        await tool.autoSurroundSelection(true);
+        const order = () => features.stackFor({ holeId: null, layer: null });
+        expect(order().map(f => f.type)).toEqual([
+            'deep_rough', 'rough', 'semi_rough', 'fairway', 'bunker',
+            'deep_rough', 'rough', 'semi_rough', 'fairway',
+        ]);
+        expect(order()[4].id).toBe(middle!.id);
+        await tool.history.undo(features);
+        await tool.history.redo(features);
+        expect(order().map(f => f.type)).toEqual([
+            'deep_rough', 'rough', 'semi_rough', 'fairway', 'bunker',
+            'deep_rough', 'rough', 'semi_rough', 'fairway',
+        ]);
+    });
+
+    test('sources in different holes keep their surrounds in their own stacks', async () => {
         const { tool, features } = await loadedTool();
         const a = await features.create({ type: 'fairway', holeId: 'h1', geometry: square(0, 0, 10) });
         const b = await features.create({ type: 'fairway', holeId: 'h2', geometry: square(100, 100, 10) });
@@ -238,7 +304,10 @@ describe('DrawToolService.autoSurroundSelection (T41)', () => {
 
         const created = features.store.items.peek().filter(f => f.type === 'semi_rough');
         expect(created).toHaveLength(2);
-        expect(created.every(f => f.holeId === null)).toBe(true);
+        expect(created.map(f => f.holeId)).toEqual(['h1', 'h2']);
+        for (const holeId of ['h1', 'h2']) {
+            expect(features.stackFor({ holeId, layer: null }).map(f => f.type)).toEqual(['semi_rough', 'fairway']);
+        }
         // Still ONE history entry for both rings.
         await tool.history.undo(features);
         expect(features.store.items.peek().filter(f => f.type === 'semi_rough')).toHaveLength(0);

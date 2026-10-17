@@ -15,7 +15,7 @@ import {
 import { CourseDetailService } from '../course-detail/course-detail.service';
 import { ZoneTypesService, zoneTypeKeyOf, zoneVariantKeyOf } from '../zones/zone-types.service';
 import { createWorkerSurfaceStackClient, type SurfaceStackClient } from './surface-stack-client';
-import { ROUGHS_LAYER, stackKey, type FeatureLayer } from '../../../shared/render/stack-key';
+import { ROUGHS_LAYER, stackKey, drawScopeRanks, type DrawScopeOrder, type FeatureLayer } from '../../../shared/render/stack-key';
 import { pathSurfaceOf } from '../../../shared/features/path-surface';
 import { ROAD_JUNCTIONS_SOURCE, junctionFillets, kerbFilletsOn } from '../../../shared/features/road-junctions';
 import { isGeneratedFeature } from './generated-features';
@@ -59,7 +59,7 @@ export function scopeFromKey(key: string): StackScope {
  */
 export function fillScopeOptions(
     select: HTMLSelectElement,
-    holes: readonly { id: string; number: number; par: number }[],
+    holes: readonly (DrawScopeOrder & { par: number })[],
     opts: { roughsDisabled?: boolean } = {},
 ): void {
     const add = (value: string, text: string, disabled = false) => {
@@ -70,7 +70,8 @@ export function fillScopeOptions(
         select.appendChild(option);
     };
     add(scopeKey(COURSE_SCOPE), 'Course level (top)');
-    for (const hole of holes) add(hole.id, `Hole ${hole.number} (par ${hole.par})`);
+    const ranks = drawScopeRanks(holes);
+    for (const hole of [...holes].sort((a, b) => ranks.get(b.id)! - ranks.get(a.id)!)) add(hole.id, hole.drawingGroupName ? `${hole.drawingGroupName} (SVG only)` : `Hole ${hole.number} (par ${hole.par})`);
     add(ROUGHS_SCOPE_KEY, 'Roughs (bottom)', opts.roughsDisabled ?? false);
 }
 
@@ -632,10 +633,10 @@ export class FeaturesService {
      * GeoJSON agree.
      */
     private stackKeyFor(f: CourseFeature): number {
-        const holeNumber = f.holeId === null
+        const rank = f.holeId === null
             ? null
-            : this.courseDetail.holes.get().find(h => h.id === f.holeId)?.number ?? 0;
-        return stackKey(f.layer, holeNumber, f.sortOrder, f.type, f.attributes);
+            : this.courseDetail.drawRanks.get().get(f.holeId) ?? 0;
+        return stackKey(f.layer, rank, f.sortOrder, f.type, f.attributes);
     }
 
     /**
@@ -949,6 +950,13 @@ export class FeaturesService {
             return { ...c, geometry: sent && !sent.centerline ? sent : c.geometry };
         });
         batched(() => {
+            // Replay final insertion slots bottom first to mirror the server's
+            // shifts, including shifts caused by normal type-based creates.
+            for (const inserted of [...created].sort((a, b) => a.sortOrder - b.sortOrder)) {
+                for (const row of this.stackFor(scopeOf(inserted))) {
+                    if (row.sortOrder >= inserted.sortOrder) this.store.patch({ ...row, sortOrder: row.sortOrder + 1 });
+                }
+            }
             for (const c of created) this.store.add(c);
             if (opts.select !== false) this.selectedIds.set(new Set(created.map(c => c.id)));
         });
@@ -1716,6 +1724,7 @@ type PatchBase = Pick<CourseFeature, 'geometry' | 'type' | 'holeId' | 'layer' | 
 /** Input for `create` / `createMany`. */
 type CreateInput = {
     type: string;
+    sortOrder?: number;
     holeId?: string | null;
     layer?: FeatureLayer;
     geometry: FeatureGeometry;

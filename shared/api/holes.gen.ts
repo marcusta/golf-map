@@ -6,6 +6,10 @@ export interface Hole {
     courseId: string;
     number: number;
     par: number;
+    drawingGroupName?: null | string;
+    drawingGroupAfter?: null | number;
+    drawingGroupOrder?: null | number;
+    drawingStackOrder?: null | number;
     strokeIndex: null | number;
     notes: null | string;
     savedRegionJson: null | string;
@@ -15,10 +19,10 @@ export interface Hole {
 }
 
 export interface HolesApi {
-    listByCourse(input: { courseId: string }): Promise<Hole[]>;
+    listByCourse(input: { includeDrawingGroups?: boolean; courseId: string }): Promise<Hole[]>;
     get(input: { id: string }): Promise<Hole>;
-    create(input: { notes?: string; savedRegionJson?: string; number: number; courseId: string; par: number }): Promise<Hole>;
-    update(input: { notes?: string; par?: number; savedRegionJson?: string; strokeIndex?: null | number; id: string; version: number }): Promise<Hole>;
+    create(input: { notes?: string; drawingGroupName?: string; savedRegionJson?: string; number: number; courseId: string; par: number }): Promise<Hole>;
+    update(input: { notes?: string; par?: number; drawingGroupName?: string; savedRegionJson?: string; drawingGroupAfter?: null | number; drawingGroupBeforeId?: null | string; layerBeforeId?: null | string; strokeIndex?: null | number; id: string; version: number }): Promise<Hole>;
     remove(input: { id: string; version: number }): Promise<{ ok: boolean }>;
 }
 

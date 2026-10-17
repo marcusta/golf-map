@@ -1027,7 +1027,7 @@ export class SelectionPanelComponent extends Component {
         // selected feature only moves the value.
         let builtFor: { holes: unknown; mixed: boolean; roughsDisabled: boolean; zonesOnly: boolean } | null = null;
         this.track(effect(() => {
-            const holes = this.courseDetail.holes.get();
+            const holes = this.courseDetail.drawScopes.get();
             const selected = this.features.selectedFeatures.get();
             const selectedScopes = new Set(selected.map(f => scopeKey(scopeOf(f))));
             const value = selectedScopes.size === 1 ? [...selectedScopes][0]! : '__mixed';

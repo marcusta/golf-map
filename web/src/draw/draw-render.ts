@@ -152,7 +152,7 @@ export function drawPreviewGeojson(host: DrawRenderHost): FeatureCollection {
         draft.forEach((p, i) => {
             features.push({
                 type: 'Feature',
-                properties: { role: i === 0 ? 'first-vertex' : p.corner ? 'vertex-corner' : 'vertex' },
+                properties: { role: i === 0 ? (cursor === p && draft.length >= 3 && !host.pathMode.get() ? 'close-vertex' : 'first-vertex') : p.corner ? 'vertex-corner' : 'vertex' },
                 geometry: { type: 'Point', coordinates: toLngLat(p) },
             });
         });
@@ -374,9 +374,9 @@ export function drawPreviewLayers(): OverlayLayerSpec[] {
         {
             id: 'draw-vertices',
             type: 'circle',
-            filter: ['in', ['get', 'role'], ['literal', ['vertex', 'first-vertex']]] as FilterSpecification,
+            filter: ['in', ['get', 'role'], ['literal', ['vertex', 'first-vertex', 'close-vertex']]] as FilterSpecification,
             paint: {
-                'circle-radius': ['case', ['==', ['get', 'role'], 'first-vertex'], 7, 5] as never,
+                'circle-radius': ['match', ['get', 'role'], 'close-vertex', 11, 'first-vertex', 7, 5] as never,
                 'circle-color': OVERLAY_TEXT, // '#FFFFFF' — --overlay-text
                 'circle-stroke-color': MARKER_FILL, // '#1E2B22' — --color-surface-brand
                 'circle-stroke-width': 2,

@@ -52,7 +52,7 @@ import {
 /** Interaction-claim id AND overlay id prefix for the draw tool. */
 export const DRAW_TOOL_ID = 'draw';
 
-const CLOSE_RING_PX = 12;
+const CLOSE_RING_PX = 24;
 const DRAG_MOVE_THRESHOLD_PX = 3;
 /** Feature-move drag: movement registers past this (prototype: 2 px). */
 const MOVE_THRESHOLD_PX = 2;
@@ -148,6 +148,7 @@ export interface PlacePress {
     startScreen: { x: number; y: number };
     lngLat: LngLat;
     shift: boolean;
+    alt: boolean;
 }
 
 /**
@@ -364,7 +365,7 @@ function onClick(host: DrawPointerHost, e: MapPointerEvent): void {
 function placeDraftPoint(
     host: DrawPointerHost,
     p: Point,
-    e: { point: { x: number; y: number }; originalEvent: { metaKey: boolean; ctrlKey: boolean } },
+    e: { point: { x: number; y: number }; originalEvent: { metaKey: boolean; ctrlKey: boolean; altKey: boolean } },
     shift: boolean,
 ): void {
     const draft = host.state.draft.peek();
@@ -378,6 +379,8 @@ function placeDraftPoint(
     // to a neighbour's anchor or outline unless Cmd/Ctrl is held.
     const snap = snapPointer(host, e, p, null);
     host.state.addPoint(snap ? snap.point : p, shift);
+    // Alt-click places the final point and closes without aiming at the start.
+    if (e.originalEvent.altKey && !host.pathMode.peek() && host.state.draft.peek().length >= 3) host.closeDraft();
 }
 
 function onMouseMove(host: DrawPointerHost, e: MapPointerEvent): void {
@@ -403,6 +406,12 @@ function onMouseMove(host: DrawPointerHost, e: MapPointerEvent): void {
         // The snap marker shows before the first point too, so the user
         // sees where the first click lands.
         const raw = lngLatToSweref99tm(e.lngLat);
+        const draft = host.state.draft.peek();
+        if (!host.pathMode.peek() && draft.length >= 3 && screenDistTo(host, draft[0], e.point) < CLOSE_RING_PX) {
+            setSnapMarker(host, null);
+            host.cursor.setLater(() => draft[0]);
+            return;
+        }
         const snap = snapPointer(host, e, raw, null);
         setSnapMarker(host, snapMarkerOf(snap, 'draft'));
         // Empty draft: the rubber band has nothing to attach to, so the
@@ -733,7 +742,7 @@ function onMouseDown(host: DrawPointerHost, e: MapMouseEvent, map: MaplibreMap):
 function onDrawMouseDown(host: DrawPointerHost, e: MapMouseEvent, map: MaplibreMap): void {
     host.dragBinding?.claim(e, map);
     if (host.state.draft.peek().length > 0) {
-        host.placePress = { startScreen: { x: e.point.x, y: e.point.y }, lngLat: e.lngLat, shift: e.originalEvent.shiftKey };
+        host.placePress = { startScreen: { x: e.point.x, y: e.point.y }, lngLat: e.lngLat, shift: e.originalEvent.shiftKey, alt: e.originalEvent.altKey };
         return;
     }
     const trace = new TraceGesture(
@@ -786,7 +795,7 @@ function onMouseUp(host: DrawPointerHost, e: MapMouseEvent, map: MaplibreMap): v
             placeDraftPoint(
                 host,
                 lngLatToSweref99tm(place.lngLat),
-                { point: place.startScreen, originalEvent: { metaKey: false, ctrlKey: false } },
+                { point: place.startScreen, originalEvent: { metaKey: false, ctrlKey: false, altKey: place.alt } },
                 place.shift,
             );
         }

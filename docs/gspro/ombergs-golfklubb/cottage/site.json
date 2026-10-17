@@ -9,7 +9,9 @@
   ],
   "assetPrefix": "omberg_cot_",
   "groundAssets": [],
-  "osm": {},
+  "osm": {
+    "omberg_cot_house": "786179224"
+  },
   "footprints": "../../../../data/omberg-cottage/osm-buildings.json",
   "categories": [
     "building"

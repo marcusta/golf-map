@@ -2,7 +2,7 @@
 // blender/tools/build_props.py from a spec (docs/gspro/<course>/*-props.json) into
 // <course>/Props/: Models/*.fbx, Textures/*.png and a golfmap-props-v1 manifest (props.json).
 // This places them: builds a Standard material per manifest material (albedo, normal map,
-// smoothness, metallic) and remaps every FBX onto them, then instantiates each instance under
+// smoothness, metallic or optional specular RGB) and remaps every FBX onto them, then instantiates each instance under
 // 'GolfMap Props' at its EPSG:3006 position (inner DEM sidecar frame), on the surface the player
 // sees (highest collider under it: course meshes, else terrain), turned so the asset's Blender +x
 // axis points along the instance's compass yawDeg. Buildings/structures get MeshColliders, small
@@ -12,6 +12,7 @@
 // Unity 2018.2 / C# 6.
 using System;
 using System.Collections.Generic;
+using System.Globalization;
 using System.IO;
 using System.Linq;
 using System.Text;
@@ -57,7 +58,7 @@ namespace GolfMap.Editor
 
         // ---- manifest -----------------------------------------------------------------------
 
-        class Mat { public string name, albedo, normal, mask; public Color color; public float smoothness, metallic; public bool cutout, fade; }
+        class Mat { public string name, albedo, normal, mask; public Color color; public Color? specular; public float smoothness, metallic; public bool cutout, fade; }
         // prefab: a Unity prefab (e.g. a vegetation pack's hedge) placed instead of a Blender FBX; its bounds are
         // measured here and it keeps its own colliders/LODs. Blender assets carry bounds in Blender local x/y.
         // axis: the prefab's forward axis ("x" default, "z" for most vehicle packs) - yawDeg is its compass bearing.
@@ -78,6 +79,25 @@ namespace GolfMap.Editor
             return l == null || l.Count < 3 ? Vector3.zero : new Vector3(F(l[0]), F(l[1]), F(l[2]));
         }
 
+        static Color? Specular(GolfMapJsonObject material, string where)
+        {
+            if (!material.Has("specular")) return null;
+            var rgb = material.Array("specular");
+            var error = where + ".specular must be an array of exactly three finite numbers in [0, 1], e.g. [0, 0, 0]. Omit the field for the Standard metallic workflow.";
+            if (rgb == null || rgb.Count != 3) throw new InvalidOperationException(error);
+            var values = new float[3];
+            for (int i = 0; i < 3; i++)
+            {
+                var n = rgb[i] as GolfMapJsonNumber;
+                double value;
+                if (n == null || !double.TryParse(n.raw, NumberStyles.Float, CultureInfo.InvariantCulture, out value)
+                    || double.IsNaN(value) || double.IsInfinity(value) || value < 0 || value > 1)
+                    throw new InvalidOperationException(error + " Invalid component " + i + ".");
+                values[i] = (float)value;
+            }
+            return new Color(values[0], values[1], values[2], 1f);
+        }
+
         static void Load(string path, out List<Mat> mats, out List<Asset> assets, out List<Inst> insts)
         {
             var root = GolfMapJsonDoc.ParseObject(File.ReadAllText(path));
@@ -94,6 +114,7 @@ namespace GolfMap.Editor
                     cutout = m["cutout"] is bool && (bool)m["cutout"],
                     fade = m["fade"] is bool && (bool)m["fade"],
                     color = c == null ? Color.white : new Color(F(c[0]), F(c[1]), F(c[2]), 1f),
+                    specular = Specular(m, path + " materials." + k),
                     smoothness = F(m["smoothness"], 0.2f), metallic = F(m["metallic"]),
                 });
             }
@@ -163,13 +184,20 @@ namespace GolfMap.Editor
         {
             var dir = folder + "Materials";
             if (!AssetDatabase.IsValidFolder(dir)) AssetDatabase.CreateFolder(folder.TrimEnd('/'), "Materials");
-            var shader = Shader.Find("Standard");
             var outp = new Dictionary<string, Material>();
             foreach (var m in mats)
             {
+                var shaderName = m.specular.HasValue ? "Standard (Specular setup)" : "Standard";
+                var shader = Shader.Find(shaderName);
+                if (shader == null) throw new InvalidOperationException("Props material '" + m.name + "': missing shader '" + shaderName + "'.");
                 var path = dir + "/" + m.name + ".mat";
                 var mat = AssetDatabase.LoadAssetAtPath<Material>(path);
                 if (mat == null) { mat = new Material(shader) { name = m.name }; AssetDatabase.CreateAsset(mat, path); }
+                // Clear the previous workflow's map while its shader still exposes the property.
+                if (mat.HasProperty("_SpecGlossMap")) mat.SetTexture("_SpecGlossMap", null);
+                if (mat.HasProperty("_MetallicGlossMap")) mat.SetTexture("_MetallicGlossMap", null);
+                mat.DisableKeyword("_SPECGLOSSMAP");
+                mat.DisableKeyword("_METALLICGLOSSMAP");
                 mat.shader = shader;
                 mat.SetColor("_Color", m.color);
                 mat.SetTexture("_MainTex", Texture(folder, m.albedo, false));
@@ -178,13 +206,23 @@ namespace GolfMap.Editor
                 mat.SetFloat("_BumpScale", 1f);
                 if (nrm != null) mat.EnableKeyword("_NORMALMAP"); else mat.DisableKeyword("_NORMALMAP");
                 mat.SetFloat("_Glossiness", m.smoothness);
-                mat.SetFloat("_Metallic", m.metallic);
                 var mask = Texture(folder, m.mask, 2);
-                mat.SetTexture("_MetallicGlossMap", mask);
+                if (m.specular.HasValue)
+                {
+                    mat.SetColor("_SpecColor", m.specular.Value);
+                    mat.SetTexture("_SpecGlossMap", null);
+                    // Specular RGB is uniform; smoothness comes from _Glossiness, not a map alpha.
+                    mat.DisableKeyword("_SMOOTHNESS_TEXTURE_ALBEDO_CHANNEL_A");
+                }
+                else
+                {
+                    mat.SetFloat("_Metallic", m.metallic);
+                    mat.SetTexture("_MetallicGlossMap", mask);
+                    if (mask != null) mat.EnableKeyword("_METALLICGLOSSMAP");
+                }
                 mat.SetTexture("_OcclusionMap", mask);
                 mat.SetFloat("_GlossMapScale", m.smoothness);
                 mat.SetFloat("_OcclusionStrength", 1f);
-                if (mask != null) mat.EnableKeyword("_METALLICGLOSSMAP"); else mat.DisableKeyword("_METALLICGLOSSMAP");
                 // Standard shader render mode: opaque, alpha-tested cutout, or fade (translucent netting)
                 mat.SetFloat("_Mode", m.fade ? 2f : m.cutout ? 1f : 0f);
                 mat.SetFloat("_Cutoff", 0.5f);

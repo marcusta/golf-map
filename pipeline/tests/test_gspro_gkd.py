@@ -151,6 +151,27 @@ def _tee(hole, tee_type):
     return next(t for t in hole["Tees"] if t["TeeType"] == tee_type)
 
 
+def test_drawing_groups_are_excluded_from_holes_hazards_and_oob(tmp_path, terrain):
+    drawing_group = {**HOLE, 'number': 100}
+    db = _make_db(tmp_path / 'groups.sqlite', holes=(HOLE, drawing_group), features=[
+        ('water', [_box(20, 20, 80, 80)], 100),
+        ('penalty_red', [_box(100, 20, 140, 80)], 100),
+        ('oob', [_box(0, 0, 390, 390)], 100),
+        ('water', [_box(220, 220, 260, 260)], None),
+    ])
+    with sqlite3.connect(db) as conn:
+        conn.execute('ALTER TABLE holes ADD COLUMN drawing_group_name TEXT')
+        conn.execute('UPDATE holes SET drawing_group_name = ? WHERE number = 100', ('Practice area',))
+    _, holes = gspro._load_gkd_course(db, COURSE)
+    assert [h['number'] for h in holes] == [1]
+    outlines = gspro._load_gkd_outlines(db, COURSE)
+    assert len(outlines) == 1
+    assert outlines[0]['hole_number'] is None
+    doc, _ = _run(tmp_path, terrain, db)
+    assert len(doc['Hazards']) == 1
+    assert sum(h['Enabled'] for h in doc['Holes']) == 1
+
+
 # --- Positions --------------------------------------------------------------
 
 def test_positions_are_unity_metres_on_the_terrain(tmp_path, terrain):

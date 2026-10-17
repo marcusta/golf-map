@@ -31,6 +31,10 @@ import { isRoughsLayerType, type FeatureLayer } from '../../../shared/render/sta
 
 /** Everything undo/redo restores about a feature. */
 interface FeatureSnapshot {
+    /** Opt-in insertion position for operations with an explicit stack location. */
+    sortOrder?: number;
+    /** Stable next sibling for replay after deletions leave numeric gaps. */
+    insertBeforeId?: string;
     geometry: FeatureGeometry;
     type: string;
     holeId: string | null;
@@ -160,13 +164,28 @@ export class EditHistory {
             if (sent.updated && !(await sent.updated)) return this.dropOnConflict();
 
             if (creates.length > 0) {
-                const created = await features.createMany(creates.map(c => ({
-                    type: c.target.type,
-                    holeId: c.target.holeId,
-                    layer: layerOf(c.target),
-                    geometry: c.target.geometry,
-                    attributes: c.target.attributes,
-                })));
+                // Restore explicit slots bottom first so later creates do not
+                // shift already restored features away from their saved slot.
+                creates.sort((a, b) => (a.target.sortOrder ?? Infinity) - (b.target.sortOrder ?? Infinity));
+                const positions = new Map(features.store.items.peek().map(f => [f.id, f.sortOrder]));
+                const inputs = creates.map(c => {
+                    const sortOrder = (c.target.insertBeforeId ? positions.get(c.target.insertBeforeId) : undefined) ?? c.target.sortOrder;
+                    if (sortOrder !== undefined) {
+                        for (const row of features.stackFor({ holeId: c.target.holeId, layer: layerOf(c.target) ?? null })) {
+                            const position = positions.get(row.id)!;
+                            if (position >= sortOrder) positions.set(row.id, position + 1);
+                        }
+                    }
+                    return {
+                        type: c.target.type,
+                        sortOrder,
+                        holeId: c.target.holeId,
+                        layer: layerOf(c.target),
+                        geometry: c.target.geometry,
+                        attributes: c.target.attributes,
+                    };
+                });
+                const created = await features.createMany(inputs);
                 if (!created) return this.dropOnConflict();
                 // The server assigns fresh ids: rename across both stacks AND
                 // this in-flight entry (it is off-stack while applying,
@@ -185,9 +204,15 @@ export class EditHistory {
 
     /** Rename a feature id across both stacks (delete-undo re-creation). */
     private remapId(oldId: string, newId: string): void {
+        const snapshot = (value: FeatureSnapshot | null): FeatureSnapshot | null =>
+            value?.insertBeforeId === oldId ? { ...value, insertBeforeId: newId } : value;
         const remap = (stack: HistoryEntry[]): HistoryEntry[] =>
-            stack.map(entry => entry.map(diff =>
-                diff.featureId === oldId ? { ...diff, featureId: newId } : diff));
+            stack.map(entry => entry.map(diff => ({
+                ...diff,
+                featureId: diff.featureId === oldId ? newId : diff.featureId,
+                before: snapshot(diff.before),
+                after: snapshot(diff.after),
+            })));
         this.undoStack.update(remap);
         this.redoStack.update(remap);
     }

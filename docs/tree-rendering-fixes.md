@@ -8,6 +8,24 @@ Record new fixes here with the symptom, actual material/shader, cause, exact cha
 refresh steps and where the result was verified. Separate confirmed results from
 experiments: a Unity result does not establish the GSPro result.
 
+## Matte architecture roofs, 2026-10-16
+
+Verified in the Omberg Unity editor, not in the built GSPro course. Terracotta
+roofs using `Standard` became nearly white at grazing views; small stepped tile
+rows made this appear as bright stripes. Imported roof normals matched their
+triangle normals. Removing normal maps or shadows did not resolve it, and the
+Standard specular/reflection keywords did not affect this camera's result.
+
+`Standard (Specular setup)` with black `_SpecColor`, no `_SpecGlossMap` and zero
+smoothness retained the terracotta colour in the same view. The props manifest
+can opt individual materials into this workflow with `specular: [0, 0, 0]`;
+materials without that field retain the metallic Standard workflow. Omberg uses
+this for matte tile, red timber, grey facade, stone and the main standing-seam
+roof. Glass keeps a restrained reflection. Rebuild/place props to persist the choice; an in-memory
+diagnostic shader swap is not the fix. Omberg's tiny roof lips/seams were also
+replaced by continuous textured roof planes. This is a modelling simplification,
+not evidence that shadows caused the original brightness.
+
 ## Arborist birch colour and dark leaves, 2026-10-12
 
 Verified visually in Arborist on Vreta, not in GSPro. The library's

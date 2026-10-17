@@ -105,6 +105,36 @@ and `sort_order` still orders paths among themselves. `pipeline/gspro.py` mirror
 writes them to a `Roads` SVG layer after the holes, so it is topmost in Inkscape and Blender
 never cuts anything into a road.
 
+**D30. Named drawing groups have independent placement (2026-10-17).** The
+group's stable internal hole number names its SVG/meshes, never its layer
+position. `drawing_group_after` places it in a gap between playable holes
+(0 below all, NULL above all), and `drawing_group_order` orders peers within
+that gap. `drawScopeRanks` inserts those groups into distinct integer ranks
+while retaining 4096 slots per scope. Roughs remains bottom, course-level
+above all scopes, roads on top. The server GeoJSON and live web rendering
+share these ranks; the pipeline mirrors them and retains OPCD's descending
+layer-document convention. Draw on includes Roughs and accepts only rough
+surface types there, like Selection's existing move operation.
+
+**D31. One layer list, including playable holes (2026-10-17; replaces D30's
+gap-based UI).** Select a layer, Move up or Move down. A course's first move
+records `holes.drawing_stack_order` for all its holes and named groups;
+`drawScopeRanks` and the pipeline prefer those integers over D30's legacy
+placement fields. Hole numbering and mesh identity stay unchanged. Roughs
+and course-level scopes remain fixed at the ends; roads retain D29's
+rendering rule. The list lives in an optional **Edit layer order** mode with
+its own selection. Opening it, selecting or moving layers and returning to
+contents preserves Draw's target, the Scope filter and selected features.
+The default panel keeps its feature rows and Draw on / Scope selectors.
+
+**D32. Surround insertion (2026-10-17).** `Surround with` inserts directly below
+the source, overriding D26's type default. Each outward Shift-chain ring
+goes below the previous ring. Merging stays within a stack scope (including
+Roughs); a merged outline goes below its lowest contributing source, while
+disjoint outlines go below their own sources. Undo/redo restores this
+placement. Create accepts an optional `sortOrder` insertion position; batch
+responses report final positions after all insertions.
+
 **D33. Roads ranked by surface (amends D29; 2026-10-17).** Among the roads the
 surface decides which one paints on top, not the drawing order: asphalt >
 concrete > paving > wood > gravel (a gravel track is gravel) > dirt > grass >

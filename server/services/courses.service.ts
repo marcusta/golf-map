@@ -140,17 +140,21 @@ export class CoursesService {
                     .selectFrom('holes')
                     .select((eb2) => eb2.fn.countAll().as('count'))
                     .whereRef('holes.course_id', '=', 'courses.id')
+                    .where('holes.drawing_group_name', 'is', null)
                     .as('hole_count'),
                 (eb) => eb
                     .selectFrom('holes')
                     .select((eb2) => eb2.fn.coalesce(eb2.fn.sum('holes.par'), eb2.val(0)).as('sum'))
                     .whereRef('holes.course_id', '=', 'courses.id')
+                    .where('holes.drawing_group_name', 'is', null)
                     .as('par_total'),
                 (eb) => eb
                     .selectFrom('course_features')
+                    .innerJoin('holes', 'holes.id', 'course_features.hole_id')
                     .select((eb2) => eb2.fn.count('course_features.hole_id').distinct().as('count'))
                     .whereRef('course_features.course_id', '=', 'courses.id')
                     .where('course_features.hole_id', 'is not', null)
+                    .where('holes.drawing_group_name', 'is', null)
                     .as('mapped_hole_count'),
             ])
             .orderBy('courses.name');
@@ -175,6 +179,7 @@ export class CoursesService {
             .selectFrom('holes')
             .select(['id', 'course_id', 'number'])
             .where('course_id', 'in', courseIds)
+            .where('drawing_group_name', 'is', null)
             .orderBy('course_id')
             .orderBy('number')
             .execute();

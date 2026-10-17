@@ -439,6 +439,14 @@ export class GsproSyncService {
         if (types.length > 0) parts.push(await this.history.countChangesSince(ctx.courseId, since, types));
 
         switch (target) {
+            case 'shapes': {
+                const layers = await this.db.selectFrom('holes').select(eb => eb.fn.countAll<number>().as('n'))
+                    .where('course_id', '=', ctx.courseId).where('updated_at', '>', sqlStamp(since))
+                    .where(eb => eb.or([eb('drawing_stack_order', 'is not', null), eb('drawing_group_name', 'is not', null)]))
+                    .executeTakeFirst();
+                parts.push(named({ count: Number(layers?.n ?? 0), kinds: [] }, 'layers'));
+                break;
+            }
             case 'terrain': {
                 if (ctx.siteId) {
                     // Every op but `recipe` changes the DEM; a recipe shapes the Blender meshes (the Meshes row).
@@ -515,18 +523,23 @@ export class GsproSyncService {
     private async courseFileChanges(courseId: string, since: string): Promise<ChangeCount> {
         const at = sqlStamp(since);
         const holes = await this.db.selectFrom('holes').select(eb => eb.fn.countAll<number>().as('n'))
+            .where('drawing_group_name', 'is', null)
             .where('course_id', '=', courseId).where('updated_at', '>', at).executeTakeFirst();
         const tees = await this.db.selectFrom('tees').innerJoin('holes', 'holes.id', 'tees.hole_id')
+            .where('holes.drawing_group_name', 'is', null)
             .select(eb => eb.fn.countAll<number>().as('n'))
             .where('holes.course_id', '=', courseId).where('tees.updated_at', '>', at).executeTakeFirst();
         const greens = await this.db.selectFrom('greens').innerJoin('holes', 'holes.id', 'greens.hole_id')
+            .where('holes.drawing_group_name', 'is', null)
             .select(eb => eb.fn.countAll<number>().as('n'))
             .where('holes.course_id', '=', courseId).where('greens.updated_at', '>', at).executeTakeFirst();
         const pins = await this.db.selectFrom('pins').innerJoin('greens', 'greens.id', 'pins.green_id')
             .innerJoin('holes', 'holes.id', 'greens.hole_id')
+            .where('holes.drawing_group_name', 'is', null)
             .select(eb => eb.fn.countAll<number>().as('n'))
             .where('holes.course_id', '=', courseId).where('pins.updated_at', '>', at).executeTakeFirst();
         const aims = await this.db.selectFrom('aim_points').innerJoin('holes', 'holes.id', 'aim_points.hole_id')
+            .where('holes.drawing_group_name', 'is', null)
             .select(eb => eb.fn.countAll<number>().as('n'))
             .where('holes.course_id', '=', courseId).where('aim_points.updated_at', '>', at).executeTakeFirst();
         const sets = await this.db.selectFrom('course_tee_sets').select(eb => eb.fn.countAll<number>().as('n'))

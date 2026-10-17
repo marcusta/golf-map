@@ -467,6 +467,30 @@ describe('CourseFeaturesService.remove', () => {
 });
 
 describe('CourseFeaturesService batch endpoints (createMany / updateMany / removeMany)', () => {
+    test('explicit insertions override type defaults and batch replies carry final stack slots', async () => {
+        const { db } = await createTestDb(seedCourse);
+        try {
+            const svc = new CourseFeaturesService(db);
+            const green = await svc.create({ courseId: TEST_COURSE_ID, type: 'green', geometry: squareGeometry() });
+            const rough = await svc.create({ courseId: TEST_COURSE_ID, type: 'rough', geometry: squareGeometry(50) });
+            await svc.reorder(TEST_COURSE_ID, null, [green.id, rough.id]);
+            const rings = await svc.createMany(TEST_COURSE_ID, [
+                { type: 'fairway', sortOrder: 0, geometry: squareGeometry(0, 0, 6) },
+                { type: 'semi_rough', sortOrder: 0, geometry: squareGeometry(0, 0, 7) },
+            ]);
+            expect(rings.map(f => f.sortOrder)).toEqual([1, 0]);
+            const stack = (await svc.listByCourse(TEST_COURSE_ID)).filter(f => f.holeId === null);
+            expect(stack.map(f => f.type)).toEqual(['semi_rough', 'fairway', 'green', 'rough']);
+            expect(stack.map(f => f.sortOrder)).toEqual([0, 1, 2, 3]);
+            for (const sortOrder of [-1, 0.5, NaN]) {
+                await expect(svc.create({ courseId: TEST_COURSE_ID, type: 'rough', sortOrder, geometry: squareGeometry() }))
+                    .rejects.toBeInstanceOf(InvalidFeatureError);
+            }
+        } finally {
+            await db.destroy();
+        }
+    });
+
     async function threeGreens(svc: CourseFeaturesService) {
         return svc.createMany(TEST_COURSE_ID, [
             { holeId: TEST_HOLE_1_ID, type: 'green', geometry: squareGeometry(0, 0) },
@@ -1668,6 +1692,7 @@ describe('CourseFeaturesService — centerline paths', () => {
         await expect(bad({ points: [{ x: X, y: Y }, { x: Number.NaN, y: Y }], widthM: 3 })).rejects.toThrow(InvalidFeatureError);
         await expect(bad({ points: [{ x: X, y: Y }, { x: X + 5, y: Y }], widthM: 3, endCap: { shape: 'rounded', rounding: 2 } })).rejects.toThrow(InvalidFeatureError);
     });
+
     test('the end shapes are kept on the line and shape the rings', async () => {
         const { db } = await createTestDb(seedCourse);
         const svc = new CourseFeaturesService(db);

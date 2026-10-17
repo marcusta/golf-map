@@ -126,6 +126,36 @@ Contents (`src/vegetation/vegetation-stems.ts`): 400 x 400 m ground with a gener
 - Regenerate the tree textures: `bun scripts/gen-tree-textures.ts` (writes `public/trees/`; `--only <name>` for one atlas). The impostor atlas is baked at runtime from those textures.
 - The map layer accepts `?treeLod=<fullM>[,<halfM>]` on the planner URL in dev builds to pull the LOD bands in; `e2e/tests/30-individual-trees.spec.ts` uses it on SwiftShader. `e2e/tests/31-vegetation-scene.spec.ts` cycles the presets and writes screenshots to `docs/validation/vegetation/`.
 
+## Closing shapes and drawing groups
+
+Polygon drafts close within 24 screen pixels of their first node; hovering
+inside that radius snaps the preview to the start and enlarges the node.
+Alt/Option-click places the final point and closes (at least three points);
+Shift+Alt-click keeps that final point sharp. Enter still closes without adding
+a point, and paths keep their open-centerline gestures.
+
+Feature stack normally shows **Draw on**, the **Scope** filter and the
+scope's feature rows. **Edit layer order…** opens a separate mode with one
+**Layers · top to bottom** list: course level, every playable hole and named
+drawing group, then Roughs. Select a layer and
+use **Move up / Move down**; the same buttons move groups across holes and
+reorder playable-hole layers. Course level stays fixed at the top of these
+scopes and Roughs stays fixed at the bottom. Hole numbers and SVG/mesh names
+never change when a layer moves. The order saves immediately and is kept
+after reload; the GSPro Shapes row becomes stale for a layer-order change.
+
+The order editor has its own selection: changing it preserves the draw
+target, content filter and selected shapes. **Done · back to contents**
+returns to the same feature list. Selecting a shape on the map follows its
+layer in the content filter. Selecting Roughs in **Draw on**
+chooses Rough when the current type cannot live there; other rough types
+stay as chosen. Choosing a non-rough type later returns to course level.
+Expand **Drawing groups (SVG only)** to add a named group or rename/delete
+the group shown by **Scope**. Delete is disabled while it holds shapes.
+Groups are not playable holes and never enter their sidebar or par/counts;
+their shapes export to SVG, but never to GreenKeeper's GKD (including water,
+penalty areas and OOB).
+
 ## Power lines in Draw
 
 `power_line` ("Power line"; `shared/features/power-line.ts`) is a Draw-mode line type: pick it in the type panel, press the path button (it stays a power line, as Creek stays a creek), click one point per pole, Enter. It is a centerline feature with an 8 m corridor (`DEFAULT_POWER_LINE_WIDTH_M`), violet on the map. It is no surface: not in the surface stack (`OVERLAY_TYPES`), the lie map or the SVG. The GSPro trees export leaves out every survey stem inside the corridor (docs/gspro/export.md, `trees`); the points are where Unity's `golfmap.powerlines.build` stands its pole structures (unity/README.md "Power lines").

@@ -73,6 +73,7 @@ import argparse
 import contextlib
 import copy as copy_mod
 import io
+import html
 import json
 import math
 import os
@@ -1741,8 +1742,22 @@ def _group_rank_sql(conn: sqlite3.Connection) -> str:
     has_layer = any(r[1] == "layer" for r in conn.execute("PRAGMA table_info(course_features)"))
     roads = ", ".join(f"'{t}'" for t in ROADS_TYPES)
     roughs = f"WHEN f.layer = '{ROUGHS_LAYER}' THEN 0 " if has_layer else ""
+    rank = "h.number"
+    if _has_column(conn, 'holes', 'drawing_group_after'):
+        # Same integer ranks as shared/render/stack-key.ts drawScopeRanks:
+        # insert groups above the chosen hole; internal numbers stay stable.
+        after = "COALESCE(h.drawing_group_after, 98)"
+        other = "COALESCE(dg.drawing_group_after, 98)"
+        group_order = "COALESCE(h.drawing_group_order, h.number)" if _has_column(conn, 'holes', 'drawing_group_order') else 'h.number'
+        other_order = "COALESCE(dg.drawing_group_order, dg.number)" if _has_column(conn, 'holes', 'drawing_group_order') else 'dg.number'
+        count = ("SELECT COUNT(*) FROM holes dg WHERE dg.course_id = h.course_id "
+                 "AND dg.drawing_group_name IS NOT NULL AND ")
+        rank = (f"CASE WHEN h.drawing_group_name IS NULL THEN h.number + ({count}{other} < h.number) "
+                f"ELSE {after} + ({count}({other}, {other_order}, dg.number) <= ({after}, {group_order}, h.number)) END")
+    if _has_column(conn, 'holes', 'drawing_stack_order'):
+        rank = f"COALESCE(h.drawing_stack_order, {rank})"
     return (f"CASE WHEN f.type IN ({roads}) THEN {ROADS_GROUP_RANK} {roughs}"
-            f"ELSE COALESCE(h.number, {COURSE_GROUP_RANK}) END")
+            f"ELSE COALESCE({rank}, {COURSE_GROUP_RANK}) END")
 
 
 def _load_course_features(db_path: Path, course_ident: str, stack: str) -> tuple[sqlite3.Row, list[sqlite3.Row]]:
@@ -1776,11 +1791,12 @@ def _load_course_features_now(db_path: Path, course_ident: str,
     created = "f.created_at" if "created_at" in cols else "NULL"
     number = "f.feature_no" if "feature_no" in cols else "NULL"
     generated = "f.generated" if "generated" in cols else "0"
+    group_name = "h.drawing_group_name" if _has_column(conn, "holes", "drawing_group_name") else "NULL"
     rows = conn.execute(
         f"""SELECT f.id, f.type, f.geometry_json, f.sort_order, h.number AS hole_number,
                    {rank} AS group_rank, {source} AS source, {source_ref} AS source_ref,
                    {attributes} AS attributes_json, {created} AS created_at,
-                   {number} AS feature_no, {generated} AS generated
+                   {number} AS feature_no, {generated} AS generated, {group_name} AS drawing_group_name
            FROM course_features f LEFT JOIN holes h ON h.id = f.hole_id
            WHERE f.course_id = ?
            ORDER BY group_rank, f.sort_order, f.id""",
@@ -3329,7 +3345,9 @@ def cmd_svg(bbox, out: Path, db_path: Path, course_ident: str,
     # Document order matches the OPCD files: the off-hole layer at the bottom,
     # then the holes descending so Hole1 ends up topmost in Inkscape, and the
     # roads over everything.
-    order = sorted((k for k in layers if k.startswith("Hole")), key=lambda k: -int(k[4:]))
+    layer_ranks = {f"Hole{r['hole_number']}": r['group_rank'] for r in rows
+                   if r['hole_number'] is not None and r['type'] not in ROADS_TYPES}
+    order = sorted((k for k in layers if k.startswith("Hole")), key=lambda k: -layer_ranks[k])
     if COURSE_WIDE_LAYER in layers:
         order.insert(0, COURSE_WIDE_LAYER)
     if ROADS_LAYER in layers:
@@ -3348,7 +3366,13 @@ def cmd_svg(bbox, out: Path, db_path: Path, course_ident: str,
         f' the same square `gspro ortho` and `gspro hillshade` render.</desc>',
     ]
     for i, layer in enumerate(order, start=1):
-        lines.append(f'  <g inkscape:groupmode="layer" id="layer{i}" inkscape:label="{layer}">')
+        # Keep OPCD's Hole<N> label: it drives mesh construction. The human
+        # name is metadata, so renaming a group never renames its meshes.
+        group_name = next((r["drawing_group_name"] for r in rows
+                           if r["hole_number"] is not None and f"Hole{r['hole_number']}" == layer
+                           and r["drawing_group_name"]), None)
+        group_attr = f' data-group-name="{html.escape(group_name, quote=True)}"' if group_name else ''
+        lines.append(f'  <g inkscape:groupmode="layer" id="layer{i}" inkscape:label="{layer}"{group_attr}>')
         lines.extend(layers[layer])
         lines.append("  </g>")
     lines.append("</svg>")
@@ -5770,8 +5794,9 @@ def _load_gkd_course(db_path: Path, course_ident: str) -> tuple[sqlite3.Row, lis
     index, tees, green centre, pins and aim points — still in WGS84."""
     conn = _open_course_db(db_path)
     course = _resolve_course(conn, course_ident)
+    playable = " AND drawing_group_name IS NULL" if _has_column(conn, "holes", "drawing_group_name") else ""
     holes = [dict(r) for r in conn.execute(
-        "SELECT id, number, par, stroke_index FROM holes WHERE course_id = ? ORDER BY number",
+        f"SELECT id, number, par, stroke_index FROM holes WHERE course_id = ?{playable} ORDER BY number",
         (course["id"],))]
     # A tee's GKD tee set is its course tee set's (`_gkd_set_tee_type`); a
     # database from before the sets had one gives every tee no set.
@@ -5864,10 +5889,11 @@ def _load_gkd_outlines(db_path: Path, course_ident: str) -> list[sqlite3.Row]:
     conn = _open_course_db(db_path)
     course = _resolve_course(conn, course_ident)
     types = (*GKD_HAZARD_TYPES, GKD_OOB_TYPE)
+    playable = " AND h.drawing_group_name IS NULL" if _has_column(conn, "holes", "drawing_group_name") else ""
     rows = conn.execute(
         f"""SELECT f.id, f.type, f.geometry_json, h.number AS hole_number
             FROM course_features f LEFT JOIN holes h ON h.id = f.hole_id
-            WHERE f.course_id = ? AND f.type IN ({','.join('?' * len(types))})
+            WHERE f.course_id = ? AND f.type IN ({','.join('?' * len(types))}){playable}
             ORDER BY h.number, f.sort_order, f.id""",
         (course["id"], *types)).fetchall()
     conn.close()

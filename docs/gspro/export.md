@@ -227,8 +227,16 @@ the next 10 m (`SIDE_STEP_M`) so a hand-typed area is never a decimal-metre terr
 - `svg` — a course's drawn features straight out of `data/app.sqlite` as a layered,
   fill-only SVG for the Inkscape/Blender leg of OPCD. One layer per hole (`Hole1`…, the
   unpadded spelling the course files use), anything not on a hole on `Others` (not the
-  reserved `Hole99` — that changes how Blender cuts); shapes named
-  `hole_<hole>_<number>` (`others_<number>` off-hole), the number being the feature's per-course
+  reserved `Hole99` — that changes how Blender cuts).
+  (Named drawing groups use stable internal `Hole100`… layers, with their
+  human name in `data-group-name`; renaming a group preserves every mesh
+  name. They export as ordinary SVG shapes, but neither these groups nor
+  their water, penalty or OOB shapes enter the GreenKeeper `.GKD`.)
+  The layer list's `drawing_stack_order` orders playable-hole and drawing-group
+  layers independently of their stable Hole number; before the first list move,
+  the legacy `drawing_group_after` / `drawing_group_order` placement is kept.
+  Their layers follow the same descending rank convention as the playable holes.
+  Shapes are named `hole_<hole>_<number>` (`others_<number>` off-hole), the number being the feature's per-course
   `feature_no` in hex (server migration 026: a counter that only goes up, so never reused; 3 hex digits
   cover 4095 shapes; the export panel lists each feature under this name). A feature without one -
   generated rows, or a database from before 026 - takes 5 characters of its id instead (`_shape_ids`;

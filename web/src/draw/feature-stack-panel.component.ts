@@ -1,6 +1,6 @@
 import { Component, Computed, Signal, batch, effect, template, untrack } from '@basics/core/client/core';
 import { t } from '../theme';
-import { s, btn, field, selectedRow, metric } from '../css';
+import { s, btn, field, input, selectedRow, metric } from '../css';
 import { CourseDetailService } from '../course-detail/course-detail.service';
 import { FeaturesService, fillScopeOptions, scopeFromKey, scopeKey, scopeOf } from './features.service';
 import { DrawToolService } from './draw-tool.service';
@@ -67,15 +67,41 @@ function pointCount(f: CourseFeature): number {
 
 const tpl = template(`
     <div class="stack-panel" bind="root" data-testid="stack-panel">
-        <div class="stack-panel__section">
+        <div bind="layerControls" class="stack-panel__section">
+            <button bind="closeLayerOrder" type="button" class="op-btn" data-testid="layer-order-done">Done · back to contents</button>
+            <label class="scope-field">Layers · top to bottom
+                <select bind="layerList" size="8" class="layer-list" data-testid="draw-layers" aria-label="Layers"></select>
+            </label>
+            <div class="drawing-group-ops">
+                <button bind="layerUp" type="button" class="op-btn" data-testid="layer-up">${icon('arrow-up')} Move up</button>
+                <button bind="layerDown" type="button" class="op-btn" data-testid="layer-down">${icon('arrow-down')} Move down</button>
+            </div>
+        </div>
+        <div class="stack-panel__section content-view">
+            <label class="scope-field">Draw on
+                <select bind="drawTarget" data-testid="draw-target-select"></select>
+            </label>
+            <details class="drawing-groups">
+                <summary>Drawing groups (SVG only)</summary>
+                <input bind="groupName" type="text" required maxlength="80" placeholder="Group name" aria-label="Drawing group name" data-testid="drawing-group-name" />
+                <div class="drawing-group-ops">
+                    <button bind="addGroup" type="button" class="op-btn" data-testid="drawing-group-add">Add group</button>
+                    <button bind="renameGroup" type="button" class="op-btn" data-testid="drawing-group-rename">Rename</button>
+                    <button bind="removeGroup" type="button" class="op-btn" data-testid="drawing-group-remove">Delete empty group</button>
+                </div>
+                <div bind="groupError" class="stack-empty show" role="status"></div>
+            </details>
+        </div>
+        <div class="stack-panel__section content-view">
             <label class="scope-field">Scope
                 <select bind="scopeSelect" data-testid="stack-panel-scope"></select>
             </label>
+            <button bind="editLayerOrder" type="button" class="op-btn" data-testid="layer-order-edit">Edit layer order…</button>
             <button bind="roughsToggle" type="button" class="layer-toggle" data-testid="stack-roughs-toggle"></button>
         </div>
-        <div bind="rows" class="stack-rows" data-testid="stack-panel-rows"></div>
-        <div bind="empty" class="stack-empty">No features in this scope.</div>
-        <div bind="reorderOps" class="stack-panel__section reorder-ops">
+        <div bind="rows" class="stack-rows content-view" data-testid="stack-panel-rows"></div>
+        <div bind="empty" class="stack-empty content-view">No features in this scope.</div>
+        <div bind="reorderOps" class="stack-panel__section reorder-ops content-view">
             <button bind="raiseBtn" type="button" class="op-btn" title="Raise (PageUp)">${icon('arrow-up')} Raise</button>
             <button bind="lowerBtn" type="button" class="op-btn" title="Lower (PageDown)">${icon('arrow-down')} Lower</button>
             <button bind="topBtn" type="button" class="op-btn" title="Raise to top (Home)">${icon('arrow-up-to-line')} Top</button>
@@ -154,6 +180,16 @@ export class FeatureStackPanelComponent extends Component {
             }
 
             & .scope-field { ${field()} }
+            & .layer-list {
+                min-height: 12rem;
+                & option { padding: ${s('xs')} ${s('sm')}; }
+            }
+            & .drawing-groups {
+                font-size: 0.75rem;
+                & summary { cursor: pointer; color: ${t('color-text-secondary')}; }
+                & input { ${input()} width: 100%; box-sizing: border-box; margin-top: ${s('sm')}; padding: ${s('sm')} ${s('md')}; font-size: 0.875rem; }
+            }
+            & .drawing-group-ops { display: flex; flex-wrap: wrap; gap: ${s('xs')}; margin-top: ${s('sm')}; }
 
             /* Roughs layer eye: editor-only view state (the planner and the
                GSPro export always include the layer). */
@@ -299,6 +335,8 @@ export class FeatureStackPanelComponent extends Component {
                 ${btn(t('radius-sm'))}
                 &:disabled { opacity: 0.4; cursor: default; }
             }
+            /* Override contextual .show rules while editing the layer order. */
+            &.stack-panel--ordering > .content-view { display: none; }
         }
     `;
 
@@ -316,6 +354,9 @@ export class FeatureStackPanelComponent extends Component {
      */
     private scopeKey = new Signal<string>(scopeKey({ holeId: this.tool.drawHoleId.peek(), layer: null }));
     private scopeUserPinned = false;
+    /** Layer-order editing never changes the content filter, draw target or feature selection. */
+    private layerOrderOpen = new Signal(false);
+    private layerOrderKey = new Signal('');
     private scopeSelect!: HTMLSelectElement;
     private rowsHost!: HTMLElement;
 
@@ -338,9 +379,81 @@ export class FeatureStackPanelComponent extends Component {
     readonly scopeCount = new Signal(0);
 
     render(): DocumentFragment {
+        let groupNameInput: HTMLInputElement;
         const frag = this.wire(tpl, {
+            root: { className: () => this.layerOrderOpen.get() ? 'stack-panel stack-panel--ordering' : 'stack-panel' },
+            layerControls: { style: () => this.layerOrderOpen.get() ? '' : 'display:none' },
+            editLayerOrder: {
+                style: () => this.tool.scope.get() === 'surfaces' ? '' : 'display:none',
+                onclick: () => {
+                    this.layerOrderKey.set(this.scopeKey.peek());
+                    this.layerOrderOpen.set(true);
+                },
+            },
+            closeLayerOrder: { onclick: () => this.layerOrderOpen.set(false) },
+            layerList: {
+                onchange: (e: Event) => this.layerOrderKey.set((e.target as HTMLSelectElement).value),
+            },
+            layerUp: {
+                disabled: () => !this.canMoveLayer(1) || this.courseDetail.loading.get(),
+                onclick: () => this.moveLayer(1),
+            },
+            layerDown: {
+                disabled: () => !this.canMoveLayer(-1) || this.courseDetail.loading.get(),
+                onclick: () => this.moveLayer(-1),
+            },
+            drawTarget: {
+                onchange: (e: Event) => {
+                    const key = (e.target as HTMLSelectElement).value;
+                    this.tool.setDrawScope(scopeFromKey(key));
+                    this.scopeUserPinned = false;
+                    this.scopeKey.set(key);
+                },
+            },
+            addGroup: {
+                disabled: () => this.courseDetail.loading.get(),
+                onclick: async () => {
+                    const input = groupNameInput;
+                    input.value = input.value.trim();
+                    if (!input.reportValidity()) return;
+                    const group = await this.courseDetail.addDrawingGroup(input.value);
+                    if (group) {
+                        this.tool.setDrawScope({ holeId: group.id, layer: null });
+                        this.scopeUserPinned = false;
+                        this.scopeKey.set(group.id);
+                        input.value = group.drawingGroupName ?? '';
+                    }
+                },
+            },
+            renameGroup: {
+                disabled: () => !this.activeDrawingGroup() || this.courseDetail.loading.get(),
+                onclick: () => {
+                    const group = this.activeDrawingGroup();
+                    groupNameInput.value = groupNameInput.value.trim();
+                    if (!groupNameInput.reportValidity()) return;
+                    if (group) void this.courseDetail.renameDrawingGroup(group.id, groupNameInput.value);
+                },
+            },
+            removeGroup: {
+                disabled: () => !this.activeDrawingGroup() || this.groupHasShapes() || this.courseDetail.loading.get(),
+                title: () => this.groupHasShapes() ? 'Move the shapes to another group before deleting this group' : 'Delete this empty drawing group',
+                onclick: async () => {
+                    const group = this.activeDrawingGroup();
+                    if (group && await this.courseDetail.removeDrawingGroup(group.id)) {
+                        if (this.tool.drawHoleId.peek() === group.id) this.tool.setDrawScope({ holeId: null, layer: null });
+                        if (this.scopeKey.peek() === group.id) {
+                            this.scopeUserPinned = false;
+                            this.scopeKey.set('');
+                        }
+                    }
+                },
+            },
+            groupError: {
+                textContent: () => this.courseDetail.error.get()?.message ?? '',
+                className: () => this.courseDetail.error.get() ? 'stack-empty show' : 'stack-empty',
+            },
             empty: {
-                className: () => this.scopeCount.get() === 0 ? 'stack-empty show' : 'stack-empty',
+                className: () => this.scopeCount.get() === 0 ? 'stack-empty content-view show' : 'stack-empty content-view',
             },
             roughsToggle: {
                 onclick: () => this.features.toggleRoughsLayerVisibility(),
@@ -359,8 +472,8 @@ export class FeatureStackPanelComponent extends Component {
             reorderOps: {
                 className: () => this.features.selectedFeatures.get()
                     .some(f => !this.features.modeBackdropTypes.get().has(f.type) && f.type !== 'vegetation_zone')
-                    ? 'stack-panel__section reorder-ops show'
-                    : 'stack-panel__section reorder-ops',
+                    ? 'stack-panel__section reorder-ops content-view show'
+                    : 'stack-panel__section reorder-ops content-view',
             },
             // Reorder is a hand-drawn verb: disabled while any generated
             // (read-only) or backdrop row is in the selection.
@@ -382,6 +495,47 @@ export class FeatureStackPanelComponent extends Component {
             },
         });
 
+        const target = this.ref(frag, 'drawTarget') as HTMLSelectElement;
+        const layerList = this.ref(frag, 'layerList') as HTMLSelectElement;
+        groupNameInput = this.ref(frag, 'groupName') as HTMLInputElement;
+        this.track(effect(() => {
+            if (this.tool.scope.get() !== 'surfaces') this.layerOrderOpen.set(false);
+        }));
+        this.track(effect(() => {
+            const scopes = this.courseDetail.drawScopes.get();
+            const key = this.layerOrderKey.get();
+            untrack(() => {
+                const scroll = layerList.scrollTop;
+                layerList.textContent = '';
+                fillScopeOptions(layerList, scopes);
+                layerList.options[0]!.textContent = 'Course level (fixed top)';
+                layerList.options[layerList.options.length - 1]!.textContent = 'Roughs (fixed bottom)';
+                layerList.value = key;
+                layerList.scrollTop = scroll;
+                if (layerList.isConnected) layerList.selectedOptions[0]?.scrollIntoView({ block: 'nearest' });
+            });
+        }));
+        this.track(effect(() => {
+            const scopes = this.courseDetail.drawScopes.get();
+            const id = this.tool.drawHoleId.get();
+            const layer = this.tool.drawLayer.get();
+            const drawScope = this.tool.scope.get();
+            untrack(() => {
+                target.textContent = '';
+                fillScopeOptions(target, scopes, { roughsDisabled: drawScope !== 'surfaces' });
+                target.value = scopeKey({ holeId: id, layer });
+            });
+        }));
+
+        this.track(effect(() => {
+            const scopes = this.courseDetail.drawScopes.get();
+            const id = scopeFromKey(this.scopeKey.get()).holeId;
+            untrack(() => {
+                const group = scopes.find(h => h.id === id && h.drawingGroupName);
+                groupNameInput.value = group?.drawingGroupName ?? '';
+            });
+        }));
+
         this.scopeSelect = this.ref(frag, 'scopeSelect') as HTMLSelectElement;
         this.scopeSelect.addEventListener('change', () => {
             this.scopeUserPinned = true;
@@ -393,7 +547,7 @@ export class FeatureStackPanelComponent extends Component {
         // panel's move select, this one FILTERS the row list rather than
         // assigning a feature's hole.
         this.track(effect(() => {
-            const holes = this.courseDetail.holes.get();
+            const holes = this.courseDetail.drawScopes.get();
             const vegetation = this.vegetation.get();
             untrack(() => {
                 this.scopeSelect.textContent = '';
@@ -427,7 +581,7 @@ export class FeatureStackPanelComponent extends Component {
                 // Every zone, under a heading per hole (course level first).
                 const groups: [string, string][] = [
                     [scopeKey({ holeId: null, layer: null }), 'No hole (course level)'],
-                    ...this.courseDetail.holes.get().map(h => [h.id, `Hole ${h.number}`] as [string, string]),
+                    ...this.courseDetail.drawScopes.get().map(h => [h.id, h.drawingGroupName ?? `Hole ${h.number}`] as [string, string]),
                 ];
                 next = [];
                 for (const [scope, label] of groups) {
@@ -528,11 +682,12 @@ export class FeatureStackPanelComponent extends Component {
         // that choice, which Draw does not have).
         this.track(effect(() => {
             const drawHoleId = this.tool.drawHoleId.get();
+            const drawLayer = this.tool.drawLayer.get();
             const vegetation = this.vegetation.get();
             untrack(() => {
                 if (!vegetation && this.scopeKey.peek() === ALL_ZONES_KEY) this.scopeUserPinned = false;
                 if (this.scopeUserPinned) return;
-                this.scopeKey.set(vegetation ? ALL_ZONES_KEY : scopeKey({ holeId: drawHoleId, layer: null }));
+                this.scopeKey.set(vegetation ? ALL_ZONES_KEY : scopeKey({ holeId: drawHoleId, layer: drawLayer }));
             });
         }));
 
@@ -565,6 +720,35 @@ export class FeatureStackPanelComponent extends Component {
 
     private selectedIds(): string[] {
         return [...this.features.selectedIds.get()];
+    }
+
+    private activeDrawingGroup() {
+        const id = scopeFromKey(this.scopeKey.get()).holeId;
+        return this.courseDetail.drawingGroups.get().find(h => h.id === id);
+    }
+
+    private groupHasShapes(): boolean {
+        const id = this.activeDrawingGroup()?.id;
+        return id !== undefined && this.features.store.items.get().some(f => f.holeId === id);
+    }
+
+    private movableLayers() {
+        const ranks = this.courseDetail.drawRanks.get();
+        return [...this.courseDetail.drawScopes.get()].sort((a, b) => ranks.get(a.id)! - ranks.get(b.id)!);
+    }
+
+    private canMoveLayer(delta: number): boolean {
+        const peers = this.movableLayers();
+        const index = peers.findIndex(h => h.id === this.layerOrderKey.get());
+        return index >= 0 && index + delta >= 0 && index + delta < peers.length;
+    }
+
+    private moveLayer(delta: number): void {
+        const peers = this.movableLayers();
+        const index = peers.findIndex(h => h.id === this.layerOrderKey.peek());
+        if (!this.canMoveLayer(delta)) return;
+        const before = delta < 0 ? peers[index - 1]!.id : peers[index + 2]?.id ?? null;
+        void this.courseDetail.moveDrawingLayer(peers[index]!.id, before);
     }
 
     private canReorder(): boolean {

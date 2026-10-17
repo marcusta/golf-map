@@ -1,4 +1,4 @@
-import { Signal, Computed, effect, untrack, di } from '@basics/core/client/core';
+import { Signal, Computed, effect, untrack, di, batch } from '@basics/core/client/core';
 import { toolHotRestart, type ToolContext } from '../editor/tool';
 import type { DragBinding } from '../editor/drag-binding';
 import { ownedOverlay } from '../editor/owned-overlay';
@@ -6,10 +6,10 @@ import { canvasCursor } from '../editor/canvas-cursor';
 import { ConfirmService } from '../app/confirm-dialog.component';
 import { ZoneTypesService, zoneTypeKeyOf } from '../zones/zone-types.service';
 import { geometryToWgs84Rings, attributesPatchOf, sameScope, scopeOf, type FeatureAttributesPatch, type FeaturesService, type StackScope } from './features.service';
-import { isRoughsLayerType } from '../../../shared/render/stack-key';
+import { ROUGHS_LAYER, isRoughsLayerType, type FeatureLayer } from '../../../shared/render/stack-key';
 import type { CourseFeature } from '../../../shared/api/course-features.gen';
 import { sweref99tmToWgs84 } from '../geo/transform';
-import type { AnchorPoint, CurveType, FeatureGeometry, Point } from '../geo/bezier';
+import { flattenRing, pointInGeometry, type AnchorPoint, type CurveType, type FeatureGeometry, type Point } from '../geo/bezier';
 import { ScreenPointCache } from './screen-cache';
 import { fitClosedBspline } from '../geo/spline-fit';
 import { PATH_SURFACE_ATTRIBUTE, isPathSurface, type PathSurface } from '../../../shared/features/path-surface';
@@ -171,6 +171,9 @@ const PATH_TRACE_TOLERANCE_M = 0.5;
 export interface SurroundSource {
     type: FeatureType;
     holeId: string | null;
+    layer?: FeatureLayer;
+    /** The source's slot, inherited by each outward ring in a chain. */
+    sortOrder?: number;
     geometry: FeatureGeometry;
 }
 
@@ -180,7 +183,7 @@ export interface SurroundSource {
  * ONE surround (`mergedSurroundGeometries` — union → offset →
  * straight-segment rings; one output per disjoint polygon of the union),
  * lone sources expand via `offset` (default `offsetGeometry`, injectable
- * for tests). `holeId` = the group's common source holeId, else null. With
+ * for tests). Merging stays within each source's stack scope. With
  * `chain` the walk repeats on each level's OUTPUT until the pairings are
  * exhausted (e.g. green → fairway(+0.5) → semi_rough(+1) → rough(+5) →
  * deep_rough(+8)); chain + merge compose because merging happens per ring
@@ -199,17 +202,17 @@ export function planSurrounds(
             .map(s => ({ source: s, pairing: SURROUND_PAIRINGS[s.type] ?? null }))
             .filter((j): j is { source: SurroundSource; pairing: { targetType: FeatureType; expandAmount: number } } => j.pairing !== null);
         if (jobs.length === 0) break;
-        const groups = new Map<FeatureType, typeof jobs>();
+        const groups = new Map<string, typeof jobs>();
         for (const j of jobs) {
-            const group = groups.get(j.pairing.targetType);
+            const key = JSON.stringify([j.pairing.targetType, j.source.holeId, j.source.layer ?? null]);
+            const group = groups.get(key);
             if (group) group.push(j);
-            else groups.set(j.pairing.targetType, [j]);
+            else groups.set(key, [j]);
         }
         const next: SurroundSource[] = [];
-        for (const [targetType, group] of groups) {
-            const holeId = new Set(group.map(j => j.source.holeId)).size === 1
-                ? group[0].source.holeId
-                : null;
+        for (const group of groups.values()) {
+            const targetType = group[0].pairing.targetType;
+            const { holeId, layer } = group[0].source;
             const geometries: FeatureGeometry[] = [];
             if (group.length === 1) {
                 const expanded = offset(group[0].source.geometry, group[0].pairing.expandAmount);
@@ -221,7 +224,15 @@ export function planSurrounds(
                 geometries.push(...mergedSurroundGeometries(group.map(j => j.source.geometry), amount));
             }
             for (const geometry of geometries) {
-                const created = { type: targetType, holeId, geometry };
+                // Disjoint outputs each belong below their own sources. A
+                // merged outline belongs below its lowest contributing source.
+                const contributors = group.length === 1 ? group : group.filter(j =>
+                    flattenRing(j.source.geometry.rings[0], 0.25, j.source.geometry.curveType)
+                        .some(([x, y]) => pointInGeometry({ x, y }, geometry)));
+                const slots = (contributors.length ? contributors : group)
+                    .map(j => j.source.sortOrder).filter((slot): slot is number => slot !== undefined);
+                const sortOrder = slots.length ? Math.min(...slots) : undefined;
+                const created = { type: targetType, holeId, layer, sortOrder, geometry };
                 creates.push(created);
                 next.push(created);
             }
@@ -352,7 +363,7 @@ export class DrawToolService {
      */
     armDraw(): void {
         this.pathMode.set(false);
-        if (this.scope.peek() === 'surfaces' && !this.typeFollowsLast.peek()) this.drawType.set(this.defaultDrawType.peek());
+        if (this.scope.peek() === 'surfaces' && !this.typeFollowsLast.peek() && this.drawLayer.peek() !== ROUGHS_LAYER) this.drawType.set(this.defaultDrawType.peek());
         this.state.arm();
     }
 
@@ -406,6 +417,18 @@ export class DrawToolService {
 
     /** Hole assignment for the next created polygon (null = course level). */
     readonly drawHoleId = new Signal<string | null>(null);
+    readonly drawLayer = new Signal<FeatureLayer>(null);
+
+    /** Roughs accepts rough surfaces only. Selecting it chooses Rough when
+     * needed; choosing a non-rough type later returns to course level. */
+    setDrawScope(scope: StackScope): void {
+        batch(() => {
+            if (scope.layer === ROUGHS_LAYER && !isRoughsLayerType(this.drawType.peek())) this.drawType.set('rough');
+            this.drawHoleId.set(scope.layer === ROUGHS_LAYER ? null : scope.holeId);
+            this.drawLayer.set(scope.layer);
+            if (scope.layer === ROUGHS_LAYER) this.pathMode.set(false);
+        });
+    }
     /**
      * Vertex under the cursor on the selected feature (select mode) — the
      * target for the 'C' smooth↔corner toggle. Sticky until the cursor
@@ -597,6 +620,15 @@ export class DrawToolService {
         // QA hook (same pattern as MapService's window.__map): expose the
         // instance for scripted/visual verification tooling. Not public API.
         (window as unknown as Record<string, unknown>).__drawTool = this;
+
+        ctx.track(effect(() => {
+            const layer = this.drawLayer.get();
+            const type = this.drawType.get();
+            const activeScope = this.scope.get();
+            if (layer === ROUGHS_LAYER && (activeScope !== 'surfaces' || !isRoughsLayerType(type))) {
+                untrack(() => this.drawLayer.set(null));
+            }
+        }));
 
         const host = this.host;
         // Map click/move, raw mousedown/up (drags, marquee), dblclick and
@@ -856,6 +888,7 @@ export class DrawToolService {
         void features.create({
             type,
             holeId: this.drawHoleId.peek(),
+            layer: this.drawLayer.peek(),
             geometry: { crs: 'EPSG:3006', curveType, rings: [ring] },
             ...this.newShapeAttributes(type),
         }).then(created => {
@@ -922,6 +955,7 @@ export class DrawToolService {
         void this.features.create({
             type,
             holeId: this.drawHoleId.peek(),
+            layer: this.drawLayer.peek(),
             geometry,
             ...this.newShapeAttributes(type),
         }).then(created => {
@@ -1093,8 +1127,8 @@ export class DrawToolService {
 
     /**
      * Auto-surround (T41): insert the surround feature(s) golf implies for
-     * the selection (the fixed type z-order renders them behind the
-     * sources). Plain click = one level of SURROUND_PAIRINGS; Shift
+     * the selection, directly below the sources in their stack. Plain
+     * click = one level of SURROUND_PAIRINGS; Shift
      * (`chain`) walks the pairings to exhaustion (green → fairway →
      * semi_rough → rough → deep_rough), each ring offset from the PREVIOUS
      * ring. Selected features sharing a target type union into ONE merged
@@ -1108,6 +1142,8 @@ export class DrawToolService {
         const sources: SurroundSource[] = items.map(f => ({
             type: f.type as FeatureType,
             holeId: f.holeId,
+            layer: f.layer ?? null,
+            sortOrder: f.sortOrder,
             geometry: f.geometry,
         }));
         const plan = planSurrounds(sources, chain);
@@ -1119,9 +1155,26 @@ export class DrawToolService {
         }
         this.actionNotice.set(null);
         // One createMany request; it selects the new rings in the same batch.
-        const created = await features.createMany(plan);
+        const created = await features.createMany(plan.map((ring, index) => ({
+            ...ring,
+            // Earlier insertions below this source move its slot up. Equal
+            // slots stay put: the next outward ring belongs below the last.
+            sortOrder: ring.sortOrder! + plan.slice(0, index).filter(previous =>
+                sameScope(scopeOf(previous), scopeOf(ring)) && previous.sortOrder! < ring.sortOrder!).length,
+        })));
         if (!created) return; // save failed — history dropped via saveError watcher
-        this.record(created.map(c => ({ featureId: c.id, before: null, after: snapshotOf(c), beforeVersion: null })));
+        const createdIds = new Set(created.map(c => c.id));
+        this.record(created.map(c => ({
+            featureId: c.id,
+            before: null,
+            after: {
+                ...snapshotOf(c),
+                sortOrder: c.sortOrder,
+                insertBeforeId: features.stackFor(scopeOf(c))
+                    .find(f => f.sortOrder > c.sortOrder && !createdIds.has(f.id))?.id,
+            },
+            beforeVersion: null,
+        })));
     }
 
     /**

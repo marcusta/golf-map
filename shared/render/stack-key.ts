@@ -1,6 +1,6 @@
 // D28 global composition order (amends D24 — see
 // docs/decisions-feature-stack-2026-07-08.md): the Roughs group at the
-// BOTTOM, then hole groups by ascending hole number, then the course-level
+// BOTTOM, then playable holes with named groups inserted between them (D30), then the course-level
 // group, then the roads on TOP, ranked by surface (D33); each group
 // internally by `sort_order`.
 //
@@ -62,14 +62,42 @@ export function roadSurfaceTier(attributes: object | null | undefined): number {
     return index === -1 ? 0 : ROAD_SURFACE_RANK.length - index;
 }
 
-/** Rank of a feature's group: Roughs 0, a hole its number, course-level above the holes, roads on top (by surface, D33). */
-export function stackGroupRank(layer: string | null | undefined, holeNumber: number | null | undefined, type: string, attributes?: object | null): number {
+export interface DrawScopeOrder {
+    id: string;
+    number: number;
+    drawingGroupName?: string | null;
+    drawingGroupAfter?: number | null;
+    drawingGroupOrder?: number | null;
+    drawingStackOrder?: number | null;
+}
+
+/** Insert named groups between holes without changing hole/mesh numbers.
+ * Each scope has an integer rank, leaving its full 4096 feature slots free.
+ * Mirrored by pipeline/gspro.py's _group_rank_sql. */
+export function drawScopeRanks(scopes: readonly DrawScopeOrder[]): Map<string, number> {
+    const groups = scopes.filter(h => h.drawingGroupName)
+        .sort((a, b) => (a.drawingGroupAfter ?? 98) - (b.drawingGroupAfter ?? 98)
+            || (a.drawingGroupOrder ?? a.number) - (b.drawingGroupOrder ?? b.number) || a.number - b.number);
+    const ranks = new Map<string, number>();
+    for (const hole of scopes) {
+        if (!hole.drawingGroupName) ranks.set(hole.id, hole.number + groups.filter(g => (g.drawingGroupAfter ?? 98) < hole.number).length);
+    }
+    groups.forEach((group, i) => ranks.set(group.id, (group.drawingGroupAfter ?? 98) + i + 1));
+    for (const scope of scopes) if (scope.drawingStackOrder != null) ranks.set(scope.id, scope.drawingStackOrder);
+    return ranks;
+}
+
+/** Rank of a feature's group: Roughs 0, a hole/group's drawScopeRanks value,
+ * course-level above every scope, roads on top (by surface, D33). Without
+ * drawing groups a playable hole's rank is its number, preserving the
+ * original keys. */
+export function stackGroupRank(layer: string | null | undefined, scopeRank: number | null | undefined, type: string, attributes?: object | null): number {
     if (ROADS_TYPES.includes(type)) return ROADS_GROUP_RANK + roadSurfaceTier(attributes);
     if (layer === ROUGHS_LAYER) return 0;
-    return holeNumber ?? COURSE_GROUP_RANK;
+    return scopeRank ?? COURSE_GROUP_RANK;
 }
 
 /** Global paint/hit/lie key: higher = on top. `attributes` carries a road's surface. */
-export function stackKey(layer: string | null | undefined, holeNumber: number | null | undefined, sortOrder: number, type: string, attributes?: object | null): number {
-    return stackGroupRank(layer, holeNumber, type, attributes) * STACK_GROUP_SPAN + sortOrder;
+export function stackKey(layer: string | null | undefined, scopeRank: number | null | undefined, sortOrder: number, type: string, attributes?: object | null): number {
+    return stackGroupRank(layer, scopeRank, type, attributes) * STACK_GROUP_SPAN + sortOrder;
 }

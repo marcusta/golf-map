@@ -81,6 +81,10 @@ export interface HolesTable {
     course_id: string;
     number: number;
     par: number;
+    drawing_group_name: Generated<string | null>;
+    drawing_group_after: Generated<number | null>;
+    drawing_group_order: Generated<number | null>;
+    drawing_stack_order: Generated<number | null>;
     stroke_index: number | null; // handicap/SI 1–18 (nullable — blank allowed)
     notes: string | null;
     saved_region_json: string | null; // v1 per-hole map region (nullable)

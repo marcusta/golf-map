@@ -88,6 +88,7 @@ const GeojsonByCourseInput = Type.Object({
 
 const CreateFeatureInput = Type.Object({
     courseId: Type.String(),
+    sortOrder: Type.Optional(Type.Integer({ minimum: 0 })),
     holeId: Type.Optional(Type.Union([Type.String(), Type.Null()])),
     layer: Type.Optional(FeatureLayerSchema),
     type: Type.String(),
@@ -180,6 +181,7 @@ export function createCourseFeaturesApi(svc: CourseFeaturesService) {
             fn: (input: Static<typeof CreateFeatureInput>) =>
                 svc.create({
                     courseId: input.courseId,
+                    sortOrder: input.sortOrder,
                     holeId: input.holeId,
                     layer: input.layer,
                     type: input.type,

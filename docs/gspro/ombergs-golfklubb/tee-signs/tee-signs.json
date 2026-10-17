@@ -1,0 +1,2228 @@
+{
+ "format": "golfmap-props-spec-v1",
+ "course": "ombergs-golfklubb",
+ "materials": {
+  "tee_plank_back": {
+   "image": "../../../../data/props/317d1f83-3ade-431c-8201-605ac0bd2871/tee-signs/plank_back.png",
+   "smoothness": 0.45
+  },
+  "tee_post_wood": {
+   "image": "../../../../data/props/317d1f83-3ade-431c-8201-605ac0bd2871/tee-signs/post_wood.png",
+   "smoothness": 0.35
+  },
+  "tee_sign_face_01_white": {
+   "image": "../../../../data/props/317d1f83-3ade-431c-8201-605ac0bd2871/tee-signs/tee_sign_01_white.png",
+   "smoothness": 0.45
+  },
+  "tee_sign_face_01_yellow_blue": {
+   "image": "../../../../data/props/317d1f83-3ade-431c-8201-605ac0bd2871/tee-signs/tee_sign_01_yellow_blue.png",
+   "smoothness": 0.45
+  },
+  "tee_sign_face_01_red": {
+   "image": "../../../../data/props/317d1f83-3ade-431c-8201-605ac0bd2871/tee-signs/tee_sign_01_red.png",
+   "smoothness": 0.45
+  },
+  "tee_sign_face_02_white": {
+   "image": "../../../../data/props/317d1f83-3ade-431c-8201-605ac0bd2871/tee-signs/tee_sign_02_white.png",
+   "smoothness": 0.45
+  },
+  "tee_sign_face_02_yellow_blue": {
+   "image": "../../../../data/props/317d1f83-3ade-431c-8201-605ac0bd2871/tee-signs/tee_sign_02_yellow_blue.png",
+   "smoothness": 0.45
+  },
+  "tee_sign_face_02_red": {
+   "image": "../../../../data/props/317d1f83-3ade-431c-8201-605ac0bd2871/tee-signs/tee_sign_02_red.png",
+   "smoothness": 0.45
+  },
+  "tee_sign_face_03_white": {
+   "image": "../../../../data/props/317d1f83-3ade-431c-8201-605ac0bd2871/tee-signs/tee_sign_03_white.png",
+   "smoothness": 0.45
+  },
+  "tee_sign_face_03_yellow": {
+   "image": "../../../../data/props/317d1f83-3ade-431c-8201-605ac0bd2871/tee-signs/tee_sign_03_yellow.png",
+   "smoothness": 0.45
+  },
+  "tee_sign_face_03_blue_red": {
+   "image": "../../../../data/props/317d1f83-3ade-431c-8201-605ac0bd2871/tee-signs/tee_sign_03_blue_red.png",
+   "smoothness": 0.45
+  },
+  "tee_sign_face_04_white": {
+   "image": "../../../../data/props/317d1f83-3ade-431c-8201-605ac0bd2871/tee-signs/tee_sign_04_white.png",
+   "smoothness": 0.45
+  },
+  "tee_sign_face_04_yellow_blue": {
+   "image": "../../../../data/props/317d1f83-3ade-431c-8201-605ac0bd2871/tee-signs/tee_sign_04_yellow_blue.png",
+   "smoothness": 0.45
+  },
+  "tee_sign_face_04_red": {
+   "image": "../../../../data/props/317d1f83-3ade-431c-8201-605ac0bd2871/tee-signs/tee_sign_04_red.png",
+   "smoothness": 0.45
+  },
+  "tee_sign_face_05_white_yellow": {
+   "image": "../../../../data/props/317d1f83-3ade-431c-8201-605ac0bd2871/tee-signs/tee_sign_05_white_yellow.png",
+   "smoothness": 0.45
+  },
+  "tee_sign_face_05_blue": {
+   "image": "../../../../data/props/317d1f83-3ade-431c-8201-605ac0bd2871/tee-signs/tee_sign_05_blue.png",
+   "smoothness": 0.45
+  },
+  "tee_sign_face_05_red": {
+   "image": "../../../../data/props/317d1f83-3ade-431c-8201-605ac0bd2871/tee-signs/tee_sign_05_red.png",
+   "smoothness": 0.45
+  },
+  "tee_sign_face_06_white": {
+   "image": "../../../../data/props/317d1f83-3ade-431c-8201-605ac0bd2871/tee-signs/tee_sign_06_white.png",
+   "smoothness": 0.45
+  },
+  "tee_sign_face_06_yellow": {
+   "image": "../../../../data/props/317d1f83-3ade-431c-8201-605ac0bd2871/tee-signs/tee_sign_06_yellow.png",
+   "smoothness": 0.45
+  },
+  "tee_sign_face_06_blue_red": {
+   "image": "../../../../data/props/317d1f83-3ade-431c-8201-605ac0bd2871/tee-signs/tee_sign_06_blue_red.png",
+   "smoothness": 0.45
+  },
+  "tee_sign_face_07_white": {
+   "image": "../../../../data/props/317d1f83-3ade-431c-8201-605ac0bd2871/tee-signs/tee_sign_07_white.png",
+   "smoothness": 0.45
+  },
+  "tee_sign_face_07_yellow": {
+   "image": "../../../../data/props/317d1f83-3ade-431c-8201-605ac0bd2871/tee-signs/tee_sign_07_yellow.png",
+   "smoothness": 0.45
+  },
+  "tee_sign_face_07_blue_red": {
+   "image": "../../../../data/props/317d1f83-3ade-431c-8201-605ac0bd2871/tee-signs/tee_sign_07_blue_red.png",
+   "smoothness": 0.45
+  },
+  "tee_sign_face_08_white": {
+   "image": "../../../../data/props/317d1f83-3ade-431c-8201-605ac0bd2871/tee-signs/tee_sign_08_white.png",
+   "smoothness": 0.45
+  },
+  "tee_sign_face_08_yellow": {
+   "image": "../../../../data/props/317d1f83-3ade-431c-8201-605ac0bd2871/tee-signs/tee_sign_08_yellow.png",
+   "smoothness": 0.45
+  },
+  "tee_sign_face_08_blue_red": {
+   "image": "../../../../data/props/317d1f83-3ade-431c-8201-605ac0bd2871/tee-signs/tee_sign_08_blue_red.png",
+   "smoothness": 0.45
+  },
+  "tee_sign_face_09_white": {
+   "image": "../../../../data/props/317d1f83-3ade-431c-8201-605ac0bd2871/tee-signs/tee_sign_09_white.png",
+   "smoothness": 0.45
+  },
+  "tee_sign_face_09_yellow_blue": {
+   "image": "../../../../data/props/317d1f83-3ade-431c-8201-605ac0bd2871/tee-signs/tee_sign_09_yellow_blue.png",
+   "smoothness": 0.45
+  },
+  "tee_sign_face_09_red": {
+   "image": "../../../../data/props/317d1f83-3ade-431c-8201-605ac0bd2871/tee-signs/tee_sign_09_red.png",
+   "smoothness": 0.45
+  },
+  "tee_sign_face_10_white_yellow": {
+   "image": "../../../../data/props/317d1f83-3ade-431c-8201-605ac0bd2871/tee-signs/tee_sign_10_white_yellow.png",
+   "smoothness": 0.45
+  },
+  "tee_sign_face_10_blue": {
+   "image": "../../../../data/props/317d1f83-3ade-431c-8201-605ac0bd2871/tee-signs/tee_sign_10_blue.png",
+   "smoothness": 0.45
+  },
+  "tee_sign_face_10_red": {
+   "image": "../../../../data/props/317d1f83-3ade-431c-8201-605ac0bd2871/tee-signs/tee_sign_10_red.png",
+   "smoothness": 0.45
+  },
+  "tee_sign_face_11_white": {
+   "image": "../../../../data/props/317d1f83-3ade-431c-8201-605ac0bd2871/tee-signs/tee_sign_11_white.png",
+   "smoothness": 0.45
+  },
+  "tee_sign_face_11_yellow_blue": {
+   "image": "../../../../data/props/317d1f83-3ade-431c-8201-605ac0bd2871/tee-signs/tee_sign_11_yellow_blue.png",
+   "smoothness": 0.45
+  },
+  "tee_sign_face_11_red": {
+   "image": "../../../../data/props/317d1f83-3ade-431c-8201-605ac0bd2871/tee-signs/tee_sign_11_red.png",
+   "smoothness": 0.45
+  },
+  "tee_sign_face_12_white": {
+   "image": "../../../../data/props/317d1f83-3ade-431c-8201-605ac0bd2871/tee-signs/tee_sign_12_white.png",
+   "smoothness": 0.45
+  },
+  "tee_sign_face_12_yellow": {
+   "image": "../../../../data/props/317d1f83-3ade-431c-8201-605ac0bd2871/tee-signs/tee_sign_12_yellow.png",
+   "smoothness": 0.45
+  },
+  "tee_sign_face_12_blue_red": {
+   "image": "../../../../data/props/317d1f83-3ade-431c-8201-605ac0bd2871/tee-signs/tee_sign_12_blue_red.png",
+   "smoothness": 0.45
+  },
+  "tee_sign_face_13_white": {
+   "image": "../../../../data/props/317d1f83-3ade-431c-8201-605ac0bd2871/tee-signs/tee_sign_13_white.png",
+   "smoothness": 0.45
+  },
+  "tee_sign_face_13_yellow_blue": {
+   "image": "../../../../data/props/317d1f83-3ade-431c-8201-605ac0bd2871/tee-signs/tee_sign_13_yellow_blue.png",
+   "smoothness": 0.45
+  },
+  "tee_sign_face_13_red": {
+   "image": "../../../../data/props/317d1f83-3ade-431c-8201-605ac0bd2871/tee-signs/tee_sign_13_red.png",
+   "smoothness": 0.45
+  },
+  "tee_sign_face_14_white": {
+   "image": "../../../../data/props/317d1f83-3ade-431c-8201-605ac0bd2871/tee-signs/tee_sign_14_white.png",
+   "smoothness": 0.45
+  },
+  "tee_sign_face_14_yellow": {
+   "image": "../../../../data/props/317d1f83-3ade-431c-8201-605ac0bd2871/tee-signs/tee_sign_14_yellow.png",
+   "smoothness": 0.45
+  },
+  "tee_sign_face_15_white": {
+   "image": "../../../../data/props/317d1f83-3ade-431c-8201-605ac0bd2871/tee-signs/tee_sign_15_white.png",
+   "smoothness": 0.45
+  },
+  "tee_sign_face_15_yellow_blue": {
+   "image": "../../../../data/props/317d1f83-3ade-431c-8201-605ac0bd2871/tee-signs/tee_sign_15_yellow_blue.png",
+   "smoothness": 0.45
+  },
+  "tee_sign_face_15_red": {
+   "image": "../../../../data/props/317d1f83-3ade-431c-8201-605ac0bd2871/tee-signs/tee_sign_15_red.png",
+   "smoothness": 0.45
+  },
+  "tee_sign_face_16_white": {
+   "image": "../../../../data/props/317d1f83-3ade-431c-8201-605ac0bd2871/tee-signs/tee_sign_16_white.png",
+   "smoothness": 0.45
+  },
+  "tee_sign_face_16_yellow": {
+   "image": "../../../../data/props/317d1f83-3ade-431c-8201-605ac0bd2871/tee-signs/tee_sign_16_yellow.png",
+   "smoothness": 0.45
+  },
+  "tee_sign_face_16_blue_red": {
+   "image": "../../../../data/props/317d1f83-3ade-431c-8201-605ac0bd2871/tee-signs/tee_sign_16_blue_red.png",
+   "smoothness": 0.45
+  },
+  "tee_sign_face_17_white_yellow": {
+   "image": "../../../../data/props/317d1f83-3ade-431c-8201-605ac0bd2871/tee-signs/tee_sign_17_white_yellow.png",
+   "smoothness": 0.45
+  },
+  "tee_sign_face_17_blue_red": {
+   "image": "../../../../data/props/317d1f83-3ade-431c-8201-605ac0bd2871/tee-signs/tee_sign_17_blue_red.png",
+   "smoothness": 0.45
+  },
+  "tee_sign_face_18_white": {
+   "image": "../../../../data/props/317d1f83-3ade-431c-8201-605ac0bd2871/tee-signs/tee_sign_18_white.png",
+   "smoothness": 0.45
+  },
+  "tee_sign_face_18_yellow": {
+   "image": "../../../../data/props/317d1f83-3ade-431c-8201-605ac0bd2871/tee-signs/tee_sign_18_yellow.png",
+   "smoothness": 0.45
+  },
+  "tee_sign_face_18_blue_red": {
+   "image": "../../../../data/props/317d1f83-3ade-431c-8201-605ac0bd2871/tee-signs/tee_sign_18_blue_red.png",
+   "smoothness": 0.45
+  }
+ },
+ "origin": [
+  477650.0,
+  6457400.0
+ ],
+ "assets": {
+  "omberg_tee_sign_01_white": {
+   "category": "prop",
+   "collider": "box",
+   "parts": [
+    {
+     "kind": "plank_sign",
+     "face": "tee_sign_face_01_white",
+     "back": "tee_plank_back",
+     "mat": "tee_post_wood",
+     "width": 0.46,
+     "height": 0.32,
+     "bottom": 0.55
+    }
+   ]
+  },
+  "omberg_tee_sign_01_yellow_blue": {
+   "category": "prop",
+   "collider": "box",
+   "parts": [
+    {
+     "kind": "plank_sign",
+     "face": "tee_sign_face_01_yellow_blue",
+     "back": "tee_plank_back",
+     "mat": "tee_post_wood",
+     "width": 0.46,
+     "height": 0.32,
+     "bottom": 0.55
+    }
+   ]
+  },
+  "omberg_tee_sign_01_red": {
+   "category": "prop",
+   "collider": "box",
+   "parts": [
+    {
+     "kind": "plank_sign",
+     "face": "tee_sign_face_01_red",
+     "back": "tee_plank_back",
+     "mat": "tee_post_wood",
+     "width": 0.46,
+     "height": 0.32,
+     "bottom": 0.55
+    }
+   ]
+  },
+  "omberg_tee_sign_02_white": {
+   "category": "prop",
+   "collider": "box",
+   "parts": [
+    {
+     "kind": "plank_sign",
+     "face": "tee_sign_face_02_white",
+     "back": "tee_plank_back",
+     "mat": "tee_post_wood",
+     "width": 0.46,
+     "height": 0.32,
+     "bottom": 0.55
+    }
+   ]
+  },
+  "omberg_tee_sign_02_yellow_blue": {
+   "category": "prop",
+   "collider": "box",
+   "parts": [
+    {
+     "kind": "plank_sign",
+     "face": "tee_sign_face_02_yellow_blue",
+     "back": "tee_plank_back",
+     "mat": "tee_post_wood",
+     "width": 0.46,
+     "height": 0.32,
+     "bottom": 0.55
+    }
+   ]
+  },
+  "omberg_tee_sign_02_red": {
+   "category": "prop",
+   "collider": "box",
+   "parts": [
+    {
+     "kind": "plank_sign",
+     "face": "tee_sign_face_02_red",
+     "back": "tee_plank_back",
+     "mat": "tee_post_wood",
+     "width": 0.46,
+     "height": 0.32,
+     "bottom": 0.55
+    }
+   ]
+  },
+  "omberg_tee_sign_03_white": {
+   "category": "prop",
+   "collider": "box",
+   "parts": [
+    {
+     "kind": "plank_sign",
+     "face": "tee_sign_face_03_white",
+     "back": "tee_plank_back",
+     "mat": "tee_post_wood",
+     "width": 0.46,
+     "height": 0.32,
+     "bottom": 0.55
+    }
+   ]
+  },
+  "omberg_tee_sign_03_yellow": {
+   "category": "prop",
+   "collider": "box",
+   "parts": [
+    {
+     "kind": "plank_sign",
+     "face": "tee_sign_face_03_yellow",
+     "back": "tee_plank_back",
+     "mat": "tee_post_wood",
+     "width": 0.46,
+     "height": 0.32,
+     "bottom": 0.55
+    }
+   ]
+  },
+  "omberg_tee_sign_03_blue_red": {
+   "category": "prop",
+   "collider": "box",
+   "parts": [
+    {
+     "kind": "plank_sign",
+     "face": "tee_sign_face_03_blue_red",
+     "back": "tee_plank_back",
+     "mat": "tee_post_wood",
+     "width": 0.46,
+     "height": 0.32,
+     "bottom": 0.55
+    }
+   ]
+  },
+  "omberg_tee_sign_04_white": {
+   "category": "prop",
+   "collider": "box",
+   "parts": [
+    {
+     "kind": "plank_sign",
+     "face": "tee_sign_face_04_white",
+     "back": "tee_plank_back",
+     "mat": "tee_post_wood",
+     "width": 0.46,
+     "height": 0.32,
+     "bottom": 0.55
+    }
+   ]
+  },
+  "omberg_tee_sign_04_yellow_blue": {
+   "category": "prop",
+   "collider": "box",
+   "parts": [
+    {
+     "kind": "plank_sign",
+     "face": "tee_sign_face_04_yellow_blue",
+     "back": "tee_plank_back",
+     "mat": "tee_post_wood",
+     "width": 0.46,
+     "height": 0.32,
+     "bottom": 0.55
+    }
+   ]
+  },
+  "omberg_tee_sign_04_red": {
+   "category": "prop",
+   "collider": "box",
+   "parts": [
+    {
+     "kind": "plank_sign",
+     "face": "tee_sign_face_04_red",
+     "back": "tee_plank_back",
+     "mat": "tee_post_wood",
+     "width": 0.46,
+     "height": 0.32,
+     "bottom": 0.55
+    }
+   ]
+  },
+  "omberg_tee_sign_05_white_yellow": {
+   "category": "prop",
+   "collider": "box",
+   "parts": [
+    {
+     "kind": "plank_sign",
+     "face": "tee_sign_face_05_white_yellow",
+     "back": "tee_plank_back",
+     "mat": "tee_post_wood",
+     "width": 0.46,
+     "height": 0.32,
+     "bottom": 0.55
+    }
+   ]
+  },
+  "omberg_tee_sign_05_blue": {
+   "category": "prop",
+   "collider": "box",
+   "parts": [
+    {
+     "kind": "plank_sign",
+     "face": "tee_sign_face_05_blue",
+     "back": "tee_plank_back",
+     "mat": "tee_post_wood",
+     "width": 0.46,
+     "height": 0.32,
+     "bottom": 0.55
+    }
+   ]
+  },
+  "omberg_tee_sign_05_red": {
+   "category": "prop",
+   "collider": "box",
+   "parts": [
+    {
+     "kind": "plank_sign",
+     "face": "tee_sign_face_05_red",
+     "back": "tee_plank_back",
+     "mat": "tee_post_wood",
+     "width": 0.46,
+     "height": 0.32,
+     "bottom": 0.55
+    }
+   ]
+  },
+  "omberg_tee_sign_06_white": {
+   "category": "prop",
+   "collider": "box",
+   "parts": [
+    {
+     "kind": "plank_sign",
+     "face": "tee_sign_face_06_white",
+     "back": "tee_plank_back",
+     "mat": "tee_post_wood",
+     "width": 0.46,
+     "height": 0.32,
+     "bottom": 0.55
+    }
+   ]
+  },
+  "omberg_tee_sign_06_yellow": {
+   "category": "prop",
+   "collider": "box",
+   "parts": [
+    {
+     "kind": "plank_sign",
+     "face": "tee_sign_face_06_yellow",
+     "back": "tee_plank_back",
+     "mat": "tee_post_wood",
+     "width": 0.46,
+     "height": 0.32,
+     "bottom": 0.55
+    }
+   ]
+  },
+  "omberg_tee_sign_06_blue_red": {
+   "category": "prop",
+   "collider": "box",
+   "parts": [
+    {
+     "kind": "plank_sign",
+     "face": "tee_sign_face_06_blue_red",
+     "back": "tee_plank_back",
+     "mat": "tee_post_wood",
+     "width": 0.46,
+     "height": 0.32,
+     "bottom": 0.55
+    }
+   ]
+  },
+  "omberg_tee_sign_07_white": {
+   "category": "prop",
+   "collider": "box",
+   "parts": [
+    {
+     "kind": "plank_sign",
+     "face": "tee_sign_face_07_white",
+     "back": "tee_plank_back",
+     "mat": "tee_post_wood",
+     "width": 0.46,
+     "height": 0.32,
+     "bottom": 0.55
+    }
+   ]
+  },
+  "omberg_tee_sign_07_yellow": {
+   "category": "prop",
+   "collider": "box",
+   "parts": [
+    {
+     "kind": "plank_sign",
+     "face": "tee_sign_face_07_yellow",
+     "back": "tee_plank_back",
+     "mat": "tee_post_wood",
+     "width": 0.46,
+     "height": 0.32,
+     "bottom": 0.55
+    }
+   ]
+  },
+  "omberg_tee_sign_07_blue_red": {
+   "category": "prop",
+   "collider": "box",
+   "parts": [
+    {
+     "kind": "plank_sign",
+     "face": "tee_sign_face_07_blue_red",
+     "back": "tee_plank_back",
+     "mat": "tee_post_wood",
+     "width": 0.46,
+     "height": 0.32,
+     "bottom": 0.55
+    }
+   ]
+  },
+  "omberg_tee_sign_08_white": {
+   "category": "prop",
+   "collider": "box",
+   "parts": [
+    {
+     "kind": "plank_sign",
+     "face": "tee_sign_face_08_white",
+     "back": "tee_plank_back",
+     "mat": "tee_post_wood",
+     "width": 0.46,
+     "height": 0.32,
+     "bottom": 0.55
+    }
+   ]
+  },
+  "omberg_tee_sign_08_yellow": {
+   "category": "prop",
+   "collider": "box",
+   "parts": [
+    {
+     "kind": "plank_sign",
+     "face": "tee_sign_face_08_yellow",
+     "back": "tee_plank_back",
+     "mat": "tee_post_wood",
+     "width": 0.46,
+     "height": 0.32,
+     "bottom": 0.55
+    }
+   ]
+  },
+  "omberg_tee_sign_08_blue_red": {
+   "category": "prop",
+   "collider": "box",
+   "parts": [
+    {
+     "kind": "plank_sign",
+     "face": "tee_sign_face_08_blue_red",
+     "back": "tee_plank_back",
+     "mat": "tee_post_wood",
+     "width": 0.46,
+     "height": 0.32,
+     "bottom": 0.55
+    }
+   ]
+  },
+  "omberg_tee_sign_09_white": {
+   "category": "prop",
+   "collider": "box",
+   "parts": [
+    {
+     "kind": "plank_sign",
+     "face": "tee_sign_face_09_white",
+     "back": "tee_plank_back",
+     "mat": "tee_post_wood",
+     "width": 0.46,
+     "height": 0.32,
+     "bottom": 0.55
+    }
+   ]
+  },
+  "omberg_tee_sign_09_yellow_blue": {
+   "category": "prop",
+   "collider": "box",
+   "parts": [
+    {
+     "kind": "plank_sign",
+     "face": "tee_sign_face_09_yellow_blue",
+     "back": "tee_plank_back",
+     "mat": "tee_post_wood",
+     "width": 0.46,
+     "height": 0.32,
+     "bottom": 0.55
+    }
+   ]
+  },
+  "omberg_tee_sign_09_red": {
+   "category": "prop",
+   "collider": "box",
+   "parts": [
+    {
+     "kind": "plank_sign",
+     "face": "tee_sign_face_09_red",
+     "back": "tee_plank_back",
+     "mat": "tee_post_wood",
+     "width": 0.46,
+     "height": 0.32,
+     "bottom": 0.55
+    }
+   ]
+  },
+  "omberg_tee_sign_10_white_yellow": {
+   "category": "prop",
+   "collider": "box",
+   "parts": [
+    {
+     "kind": "plank_sign",
+     "face": "tee_sign_face_10_white_yellow",
+     "back": "tee_plank_back",
+     "mat": "tee_post_wood",
+     "width": 0.46,
+     "height": 0.32,
+     "bottom": 0.55
+    }
+   ]
+  },
+  "omberg_tee_sign_10_blue": {
+   "category": "prop",
+   "collider": "box",
+   "parts": [
+    {
+     "kind": "plank_sign",
+     "face": "tee_sign_face_10_blue",
+     "back": "tee_plank_back",
+     "mat": "tee_post_wood",
+     "width": 0.46,
+     "height": 0.32,
+     "bottom": 0.55
+    }
+   ]
+  },
+  "omberg_tee_sign_10_red": {
+   "category": "prop",
+   "collider": "box",
+   "parts": [
+    {
+     "kind": "plank_sign",
+     "face": "tee_sign_face_10_red",
+     "back": "tee_plank_back",
+     "mat": "tee_post_wood",
+     "width": 0.46,
+     "height": 0.32,
+     "bottom": 0.55
+    }
+   ]
+  },
+  "omberg_tee_sign_11_white": {
+   "category": "prop",
+   "collider": "box",
+   "parts": [
+    {
+     "kind": "plank_sign",
+     "face": "tee_sign_face_11_white",
+     "back": "tee_plank_back",
+     "mat": "tee_post_wood",
+     "width": 0.46,
+     "height": 0.32,
+     "bottom": 0.55
+    }
+   ]
+  },
+  "omberg_tee_sign_11_yellow_blue": {
+   "category": "prop",
+   "collider": "box",
+   "parts": [
+    {
+     "kind": "plank_sign",
+     "face": "tee_sign_face_11_yellow_blue",
+     "back": "tee_plank_back",
+     "mat": "tee_post_wood",
+     "width": 0.46,
+     "height": 0.32,
+     "bottom": 0.55
+    }
+   ]
+  },
+  "omberg_tee_sign_11_red": {
+   "category": "prop",
+   "collider": "box",
+   "parts": [
+    {
+     "kind": "plank_sign",
+     "face": "tee_sign_face_11_red",
+     "back": "tee_plank_back",
+     "mat": "tee_post_wood",
+     "width": 0.46,
+     "height": 0.32,
+     "bottom": 0.55
+    }
+   ]
+  },
+  "omberg_tee_sign_12_white": {
+   "category": "prop",
+   "collider": "box",
+   "parts": [
+    {
+     "kind": "plank_sign",
+     "face": "tee_sign_face_12_white",
+     "back": "tee_plank_back",
+     "mat": "tee_post_wood",
+     "width": 0.46,
+     "height": 0.32,
+     "bottom": 0.55
+    }
+   ]
+  },
+  "omberg_tee_sign_12_yellow": {
+   "category": "prop",
+   "collider": "box",
+   "parts": [
+    {
+     "kind": "plank_sign",
+     "face": "tee_sign_face_12_yellow",
+     "back": "tee_plank_back",
+     "mat": "tee_post_wood",
+     "width": 0.46,
+     "height": 0.32,
+     "bottom": 0.55
+    }
+   ]
+  },
+  "omberg_tee_sign_12_blue_red": {
+   "category": "prop",
+   "collider": "box",
+   "parts": [
+    {
+     "kind": "plank_sign",
+     "face": "tee_sign_face_12_blue_red",
+     "back": "tee_plank_back",
+     "mat": "tee_post_wood",
+     "width": 0.46,
+     "height": 0.32,
+     "bottom": 0.55
+    }
+   ]
+  },
+  "omberg_tee_sign_13_white": {
+   "category": "prop",
+   "collider": "box",
+   "parts": [
+    {
+     "kind": "plank_sign",
+     "face": "tee_sign_face_13_white",
+     "back": "tee_plank_back",
+     "mat": "tee_post_wood",
+     "width": 0.46,
+     "height": 0.32,
+     "bottom": 0.55
+    }
+   ]
+  },
+  "omberg_tee_sign_13_yellow_blue": {
+   "category": "prop",
+   "collider": "box",
+   "parts": [
+    {
+     "kind": "plank_sign",
+     "face": "tee_sign_face_13_yellow_blue",
+     "back": "tee_plank_back",
+     "mat": "tee_post_wood",
+     "width": 0.46,
+     "height": 0.32,
+     "bottom": 0.55
+    }
+   ]
+  },
+  "omberg_tee_sign_13_red": {
+   "category": "prop",
+   "collider": "box",
+   "parts": [
+    {
+     "kind": "plank_sign",
+     "face": "tee_sign_face_13_red",
+     "back": "tee_plank_back",
+     "mat": "tee_post_wood",
+     "width": 0.46,
+     "height": 0.32,
+     "bottom": 0.55
+    }
+   ]
+  },
+  "omberg_tee_sign_14_white": {
+   "category": "prop",
+   "collider": "box",
+   "parts": [
+    {
+     "kind": "plank_sign",
+     "face": "tee_sign_face_14_white",
+     "back": "tee_plank_back",
+     "mat": "tee_post_wood",
+     "width": 0.46,
+     "height": 0.32,
+     "bottom": 0.55
+    }
+   ]
+  },
+  "omberg_tee_sign_14_yellow": {
+   "category": "prop",
+   "collider": "box",
+   "parts": [
+    {
+     "kind": "plank_sign",
+     "face": "tee_sign_face_14_yellow",
+     "back": "tee_plank_back",
+     "mat": "tee_post_wood",
+     "width": 0.46,
+     "height": 0.32,
+     "bottom": 0.55
+    }
+   ]
+  },
+  "omberg_tee_sign_15_white": {
+   "category": "prop",
+   "collider": "box",
+   "parts": [
+    {
+     "kind": "plank_sign",
+     "face": "tee_sign_face_15_white",
+     "back": "tee_plank_back",
+     "mat": "tee_post_wood",
+     "width": 0.46,
+     "height": 0.32,
+     "bottom": 0.55
+    }
+   ]
+  },
+  "omberg_tee_sign_15_yellow_blue": {
+   "category": "prop",
+   "collider": "box",
+   "parts": [
+    {
+     "kind": "plank_sign",
+     "face": "tee_sign_face_15_yellow_blue",
+     "back": "tee_plank_back",
+     "mat": "tee_post_wood",
+     "width": 0.46,
+     "height": 0.32,
+     "bottom": 0.55
+    }
+   ]
+  },
+  "omberg_tee_sign_15_red": {
+   "category": "prop",
+   "collider": "box",
+   "parts": [
+    {
+     "kind": "plank_sign",
+     "face": "tee_sign_face_15_red",
+     "back": "tee_plank_back",
+     "mat": "tee_post_wood",
+     "width": 0.46,
+     "height": 0.32,
+     "bottom": 0.55
+    }
+   ]
+  },
+  "omberg_tee_sign_16_white": {
+   "category": "prop",
+   "collider": "box",
+   "parts": [
+    {
+     "kind": "plank_sign",
+     "face": "tee_sign_face_16_white",
+     "back": "tee_plank_back",
+     "mat": "tee_post_wood",
+     "width": 0.46,
+     "height": 0.32,
+     "bottom": 0.55
+    }
+   ]
+  },
+  "omberg_tee_sign_16_yellow": {
+   "category": "prop",
+   "collider": "box",
+   "parts": [
+    {
+     "kind": "plank_sign",
+     "face": "tee_sign_face_16_yellow",
+     "back": "tee_plank_back",
+     "mat": "tee_post_wood",
+     "width": 0.46,
+     "height": 0.32,
+     "bottom": 0.55
+    }
+   ]
+  },
+  "omberg_tee_sign_16_blue_red": {
+   "category": "prop",
+   "collider": "box",
+   "parts": [
+    {
+     "kind": "plank_sign",
+     "face": "tee_sign_face_16_blue_red",
+     "back": "tee_plank_back",
+     "mat": "tee_post_wood",
+     "width": 0.46,
+     "height": 0.32,
+     "bottom": 0.55
+    }
+   ]
+  },
+  "omberg_tee_sign_17_white_yellow": {
+   "category": "prop",
+   "collider": "box",
+   "parts": [
+    {
+     "kind": "plank_sign",
+     "face": "tee_sign_face_17_white_yellow",
+     "back": "tee_plank_back",
+     "mat": "tee_post_wood",
+     "width": 0.46,
+     "height": 0.32,
+     "bottom": 0.55
+    }
+   ]
+  },
+  "omberg_tee_sign_17_blue_red": {
+   "category": "prop",
+   "collider": "box",
+   "parts": [
+    {
+     "kind": "plank_sign",
+     "face": "tee_sign_face_17_blue_red",
+     "back": "tee_plank_back",
+     "mat": "tee_post_wood",
+     "width": 0.46,
+     "height": 0.32,
+     "bottom": 0.55
+    }
+   ]
+  },
+  "omberg_tee_sign_18_white": {
+   "category": "prop",
+   "collider": "box",
+   "parts": [
+    {
+     "kind": "plank_sign",
+     "face": "tee_sign_face_18_white",
+     "back": "tee_plank_back",
+     "mat": "tee_post_wood",
+     "width": 0.46,
+     "height": 0.32,
+     "bottom": 0.55
+    }
+   ]
+  },
+  "omberg_tee_sign_18_yellow": {
+   "category": "prop",
+   "collider": "box",
+   "parts": [
+    {
+     "kind": "plank_sign",
+     "face": "tee_sign_face_18_yellow",
+     "back": "tee_plank_back",
+     "mat": "tee_post_wood",
+     "width": 0.46,
+     "height": 0.32,
+     "bottom": 0.55
+    }
+   ]
+  },
+  "omberg_tee_sign_18_blue_red": {
+   "category": "prop",
+   "collider": "box",
+   "parts": [
+    {
+     "kind": "plank_sign",
+     "face": "tee_sign_face_18_blue_red",
+     "back": "tee_plank_back",
+     "mat": "tee_post_wood",
+     "width": 0.46,
+     "height": 0.32,
+     "bottom": 0.55
+    }
+   ]
+  }
+ },
+ "instances": [
+  {
+   "asset": "omberg_tee_sign_01_white",
+   "e": 477806.01,
+   "n": 6457632.33,
+   "yawDeg": 80.04,
+   "ground": "centre",
+   "teeBox": "drawn"
+  },
+  {
+   "asset": "omberg_tee_sign_01_yellow_blue",
+   "e": 477809.46,
+   "n": 6457622.21,
+   "yawDeg": 104.83,
+   "ground": "centre",
+   "teeBox": "drawn"
+  },
+  {
+   "asset": "omberg_tee_sign_01_red",
+   "e": 477803.35,
+   "n": 6457575.66,
+   "yawDeg": 102.24,
+   "ground": "centre",
+   "teeBox": "drawn"
+  },
+  {
+   "asset": "omberg_tee_sign_02_white",
+   "e": 477860.72,
+   "n": 6457264.62,
+   "yawDeg": 219.57,
+   "ground": "centre",
+   "teeBox": "drawn"
+  },
+  {
+   "asset": "omberg_tee_sign_02_yellow_blue",
+   "e": 477862.26,
+   "n": 6457293.48,
+   "yawDeg": 218.58,
+   "ground": "centre",
+   "teeBox": "drawn"
+  },
+  {
+   "asset": "omberg_tee_sign_02_red",
+   "e": 477869.69,
+   "n": 6457315.59,
+   "yawDeg": 218.42,
+   "ground": "centre",
+   "teeBox": "drawn"
+  },
+  {
+   "asset": "omberg_tee_sign_03_white",
+   "e": 478221.18,
+   "n": 6457628.44,
+   "yawDeg": 299.0,
+   "ground": "centre",
+   "teeBox": "drawn"
+  },
+  {
+   "asset": "omberg_tee_sign_03_yellow",
+   "e": 478232.05,
+   "n": 6457664.3,
+   "yawDeg": 295.04,
+   "ground": "centre",
+   "teeBox": "drawn"
+  },
+  {
+   "asset": "omberg_tee_sign_03_blue_red",
+   "e": 478178.51,
+   "n": 6457695.62,
+   "yawDeg": 197.11,
+   "ground": "centre",
+   "teeBox": "drawn"
+  },
+  {
+   "asset": "omberg_tee_sign_04_white",
+   "e": 477843.14,
+   "n": 6457791.64,
+   "yawDeg": 311.29,
+   "ground": "centre",
+   "teeBox": "drawn"
+  },
+  {
+   "asset": "omberg_tee_sign_04_yellow_blue",
+   "e": 477840.29,
+   "n": 6457819.15,
+   "yawDeg": 334.93,
+   "ground": "centre",
+   "teeBox": "drawn"
+  },
+  {
+   "asset": "omberg_tee_sign_04_red",
+   "e": 477864.44,
+   "n": 6457865.83,
+   "yawDeg": 319.96,
+   "ground": "centre",
+   "teeBox": "drawn"
+  },
+  {
+   "asset": "omberg_tee_sign_05_white_yellow",
+   "e": 477825.52,
+   "n": 6458063.78,
+   "yawDeg": 188.53,
+   "ground": "centre",
+   "teeBox": "drawn"
+  },
+  {
+   "asset": "omberg_tee_sign_05_blue",
+   "e": 477809.72,
+   "n": 6458039.64,
+   "yawDeg": 44.31,
+   "ground": "centre",
+   "teeBox": "drawn"
+  },
+  {
+   "asset": "omberg_tee_sign_05_red",
+   "e": 477801.75,
+   "n": 6457990.03,
+   "yawDeg": 18.08,
+   "ground": "centre",
+   "teeBox": "drawn"
+  },
+  {
+   "asset": "omberg_tee_sign_06_white",
+   "e": 477727.53,
+   "n": 6457849.58,
+   "yawDeg": 125.35,
+   "ground": "centre",
+   "teeBox": "drawn"
+  },
+  {
+   "asset": "omberg_tee_sign_06_yellow",
+   "e": 477709.7,
+   "n": 6457854.63,
+   "yawDeg": 109.56,
+   "ground": "centre",
+   "teeBox": "drawn"
+  },
+  {
+   "asset": "omberg_tee_sign_06_blue_red",
+   "e": 477654.01,
+   "n": 6457858.68,
+   "yawDeg": 92.89,
+   "ground": "centre",
+   "teeBox": "drawn"
+  },
+  {
+   "asset": "omberg_tee_sign_07_white",
+   "e": 477415.19,
+   "n": 6457620.72,
+   "yawDeg": 8.25,
+   "ground": "centre",
+   "teeBox": "drawn"
+  },
+  {
+   "asset": "omberg_tee_sign_07_yellow",
+   "e": 477415.33,
+   "n": 6457609.7,
+   "yawDeg": 68.99,
+   "ground": "centre",
+   "teeBox": "drawn"
+  },
+  {
+   "asset": "omberg_tee_sign_07_blue_red",
+   "e": 477403.21,
+   "n": 6457570.15,
+   "yawDeg": 2.12,
+   "ground": "centre",
+   "teeBox": "assumed"
+  },
+  {
+   "asset": "omberg_tee_sign_08_white",
+   "e": 477496.45,
+   "n": 6457265.43,
+   "yawDeg": 231.88,
+   "ground": "centre",
+   "teeBox": "assumed"
+  },
+  {
+   "asset": "omberg_tee_sign_08_yellow",
+   "e": 477496.73,
+   "n": 6457279.57,
+   "yawDeg": 221.14,
+   "ground": "centre",
+   "teeBox": "assumed"
+  },
+  {
+   "asset": "omberg_tee_sign_08_blue_red",
+   "e": 477509.74,
+   "n": 6457393.42,
+   "yawDeg": 348.44,
+   "ground": "centre",
+   "teeBox": "assumed"
+  },
+  {
+   "asset": "omberg_tee_sign_09_white",
+   "e": 477581.48,
+   "n": 6457795.21,
+   "yawDeg": 15.37,
+   "ground": "centre",
+   "teeBox": "drawn"
+  },
+  {
+   "asset": "omberg_tee_sign_09_yellow_blue",
+   "e": 477593.04,
+   "n": 6457809.98,
+   "yawDeg": 56.09,
+   "ground": "centre",
+   "teeBox": "drawn"
+  },
+  {
+   "asset": "omberg_tee_sign_09_red",
+   "e": 477622.06,
+   "n": 6457792.54,
+   "yawDeg": 301.93,
+   "ground": "centre",
+   "teeBox": "drawn"
+  },
+  {
+   "asset": "omberg_tee_sign_10_white_yellow",
+   "e": 477780.79,
+   "n": 6457641.2,
+   "yawDeg": 178.14,
+   "ground": "centre",
+   "teeBox": "assumed"
+  },
+  {
+   "asset": "omberg_tee_sign_10_blue",
+   "e": 477788.17,
+   "n": 6457619.42,
+   "yawDeg": 118.46,
+   "ground": "centre",
+   "teeBox": "assumed"
+  },
+  {
+   "asset": "omberg_tee_sign_10_red",
+   "e": 477771.4,
+   "n": 6457574.47,
+   "yawDeg": 20.24,
+   "ground": "centre",
+   "teeBox": "assumed"
+  },
+  {
+   "asset": "omberg_tee_sign_11_white",
+   "e": 477592.4,
+   "n": 6457331.72,
+   "yawDeg": 327.13,
+   "ground": "centre",
+   "teeBox": "assumed"
+  },
+  {
+   "asset": "omberg_tee_sign_11_yellow_blue",
+   "e": 477610.97,
+   "n": 6457309.26,
+   "yawDeg": 294.05,
+   "ground": "centre",
+   "teeBox": "assumed"
+  },
+  {
+   "asset": "omberg_tee_sign_11_red",
+   "e": 477630.47,
+   "n": 6457302.15,
+   "yawDeg": 297.52,
+   "ground": "centre",
+   "teeBox": "assumed"
+  },
+  {
+   "asset": "omberg_tee_sign_12_white",
+   "e": 477858.2,
+   "n": 6457261.41,
+   "yawDeg": 223.22,
+   "ground": "centre",
+   "teeBox": "drawn"
+  },
+  {
+   "asset": "omberg_tee_sign_12_yellow",
+   "e": 477826.85,
+   "n": 6457222.67,
+   "yawDeg": 202.64,
+   "ground": "centre",
+   "teeBox": "assumed"
+  },
+  {
+   "asset": "omberg_tee_sign_12_blue_red",
+   "e": 477796.59,
+   "n": 6457186.37,
+   "yawDeg": 182.75,
+   "ground": "centre",
+   "teeBox": "assumed"
+  },
+  {
+   "asset": "omberg_tee_sign_13_white",
+   "e": 477812.07,
+   "n": 6456842.28,
+   "yawDeg": 142.89,
+   "ground": "centre",
+   "teeBox": "assumed"
+  },
+  {
+   "asset": "omberg_tee_sign_13_yellow_blue",
+   "e": 477793.91,
+   "n": 6456840.68,
+   "yawDeg": 268.53,
+   "ground": "centre",
+   "teeBox": "assumed"
+  },
+  {
+   "asset": "omberg_tee_sign_13_red",
+   "e": 477773.7,
+   "n": 6456868.1,
+   "yawDeg": 277.15,
+   "ground": "centre",
+   "teeBox": "assumed"
+  },
+  {
+   "asset": "omberg_tee_sign_14_white",
+   "e": 477698.62,
+   "n": 6456817.17,
+   "yawDeg": 300.91,
+   "ground": "centre",
+   "teeBox": "assumed"
+  },
+  {
+   "asset": "omberg_tee_sign_14_yellow",
+   "e": 477689.71,
+   "n": 6456828.62,
+   "yawDeg": 301.03,
+   "ground": "centre",
+   "teeBox": "assumed"
+  },
+  {
+   "asset": "omberg_tee_sign_15_white",
+   "e": 477288.42,
+   "n": 6457220.29,
+   "yawDeg": 18.39,
+   "ground": "centre",
+   "teeBox": "assumed"
+  },
+  {
+   "asset": "omberg_tee_sign_15_yellow_blue",
+   "e": 477303.25,
+   "n": 6457219.27,
+   "yawDeg": 18.99,
+   "ground": "centre",
+   "teeBox": "assumed"
+  },
+  {
+   "asset": "omberg_tee_sign_15_red",
+   "e": 477319.94,
+   "n": 6457218.48,
+   "yawDeg": 27.92,
+   "ground": "centre",
+   "teeBox": "assumed"
+  },
+  {
+   "asset": "omberg_tee_sign_16_white",
+   "e": 477459.29,
+   "n": 6457281.79,
+   "yawDeg": 59.52,
+   "ground": "centre",
+   "teeBox": "assumed"
+  },
+  {
+   "asset": "omberg_tee_sign_16_yellow",
+   "e": 477479.86,
+   "n": 6457264.75,
+   "yawDeg": 44.21,
+   "ground": "centre",
+   "teeBox": "assumed"
+  },
+  {
+   "asset": "omberg_tee_sign_16_blue_red",
+   "e": 477524.03,
+   "n": 6457208.37,
+   "yawDeg": 24.58,
+   "ground": "centre",
+   "teeBox": "assumed"
+  },
+  {
+   "asset": "omberg_tee_sign_17_white_yellow",
+   "e": 477806.57,
+   "n": 6456928.51,
+   "yawDeg": 162.61,
+   "ground": "centre",
+   "teeBox": "assumed"
+  },
+  {
+   "asset": "omberg_tee_sign_17_blue_red",
+   "e": 477771.96,
+   "n": 6456976.12,
+   "yawDeg": 291.86,
+   "ground": "centre",
+   "teeBox": "assumed"
+  },
+  {
+   "asset": "omberg_tee_sign_18_white",
+   "e": 477512.03,
+   "n": 6457271.99,
+   "yawDeg": 262.03,
+   "ground": "centre",
+   "teeBox": "drawn"
+  },
+  {
+   "asset": "omberg_tee_sign_18_yellow",
+   "e": 477509.84,
+   "n": 6457291.75,
+   "yawDeg": 15.77,
+   "ground": "centre",
+   "teeBox": "drawn"
+  },
+  {
+   "asset": "omberg_tee_sign_18_blue_red",
+   "e": 477537.72,
+   "n": 6457358.5,
+   "yawDeg": 38.3,
+   "ground": "centre",
+   "teeBox": "drawn"
+  }
+ ],
+ "signs": [
+  {
+   "asset": "omberg_tee_sign_01_white",
+   "e": 477806.01,
+   "n": 6457632.33,
+   "yawDeg": 80.04,
+   "ground": "centre",
+   "tees": [
+    {
+     "color": "white",
+     "length": 335
+    }
+   ],
+   "teeBox": "drawn"
+  },
+  {
+   "asset": "omberg_tee_sign_01_yellow_blue",
+   "e": 477809.46,
+   "n": 6457622.21,
+   "yawDeg": 104.83,
+   "ground": "centre",
+   "tees": [
+    {
+     "color": "yellow",
+     "length": 321
+    },
+    {
+     "color": "blue",
+     "length": 321
+    }
+   ],
+   "teeBox": "drawn"
+  },
+  {
+   "asset": "omberg_tee_sign_01_red",
+   "e": 477803.35,
+   "n": 6457575.66,
+   "yawDeg": 102.24,
+   "ground": "centre",
+   "tees": [
+    {
+     "color": "red",
+     "length": 278
+    }
+   ],
+   "teeBox": "drawn"
+  },
+  {
+   "asset": "omberg_tee_sign_02_white",
+   "e": 477860.72,
+   "n": 6457264.62,
+   "yawDeg": 219.57,
+   "ground": "centre",
+   "tees": [
+    {
+     "color": "white",
+     "length": 304
+    }
+   ],
+   "teeBox": "drawn"
+  },
+  {
+   "asset": "omberg_tee_sign_02_yellow_blue",
+   "e": 477862.26,
+   "n": 6457293.48,
+   "yawDeg": 218.58,
+   "ground": "centre",
+   "tees": [
+    {
+     "color": "yellow",
+     "length": 278
+    },
+    {
+     "color": "blue",
+     "length": 277
+    }
+   ],
+   "teeBox": "drawn"
+  },
+  {
+   "asset": "omberg_tee_sign_02_red",
+   "e": 477869.69,
+   "n": 6457315.59,
+   "yawDeg": 218.42,
+   "ground": "centre",
+   "tees": [
+    {
+     "color": "red",
+     "length": 254
+    }
+   ],
+   "teeBox": "drawn"
+  },
+  {
+   "asset": "omberg_tee_sign_03_white",
+   "e": 478221.18,
+   "n": 6457628.44,
+   "yawDeg": 299.0,
+   "ground": "centre",
+   "tees": [
+    {
+     "color": "white",
+     "length": 394
+    }
+   ],
+   "teeBox": "drawn"
+  },
+  {
+   "asset": "omberg_tee_sign_03_yellow",
+   "e": 478232.05,
+   "n": 6457664.3,
+   "yawDeg": 295.04,
+   "ground": "centre",
+   "tees": [
+    {
+     "color": "yellow",
+     "length": 371
+    }
+   ],
+   "teeBox": "drawn"
+  },
+  {
+   "asset": "omberg_tee_sign_03_blue_red",
+   "e": 478178.51,
+   "n": 6457695.62,
+   "yawDeg": 197.11,
+   "ground": "centre",
+   "tees": [
+    {
+     "color": "blue",
+     "length": 314
+    },
+    {
+     "color": "red",
+     "length": 312
+    }
+   ],
+   "teeBox": "drawn"
+  },
+  {
+   "asset": "omberg_tee_sign_04_white",
+   "e": 477843.14,
+   "n": 6457791.64,
+   "yawDeg": 311.29,
+   "ground": "centre",
+   "tees": [
+    {
+     "color": "white",
+     "length": 362
+    }
+   ],
+   "teeBox": "drawn"
+  },
+  {
+   "asset": "omberg_tee_sign_04_yellow_blue",
+   "e": 477840.29,
+   "n": 6457819.15,
+   "yawDeg": 334.93,
+   "ground": "centre",
+   "tees": [
+    {
+     "color": "yellow",
+     "length": 336
+    },
+    {
+     "color": "blue",
+     "length": 336
+    }
+   ],
+   "teeBox": "drawn"
+  },
+  {
+   "asset": "omberg_tee_sign_04_red",
+   "e": 477864.44,
+   "n": 6457865.83,
+   "yawDeg": 319.96,
+   "ground": "centre",
+   "tees": [
+    {
+     "color": "red",
+     "length": 286
+    }
+   ],
+   "teeBox": "drawn"
+  },
+  {
+   "asset": "omberg_tee_sign_05_white_yellow",
+   "e": 477825.52,
+   "n": 6458063.78,
+   "yawDeg": 188.53,
+   "ground": "centre",
+   "tees": [
+    {
+     "color": "white",
+     "length": 195
+    },
+    {
+     "color": "yellow",
+     "length": 183
+    }
+   ],
+   "teeBox": "drawn"
+  },
+  {
+   "asset": "omberg_tee_sign_05_blue",
+   "e": 477809.72,
+   "n": 6458039.64,
+   "yawDeg": 44.31,
+   "ground": "centre",
+   "tees": [
+    {
+     "color": "blue",
+     "length": 154
+    }
+   ],
+   "teeBox": "drawn"
+  },
+  {
+   "asset": "omberg_tee_sign_05_red",
+   "e": 477801.75,
+   "n": 6457990.03,
+   "yawDeg": 18.08,
+   "ground": "centre",
+   "tees": [
+    {
+     "color": "red",
+     "length": 110
+    }
+   ],
+   "teeBox": "drawn"
+  },
+  {
+   "asset": "omberg_tee_sign_06_white",
+   "e": 477727.53,
+   "n": 6457849.58,
+   "yawDeg": 125.35,
+   "ground": "centre",
+   "tees": [
+    {
+     "color": "white",
+     "length": 367
+    }
+   ],
+   "teeBox": "drawn"
+  },
+  {
+   "asset": "omberg_tee_sign_06_yellow",
+   "e": 477709.7,
+   "n": 6457854.63,
+   "yawDeg": 109.56,
+   "ground": "centre",
+   "tees": [
+    {
+     "color": "yellow",
+     "length": 349
+    }
+   ],
+   "teeBox": "drawn"
+  },
+  {
+   "asset": "omberg_tee_sign_06_blue_red",
+   "e": 477654.01,
+   "n": 6457858.68,
+   "yawDeg": 92.89,
+   "ground": "centre",
+   "tees": [
+    {
+     "color": "blue",
+     "length": 299
+    },
+    {
+     "color": "red",
+     "length": 299
+    }
+   ],
+   "teeBox": "drawn"
+  },
+  {
+   "asset": "omberg_tee_sign_07_white",
+   "e": 477415.19,
+   "n": 6457620.72,
+   "yawDeg": 8.25,
+   "ground": "centre",
+   "tees": [
+    {
+     "color": "white",
+     "length": 348
+    }
+   ],
+   "teeBox": "drawn"
+  },
+  {
+   "asset": "omberg_tee_sign_07_yellow",
+   "e": 477415.33,
+   "n": 6457609.7,
+   "yawDeg": 68.99,
+   "ground": "centre",
+   "tees": [
+    {
+     "color": "yellow",
+     "length": 333
+    }
+   ],
+   "teeBox": "drawn"
+  },
+  {
+   "asset": "omberg_tee_sign_07_blue_red",
+   "e": 477403.21,
+   "n": 6457570.15,
+   "yawDeg": 2.12,
+   "ground": "centre",
+   "tees": [
+    {
+     "color": "blue",
+     "length": 297
+    },
+    {
+     "color": "red",
+     "length": 297
+    }
+   ],
+   "teeBox": "assumed"
+  },
+  {
+   "asset": "omberg_tee_sign_08_white",
+   "e": 477496.45,
+   "n": 6457265.43,
+   "yawDeg": 231.88,
+   "ground": "centre",
+   "tees": [
+    {
+     "color": "white",
+     "length": 506
+    }
+   ],
+   "teeBox": "assumed"
+  },
+  {
+   "asset": "omberg_tee_sign_08_yellow",
+   "e": 477496.73,
+   "n": 6457279.57,
+   "yawDeg": 221.14,
+   "ground": "centre",
+   "tees": [
+    {
+     "color": "yellow",
+     "length": 493
+    }
+   ],
+   "teeBox": "assumed"
+  },
+  {
+   "asset": "omberg_tee_sign_08_blue_red",
+   "e": 477509.74,
+   "n": 6457393.42,
+   "yawDeg": 348.44,
+   "ground": "centre",
+   "tees": [
+    {
+     "color": "blue",
+     "length": 380
+    },
+    {
+     "color": "red",
+     "length": 380
+    }
+   ],
+   "teeBox": "assumed"
+  },
+  {
+   "asset": "omberg_tee_sign_09_white",
+   "e": 477581.48,
+   "n": 6457795.21,
+   "yawDeg": 15.37,
+   "ground": "centre",
+   "tees": [
+    {
+     "color": "white",
+     "length": 138
+    }
+   ],
+   "teeBox": "drawn"
+  },
+  {
+   "asset": "omberg_tee_sign_09_yellow_blue",
+   "e": 477593.04,
+   "n": 6457809.98,
+   "yawDeg": 56.09,
+   "ground": "centre",
+   "tees": [
+    {
+     "color": "yellow",
+     "length": 121
+    },
+    {
+     "color": "blue",
+     "length": 121
+    }
+   ],
+   "teeBox": "drawn"
+  },
+  {
+   "asset": "omberg_tee_sign_09_red",
+   "e": 477622.06,
+   "n": 6457792.54,
+   "yawDeg": 301.93,
+   "ground": "centre",
+   "tees": [
+    {
+     "color": "red",
+     "length": 101
+    }
+   ],
+   "teeBox": "drawn"
+  },
+  {
+   "asset": "omberg_tee_sign_10_white_yellow",
+   "e": 477780.79,
+   "n": 6457641.2,
+   "yawDeg": 178.14,
+   "ground": "centre",
+   "tees": [
+    {
+     "color": "white",
+     "length": 352
+    },
+    {
+     "color": "yellow",
+     "length": 344
+    }
+   ],
+   "teeBox": "assumed"
+  },
+  {
+   "asset": "omberg_tee_sign_10_blue",
+   "e": 477788.17,
+   "n": 6457619.42,
+   "yawDeg": 118.46,
+   "ground": "centre",
+   "tees": [
+    {
+     "color": "blue",
+     "length": 324
+    }
+   ],
+   "teeBox": "assumed"
+  },
+  {
+   "asset": "omberg_tee_sign_10_red",
+   "e": 477771.4,
+   "n": 6457574.47,
+   "yawDeg": 20.24,
+   "ground": "centre",
+   "tees": [
+    {
+     "color": "red",
+     "length": 287
+    }
+   ],
+   "teeBox": "assumed"
+  },
+  {
+   "asset": "omberg_tee_sign_11_white",
+   "e": 477592.4,
+   "n": 6457331.72,
+   "yawDeg": 327.13,
+   "ground": "centre",
+   "tees": [
+    {
+     "color": "white",
+     "length": 177
+    }
+   ],
+   "teeBox": "assumed"
+  },
+  {
+   "asset": "omberg_tee_sign_11_yellow_blue",
+   "e": 477610.97,
+   "n": 6457309.26,
+   "yawDeg": 294.05,
+   "ground": "centre",
+   "tees": [
+    {
+     "color": "yellow",
+     "length": 158
+    },
+    {
+     "color": "blue",
+     "length": 158
+    }
+   ],
+   "teeBox": "assumed"
+  },
+  {
+   "asset": "omberg_tee_sign_11_red",
+   "e": 477630.47,
+   "n": 6457302.15,
+   "yawDeg": 297.52,
+   "ground": "centre",
+   "tees": [
+    {
+     "color": "red",
+     "length": 139
+    }
+   ],
+   "teeBox": "assumed"
+  },
+  {
+   "asset": "omberg_tee_sign_12_white",
+   "e": 477858.2,
+   "n": 6457261.41,
+   "yawDeg": 223.22,
+   "ground": "centre",
+   "tees": [
+    {
+     "color": "white",
+     "length": 397
+    }
+   ],
+   "teeBox": "drawn"
+  },
+  {
+   "asset": "omberg_tee_sign_12_yellow",
+   "e": 477826.85,
+   "n": 6457222.67,
+   "yawDeg": 202.64,
+   "ground": "centre",
+   "tees": [
+    {
+     "color": "yellow",
+     "length": 344
+    }
+   ],
+   "teeBox": "assumed"
+  },
+  {
+   "asset": "omberg_tee_sign_12_blue_red",
+   "e": 477796.59,
+   "n": 6457186.37,
+   "yawDeg": 182.75,
+   "ground": "centre",
+   "tees": [
+    {
+     "color": "blue",
+     "length": 300
+    },
+    {
+     "color": "red",
+     "length": 299
+    }
+   ],
+   "teeBox": "assumed"
+  },
+  {
+   "asset": "omberg_tee_sign_13_white",
+   "e": 477812.07,
+   "n": 6456842.28,
+   "yawDeg": 142.89,
+   "ground": "centre",
+   "tees": [
+    {
+     "color": "white",
+     "length": 137
+    }
+   ],
+   "teeBox": "assumed"
+  },
+  {
+   "asset": "omberg_tee_sign_13_yellow_blue",
+   "e": 477793.91,
+   "n": 6456840.68,
+   "yawDeg": 268.53,
+   "ground": "centre",
+   "tees": [
+    {
+     "color": "yellow",
+     "length": 121
+    },
+    {
+     "color": "blue",
+     "length": 121
+    }
+   ],
+   "teeBox": "assumed"
+  },
+  {
+   "asset": "omberg_tee_sign_13_red",
+   "e": 477773.7,
+   "n": 6456868.1,
+   "yawDeg": 277.15,
+   "ground": "centre",
+   "tees": [
+    {
+     "color": "red",
+     "length": 92
+    }
+   ],
+   "teeBox": "assumed"
+  },
+  {
+   "asset": "omberg_tee_sign_14_white",
+   "e": 477698.62,
+   "n": 6456817.17,
+   "yawDeg": 300.91,
+   "ground": "centre",
+   "tees": [
+    {
+     "color": "white",
+     "length": 563
+    }
+   ],
+   "teeBox": "assumed"
+  },
+  {
+   "asset": "omberg_tee_sign_14_yellow",
+   "e": 477689.71,
+   "n": 6456828.62,
+   "yawDeg": 301.03,
+   "ground": "centre",
+   "tees": [
+    {
+     "color": "yellow",
+     "length": 549
+    }
+   ],
+   "teeBox": "assumed"
+  },
+  {
+   "asset": "omberg_tee_sign_15_white",
+   "e": 477288.42,
+   "n": 6457220.29,
+   "yawDeg": 18.39,
+   "ground": "centre",
+   "tees": [
+    {
+     "color": "white",
+     "length": 159
+    }
+   ],
+   "teeBox": "assumed"
+  },
+  {
+   "asset": "omberg_tee_sign_15_yellow_blue",
+   "e": 477303.25,
+   "n": 6457219.27,
+   "yawDeg": 18.99,
+   "ground": "centre",
+   "tees": [
+    {
+     "color": "yellow",
+     "length": 144
+    },
+    {
+     "color": "blue",
+     "length": 144
+    }
+   ],
+   "teeBox": "assumed"
+  },
+  {
+   "asset": "omberg_tee_sign_15_red",
+   "e": 477319.94,
+   "n": 6457218.48,
+   "yawDeg": 27.92,
+   "ground": "centre",
+   "tees": [
+    {
+     "color": "red",
+     "length": 131
+    }
+   ],
+   "teeBox": "assumed"
+  },
+  {
+   "asset": "omberg_tee_sign_16_white",
+   "e": 477459.29,
+   "n": 6457281.79,
+   "yawDeg": 59.52,
+   "ground": "centre",
+   "tees": [
+    {
+     "color": "white",
+     "length": 470
+    }
+   ],
+   "teeBox": "assumed"
+  },
+  {
+   "asset": "omberg_tee_sign_16_yellow",
+   "e": 477479.86,
+   "n": 6457264.75,
+   "yawDeg": 44.21,
+   "ground": "centre",
+   "tees": [
+    {
+     "color": "yellow",
+     "length": 446
+    }
+   ],
+   "teeBox": "assumed"
+  },
+  {
+   "asset": "omberg_tee_sign_16_blue_red",
+   "e": 477524.03,
+   "n": 6457208.37,
+   "yawDeg": 24.58,
+   "ground": "centre",
+   "tees": [
+    {
+     "color": "blue",
+     "length": 380
+    },
+    {
+     "color": "red",
+     "length": 380
+    }
+   ],
+   "teeBox": "assumed"
+  },
+  {
+   "asset": "omberg_tee_sign_17_white_yellow",
+   "e": 477806.57,
+   "n": 6456928.51,
+   "yawDeg": 162.61,
+   "ground": "centre",
+   "tees": [
+    {
+     "color": "white",
+     "length": 411
+    },
+    {
+     "color": "yellow",
+     "length": 406
+    }
+   ],
+   "teeBox": "assumed"
+  },
+  {
+   "asset": "omberg_tee_sign_17_blue_red",
+   "e": 477771.96,
+   "n": 6456976.12,
+   "yawDeg": 291.86,
+   "ground": "centre",
+   "tees": [
+    {
+     "color": "blue",
+     "length": 346
+    },
+    {
+     "color": "red",
+     "length": 346
+    }
+   ],
+   "teeBox": "assumed"
+  },
+  {
+   "asset": "omberg_tee_sign_18_white",
+   "e": 477512.03,
+   "n": 6457271.99,
+   "yawDeg": 262.03,
+   "ground": "centre",
+   "tees": [
+    {
+     "color": "white",
+     "length": 487
+    }
+   ],
+   "teeBox": "drawn"
+  },
+  {
+   "asset": "omberg_tee_sign_18_yellow",
+   "e": 477509.84,
+   "n": 6457291.75,
+   "yawDeg": 15.77,
+   "ground": "centre",
+   "tees": [
+    {
+     "color": "yellow",
+     "length": 475
+    }
+   ],
+   "teeBox": "drawn"
+  },
+  {
+   "asset": "omberg_tee_sign_18_blue_red",
+   "e": 477537.72,
+   "n": 6457358.5,
+   "yawDeg": 38.3,
+   "ground": "centre",
+   "tees": [
+    {
+     "color": "blue",
+     "length": 407
+    },
+    {
+     "color": "red",
+     "length": 407
+    }
+   ],
+   "teeBox": "drawn"
+  }
+ ]
+}

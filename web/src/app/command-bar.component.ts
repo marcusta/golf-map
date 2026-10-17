@@ -844,14 +844,18 @@ export class CommandBarComponent extends Component<{ mode: CommandBarMode }> {
         if (isCreate) {
             this.buildZone3(this.ref(frag, 'zone3Host'));
 
-            // New polygons follow the active route/sidebar hole (moved here
-            // from the old draw panel, which no longer exists). No second
-            // creation selector: pick a hole in the left sidebar, then draw.
+            // A sidebar navigation sets the draw target. Editing a drawing
+            // group's name/list must preserve the explicit Draw on choice.
+            let lastDrawRoute = '';
             this.track(effect(() => {
                 const number = this.selectedHole.get();
                 const holes = this.svc.holes.get();
                 const activeHoleId = this.activeHoleId.get();
+                const route = `${this.svc.course.get()?.id ?? ''}:${number ?? ''}:${activeHoleId ?? ''}`;
+                if (route === lastDrawRoute) return;
+                lastDrawRoute = route;
                 untrack(() => {
+                    this.tool.drawLayer.set(null);
                     if (!number) {
                         this.tool.drawHoleId.set(null);
                     } else if (activeHoleId) {
@@ -958,7 +962,7 @@ export class CommandBarComponent extends Component<{ mode: CommandBarMode }> {
                     ? 'New shapes are added to this hole / scope. The next shape keeps the last-used type.'
                     : `New shapes are added to this hole / scope. Each new shape starts as ${FEATURE_STYLES[this.tool.defaultDrawType.get()].label}.`),
             },
-            targetHole: () => `→ ${this.holeLabel(this.tool.drawHoleId.get())}`,
+            targetHole: () => `→ ${this.tool.drawLayer.get() === 'roughs' ? 'Roughs (bottom)' : this.holeLabel(this.tool.drawHoleId.get())}`,
             targetChain: () => this.chainLabel(),
             undoBtn: {
                 onclick: () => this.tool.undo(),
@@ -974,7 +978,7 @@ export class CommandBarComponent extends Component<{ mode: CommandBarMode }> {
             newPoly: {
                 innerHTML: `<span class="cmdbar__new-icon">${icon('plus', 16)}</span>`,
                 title: () => (this.tool.state.isDrawing.get()
-                    ? 'Drawing — click to stop and return to Select (Esc)'
+                    ? 'Drawing — click near the first point or press Enter to close; Alt-click places the final point and closes. Click this button to stop (Esc)'
                     : this.isVegetationSubmode() ? 'New zone (N)' : 'New polygon (N)'),
                 'aria-label': () => (this.tool.state.isDrawing.get() ? 'Stop drawing'
                     : this.isVegetationSubmode() ? 'New zone' : 'New polygon'),
@@ -1318,8 +1322,8 @@ export class CommandBarComponent extends Component<{ mode: CommandBarMode }> {
 
     private holeLabel(holeId: string | null): string {
         if (holeId === null) return 'Course level';
-        const hole = this.svc.holes.get().find(h => h.id === holeId);
-        return hole ? `Hole ${hole.number} (par ${hole.par})` : 'Selected hole';
+        const hole = this.svc.drawScopes.get().find(h => h.id === holeId);
+        return hole?.drawingGroupName ?? (hole ? `Hole ${hole.number} (par ${hole.par})` : 'Selected hole');
     }
 
     /**

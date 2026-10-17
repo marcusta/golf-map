@@ -98,6 +98,51 @@ BASIC = [
 ]
 
 
+def test_named_drawing_groups_keep_stable_opcd_layers_and_shapes(tmp_path):
+    db = tmp_path / 'groups.sqlite'
+    _make_db(db, [('bunker', 100, 0, [_ring((0.5, 0.5))], 'bspline')], holes=(1, 100))
+    with sqlite3.connect(db) as conn:
+        conn.execute('ALTER TABLE holes ADD COLUMN drawing_group_name TEXT')
+        conn.execute('UPDATE holes SET drawing_group_name = ? WHERE number = 100', ('Clubhouse & garden',))
+    out = tmp_path / 'groups.svg'
+    gspro.cmd_svg(BBOX, out, db, 'Testbana', flatten=None, precision=3, mapped={}, stack='app')
+    root = ET.parse(out).getroot()
+    group = next(g for g in root.findall(f'{SVG_NS}g') if g.get(f'{INK_NS}label') == 'Hole100')
+    assert group.get('data-group-name') == 'Clubhouse & garden'
+    assert group.find(f'{SVG_NS}path').get('id') == 'hole_100_1'
+
+
+def test_drawing_group_order_between_holes_and_among_peers(tmp_path):
+    db = tmp_path / 'order.sqlite'
+    _make_db(db, [('bunker', n, 0, [_ring((0.1 + i * 0.2, 0.5))], 'bspline')
+                  for i, n in enumerate((1, 2, 100, 101))], holes=(1, 2, 100, 101))
+    with sqlite3.connect(db) as conn:
+        conn.execute('ALTER TABLE holes ADD COLUMN drawing_group_name TEXT')
+        conn.execute('ALTER TABLE holes ADD COLUMN drawing_group_after INTEGER')
+        conn.execute('ALTER TABLE holes ADD COLUMN drawing_group_order INTEGER')
+        conn.execute("UPDATE holes SET drawing_group_name = 'A', drawing_group_after = 1, drawing_group_order = 1 WHERE number = 100")
+        conn.execute("UPDATE holes SET drawing_group_name = 'B', drawing_group_after = 1, drawing_group_order = 0 WHERE number = 101")
+    out = tmp_path / 'ordered.svg'
+
+    def export():
+        gspro.cmd_svg(BBOX, out, db, 'Testbana', flatten=None, precision=3, mapped={}, stack='app')
+        _, rows = gspro._load_course_features(db, 'Testbana', 'app')
+        return [r['hole_number'] for r in rows], [label for label, _ in _layers(out)]
+
+    assert export() == ([1, 101, 100, 2], ['Hole2', 'Hole100', 'Hole101', 'Hole1'])
+    with sqlite3.connect(db) as conn:
+        conn.execute('UPDATE holes SET drawing_group_after = 0 WHERE number >= 100')
+    assert export() == ([101, 100, 1, 2], ['Hole2', 'Hole1', 'Hole100', 'Hole101'])
+    with sqlite3.connect(db) as conn:
+        conn.execute('UPDATE holes SET drawing_group_order = CASE number WHEN 100 THEN 0 ELSE 1 END WHERE number >= 100')
+    assert export() == ([100, 101, 1, 2], ['Hole2', 'Hole1', 'Hole101', 'Hole100'])
+    # The layer list can reorder holes too, without renaming their SVG layers.
+    with sqlite3.connect(db) as conn:
+        conn.execute('ALTER TABLE holes ADD COLUMN drawing_stack_order INTEGER')
+        conn.execute('UPDATE holes SET drawing_stack_order = CASE number WHEN 100 THEN 1 WHEN 2 THEN 2 WHEN 101 THEN 3 ELSE 4 END')
+    assert export() == ([100, 2, 101, 1], ['Hole1', 'Hole101', 'Hole2', 'Hole100'])
+
+
 def test_layer_per_hole_and_others_for_the_rest(tmp_path):
     """One layer per hole named HoleN, features with no hole on 'Others' —
     never the reserved Hole99, which would change how Blender cuts. Document

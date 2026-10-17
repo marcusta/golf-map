@@ -5,7 +5,7 @@ import { VersionConflictError } from '@basics/core/server/version-conflict';
 import { ConflictError, NotFoundError } from '@basics/core/server/auth';
 import { toGeoJson, type FeatureGeometry, type GeoJsonPolygon, type GeoJsonMultiPolygon } from './geo';
 import { resolveSurfaceStack } from '../../shared/render/resolved-surface-stack';
-import { ROUGHS_LAYER, isRoughsLayerType, stackKey, type FeatureLayer } from '../../shared/render/stack-key';
+import { ROUGHS_LAYER, isRoughsLayerType, stackKey, drawScopeRanks, type FeatureLayer } from '../../shared/render/stack-key';
 import { PATH_SURFACE_ATTRIBUTE, PATH_SURFACES, isPathSurface } from '../../shared/features/path-surface';
 import { centerlineError, centerlineGeometry } from '../../shared/features/centerline';
 import { pathTransitionsError, type PathTransition } from '../../shared/features/path-transitions';
@@ -646,6 +646,8 @@ function toCourseFeatureSafe(row: FeatureRow): CourseFeature | null {
 
 export interface CreateFeatureInput {
     courseId: string;
+    /** Explicit insertion slot within the group; omitted uses D26. */
+    sortOrder?: number;
     holeId?: string | null;
     /** `'roughs'` puts it in the Roughs group (rough types, no hole). */
     layer?: string | null;
@@ -675,6 +677,9 @@ export interface UpdateFeatureInput {
 }
 
 function assertValidCreate(input: CreateFeatureInput): void {
+    if (input.sortOrder !== undefined && (!Number.isSafeInteger(input.sortOrder) || input.sortOrder < 0)) {
+        throw new InvalidFeatureError('sortOrder must be a non-negative safe integer');
+    }
     assertValidType(input.type);
     assertValidGeometry(deriveCenterlineRings(input.geometry));
     assertValidAttributes(input.attributes);
@@ -797,6 +802,9 @@ export class CourseFeaturesService {
         courseId: string,
         opts: { resolved?: boolean } = {},
     ): Promise<CourseFeatureFeatureCollection> {
+        const scopeRanks = drawScopeRanks(await this.db.selectFrom('holes')
+            .select(['id', 'number', 'drawing_group_name as drawingGroupName', 'drawing_group_after as drawingGroupAfter', 'drawing_group_order as drawingGroupOrder', 'drawing_stack_order as drawingStackOrder'])
+            .where('course_id', '=', courseId).execute());
         const rows = await this.db
             .selectFrom('course_features')
             .leftJoin('holes', 'holes.id', 'course_features.hole_id')
@@ -839,7 +847,7 @@ export class CourseFeaturesService {
                     layer: feature.layer,
                     type: feature.type,
                     sortOrder: feature.sortOrder,
-                    stackKey: stackKey(feature.layer, row.hole_number, feature.sortOrder, feature.type, feature.attributes),
+                    stackKey: stackKey(feature.layer, feature.holeId ? scopeRanks.get(feature.holeId) : null, feature.sortOrder, feature.type, feature.attributes),
                     source: feature.source,
                     sourceRef: feature.sourceRef,
                     license: feature.license,
@@ -884,6 +892,11 @@ export class CourseFeaturesService {
         const created = await this.db.transaction().execute(async (trx) => {
             const created: CourseFeature[] = [];
             for (const input of inputs) created.push(await this.createIn(trx, input));
+            // A later insertion can shift a feature created earlier in this batch.
+            const rows = await trx.selectFrom('course_features').select(['id', 'sort_order'])
+                .where('id', 'in', created.map(f => f.id)).execute();
+            const positions = new Map(rows.map(row => [row.id, row.sort_order]));
+            for (const feature of created) feature.sortOrder = positions.get(feature.id)!;
             return created;
         });
         if (created.some((f) => f.type === 'path' && f.geometry.centerline)) await this.refreshRoadJunctions(courseId);
@@ -902,7 +915,7 @@ export class CourseFeaturesService {
         const geojson = toGeoJson(geometry);
 
         const groupStack = await this.byGroup(input.courseId, holeId, layer, trx).execute();
-        const sortOrder = insertionPosition(groupStack, input.type);
+        const sortOrder = input.sortOrder ?? insertionPosition(groupStack, input.type);
 
         for (const row of groupStack) {
             if (row.sort_order >= sortOrder) {

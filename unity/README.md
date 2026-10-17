@@ -1370,6 +1370,12 @@ and over no ground at all look alike. Judge Lux in screenshots with `depth: true
   height above the ground. Triangles are counted from each mesh's submeshes: in a built course static batching
   gives every renderer the whole combined mesh, and a sum of `sharedMesh.triangles` there is ~90x too high.
 - Manifest materials can be `fade` (translucent Standard, e.g. ball-stop netting) or `cutout`.
+- An optional material `specular: [r, g, b]` selects `Standard (Specular setup)` with that uniform
+  specular colour; each component must be a finite number in 0–1 (exactly three components).
+  `[0, 0, 0]` removes specular reflection for matte surfaces. Smoothness is the material's
+  `smoothness` value; the existing mask still supplies G-channel occlusion, but its R metallic
+  and A smoothness channels are unused in this workflow. No specular/gloss texture is assigned.
+  Omitting `specular` keeps the existing Standard metallic workflow and R/G/A mask behaviour.
 - `golfmap.props.clear` deletes `GolfMap Props`. The `placed.json` record stays, so the next place still keeps what
   was moved by hand.
 

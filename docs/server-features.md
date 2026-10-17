@@ -10,6 +10,47 @@ Moved from server/AGENTS.md. Feature sections: db scripts, edit history, feature
 
 Migration 025 keeps the state BEFORE every change of a course feature (`course_feature_history`: `update` and `delete` hold the old row without `geojson`, `restack` only `sort_order`/`version`/`updated_at`) and of a terrain edit (`terrain_edit_history`), by SQLite triggers, so every write path is covered (editor, reorders, generator bulk replaces, scripts). Nothing reads it in the app; `FeatureHistoryService` (`stateAt`, `changes`, `mix`, `writeVariantDb`, export `snapshot`s) serves `scripts/gspro-bisect.ts`. A full GSPro SVG export also keeps `<export dir>/export-history/<local time>/` (the SVG + `features.json`). Timestamps are UTC. A new feature shifts every one above it: that is a `restack` row per feature, and `changes` reports only features whose order among their group really moved.
 
+## Drawing groups
+
+Migration 032 adds `holes.drawing_group_name`: NULL is a playable hole, a name
+is a drawing scope. Reusing `course_features.hole_id` keeps ordering, moving,
+undo and mesh naming on the existing path. New groups get stable internal
+numbers from 100 to 1022 (never OPCD's special Hole99); playable hole creation
+accepts 1–98. Deleting a playable hole never renumbers groups. Group deletion
+requires an empty scope so features and their mesh names cannot disappear.
+
+`HolesService.listByCourse` and `/api/holes` omit groups unless
+`includeDrawingGroups=true`; the desktop course-detail store requests them
+and exposes separate playable `holes`, `drawingGroups` and all `drawScopes`.
+Create/update use optional `drawingGroupName` (trimmed, 1–80 characters).
+Course summaries, routing, par totals and GreenKeeper's course-file hole
+change count exclude groups. `gspro.py` also excludes their hazard/OOB
+features from GKD and skips the groups in Unity's playable-hole navigator.
+
+Migration 033 adds `drawing_group_after`: NULL = above all playable holes,
+0 = below all holes, N = above playable hole N. Migration 034 adds
+`drawing_group_order` for peers in the same gap (NULL falls back to their
+stable internal number). Update's `drawingGroupBeforeId` moves a group
+before a peer in bottom-to-top order, or to that gap's top with NULL; it
+checks the version and rewrites peer orders atomically. The client reloads
+all scopes after a peer move because their versions can also change.
+Removing a playable hole compacts explicit group positions with its numbers.
+`drawScopeRanks` in `shared/render/stack-key.ts` assigns distinct integer
+ranks with all 4096 feature slots per scope intact; the server GeoJSON and
+web use it, and `gspro.py` mirrors it in `_group_rank_sql`. SVG layers retain
+OPCD's descending rank convention, now including groups at their chosen rank.
+
+Migration 035 replaces the gap-based UI with `drawing_stack_order` for both
+playable-hole and drawing-group layers. NULL retains legacy placement until
+the first list move. Update's `layerBeforeId` inserts that layer before a
+same-course layer in bottom-to-top order (NULL = top), atomically assigns
+distinct orders and bumps affected versions. The web reloads all scopes.
+Course level and Roughs are fixed scopes, not reorderable hole rows. Creating
+a layer after reordering appends it at the top of the movable layers.
+`drawScopeRanks` and `_group_rank_sql` prefer explicit stack order; hole
+numbers keep their identity for routing, GreenKeeper and SVG/mesh names.
+The Shapes status row counts changed layers as well as changed features.
+
 ## Feature numbers
 
 Migration 026 gives every hand-drawn or imported course feature a per-course number, `course_features.feature_no` (`no` on the API), from the counter `courses.next_feature_no`. Shown in hex it is the feature's GSPro SVG shape name and so its mesh name (`hole_18_1c` → `Spline_hole_18_1c_Bunker_-_Mesh`; docs/gspro/export.md), which Unity keys saved edits to, so a number is never reused. Triggers hand them out, like the history, so every write path is covered: a row inserted without one gets the next number; a row written with one (history restore, publish ingest) keeps it and moves the counter past it. Generated rows (`generated = 1`, the pipeline's bulk replaces) get none, since each run re-inserts thousands. The history triggers keep `feature_no` in the old row. No unique index: an ingest upserts row by row and a served copy can hold a number mid-ingest; the counter keeps them unique.
