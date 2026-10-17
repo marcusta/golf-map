@@ -19,7 +19,7 @@
     "omberg_farm_road_outbuilding": "1431566964",
     "omberg_farm_field_cottage": "1431566965"
   },
-  "footprints": "osm-buildings.json",
+  "footprints": "../../../../data/omberg-farm/osm-buildings.json",
   "categories": [
     "building"
   ]
