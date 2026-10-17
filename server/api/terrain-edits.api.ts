@@ -49,6 +49,7 @@ const ParamsSchema = Type.Object({
     reference: Type.Optional(Type.Union([Type.Literal('level'), Type.Literal('plane'), Type.Literal('stream')])),
     rimM: Type.Optional(Type.Number()),
     bankAboveDeg: Type.Optional(Type.Number()),
+    levelOffsetM: Type.Optional(Type.Number()),
     variation: Type.Optional(Type.Number()),
     seed: Type.Optional(Type.Number()),
     // shore (a generated lake shore, origin `lake-shore`): the water level and the profile out from the shoreline; depthM above.

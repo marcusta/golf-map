@@ -208,6 +208,8 @@ export interface DigSettings {
     faceSlopeDeg?: number;
     /** Ponds only: the outline is the water's edge, the bank outside rises from it at this angle (°). */
     bankAboveDeg?: number;
+    /** Ponds only: metres added to the lidar's water level (negative lowers the water). */
+    levelOffsetM?: number;
 }
 
 /**
@@ -526,6 +528,7 @@ export class TerrainEditToolService {
         if (num('digBankSlopeDeg') !== undefined) settings.bankSlopeDeg = num('digBankSlopeDeg');
         if (num('digFaceSlopeDeg') !== undefined) settings.faceSlopeDeg = num('digFaceSlopeDeg');
         if (num('digBankAboveDeg') !== undefined) settings.bankAboveDeg = num('digBankAboveDeg');
+        if (num('digLevelOffsetM') !== undefined) settings.levelOffsetM = num('digLevelOffsetM');
         return settings;
     }
 
@@ -545,6 +548,7 @@ export class TerrainEditToolService {
         if (settings.bankSlopeDeg !== undefined) next.digBankSlopeDeg = settings.bankSlopeDeg;
         if (settings.faceSlopeDeg !== undefined) next.digFaceSlopeDeg = settings.faceSlopeDeg;
         if (settings.bankAboveDeg !== undefined) next.digBankAboveDeg = settings.bankAboveDeg;
+        if (settings.levelOffsetM) next.digLevelOffsetM = settings.levelOffsetM;
         return this.redig(edit, next, 'Saved on the feature');
     }
 

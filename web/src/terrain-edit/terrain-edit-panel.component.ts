@@ -1126,8 +1126,13 @@ export class TerrainEditPanelComponent extends Component {
         const above = optionalNumber(current.bankAboveDeg, 1, 1);
         above.placeholder = 'off';
         above.setAttribute('data-testid', 'terrain-edit-dig-bank-above');
+        const level = optionalNumber(current.levelOffsetM, -3, 0.05);
+        level.max = '3';
+        level.placeholder = '0';
+        level.title = "Metres added to the lidar's water level: -0.3 lowers the water 30 cm (with a bank above water, the bank is cut down to it)";
+        level.setAttribute('data-testid', 'terrain-edit-dig-level-offset');
         if (edit.origin === 'water-digs') {
-            out.push(field('Bank above water (°)', above),
+            out.push(field('Bank above water (°)', above), field('Water level ± (m)', level),
                 hint('Set: the outline is the water\'s edge — the bank outside comes down to the water there at this angle (45 is a steep pond bank), and the water plane stands at the dig\'s level. Empty: the bank tapers in under the water.'));
             const featureId = this.tool.pondOf(edit);
             if (featureId) {
@@ -1143,7 +1148,10 @@ export class TerrainEditPanelComponent extends Component {
         const save = () => {
             const settings: DigSettings = { preset: preset?.value || undefined, depthM: read(depth), bankSlopeDeg: read(bank) };
             if (edit.origin === 'bunker-digs') settings.faceSlopeDeg = read(face);
-            if (edit.origin === 'water-digs') settings.bankAboveDeg = read(above);
+            if (edit.origin === 'water-digs') {
+                settings.bankAboveDeg = read(above);
+                settings.levelOffsetM = read(level);
+            }
             return this.tool.saveDigSettings(edit.id, settings);
         };
         out.push(this.actions(save));

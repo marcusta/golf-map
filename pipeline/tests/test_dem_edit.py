@@ -636,6 +636,27 @@ def test_dig_bank_above_reports_its_water_level_under_its_origin_ref():
     assert levels == {"feature:p1": pytest.approx(10.0)}   # the plain dig keeps OPCD's rim rule
 
 
+def test_dig_level_offset_lowers_the_water_and_cuts_the_bank_to_it():
+    dem = pond_dem()
+    edit = edit_3006("dig", rect_3006(20, 60, 20, 60), feather_m=0.0, depth_m=1.0, bank_slope_deg=30.0,
+                     reference="level", rim_m=2.0, bank_above_deg=45.0, level_offset_m=-0.3, origin_ref="feature:p1")
+    levels: dict = {}
+    out = apply_edits(dem, TRANSFORM, NODATA, [edit], log=lambda *_: None, water_levels=levels)
+    assert levels == {"feature:p1": pytest.approx(9.7)}
+    assert float(out[rect_mask(20, 60, 20, 60)].max()) <= 9.7 + 1e-6   # everything inside under the lower water
+    assert out[40, 60] == pytest.approx(10.2, abs=0.01)                 # the bank rises from 9.7 at 45 deg
+    assert out[40, 40] == pytest.approx(8.7, abs=0.01)                  # the bed follows the level down
+
+
+def test_dig_level_offset_is_for_a_level_dig():
+    with pytest.raises(ValueError, match="levelOffsetM"):
+        dem_edit._dig_params({"depthM": 1.0, "reference": "plane", "levelOffsetM": -0.3})
+    with pytest.raises(ValueError, match="levelOffsetM"):
+        dem_edit._dig_params({"depthM": 1.0, "levelOffsetM": -5})
+    assert dem_edit._dig_params({"depthM": 1.0, "levelOffsetM": -0.3})["level_offset_m"] == -0.3
+    assert dem_edit._dig_params({"depthM": 1.0})["level_offset_m"] == 0.0
+
+
 def test_dig_bank_above_is_for_a_level_dig():
     with pytest.raises(ValueError, match="bankAboveDeg"):
         dem_edit._dig_params({"depthM": 1.0, "reference": "plane", "bankAboveDeg": 45})

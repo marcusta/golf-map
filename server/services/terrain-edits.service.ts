@@ -87,6 +87,8 @@ export interface TerrainEditParams {
     rimM?: number;
     /** dig, reference level: the outline is the water's edge and the bank outside rises from it at this angle (degrees). */
     bankAboveDeg?: number;
+    /** dig, reference level: metres added to the water level the lidar gives (negative: lower water). */
+    levelOffsetM?: number;
     variation?: number;
     seed?: number;
     /**
@@ -136,7 +138,7 @@ export type TerrainEditParamsInput = Omit<TerrainEditParams, 'featherM'> & { fea
 
 /** The dig params, in the order they go into the pipeline handoff. */
 export const DIG_PARAM_KEYS = [
-    'depthM', 'bankSlopeDeg', 'faceSlopeDeg', 'faceBearingDeg', 'shelfM', 'shelfDepthM', 'reference', 'rimM', 'bankAboveDeg', 'variation', 'seed',
+    'depthM', 'bankSlopeDeg', 'faceSlopeDeg', 'faceBearingDeg', 'shelfM', 'shelfDepthM', 'reference', 'rimM', 'bankAboveDeg', 'levelOffsetM', 'variation', 'seed',
 ] as const;
 
 /** The shore params (all numbers), in the order they go into the pipeline handoff; `depthM` is shared with dig. */
@@ -407,6 +409,12 @@ function assertDigParams(p: TerrainEditParams): void {
     if (p.rimM !== undefined && (!finite(p.rimM) || p.rimM <= 0)) throw new InvalidTerrainEditError('rimM must be > 0');
     if (p.bankAboveDeg !== undefined && (p.reference ?? 'level') !== 'level') {
         throw new InvalidTerrainEditError("bankAboveDeg is for reference 'level' (a pond's water's edge)");
+    }
+    if (p.levelOffsetM !== undefined && (!finite(p.levelOffsetM) || p.levelOffsetM < -3 || p.levelOffsetM > 3)) {
+        throw new InvalidTerrainEditError('levelOffsetM must be between -3 and 3 m');
+    }
+    if (p.levelOffsetM && (p.reference ?? 'level') !== 'level') {
+        throw new InvalidTerrainEditError("levelOffsetM is for reference 'level' (a pond's water level)");
     }
     if (p.variation !== undefined && (!finite(p.variation) || p.variation < 0 || p.variation > 1)) {
         throw new InvalidTerrainEditError('variation must be in [0, 1]');

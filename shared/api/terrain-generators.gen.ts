@@ -57,6 +57,7 @@ export interface TerrainEditParams {
     reference?: 'plane' | 'level' | 'stream';
     rimM?: number;
     bankAboveDeg?: number;
+    levelOffsetM?: number;
     variation?: number;
     seed?: number;
     levelM?: number;
@@ -80,6 +81,7 @@ export interface TerrainEditParams {
     cliffHoldM?: number;
     cliffFadeM?: number;
     cliffSmoothM?: number;
+    innerDepthM?: number;
     raster?: string;
     changedM2?: number;
     maxRaiseM?: number;

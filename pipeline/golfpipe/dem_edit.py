@@ -52,7 +52,9 @@ Operations (D-TE3, two only in v1):
   where the lidar's 0.5 m grid smears a steep bank a metre or two out over
   the water): everything inside goes below the level, no taper, and outside
   it the bank comes down to the level at the outline, rising from there at
-  that angle until it meets the ground (only lowering, within ``rimM``);
+  that angle until it meets the ground (only lowering, within ``rimM``).
+  ``levelOffsetM`` moves that level (negative: lower water, a pond whose
+  surrounds the lidar shows barely above it);
   ``reference: plane`` fits a plane to the ground in a ``rimM`` band outside
   the polygon (a bunker: the lidar has already smoothed the hollow itself).
   ``reference: stream`` is a creek's water surface, falling downstream
@@ -217,6 +219,7 @@ class DemEdit:
     reference: str = "level"
     rim_m: float = DEFAULT_DIG_RIM_M
     bank_above_deg: float | None = None
+    level_offset_m: float = 0.0
     variation: float = 0.0
     seed: int = 0
     # delta only: the GeoTIFF of metres to add.
@@ -411,6 +414,11 @@ def _dig_params(props: dict) -> dict:
         raise ValueError("bankAboveDeg must be between 0 and 90 degrees")
     if above is not None and reference != "level":
         raise ValueError("bankAboveDeg is for reference level (a pond's water's edge)")
+    offset = num("levelOffsetM", 0.0)
+    if not -3.0 <= offset <= 3.0:
+        raise ValueError("levelOffsetM must be between -3 and 3 m")
+    if offset and reference != "level":
+        raise ValueError("levelOffsetM is for reference level (a pond's water level)")
     try:
         seed = int(props.get("seed", 0))
     except (TypeError, ValueError):
@@ -418,7 +426,7 @@ def _dig_params(props: dict) -> dict:
     return dict(
         depth_m=depth, bank_slope_deg=bank, face_slope_deg=face, face_bearing_deg=bearing,
         shelf_m=shelf, shelf_depth_m=shelf_depth, reference=reference, rim_m=rim,
-        bank_above_deg=above, variation=variation, seed=seed,
+        bank_above_deg=above, level_offset_m=offset, variation=variation, seed=seed,
     )
 
 
@@ -871,7 +879,7 @@ def _dig_target(
         rim = inside & (d <= edit.rim_m)
         if not rim.any():
             rim = inside
-        level = float(np.percentile(cur_win[rim], DIG_LEVEL_PERCENTILE))
+        level = float(np.percentile(cur_win[rim], DIG_LEVEL_PERCENTILE)) + edit.level_offset_m
         if edit.bank_above_deg is not None:
             if water_levels is not None:
                 water_levels[key] = round(level, 3)

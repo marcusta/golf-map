@@ -309,6 +309,9 @@ export class TerrainGeneratorsService {
                 // digBankAboveDeg: the outline is the water's edge, the bank outside rises from it at that angle.
                 const above = num('digBankAboveDeg');
                 if (above !== undefined) params.bankAboveDeg = above;
+                // digLevelOffsetM: the water level moved from the lidar's (negative: lower water, a steeper drop to it).
+                const offset = num('digLevelOffsetM');
+                if (offset) params.levelOffsetM = offset;
             } else {
                 params = {
                     featherM: 0, reference: 'plane', rimM: BUNKER_DIG.rimM,

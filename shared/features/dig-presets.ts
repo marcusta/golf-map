@@ -49,6 +49,7 @@ export const DIG_GENERATOR_KINDS: readonly DigGeneratorKind[] = ['water-digs', '
  * The feature attributes a dig generator reads: `dig: false` skips the
  * feature, `digPreset` picks a profile (ponds and creeks), the numbers
  * override it (`digFaceSlopeDeg`: bunkers only; `digBankAboveDeg`: ponds, the
- * outline is the water's edge and the bank outside rises from it at that angle).
+ * outline is the water's edge and the bank outside rises from it at that angle;
+ * `digLevelOffsetM`: ponds, metres added to the lidar's water level, negative lowers it).
  */
-export const DIG_ATTRIBUTES = ['dig', 'digPreset', 'digDepthM', 'digBankSlopeDeg', 'digFaceSlopeDeg', 'digBankAboveDeg'] as const;
+export const DIG_ATTRIBUTES = ['dig', 'digPreset', 'digDepthM', 'digBankSlopeDeg', 'digFaceSlopeDeg', 'digBankAboveDeg', 'digLevelOffsetM'] as const;

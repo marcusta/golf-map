@@ -383,6 +383,18 @@ test('water digs dry run: the digs it would write, nothing written', async () =>
     await expect(t.svc.generate(TEST_COURSE_ID, 'road-grades', { dryRun: true })).rejects.toThrow(/dig generators/);
 });
 
+test('water digs: a pond with a steep bank and lowered water reach the dig', async () => {
+    const t = await setup(recordingRunner().runner);
+    await buildSite(t);
+    const pond = await t.courseFeatures.create({ courseId: TEST_COURSE_ID, type: 'water', geometry: rectRing(530000, 6487000, 40, 30),
+        attributes: { digPreset: 'deep_water', digBankAboveDeg: 45, digLevelOffsetM: -0.3 } });
+    const plain = await t.courseFeatures.create({ courseId: TEST_COURSE_ID, type: 'water', geometry: rectRing(530100, 6487000, 20, 20), attributes: { digLevelOffsetM: 0 } });
+    const result = await t.svc.generate(TEST_COURSE_ID, 'water-digs', { dryRun: true });
+    const by = new Map(result.planned?.map(p => [p.originRef, p.params]));
+    expect(by.get(`feature:${pond.id}`)).toMatchObject({ reference: 'level', bankAboveDeg: 45, levelOffsetM: -0.3 });
+    expect(by.get(`feature:${plain.id}`)?.levelOffsetM).toBeUndefined();
+});
+
 test('water digs: one level dig per pond with its preset, outline as drawn, creeks and dig: false left alone', async () => {
     const { calls, runner } = recordingRunner();
     const t = await setup(runner);
