@@ -1227,7 +1227,8 @@ def main():
     assigned = np.full(len(cell_pts), -1)
     best = np.full(len(cell_pts), 9)
     for k, name in enumerate(names):
-        rk = region_rank[name][lj_all, li_all]
+        # lidar cells on the crop's far edge index one past the grid: clip, they rank as outside
+        rk = np.where(ok_all, region_rank[name][np.clip(lj_all, 0, lg.ny - 1), np.clip(li_all, 0, lg.nx - 1)], 9)
         better = rk < best
         assigned[better] = k
         best[better] = rk[better]
