@@ -505,7 +505,7 @@ def cmd_road_grades(
     classes: set[str] | None = None,
 ) -> Path:
     """Turns fetch-roads centerlines into the road grading: one `corridor`
-    terrain edit per centerline, one tilted `plane` per parking lot (replayed
+    terrain edit per centerline, one `smooth` per parking lot (replayed
     before the corridors, see roads.lot_grade_features) — smooth along the road over `smooth_m`,
     flat across its width, feathered `feather_m` beyond the pavement (see
     golfpipe/dem_edit.py). `classes` keeps only those road_class groups
@@ -540,7 +540,8 @@ def cmd_road_grades(
         groups[c.group] = groups.get(c.group, 0) + 1
     print(f"Road grades: {len(lines)} corridor edits (" + (", ".join(f"{g}={n}" for g, n in sorted(groups.items())) or "none")
           + f"), {sum(c.line.length for c in lines) / 1000:.1f} km, smooth {smooth_m:g} m along, feather {feather_m:g} m"
-          + (f"; {len(lots)} parking lot plane(s), {sum(l.polygon.area for l in lots):,.0f} m²" if lots else ""))
+          + (f"; {len(lots)} parking lot(s) smoothed ({roads_mod.DEFAULT_LOT_SMOOTH_RADIUS_M:g} m median), "
+             f"{sum(l.polygon.area for l in lots):,.0f} m²" if lots else ""))
     print(f"Wrote {out}")
     return out
 

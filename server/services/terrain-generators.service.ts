@@ -15,10 +15,10 @@
 //                     into the site's terrain_edits under origin
 //                     `building-pads`.
 //   - `generate('road-grades')`   → one `corridor` edit per road centerline,
-//                     origin `road-grades`, and one tilted `plane` per paved
+//                     origin `road-grades`, and one `smooth` per paved
 //                     area. The roads are the course's own `path` features
 //                     (a road moved in the editor is graded where it now is,
-//                     a drawn yard or lot as a plane); only a course with none
+//                     a drawn yard or lot smoothed); only a course with none
 //                     falls back to the fetched centerlines.
 //
 // Generated edits replace their previous generation only (a disabled pad
@@ -425,10 +425,11 @@ export class TerrainGeneratorsService {
     }
 
     /**
-     * Road centerlines → corridor grades, paved areas → planes. The course's
+     * Road centerlines → corridor grades, paved areas → smoothed. The course's
      * own `path` features are the roads: a centerline path is graded along
      * its line, a hand-drawn or imported paved polygon (a parking lot, a yard
-     * at a junction) as one tilted plane like a fetched parking lot. A course
+     * at a junction) has its lidar ground smoothed like a fetched parking lot
+     * (a median, not a plane: real lots slope and bend). A course
      * with no paths of its own uses the centerlines a road fetch persisted,
      * fetching them first when there are none yet.
      */
@@ -453,7 +454,7 @@ export class TerrainGeneratorsService {
                     crs: { type: 'name', properties: { name: 'urn:ogc:def:crs:EPSG::3006' } },
                     features: [...own.lines, ...own.areas],
                 }));
-                report.push(`From the course's paths: ${own.lines.length} road centerline(s), ${own.areas.length} paved area(s) as planes`
+                report.push(`From the course's paths: ${own.lines.length} road centerline(s), ${own.areas.length} paved area(s) smoothed`
                     + (own.skipped ? `; ${own.skipped} long thin path polygon(s) skipped (draw roads as centerlines to grade them)` : ''));
             }
             const grades = path.join(work, 'road-grades.geojson');
@@ -473,9 +474,9 @@ export class TerrainGeneratorsService {
      * fillets) in fetch-roads `--centerlines-out` form (EPSG:3006): each
      * centerline path a LineString with its `widthM`, flattened the way the
      * editor draws it; each paved polygon a `road_class: parking` Polygon,
-     * which road-grades fits one plane. A polygon too long and thin to be an
-     * area (an old road corridor drawn or imported as an outline) is skipped
-     * and counted: a plane down a winding road would cut and fill it.
+     * which road-grades smooths. A polygon too long and thin to be an area
+     * (an old road corridor drawn or imported as an outline) is skipped and
+     * counted: a road is graded along its centerline, not smoothed as a lot.
      */
     private async featureRoads(courseId: string): Promise<{ lines: object[]; areas: object[]; skipped: number }> {
         const features = (await this.courseFeatures.listByCourse(courseId)).filter(f => f.type === 'path' && !f.generated);
@@ -557,8 +558,8 @@ export class TerrainGeneratorsService {
 
 /**
  * A paved polygon less compact than this (4πA/P²: 1 for a disc, ~0.7 for a
- * 2:1 parking lot, ~0.05 for a 5 m × 300 m road) is a road outline, not an
- * area one plane can grade.
+ * 2:1 parking lot, ~0.05 for a 5 m × 300 m road) is a road outline, not a
+ * lot to smooth.
  */
 const MIN_PLANE_COMPACTNESS = 0.15;
 

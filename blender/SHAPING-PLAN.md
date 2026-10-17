@@ -40,7 +40,8 @@ other specs: `docs/gspro/<course>/shaping/NN-<id>.json`, applied in file-name or
 
 - `00-global.gen.json` - **generated** by golf-map (`gspro.py shaping-global`) from the course's features
   and terrain edits: tees flattened, paths/roads cut + smoothed, merged roads of mixed surfaces split into one
-  object per surface (`golfmap.split_surfaces`), building pads and parking levelled.
+  object per surface (`golfmap.split_surfaces`), building pads levelled (parking lots follow the
+  smoothed DEM through the conform).
   A path drawn tomorrow is picked up by the next generation without editing anything.
 - `10-hole-<n>.json` - per-hole work, written with Marcus: bunker recipes, creeks, ponds, overrides.
 - `20-rocks.json` - hand layer: rock slabs cut out of the course meshes into their own objects (`golfmap.cut_out`).

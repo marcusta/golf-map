@@ -350,16 +350,14 @@ the next 10 m (`SIDE_STEP_M`) so a hand-typed area is never a decimal-metre terr
   from the same rows the same way, `_mixed_road_shapes`; Blender cuts their meshes along the seams and
   separates one object per surface, after the cut and smooth and before the footprints, which level the
   parts alike since they share the seam vertices; the report says `1 road shape(s) of mixed surfaces
-  split per surface in Blender: roads_124`), then `golfmap.flatten_footprint` per **lot** (`lot-<shape name>`, `featureId`, `seed` =
-  `feature_no`, `level: plane`, `falloffM` 2: a hand-made `path` polygon, not a centerline road,
-  generated fillet or bridge deck, with 4πA/P² ≥ 0.15 - the server's road-grading rule for a lot
-  plane) and per **pad** (`pad-<origin_ref slug>`, else `pad-<edit id>`: the site's enabled `plane`
-  terrain edits other than the lots graded from a feature, `level: median` when `flat`, else
-  `plane`). `footprint3006` (EPSG:3006, cm, open ring) is the area that ends up level and `falloffM`
+  split per surface in Blender: roads_124`), then `golfmap.flatten_footprint` per **pad** (`pad-<origin_ref slug>`, else `pad-<edit id>`: the site's enabled `plane`
+  terrain edits other than old lot planes graded from a feature, `level: median` when `flat`, else
+  `plane`). Parking lots get no op: road grading smooths their lidar ground in the DEM (a `smooth` edit,
+  not a plane, which left shelves where lots met) and the meshes follow it through the conform. `footprint3006` (EPSG:3006, cm, open ring) is the area that ends up level and `falloffM`
   the blend band outside it: a terrain edit feathers inside its ring, so its ring is shrunk by its
   `featherM` (a building pad = footprint + 1.5 m apron, falloff 4 m). Pads whose falloff edge is over
   `SHAPING_PAD_REACH_M` (10 m) from every course shape move no mesh and are left out, counted in the
-  report, as are lot edits of this course's features and stale ones (deleted features). No timestamps,
+  report, as are old lot plane edits of this course's features and stale ones (deleted features). No timestamps,
   sorted stable ids: regenerating diffs cleanly (pad rows get new ids on every re-import; their
   `origin_ref` doesn't change). Last, when the course has a gravel or dirt path (`stats.edge_fade_paths`),
   `paths-edge-fade` (`golfmap.path_edge_fade`, `select: {type: path}`): on the final heights, those paths'

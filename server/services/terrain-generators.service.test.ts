@@ -351,7 +351,7 @@ test('road grades follow the course\'s own paths: lines as corridors, paved area
     const result = await t.svc.generate(TEST_COURSE_ID, 'road-grades');
     // No fetch: the course has roads of its own.
     expect(calls.map(c => c.args[2])).toEqual(['road-grades']);
-    expect(result.report[0]).toBe('From the course\'s paths: 1 road centerline(s), 1 paved area(s) as planes; 1 long thin path polygon(s) skipped (draw roads as centerlines to grade them)');
+    expect(result.report[0]).toBe('From the course\'s paths: 1 road centerline(s), 1 paved area(s) smoothed; 1 long thin path polygon(s) skipped (draw roads as centerlines to grade them)');
     const doc = JSON.parse(lines[0]!) as { features: Array<{ properties: Record<string, unknown>; geometry: { type: string; coordinates: unknown } }> };
     expect(doc.features.map(f => f.properties.id)).toEqual([`feature:${road.id}`, `feature:${yard.id}`]);
     const [line, area] = doc.features;

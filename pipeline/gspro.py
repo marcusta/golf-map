@@ -3422,18 +3422,18 @@ def cmd_svg(bbox, out: Path, db_path: Path, course_ident: str,
 #      separates one object per surface (blender/tools/shape_surfaces.py);
 #      after the cut and smooth, before the footprints, which then level the
 #      separated parts alike (they share the seam vertices);
-#   3. `golfmap.flatten_footprint` per paved lot (a hand-drawn/imported `path`
-#      polygon compact enough to be an area, not a road outline - the same
-#      rule the server's road grading uses to fit a lot one plane), tilted
-#      like the DEM's lot planes (`level: plane`);
+#   3. no op for paved lots: the road grading smooths a lot's lidar ground in
+#      the DEM (a `smooth` edit, not a plane: real lots slope and bend, and a
+#      plane per lot left shelves where neighbouring lots met), and the meshes
+#      follow it through the conform;
 #   4. `golfmap.flatten_footprint` per building pad / other plane terrain
 #      edit on the course's site (`level: median` for a flat pad), when it
 #      comes near a course shape at all.
 # A footprint is the area that ends up level (EPSG:3006, metres); `falloffM` is
 # the blend band OUTSIDE it. The DEM edits feather inside their ring instead,
 # so a terrain edit's ring is shrunk by its featherM: the same level core and
-# the same outer edge. No timestamps and sorted, stable ids (a lot by its shape
-# name, a pad by its origin_ref: pad rows get new ids on every re-import), so a
+# the same outer edge. No timestamps and sorted, stable ids (a pad by its
+# origin_ref: pad rows get new ids on every re-import), so a
 # regeneration diffs cleanly.
 #
 # The same command writes `10-features.gen.json` next to it (id `features`):
@@ -3449,13 +3449,6 @@ SHAPING_GLOBAL_FILE = "00-global.gen.json"
 SHAPING_TEE_TYPE = "tee"
 SHAPING_TEE_PARAMS = {"tees_flat_inset": 1, "tees_flat_outset": 3.0}
 SHAPING_PATH_SMOOTH_PARAMS = {"smooth_path_distance": 3.0, "smooth_path_amt": 20}
-# A paved `path` polygon less compact than this (4πA/P²; ~0.7 for a 2:1 lot,
-# ~0.05 for a 5 m × 300 m road) is a road outline, not a lot: server
-# terrain-generators.service.ts MIN_PLANE_COMPACTNESS.
-SHAPING_LOT_MIN_COMPACTNESS = 0.15
-# The DEM lot planes' feather (golfpipe/roads.py DEFAULT_LOT_FEATHER_M).
-SHAPING_LOT_FALLOFF_M = 2.0
-SHAPING_LOT_FLATTEN_M = 0.1
 # A pad whose falloff edge stays further than this from every course shape
 # moves no mesh vertex (blends reach a few metres past a shape): left out.
 SHAPING_PAD_REACH_M = 10.0
@@ -3473,22 +3466,6 @@ def _shaping_ring(poly, tol: float = SHAPING_SIMPLIFY_M) -> list[list[float]]:
 def _largest_polygon(shape):
     polys = _polygons(shape)
     return max(polys, key=lambda p: p.area) if polys else None
-
-
-def _is_lot(row) -> "object | None":
-    """A course feature's lot polygon (its largest part), or None when it is
-    not a paved lot: not a hand-made `path`, a centerline road, a bridge deck,
-    or a polygon too long and thin to be graded as one plane."""
-    if row["type"] not in ROADS_TYPES or row["generated"] or _is_bridge_deck(row):
-        return None
-    geom = json.loads(row["geometry_json"])
-    if geom.get("centerline"):
-        return None
-    poly = _largest_polygon(_row_shape(row, SHAPING_LOT_FLATTEN_M))
-    if poly is None or poly.length <= 0:
-        return None
-    compactness = 4 * math.pi * poly.area / poly.length ** 2
-    return poly if compactness >= SHAPING_LOT_MIN_COMPACTNESS else None
 
 
 def _load_plane_edits(db_path: Path, course_id: str) -> list[sqlite3.Row]:
@@ -3588,18 +3565,6 @@ def shaping_global(db_path: Path, course_ident: str) -> tuple[dict, dict]:
     if mixed:
         ops.append({"id": SHAPING_SPLIT_ID, "op": "golfmap.split_surfaces", "select": {"shape": mixed}})
 
-    lots = []
-    for r in rows:
-        poly = _is_lot(r)
-        if poly is not None:
-            seed = r["feature_no"] if r["feature_no"] is not None else _id_seed(r["id"])
-            lots.append({"id": f"lot-{shape_ids[r['id']]}", "op": "golfmap.flatten_footprint",
-                         "featureId": r["id"], "seed": seed, "footprint3006": _shaping_ring(poly),
-                         "level": "plane", "falloffM": SHAPING_LOT_FALLOFF_M})
-    lots.sort(key=lambda o: (o["seed"], o["id"]))
-    ops += lots
-    stats["lots"] = len(lots)
-
     # Where the meshes are: every shape the SVG writes (bridge decks are props).
     course_shapes, tree = _course_mesh_shapes(db_path, rows, fills)
     pads, used = [], set()
@@ -3607,8 +3572,8 @@ def shaping_global(db_path: Path, course_ident: str) -> tuple[dict, dict]:
     for edit in _load_plane_edits(db_path, course["id"]):
         ref = edit["origin_ref"] or ""
         if ref.startswith("feature:"):
-            # A lot graded from a feature: this course's is a lot op above (or not
-            # a lot any more); another course's, or a deleted feature's, is not ours.
+            # A lot plane from an older road grading (lots are smoothed now, not
+            # planes): no mesh op; another course's, or a deleted feature's, is not ours.
             stats["lot_edits" if ref[len("feature:"):] in course_ids else "stale_edits"] += 1
             continue
         try:
@@ -3885,7 +3850,7 @@ def cmd_shaping_global(db_path: Path, course_ident: str, out: Path | None = None
     print(f"  {doc['course']['name']} ({doc['course']['id']}): {len(doc['ops'])} op(s) - "
           + ", ".join(f"{k} {v}" for k, v in counts.items()))
     print(f"  {stats['tees']} tee(s), {stats['paths']} path piece(s) (bridge decks left out), "
-          f"{stats['lots']} lot(s) levelled as planes, {stats['pads']} pad(s)")
+          f"{stats['pads']} pad(s)")
     if stats.get("mixed_roads"):
         split = next(o for o in doc["ops"] if o["id"] == SHAPING_SPLIT_ID)
         print(f"  {stats['mixed_roads']} road shape(s) of mixed surfaces split per surface in Blender: "
@@ -3894,7 +3859,7 @@ def cmd_shaping_global(db_path: Path, course_ident: str, out: Path | None = None
         print(f"  {stats['pads_far']} plane edit(s) further than {SHAPING_PAD_REACH_M:g} m from every course "
               f"shape left out (they move no mesh)")
     if stats["lot_edits"]:
-        print(f"  {stats['lot_edits']} lot plane edit(s) of this course's paths skipped (the lots come from the features)")
+        print(f"  {stats['lot_edits']} old lot plane edit(s) of this course's paths skipped (re-run Road grades: lots are smoothed now)")
     if stats["stale_edits"]:
         print(f"  {stats['stale_edits']} plane edit(s) of a feature not on this course (deleted, or another "
               f"course's) skipped")

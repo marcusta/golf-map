@@ -127,18 +127,18 @@ def test_fetch_roads_writes_the_lot_as_one_feature_and_road_grades_fits_it_a_pla
     edits_out = tmp_path / "grades.geojson"
     cmd_road_grades(lines, edits_out)
     edits = json.loads(edits_out.read_text(encoding="utf-8"))["features"]
-    assert [e["properties"]["op"] for e in edits] == ["plane", "corridor"]  # the lot replays first
-    plane = edits[0]["properties"]
-    assert plane["originRef"] == "osm:parking/1" and plane["origin"] == "road-grades"
-    assert "flat" not in plane  # tilted best fit, not dug level
-    assert plane["createdAt"] < edits[1]["properties"]["createdAt"]
-    # The edit polygon reaches featherM beyond the lot so the whole lot sits on the plane.
+    assert [e["properties"]["op"] for e in edits] == ["smooth", "corridor"]  # the lot replays first
+    lot_edit = edits[0]["properties"]
+    assert lot_edit["originRef"] == "osm:parking/1" and lot_edit["origin"] == "road-grades"
+    assert lot_edit["radiusM"] == roads.DEFAULT_LOT_SMOOTH_RADIUS_M and "flat" not in lot_edit  # smoothed lidar, not a plane
+    assert lot_edit["createdAt"] < edits[1]["properties"]["createdAt"]
+    # The edit polygon reaches featherM beyond the lot so the whole lot is smoothed.
     lons, lats = zip(*edits[0]["geometry"]["coordinates"][0])
     xs, ys = reproject(lons, lats)
     edit_poly = Polygon(zip(xs, ys))
     assert edit_poly.area > lot.polygon.area
     assert edit_poly.buffer(-roads.DEFAULT_LOT_FEATHER_M + 0.2).contains(lot.polygon)
-    assert "1 parking lot plane(s)" in capsys.readouterr().out
+    assert "1 parking lot(s) smoothed" in capsys.readouterr().out
 
     cmd_road_grades(lines, edits_out, classes={"road"})
     assert [e["properties"]["op"] for e in json.loads(edits_out.read_text(encoding="utf-8"))["features"]] == ["corridor"]

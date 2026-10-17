@@ -36,8 +36,8 @@ relations) that are surface lots are fetched too, used as mapped — they ARE
 the paved surface, where the aisles OSM draws through them only cover strips
 of it. Their `road_class` is `parking`; `service` ways lying inside a lot
 (PARKING_AISLE_INSIDE of their length) are absorbed into it — dropped, lending
-the lot their surface when it has none. Grading fits one tilted `plane` per
-lot (lot_grade_features) instead of a corridor.
+the lot their surface when it has none. Grading smooths each lot's lidar
+ground (a `smooth` edit, lot_grade_features) instead of a corridor.
 
 Skipped: tunnels (nothing to paint) and SKIP_HIGHWAY classes (steps,
 platforms, proposed/construction). `area=yes` ways are surfaces already and
@@ -750,6 +750,9 @@ def read_parking_lots(path) -> list[ParkingLot]:
 
 
 DEFAULT_LOT_FEATHER_M = 2.0
+# The median radius a lot's ground is smoothed over: wide enough to take out
+# a mound or a lidar seam, small against a lot, so its slope and bends stay.
+DEFAULT_LOT_SMOOTH_RADIUS_M = 4.0
 
 
 def lot_grade_features(
@@ -757,20 +760,24 @@ def lot_grade_features(
     to_wgs84: Reproject,
     *,
     feather_m: float = DEFAULT_LOT_FEATHER_M,
+    radius_m: float = DEFAULT_LOT_SMOOTH_RADIUS_M,
     created_at: str = "",
     first_index: int = 0,
 ) -> list[dict]:
-    """One D-TE5 `plane` terrain edit per parking lot: an outlier-rejected
-    least-squares plane — a lot on a slope stays evenly sloped, as lots are
-    built, not dug level — over the lot grown by `feather_m` (dem_edit
-    feathers inside the polygon, so the lot itself is fully on the plane).
+    """One D-TE5 `smooth` terrain edit per parking lot: the lidar ground under
+    the lot through a `radius_m` median (dem_edit), over the lot grown by
+    `feather_m` (dem_edit feathers inside the polygon, so the lot itself is
+    fully smoothed). A lot keeps the slope and the gentle bends it was built
+    with and loses the bumps. One least-squares plane per lot did not: real
+    lots are not planes (Omberg's 8,500 m² yard bends 1.6 m off its best
+    plane), and neighbouring lots' planes met in shelves up to 0.8 m.
     Holes are graded with the lot. Same origin as the road corridors, and
     numbered before them, so the lots replay FIRST: a corridor takes its
     profile from the heights as they are when it replays, so a road ending
-    at a lot runs into the lot's plane, and a road passing through or along
-    one stays one smooth line. Replayed after the roads, a lot's plane
-    overwrote the graded road inside it and its feather left a step where
-    the road went on (Vreta: 1.5 m in 3 m beside a gravel yard)."""
+    at a lot runs into the smoothed lot, and a road passing through or along
+    one stays one smooth line. Replayed after the roads, a lot overwrote the
+    graded road inside it and its feather left a step where the road went
+    on (Vreta: 1.5 m in 3 m beside a gravel yard)."""
     features = []
     for offset, lot in enumerate(lots):
         polygon = Polygon(lot.polygon.exterior).buffer(feather_m, quad_segs=BUFFER_QUAD_SEGS, join_style="round")
@@ -781,8 +788,9 @@ def lot_grade_features(
         features.append({
             "type": "Feature",
             "properties": {
-                "op": "plane",
+                "op": "smooth",
                 "featherM": feather_m,
+                "radiusM": radius_m,
                 "createdAt": f"{created_at}#{index:05d}" if created_at else None,
                 "origin": GRADES_ORIGIN,
                 "originRef": lot.id,

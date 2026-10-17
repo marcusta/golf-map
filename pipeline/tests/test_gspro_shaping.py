@@ -195,7 +195,7 @@ def test_the_layer_is_the_shaping_format_generated_for_the_course(tmp_path):
 
 def test_tees_are_flattened_and_paths_smoothed_by_type_before_the_footprints_with_no_cut_on_non_concrete(tmp_path):
     """Selected by type, so a tee or path drawn tomorrow is covered without a
-    new op; then the lots, then the pads (the plan's area-edit order). The cart-path cut
+    new op; then the pads (the plan's area-edit order). The cart-path cut
     is the concrete-slab look: this course's paths are asphalt and gravel, so none."""
     doc, stats = _layer(tmp_path)
     ids = [o["id"] for o in doc["ops"]]
@@ -207,7 +207,7 @@ def test_tees_are_flattened_and_paths_smoothed_by_type_before_the_footprints_wit
     assert ops["paths-smooth"]["op"] == "afrod.smoothcartpaths" and ops["paths-smooth"]["select"] == {"type": "path"}
     assert ops["paths-smooth"]["params"] == gspro.SHAPING_PATH_SMOOTH_PARAMS
     assert stats["tees"] == 2 and stats["concrete_paths"] == 0 and stats["concrete_cut_skipped"] == 0
-    assert ids.index("lot-1a") > ids.index("paths-smooth") and ids.index("pad-osm-way-7") > ids.index("lot-1a")
+    assert ids.index("pad-osm-way-7") > ids.index("paths-smooth")
 
 
 def test_only_concrete_paths_are_cut_selected_by_feature_id(tmp_path):
@@ -231,7 +231,7 @@ def test_a_concrete_path_in_a_mixed_road_shape_is_not_cut_and_is_counted(tmp_pat
 
 
 def test_gravel_and_dirt_paths_get_the_edge_fade_last_on_the_final_heights(tmp_path):
-    """The fade needs each part's own surface (after the split) and the heights the lots and pads leave: it is the
+    """The fade needs each part's own surface (after the split) and the heights the pads leave: it is the
     layer's last op. Asphalt and concrete keep a crisp edge: a course without gravel or dirt gets no op."""
     doc, stats = _layer(tmp_path)
     ids = [o["id"] for o in doc["ops"]]
@@ -251,7 +251,7 @@ def test_a_road_network_of_two_surfaces_is_split_per_surface_after_the_cut_and_s
     ids = [o["id"] for o in doc["ops"]]
     split = _ops(doc)["paths-surfaces"]
     assert split == {"id": "paths-surfaces", "op": "golfmap.split_surfaces", "select": {"shape": ["roads_5"]}}
-    assert ids.index("paths-smooth") < ids.index("paths-surfaces") < ids.index("lot-1a")
+    assert ids.index("paths-smooth") < ids.index("paths-surfaces") < ids.index("pad-osm-way-7")
     assert stats["mixed_roads"] == 1
     import importlib.util
     spec = importlib.util.spec_from_file_location("shape_layers", gspro.SHAPING_ENGINE_LAYERS)
@@ -276,19 +276,14 @@ def test_no_tee_or_path_ops_for_a_course_without_them(tmp_path):
     assert doc["ops"] == []
 
 
-def test_a_paved_lot_is_levelled_as_a_tilted_plane_named_after_its_shape(tmp_path):
-    """Only a hand-made path polygon compact enough to be an area: not a road
-    outline, a centerline road, a generated fillet or a bridge deck. Its own
-    outline is the level footprint, with the DEM lot planes' 2 m falloff."""
+def test_a_paved_lot_gets_no_mesh_op_the_dem_smooths_it(tmp_path):
+    """Road grading smooths a lot's lidar ground in the DEM (real lots slope and
+    bend; a plane per lot left shelves where lots met) and the meshes follow it
+    through the conform: no footprint op, and no lot counted."""
     doc, stats = _layer(tmp_path)
-    lots = [o for o in doc["ops"] if o["id"].startswith("lot-")]
-    assert [o["id"] for o in lots] == ["lot-1a"]
-    lot = lots[0]
-    assert lot["op"] == "golfmap.flatten_footprint"
-    assert lot["featureId"] == "lot" and lot["seed"] == 0x1a
-    assert lot["level"] == "plane" and lot["falloffM"] == gspro.SHAPING_LOT_FALLOFF_M
-    assert Polygon(lot["footprint3006"]).equals(Polygon([(X0 - 60, Y0), (X0 - 20, Y0), (X0 - 20, Y0 + 30), (X0 - 60, Y0 + 30)]))
-    assert stats["lots"] == 1
+    assert not [o for o in doc["ops"] if o["id"].startswith("lot-")]
+    assert all(o.get("featureId") != "lot" for o in doc["ops"])
+    assert "lots" not in stats
 
 
 def test_a_building_pad_near_the_course_is_its_flat_core_with_the_feather_as_falloff(tmp_path):
@@ -313,8 +308,8 @@ def test_a_hand_drawn_plane_is_kept_tilted_and_named_after_its_edit_id(tmp_path)
 
 def test_edits_that_are_not_pads_of_this_course_near_its_meshes_are_left_out(tmp_path):
     """Far from every shape (moves no mesh), disabled, another site's, not a
-    plane, or a lot graded from a feature (this course's is a lot op; a
-    deleted feature's is stale)."""
+    plane, or a lot plane an older road grading made from a feature (no mesh
+    op now; a deleted feature's is stale)."""
     doc, stats = _layer(tmp_path)
     assert sorted(i for i in _ops(doc) if i.startswith("pad-")) == ["pad-ehand", "pad-osm-way-7"]
     assert stats["pads_far"] == 1 and stats["lot_edits"] == 1 and stats["stale_edits"] == 1
@@ -335,12 +330,12 @@ def test_regenerating_is_byte_identical_and_reimported_pads_keep_their_ids(tmp_p
     assert out_a.read_bytes() == out_b.read_bytes()
 
 
-def test_a_new_lot_or_pad_adds_an_op_and_changes_no_other(tmp_path):
+def test_a_new_pad_adds_an_op_and_a_new_lot_none_and_changes_no_other(tmp_path):
     before = _ops(_layer(tmp_path, name="a.sqlite")[0])
     more_features = FEATURES + [_feature("lot2", "path", [_rect(-120, 0, -90, 30)], 0x2f)]
     more_edits = EDITS + [_edit("e-new", _edit_ring(100, 40, 120, 60), ref="osm:way/11")]
     after = _ops(_layer(tmp_path, more_features, more_edits, name="b.sqlite")[0])
-    assert set(after) - set(before) == {"lot-2f", "pad-osm-way-11"}
+    assert set(after) - set(before) == {"pad-osm-way-11"}
     assert all(after[k] == v for k, v in before.items())
 
 
@@ -359,9 +354,9 @@ def test_the_cli_writes_one_coordinate_pair_per_line(tmp_path, capsys):
     assert gspro.main(["shaping-global", "--course", "testbana", "--db", str(db), "--out", str(out)]) == 0
     text = out.read_text(encoding="utf-8")
     assert json.loads(text)["format"] == "golfmap-shaping-layer-v1"
-    assert f"[{X0 - 60:.1f}, {Y0:.1f}]" in text
+    assert f"[{X0 + 44:.1f}, {Y0 + 4:.1f}]" in text
     report = capsys.readouterr().out
-    assert "2 tee(s)" in report and "1 lot(s)" in report and "2 pad(s)" in report
+    assert "2 tee(s)" in report and "lot(s)" not in report.split("old lot")[0] and "2 pad(s)" in report
 
 
 def test_the_default_file_goes_under_the_courses_docs_folder():

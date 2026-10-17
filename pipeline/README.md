@@ -251,10 +251,13 @@ not `parking=underground` / `multi-storey` / `rooftop` / garages) come along as
 inside a lot (80 % of their length) are its aisles and are absorbed — the lot
 polygon already covers them — lending it their surface when it has none. The
 centerlines file carries each lot as a Polygon (`road_class: parking`), and
-`road-grades` fits it one tilted `plane` edit (outlier-rejected least squares, so a
-lot on a slope stays evenly sloped) grown by a 2 m feather, replayed **before**
-the road corridors. A corridor takes its profile from the heights as they are when
-it replays, so a road ending at a lot runs into the lot's plane, and a road passing
+`road-grades` writes it one `smooth` edit (a 4 m median of the lidar ground,
+`DEFAULT_LOT_SMOOTH_RADIUS_M`, so a lot keeps the slope and bends it was built with
+and loses the bumps) grown by a 2 m feather, replayed **before** the road corridors.
+It used to be one tilted plane per lot: Omberg's 8,500 m² yard bends 1.6 m off its
+best plane, and neighbouring lots' planes met in shelves up to 0.8 m. A corridor
+takes its profile from the heights as they are when it replays, so a road ending
+at a lot runs into the smoothed lot, and a road passing
 through or along one stays one smooth line. Replayed after, a lot overwrote the
 graded road inside it, and its feather left a 1.5 m step beside Vreta's gravel yard.
 Across generators the replay order is fixed (`GENERATED_ORDER` in
