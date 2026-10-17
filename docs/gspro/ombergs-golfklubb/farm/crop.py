@@ -39,6 +39,14 @@ def main():
     np.savez_compressed(OUT / 'lidar-crop.npz', points=pts)
     crop['lidarPoints'] = int(len(pts))
     crop['lidarClasses'] = {str(int(c)): int(n) for c, n in zip(*np.unique(pts[:, 3], return_counts=True))}
+    # The course terrain and meshes are built from the edited DEM: model.py sets each asset's dz
+    # from it so that Unity's centre-on-terrain placement lands at the authored ground height.
+    with rasterio.open(SOURCE / 'dem-edited.tif') as src:
+        win = from_bounds(*BOUNDS, transform=src.transform).round_offsets().round_lengths()
+        z = src.read(1, window=win).astype('float32')
+        t = src.window_transform(win)
+    np.savez_compressed(OUT / 'dem-edited-crop.npz', z=z, topLeftE=t.c, topLeftN=t.f, pixelE=t.a, pixelN=-t.e)
+    crop['demEdited'] = dict(file='dem-edited-crop.npz', shape=list(z.shape), pixelM=t.a)
     feats = json.loads((SOURCE / 'buildings.geojson').read_text())['features']
     keep = [f for f in feats if BOUNDS[0] < f['properties']['rect']['cx'] < BOUNDS[2] and BOUNDS[1] < f['properties']['rect']['cy'] < BOUNDS[3]]
     (OUT / 'osm-buildings.json').write_text(json.dumps(keep, indent=1))

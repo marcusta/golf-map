@@ -42,6 +42,20 @@ class Evidence:
         self.osm = {str(f["properties"]["osm_id"]): f for f in json.loads((data / "osm-buildings.json").read_text())}
         self.points = np.load(data / "lidar-crop.npz")["points"]
         self.data = data
+        self.dem = np.load(data / "dem-edited-crop.npz")
+
+    def terrain(self, e, n):
+        """Course terrain height (edited DEM, bilinear) at EPSG:3006 (e, n): where Unity's
+        centre-on-terrain placement puts an asset's origin before dz."""
+        d = self.dem
+        x = (e - float(d["topLeftE"])) / float(d["pixelE"]) - .5
+        y = (float(d["topLeftN"]) - n) / float(d["pixelN"]) - .5
+        z = d["z"]
+        i, j = int(math.floor(y)), int(math.floor(x))
+        fy, fx = y - i, x - j
+        i, j = max(0, min(i, z.shape[0] - 2)), max(0, min(j, z.shape[1] - 2))
+        return float(z[i, j] * (1 - fx) * (1 - fy) + z[i, j + 1] * fx * (1 - fy)
+                     + z[i + 1, j] * (1 - fx) * fy + z[i + 1, j + 1] * fx * fy)
 
 
 def farm_name(mat):
@@ -64,25 +78,30 @@ def main():
     ev = Evidence()
     assets, instances = {}, []
 
+    def lift(e, n, ground_abs, dz):
+        # Unity sets the origin on the course terrain under it, then adds dz: carry the gap
+        # between the authored ground and that terrain so the asset lands at ground_abs (+ dz).
+        return round(ground_abs - ev.terrain(e, n) + dz, 3)
+
     def add(aid, g, e, n, yaw, ground_abs, dz=0.0):
         """Place asset `aid` (asset-local metres, +x along yawDeg's compass bearing, z up from
-        ground_abs) at EPSG:3006 (e, n). Unity drops it on the terrain under its centre + dz."""
+        ground_abs) at EPSG:3006 (e, n), so that its z=0 lands at ground_abs + dz in Unity."""
         assert aid.startswith("omberg_farm_"), aid
         assets[aid] = g
-        instances.append(dict(asset=aid, e=e, n=n, yawDeg=yaw, ground="centre", dz=dz,
-                              layoutZ=round(ground_abs - BASE_Z, 3)))
+        instances.append(dict(asset=aid, e=e, n=n, yawDeg=yaw, ground="centre", dz=lift(e, n, ground_abs, dz),
+                              layoutZ=round(ground_abs + dz - BASE_Z, 3)))
 
     prefabs, proxies = {}, []
 
     def add_prefab(aid, prefab, e, n, yaw, ground_abs, scale=(1, 1, 1), size=None, dz=0.0, category="prop"):
         """Place a Unity prefab from the course project (e.g. the CESimgolf boxwood) instead of
         authored geometry. `scale` is Unity's local scale (x along yawDeg, y up, z across; it
-        multiplies the prefab's own); each instance's centre sits on the terrain + dz. `size` is
+        multiplies the prefab's own); each instance's origin lands at ground_abs + dz. `size` is
         the unscaled prefab in the same axes and only draws a review box; prefabs are not exported."""
         assert aid.startswith("omberg_farm_"), aid
         prefabs.setdefault(aid, dict(prefab=prefab, category=category, collider="keep"))
-        instances.append(dict(asset=aid, e=e, n=n, yawDeg=yaw, ground="centre", dz=dz,
-                              scale=[round(v, 4) for v in scale], layoutZ=round(ground_abs - BASE_Z, 3)))
+        instances.append(dict(asset=aid, e=e, n=n, yawDeg=yaw, ground="centre", dz=lift(e, n, ground_abs, dz),
+                              scale=[round(v, 4) for v in scale], layoutZ=round(ground_abs + dz - BASE_Z, 3)))
         if size:
             proxies.append((aid, e, n, yaw, ground_abs + dz, [size[0] * scale[0], size[2] * scale[2], size[1] * scale[1]]))
 
@@ -150,7 +169,7 @@ def main():
         for aid, e, n, yaw, z, (sx, sy, sz) in proxies:
             bpy.ops.mesh.primitive_cube_add(size=1, location=(e - ORIGIN[0], n - ORIGIN[1], z - BASE_Z + sz / 2))
             ob = bpy.context.object
-            ob.name = aid + " proxy"
+            ob.name = "proxy " + aid  # not "omberg_farm_*": the survey checker picks assets by that prefix
             ob.scale = (sx, sy, sz)
             ob.rotation_euler.z = math.radians(90 - yaw)
             ob.data.materials.append(mat)
