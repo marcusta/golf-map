@@ -729,11 +729,13 @@ class Geo:
         if L < 1e-6:
             return
         fwd = d / L
-        side = fwd.cross(UP)
+        # Right-handed (fwd, side, up) basis: the reverse cross order mirrored the box, so every
+        # beam's faces were wound inside out (back-face culled in Unity).
+        side = UP.cross(fwd)
         if side.length < 1e-4:
             side = Vector((1, 0, 0))
         side.normalize()
-        upv = side.cross(fwd).normalized()
+        upv = fwd.cross(side).normalized()
         m = Matrix((
             (fwd.x, side.x, upv.x, 0), (fwd.y, side.y, upv.y, 0), (fwd.z, side.z, upv.z, 0), (0, 0, 0, 1)))
         self.push(Matrix.Translation(a) @ m)
