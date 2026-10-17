@@ -1,0 +1,941 @@
+{
+  "crs": "EPSG:3006",
+  "verticalDatum": "RH2000 (source lidar/DEM; metres)",
+  "sourceSite": "D:\\golf-map\\data\\sources\\317d1f83-3ade-431c-8201-605ac0bd2871",
+  "sourceOrthoResolutionM": 0.16,
+  "lidarCropPoints": 71643,
+  "orthoBounds3006": [
+    477750,
+    6457610,
+    477960,
+    6457790
+  ],
+  "uncertainty": "OSM corners retain source decimal coordinates, not centimetre survey accuracy. Roof traces are approximate; sparse lidar supports plane heights to about 0.2m but edges to roughly 0.5-1.5m. Existing eaveM/ridgeM are nDSM distribution percentiles, not wall/eave levels.",
+  "buildings": [
+    {
+      "id": "osm:way/687779185",
+      "rect": {
+        "cx": 477791.03,
+        "cy": 6457760.96,
+        "lengthM": 25.4,
+        "widthM": 18.29,
+        "angleDeg": 5.7
+      },
+      "footprint3006": [
+        [
+          477789.91,
+          6457751.66
+        ],
+        [
+          477789.35,
+          6457757.31
+        ],
+        [
+          477778.75,
+          6457756.24
+        ],
+        [
+          477777.49,
+          6457768.8
+        ],
+        [
+          477802.76,
+          6457771.32
+        ],
+        [
+          477804.02,
+          6457758.73
+        ],
+        [
+          477794.01,
+          6457757.73
+        ],
+        [
+          477794.57,
+          6457752.12
+        ],
+        [
+          477789.91,
+          6457751.66
+        ]
+      ],
+      "axisBearingFromNorthDeg": 84.3,
+      "groundMedianAbsM": 105.55,
+      "groundRangeP10P90AbsM": [
+        105.44,
+        105.64
+      ],
+      "groundPoints": 233,
+      "roofAbsoluteQuantilesP05P20P50P95P99": [
+        108.797,
+        112.006,
+        112.83,
+        113.861,
+        113.97
+      ],
+      "roofPoints": 419,
+      "existingNDSMPercentiles": {
+        "eaveM": 6.47,
+        "ridgeM": 8.31
+      },
+      "principalGableRect": {
+        "cx": 477790.75,
+        "cy": 6457763.78,
+        "lengthM": 25.4,
+        "widthM": 12.63,
+        "angleDeg": 5.7
+      },
+      "simpleGableFits": {
+        "-1": {
+          "originEN": [
+            477790.9176,
+            6457760.600133335
+          ],
+          "slopeE": -0.039124856726233045,
+          "slopeN": 0.40518517142675575,
+          "zAtOrigin": 112.3913845056324,
+          "points": 71,
+          "rmseM": 0.044181115168576854
+        },
+        "1": {
+          "originEN": [
+            477790.5047252748,
+            6457766.7883516485
+          ],
+          "slopeE": 0.03937121161171975,
+          "slopeN": -0.40582325348845005,
+          "zAtOrigin": 113.29901098895985,
+          "points": 91,
+          "rmseM": 0.016216615521465607
+        }
+      },
+      "inferredGableAtMidLength": {
+        "ridgeEN": [
+          477790.647223845,
+          6457764.809684285
+        ],
+        "ridgeAbsM": 114.10761055725929,
+        "eaveMinusAbsM": 111.11574455108077,
+        "eavePlusAbsM": 111.95473062574034,
+        "caveat": "Eaves evaluated at principal OSM wall lines, not traced roof edge; \u00b10.3-0.6 m for model use."
+      }
+    },
+    {
+      "id": "osm:way/687779186",
+      "rect": {
+        "cx": 477782.45,
+        "cy": 6457725.49,
+        "lengthM": 24.64,
+        "widthM": 18.83,
+        "angleDeg": 121.6
+      },
+      "footprint3006": [
+        [
+          477767.98,
+          6457731.05
+        ],
+        [
+          477779.26,
+          6457737.97
+        ],
+        [
+          477782.99,
+          6457731.89
+        ],
+        [
+          477787.77,
+          6457734.81
+        ],
+        [
+          477790.53,
+          6457730.31
+        ],
+        [
+          477785.84,
+          6457727.44
+        ],
+        [
+          477792.23,
+          6457717.04
+        ],
+        [
+          477780.87,
+          6457710.08
+        ],
+        [
+          477767.98,
+          6457731.05
+        ]
+      ],
+      "axisBearingFromNorthDeg": 148.4,
+      "groundMedianAbsM": 106.03,
+      "groundRangeP10P90AbsM": [
+        105.92,
+        106.18
+      ],
+      "groundPoints": 229,
+      "roofAbsoluteQuantilesP05P20P50P95P99": [
+        109.843,
+        112.63199999999999,
+        113.57000000000001,
+        118.986,
+        120.64059999999999
+      ],
+      "roofPoints": 467,
+      "existingNDSMPercentiles": {
+        "eaveM": 6.7,
+        "ridgeM": 13.09
+      },
+      "principalGableRect": {
+        "cx": 477780.1,
+        "cy": 6457724.03,
+        "lengthM": 24.64,
+        "widthM": 13.25,
+        "angleDeg": 121.6
+      },
+      "simpleGableFits": {
+        "-1": {
+          "originEN": [
+            477782.9479012348,
+            6457725.540493825
+          ],
+          "slopeE": -0.34237224581100284,
+          "slopeN": -0.21253912242535197,
+          "zAtOrigin": 113.11432098793803,
+          "points": 81,
+          "rmseM": 0.024312802091957162
+        },
+        "1": {
+          "originEN": [
+            477777.3719753089,
+            6457722.421975306
+          ],
+          "slopeE": 0.3395682402594115,
+          "slopeN": 0.21422155550394534,
+          "zAtOrigin": 113.89876543167817,
+          "points": 81,
+          "rmseM": 0.022100029272543422
+        }
+      },
+      "inferredGableAtMidLength": {
+        "ridgeEN": [
+          477779.29618962924,
+          6457723.535492561
+        ],
+        "ridgeAbsM": 114.79070690064849,
+        "eaveMinusAbsM": 111.74069187438838,
+        "eavePlusAbsM": 112.50986076683088,
+        "caveat": "Eaves evaluated at principal OSM wall lines, not traced roof edge; \u00b10.3-0.6 m for model use."
+      }
+    },
+    {
+      "id": "osm:way/687779187",
+      "rect": {
+        "cx": 477868.97,
+        "cy": 6457745.33,
+        "lengthM": 35.93,
+        "widthM": 17.21,
+        "angleDeg": 95.6
+      },
+      "footprint3006": [
+        [
+          477860.19,
+          6457746.73
+        ],
+        [
+          477864.48,
+          6457747.15
+        ],
+        [
+          477862.94,
+          6457762.79
+        ],
+        [
+          477875.77,
+          6457764.06
+        ],
+        [
+          477879.3,
+          6457728.3
+        ],
+        [
+          477866.44,
+          6457727.03
+        ],
+        [
+          477864.96,
+          6457742.12
+        ],
+        [
+          477860.68,
+          6457741.7
+        ],
+        [
+          477860.19,
+          6457746.73
+        ]
+      ],
+      "axisBearingFromNorthDeg": 174.4,
+      "groundMedianAbsM": 108.11,
+      "groundRangeP10P90AbsM": [
+        107.95,
+        108.3
+      ],
+      "groundPoints": 293,
+      "roofAbsoluteQuantilesP05P20P50P95P99": [
+        114.1595,
+        114.87,
+        115.61,
+        116.61,
+        116.6701
+      ],
+      "roofPoints": 600,
+      "existingNDSMPercentiles": {
+        "eaveM": 6.81,
+        "ridgeM": 8.5
+      },
+      "principalGableRect": {
+        "cx": 477868.97,
+        "cy": 6457745.33,
+        "lengthM": 35.93,
+        "widthM": 17.21,
+        "angleDeg": 95.6
+      },
+      "simpleGableFits": {
+        "-1": {
+          "originEN": [
+            477873.05753246753,
+            6457745.737857141
+          ],
+          "slopeE": -0.38559891472845714,
+          "slopeN": -0.0415133672210107,
+          "zAtOrigin": 115.74673847404901,
+          "points": 149,
+          "rmseM": 0.055785925180005205
+        },
+        "1": {
+          "originEN": [
+            477865.69873239426,
+            6457744.91943662
+          ],
+          "slopeE": 0.4281080876100758,
+          "slopeN": 0.042976954909808567,
+          "zAtOrigin": 114.95844834363317,
+          "points": 58,
+          "rmseM": 0.05233123508358301
+        }
+      },
+      "inferredGableAtMidLength": {
+        "ridgeEN": [
+          477870.14187225077,
+          6457745.4449030785
+        ],
+        "ridgeAbsM": 116.88317539890245,
+        "eaveMinusAbsM": 114.00271647190303,
+        "eavePlusAbsM": 112.67417298518492,
+        "caveat": "Eaves evaluated at principal OSM wall lines, not traced roof edge; \u00b10.3-0.6 m for model use."
+      }
+    },
+    {
+      "id": "osm:way/687779189",
+      "rect": {
+        "cx": 477899.58,
+        "cy": 6457735.8,
+        "lengthM": 20.97,
+        "widthM": 8.38,
+        "angleDeg": 85.2
+      },
+      "footprint3006": [
+        [
+          477896.29,
+          6457746.6
+        ],
+        [
+          477904.64,
+          6457745.89
+        ],
+        [
+          477902.87,
+          6457725.0
+        ],
+        [
+          477894.53,
+          6457725.71
+        ],
+        [
+          477896.29,
+          6457746.6
+        ]
+      ],
+      "axisBearingFromNorthDeg": 4.8,
+      "groundMedianAbsM": 110.51,
+      "groundRangeP10P90AbsM": [
+        110.3,
+        110.65100000000001
+      ],
+      "groundPoints": 210,
+      "roofAbsoluteQuantilesP05P20P50P95P99": [
+        114.12,
+        114.14,
+        114.17,
+        114.23,
+        114.2521
+      ],
+      "roofPoints": 198,
+      "existingNDSMPercentiles": {
+        "eaveM": 3.58,
+        "ridgeM": 3.78
+      }
+    },
+    {
+      "id": "osm:way/687779190",
+      "rect": {
+        "cx": 477859.54,
+        "cy": 6457656.12,
+        "lengthM": 11.73,
+        "widthM": 8.68,
+        "angleDeg": 170.4
+      },
+      "footprint3006": [
+        [
+          477853.04,
+          6457652.81
+        ],
+        [
+          477854.49,
+          6457661.37
+        ],
+        [
+          477866.05,
+          6457659.42
+        ],
+        [
+          477864.6,
+          6457650.87
+        ],
+        [
+          477853.04,
+          6457652.81
+        ]
+      ],
+      "axisBearingFromNorthDeg": 99.6,
+      "groundMedianAbsM": 109.82000000000001,
+      "groundRangeP10P90AbsM": [
+        109.46000000000001,
+        110.08
+      ],
+      "groundPoints": 171,
+      "roofAbsoluteQuantilesP05P20P50P95P99": [
+        114.65,
+        114.82400000000001,
+        115.275,
+        115.9345,
+        116.0
+      ],
+      "roofPoints": 112,
+      "existingNDSMPercentiles": {
+        "eaveM": 5.06,
+        "ridgeM": 6.15
+      },
+      "principalGableRect": {
+        "cx": 477859.54,
+        "cy": 6457656.12,
+        "lengthM": 11.73,
+        "widthM": 8.68,
+        "angleDeg": 170.4
+      },
+      "simpleGableFits": {
+        "-1": {
+          "originEN": [
+            477859.32041666657,
+            6457658.251249999
+          ],
+          "slopeE": -0.07064555489261133,
+          "slopeN": -0.4039220400214174,
+          "zAtOrigin": 115.24625000047727,
+          "points": 24,
+          "rmseM": 0.012624475911125862
+        }
+      }
+    },
+    {
+      "id": "osm:way/687779191",
+      "rect": {
+        "cx": 477843.18,
+        "cy": 6457669.85,
+        "lengthM": 25.3,
+        "widthM": 8.43,
+        "angleDeg": 89.0
+      },
+      "footprint3006": [
+        [
+          477839.2,
+          6457682.57
+        ],
+        [
+          477847.62,
+          6457682.43
+        ],
+        [
+          477847.16,
+          6457657.13
+        ],
+        [
+          477838.74,
+          6457657.29
+        ],
+        [
+          477839.2,
+          6457682.57
+        ]
+      ],
+      "axisBearingFromNorthDeg": 1.0,
+      "groundMedianAbsM": 109.055,
+      "groundRangeP10P90AbsM": [
+        108.71000000000001,
+        109.16
+      ],
+      "groundPoints": 232,
+      "roofAbsoluteQuantilesP05P20P50P95P99": [
+        112.36,
+        112.37,
+        112.38,
+        112.43,
+        112.4936
+      ],
+      "roofPoints": 242,
+      "existingNDSMPercentiles": {
+        "eaveM": 3.3,
+        "ridgeM": 3.5
+      }
+    },
+    {
+      "id": "osm:way/687779192",
+      "rect": {
+        "cx": 477808.07,
+        "cy": 6457659.24,
+        "lengthM": 47.06,
+        "widthM": 32.4,
+        "angleDeg": 88.5
+      },
+      "footprint3006": [
+        [
+          477803.42,
+          6457675.96
+        ],
+        [
+          477805.25,
+          6457677.03
+        ],
+        [
+          477808.05,
+          6457672.3
+        ],
+        [
+          477803.24,
+          6457669.46
+        ],
+        [
+          477803.09,
+          6457663.5
+        ],
+        [
+          477817.2,
+          6457663.13
+        ],
+        [
+          477817.39,
+          6457669.89
+        ],
+        [
+          477824.56,
+          6457669.71
+        ],
+        [
+          477823.68,
+          6457636.87
+        ],
+        [
+          477816.48,
+          6457637.06
+        ],
+        [
+          477816.44,
+          6457635.48
+        ],
+        [
+          477802.08,
+          6457635.86
+        ],
+        [
+          477802.3,
+          6457644.11
+        ],
+        [
+          477791.47,
+          6457644.4
+        ],
+        [
+          477792.51,
+          6457683.19
+        ],
+        [
+          477803.61,
+          6457682.9
+        ],
+        [
+          477803.42,
+          6457675.96
+        ]
+      ],
+      "axisBearingFromNorthDeg": 1.5,
+      "groundMedianAbsM": 109.09,
+      "groundRangeP10P90AbsM": [
+        108.69,
+        109.215
+      ],
+      "groundPoints": 206,
+      "roofAbsoluteQuantilesP05P20P50P95P99": [
+        113.46000000000001,
+        114.07000000000001,
+        115.745,
+        119.71000000000001,
+        119.89
+      ],
+      "roofPoints": 1354,
+      "existingNDSMPercentiles": {
+        "eaveM": 5.03,
+        "ridgeM": 10.57
+      }
+    },
+    {
+      "id": "osm:way/1431566994",
+      "rect": {
+        "cx": 477921.81,
+        "cy": 6457682.14,
+        "lengthM": 50.77,
+        "widthM": 17.15,
+        "angleDeg": 15.8
+      },
+      "footprint3006": [
+        [
+          477943.9,
+          6457697.27
+        ],
+        [
+          477948.57,
+          6457680.78
+        ],
+        [
+          477899.72,
+          6457667.0
+        ],
+        [
+          477895.05,
+          6457683.51
+        ],
+        [
+          477943.9,
+          6457697.27
+        ]
+      ],
+      "axisBearingFromNorthDeg": 74.2,
+      "groundMedianAbsM": 110.66,
+      "groundRangeP10P90AbsM": [
+        110.59,
+        110.72
+      ],
+      "groundPoints": 368,
+      "roofAbsoluteQuantilesP05P20P50P95P99": [
+        118.0,
+        118.61,
+        119.60000000000001,
+        120.88,
+        120.92
+      ],
+      "roofPoints": 1114,
+      "existingNDSMPercentiles": {
+        "eaveM": 8.02,
+        "ridgeM": 10.2
+      },
+      "principalGableRect": {
+        "cx": 477921.81,
+        "cy": 6457682.14,
+        "lengthM": 50.77,
+        "widthM": 17.15,
+        "angleDeg": 15.8
+      },
+      "simpleGableFits": {
+        "-1": {
+          "originEN": [
+            477923.1353333334,
+            6457678.172923076
+          ],
+          "slopeE": -0.1060548825372925,
+          "slopeN": 0.38844145198710567,
+          "zAtOrigin": 119.0848806371489,
+          "points": 157,
+          "rmseM": 0.03657979990255291
+        },
+        "1": {
+          "originEN": [
+            477920.6694871797,
+            6457686.065512822
+          ],
+          "slopeE": 0.10717552486595318,
+          "slopeN": -0.39157392617048253,
+          "zAtOrigin": 119.63560422398095,
+          "points": 214,
+          "rmseM": 0.0290777364983992
+        }
+      },
+      "inferredGableAtMidLength": {
+        "ridgeEN": [
+          477921.6320211871,
+          6457682.7689637905
+        ],
+        "ridgeAbsM": 121.0296069586462,
+        "eaveMinusAbsM": 117.31376064292998,
+        "eavePlusAbsM": 117.81384998245706,
+        "caveat": "Eaves evaluated at principal OSM wall lines, not traced roof edge; \u00b10.3-0.6 m for model use."
+      }
+    },
+    {
+      "id": "osm:way/1431573558",
+      "rect": {
+        "cx": 477833.13,
+        "cy": 6457672.31,
+        "lengthM": 19.92,
+        "widthM": 5.62,
+        "angleDeg": 90.0
+      },
+      "footprint3006": [
+        [
+          477830.33,
+          6457682.27
+        ],
+        [
+          477835.94,
+          6457682.27
+        ],
+        [
+          477835.94,
+          6457662.35
+        ],
+        [
+          477830.33,
+          6457662.35
+        ],
+        [
+          477830.33,
+          6457682.27
+        ]
+      ],
+      "axisBearingFromNorthDeg": 0.0,
+      "groundMedianAbsM": 108.63499999999999,
+      "groundRangeP10P90AbsM": [
+        108.35300000000001,
+        108.837
+      ],
+      "groundPoints": 164,
+      "roofAbsoluteQuantilesP05P20P50P95P99": [
+        111.25,
+        111.28800000000001,
+        111.44,
+        111.623,
+        111.64
+      ],
+      "roofPoints": 115,
+      "existingNDSMPercentiles": {
+        "eaveM": 2.65,
+        "ridgeM": 3.12
+      }
+    }
+  ],
+  "interpretedRoofSections": [
+    {
+      "id": "clubhouse-west-low",
+      "roofEdge3006": [
+        [
+          477789.04,
+          6457681.65
+        ],
+        [
+          477803.28,
+          6457681.33
+        ],
+        [
+          477803.28,
+          6457633.65
+        ],
+        [
+          477789.04,
+          6457634.29
+        ]
+      ],
+      "note": "Long red western wing. Roof includes part of west veranda; wall polygon is narrower. Approximate roof-edge tracing \u00b11 m.",
+      "roofAbsQuantilesP05P20P50P95P99": [
+        112.58,
+        113.2,
+        113.74000000000001,
+        114.99000000000001,
+        115.06
+      ],
+      "points": 877
+    },
+    {
+      "id": "clubhouse-east-tall",
+      "roofEdge3006": [
+        [
+          477801.36,
+          6457662.93
+        ],
+        [
+          477817.2,
+          6457662.93
+        ],
+        [
+          477817.2,
+          6457669.65
+        ],
+        [
+          477824.88,
+          6457669.65
+        ],
+        [
+          477826.48,
+          6457633.17
+        ],
+        [
+          477801.2,
+          6457633.49
+        ]
+      ],
+      "note": "Broad tall red eastern roof, including north-facing courtyard notch; west valley meets the lower roof. Approximate roof-edge tracing \u00b11 m.",
+      "roofAbsQuantilesP05P20P50P95P99": [
+        113.7085,
+        115.47,
+        117.595,
+        119.77,
+        119.89
+      ],
+      "points": 1098
+    },
+    {
+      "id": "white-diagonal-link",
+      "roofEdge3006": [
+        [
+          477778.32,
+          6457709.33
+        ],
+        [
+          477790.8,
+          6457717.01
+        ],
+        [
+          477802.8,
+          6457696.05
+        ],
+        [
+          477790.16,
+          6457690.13
+        ]
+      ],
+      "note": "White metal tall connector roof, present in 2023 and 2025, omitted from OSM. Ortho roof lean and roof boundary ambiguity \u00b11.5 m.",
+      "roofAbsQuantilesP05P20P50P95P99": [
+        118.65,
+        119.16,
+        119.88,
+        120.92,
+        121.01
+      ],
+      "points": 436
+    },
+    {
+      "id": "white-straight-link",
+      "roofEdge3006": [
+        [
+          477790.16,
+          6457692.69
+        ],
+        [
+          477802.8,
+          6457695.73
+        ],
+        [
+          477802.96,
+          6457679.25
+        ],
+        [
+          477790.32,
+          6457679.57
+        ]
+      ],
+      "note": "White connector southern bent leg; overlaps diagonal roof. Trace \u00b11.5 m.",
+      "roofAbsQuantilesP05P20P50P95P99": [
+        113.14450000000001,
+        118.87,
+        119.7,
+        120.8215,
+        120.9544
+      ],
+      "points": 240
+    }
+  ],
+  "roofPlanes": {
+    "west-wing-west-slope": {
+      "originEN": [
+        477792.3835121954,
+        6457660.511804875
+      ],
+      "slopeE": 0.4168354766770225,
+      "slopeN": -0.010926494333887989,
+      "zAtOrigin": 113.52053658550675,
+      "points": 205,
+      "rmseM": 0.03755211949613573
+    },
+    "west-wing-east-slope": {
+      "originEN": [
+        477799.008675497,
+        6457660.440927155
+      ],
+      "slopeE": -0.39474611215295397,
+      "slopeN": 0.0084972094715043,
+      "zAtOrigin": 114.05519791515617,
+      "points": 149,
+      "rmseM": 0.028081150217825226
+    },
+    "tall-roof-west-slope": {
+      "originEN": [
+        477809.5101153849,
+        6457649.033423077
+      ],
+      "slopeE": 0.40434856641675826,
+      "slopeN": -0.008100258222736495,
+      "zAtOrigin": 116.70660681571404,
+      "points": 255,
+      "rmseM": 0.04273527928380802
+    },
+    "tall-roof-east-slope": {
+      "originEN": [
+        477822.345982906,
+        6457649.377264959
+      ],
+      "slopeE": -0.397898154363278,
+      "slopeN": 0.0101693245328328,
+      "zAtOrigin": 117.98743589744231,
+      "points": 117,
+      "rmseM": 0.03583369223229342
+    }
+  },
+  "unityFrame": {
+    "west": 477021,
+    "south": 6456736,
+    "minAbsM": 80.76200103759766
+  },
+  "images": {
+    "ortho2025": "D:\\golf-map\\data\\omberg-clubhouse\\ortho-2025-osm.png",
+    "ortho2023": "D:\\golf-map\\data\\omberg-clubhouse\\ortho-2023-osm.png",
+    "lidarHeight": "D:\\golf-map\\data\\omberg-clubhouse\\lidar-height-top.png"
+  }
+}

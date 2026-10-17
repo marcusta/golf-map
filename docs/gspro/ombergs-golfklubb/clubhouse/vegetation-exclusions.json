@@ -1,0 +1,36 @@
+{
+  "format": "omberg-architecture-clearance-v1",
+  "crs": "EPSG:3006",
+  "roofMarginM": 0.5,
+  "insideRoofOrPavingTreeIds": [
+    "epsg3006:477778.50:6457765.50",
+    "epsg3006:477870.50:6457763.50",
+    "epsg3006:477875.50:6457755.50",
+    "epsg3006:477787.50:6457734.50",
+    "epsg3006:477878.50:6457732.50",
+    "epsg3006:477786.50:6457725.50",
+    "epsg3006:477793.50:6457682.50",
+    "epsg3006:477831.50:6457676.50",
+    "epsg3006:477835.50:6457670.50",
+    "epsg3006:477822.50:6457676.50",
+    "epsg3006:477807.50:6457675.50",
+    "epsg3006:477816.50:6457670.50",
+    "epsg3006:477822.50:6457670.50",
+    "epsg3006:477808.50:6457664.50",
+    "epsg3006:477813.50:6457663.50"
+  ],
+  "treeClearanceEvidence": "Nine stems strictly inside roof/wall footprints, plus six strictly inside the separately traced paved courtyard. The orthophoto shows continuous paving without trees there. No stem is selected merely because its crown approaches a roof.",
+  "pavedCourtyard3006": [
+    [477803.12, 6457691.89],
+    [477830.00, 6457691.09],
+    [477829.84, 6457682.45],
+    [477829.36, 6457669.33],
+    [477817.20, 6457669.33],
+    [477817.20, 6457663.09],
+    [477803.92, 6457663.09],
+    [477802.96, 6457669.33],
+    [477803.76, 6457678.77]
+  ],
+  "courtyardEvidence": "Traced inside the continuous paved/stone foreground of the 2025 0.16m ortho crop, north up. Approximately 0.5-1 m boundary uncertainty. It stops west of the central annex and south of the car park approach; surrounding lawn is not included.",
+  "reproducibility": "Tree deletes are persistent existing GolfMap tree edits and survive survey/export/replant. Preserve conflicts rather than replacing manual edits. Lower vegetation clearance is a course-local post-export overlay on mask PNGs, and persists in Unity via golfmap.zones.patch; every full/overlapping zones export must be followed by rerunning this script --zones --apply and the patch import. Database zone geometry is unchanged. No mask groups, rules, terrain or shaping layers change. This overlay is documented and repeatable, not integrated into Update vegetation."
+}
