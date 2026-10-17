@@ -54,7 +54,8 @@
 //   --out <folder>      where the .blend goes (default the course's export folder)
 //   --opcd-name <name>  the course's Course Name in OPCD, for this run
 //   --dry-run           walk to the SVG Jobs tab, print the job table, submit nothing
-//   --attach            submit nothing: wait for the newest job already in the table and download it
+//   --attach            submit nothing: wait for the newest job already in the table (with --svg:
+//                       the newest job of that file) and download it
 //   --submit-only       upload and submit, then exit 0 (OPCD builds up to 3 at once; --status reads them)
 //   --status            print the job table and record every export snapshot's build outcome
 //   --timeout <min>     cap on the build wait (default 8)
@@ -1534,11 +1535,17 @@ async function main(): Promise<void> {
         let firstLookMs: number | undefined;
         let ours: OurJob | undefined;
         if (parsed.attach) {
-            // The newest row is the job to follow: everything under it counts as "before".
+            // The newest row is the job to follow - with --svg, the newest row of that file, so a
+            // bisect variant submitted later does not stand in for it. Every other row is "before".
             const jobs = await readJobs(page);
             if (!jobs.length) throw new PageChanged('attach', 'the job table is empty: nothing to attach to');
-            console.log(`attached to ${jobs[0]!.created}  ${jobs[0]!.status}  ${jobs[0]!.name}`);
-            before = jobs.slice(1);
+            const file = parsed.svg ? path.basename(parsed.svg) : null;
+            const at = file ? jobs.findIndex((j) => splitJobName(j.name).svg === file) : 0;
+            if (at < 0) throw new PageChanged('attach', `no job of ${file} in the table`);
+            const job = jobs[at]!;
+            console.log(`attached to ${job.created}  ${job.status}  ${job.name}`);
+            before = jobs.filter((_, i) => i !== at);
+            if (file) ours = { svg: file, description: splitJobName(job.name).description };
             firstLookMs = 0;
         } else {
             // The export snapshot this SVG is (byte for byte), so the job names it and --status can find it.

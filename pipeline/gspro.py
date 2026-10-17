@@ -3186,6 +3186,80 @@ def _road_names(roads: list[MergedRoad], rows_oldest_first: list, shape_ids: dic
     return names  # type: ignore[return-value]
 
 
+# A green's edge must meet fairway or semi rough: OPCD builds a blend mesh
+# between a green and what surrounds it, and Omberg's hole 13 (green and two
+# bunkers lying straight in rough, 2-3 m apart) failed the whole build without
+# a word, where each of the three alone built. The band is what lies just
+# outside the green as painted (the topmost shape there); bits under
+# GREEN_BORDER_MIN_M2 are snapping noise along a shared edge.
+GREEN_BORDER_BAND_M = 0.5
+GREEN_BORDER_OK = ("fairway", "semi_rough")
+GREEN_BORDER_MIN_M2 = 0.25
+# Nothing painted there: OPCD's own outer surface (Outer_Deep_Sat).
+GREEN_BORDER_NOTHING = "nothing (OPCD outer deep rough)"
+# A shape whose visible part is under this share of it is covered by the
+# shapes painted above it: OPCD makes no mesh for it.
+HIDDEN_VISIBLE_SHARE = 0.01
+
+
+def _paint_tops(paint: list, i: int, area) -> dict[str, float]:
+    """What is seen on top within `area`, painting `paint` (bottom first) but
+    leaving out shape `i`: {kind: m2}, plus GREEN_BORDER_NOTHING for the part
+    no shape covers."""
+    seen: dict[str, float] = {}
+    left = area
+    for j in range(len(paint) - 1, -1, -1):
+        if j == i or left.is_empty:
+            continue
+        _, _, kind, shape = paint[j]
+        if shape is None or not shape.intersects(left):
+            continue
+        part = left.intersection(shape).area
+        if part > 0:
+            seen[kind] = seen.get(kind, 0.0) + part
+            left = left.difference(shape)
+    if not left.is_empty and left.area > 0:
+        seen[GREEN_BORDER_NOTHING] = left.area
+    return seen
+
+
+def _green_border_problems(paint: list) -> list[tuple[str, dict[str, float]]]:
+    """Greens whose edge meets anything but fairway or semi rough, as painted:
+    [(shape name, {what it meets: m2})]. `paint` is [(layer, name, kind,
+    shapely shape)] in paint order, bottom first."""
+    problems = []
+    for i, (_, name, kind, shape) in enumerate(paint):
+        if kind != "green" or shape is None or shape.is_empty:
+            continue
+        band = shape.buffer(GREEN_BORDER_BAND_M).difference(shape)
+        bad = {k: a for k, a in _paint_tops(paint, i, band).items()
+               if k not in GREEN_BORDER_OK and a >= GREEN_BORDER_MIN_M2}
+        if bad:
+            problems.append((name, bad))
+    return problems
+
+
+def _hidden_shapes(paint: list) -> list[tuple[str, list[str]]]:
+    """Shapes the ones painted above them cover (all but HIDDEN_VISIBLE_SHARE):
+    [(shape name, [names of the shapes above that overlap it])]."""
+    from shapely import STRtree, unary_union
+
+    shapes = [s for *_, s in paint]
+    tree = STRtree([s for s in shapes if s is not None])
+    index = [i for i, s in enumerate(shapes) if s is not None]
+    hidden = []
+    for i, (_, name, _, shape) in enumerate(paint):
+        if shape is None or shape.is_empty or shape.area <= 0:
+            continue
+        above = [index[k] for k in tree.query(shape) if index[k] > i]
+        if not above:
+            continue
+        over = [j for j in above if paint[j][3].intersection(shape).area > 0]
+        if over and shape.difference(unary_union([paint[j][3] for j in over])).area < HIDDEN_VISIBLE_SHARE * shape.area:
+            hidden.append((name, [paint[j][1] for j in over]))
+    return hidden
+
+
 def cmd_svg(bbox, out: Path, db_path: Path, course_ident: str,
             flatten: float | None, precision: int, mapped: dict[str, str],
             stack: str = "opcd", extent: Extent | None = None,
@@ -3236,6 +3310,7 @@ def cmd_svg(bbox, out: Path, db_path: Path, course_ident: str,
     # material from the fill, so the name only has to say which hole and which
     # feature.
     layers: dict[str, list[str]] = {}
+    painted: dict[str, list] = {}
     written: dict[str, int] = {}
     skipped: dict[str, int] = {}
     slabs = 0
@@ -3324,6 +3399,8 @@ def cmd_svg(bbox, out: Path, db_path: Path, course_ident: str,
         # Several rings on one feature = outer ring plus holes; even-odd makes
         # the inner rings punch through.
         rule = ' fill-rule="evenodd"' if len(subpaths) > 1 else ""
+        # The shape as written, for the checks of what OPCD will see (paint order).
+        painted.setdefault(layer, []).append((name, kind, shape if shape is not None else _row_shape(row, tol)))
         layers.setdefault(layer, []).append(
             f'    <path id="{name}" inkscape:label="{name}" data-type="{kind}"'
             f' data-feature-id="{row["id"]}"'
@@ -3333,6 +3410,7 @@ def cmd_svg(bbox, out: Path, db_path: Path, course_ident: str,
     # so a road drawn elsewhere never renames one; still written in paint order.
     road_names = [f"roads_{part}" for part in _road_names(roads, shapes, shape_ids)]
     for road, name in zip(roads, road_names):
+        painted.setdefault(ROADS_LAYER, []).append((name, road.kind, road.shape))
         subpaths = _shape_subpaths(road.shape, to_svg, precision)
         rule = ' fill-rule="evenodd"' if len(subpaths) > 1 else ""
         surface = f' data-surface="{road.surface}"' if road.surface else ""
@@ -3423,6 +3501,14 @@ def cmd_svg(bbox, out: Path, db_path: Path, course_ident: str,
         detail = ", ".join(f"{k} {v}" for k, v in sorted(dropped_outside.items(), key=lambda kv: -kv[1]))
         print(f"  {sum(dropped_outside.values())} shape(s) lie wholly outside the terrain square and were "
               f"left out: {detail}")
+    paint = [(layer, name, kind, shape) for layer in order for name, kind, shape in painted.get(layer, [])]
+    for name, meets in _green_border_problems(paint):
+        detail = ", ".join(f"{k} {a:.1f} m2" for k, a in sorted(meets.items(), key=lambda kv: -kv[1]))
+        print(f"  warning: green {name} meets more than fairway/semi rough at its edge ({detail}): "
+              f"OPCD's green blend can fail the whole build - surround it with fairway or semi rough")
+    for name, above in _hidden_shapes(paint):
+        listed = ", ".join(above[:3]) + (" …" if len(above) > 3 else "")
+        print(f"  warning: {name} is covered by the shapes above it ({listed}): OPCD makes no mesh for it")
 
 
 # --- Command: shaping-global --------------------------------------------------
