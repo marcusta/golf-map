@@ -87,6 +87,10 @@ Until 2026-10-14 these three were "Plant for GSPro", "Update N zones for GSPro" 
 - While a run goes, the button's label is its own job's `step`: the board job's for the `update(target)` buttons, the shaping job's phase for the two that run `ShapingService.apply` themselves (**Update paths**, **Update meshes (this feature)**).
 - The Terrain editor's panel still **shows** a shaping run: the selection's phases under the Shape section (`terrain-shape-job`) and a course-wide run's under the edit list (`terrain-edit-meshes-job`, which also picks up a run started elsewhere through `ShapingService.resume`). Only the buttons moved.
 
+## Planting rules (Vegetation mode)
+
+The zone-type picker's **Planting rules…** opens `zones/vegetation-rules-panel.component.ts`, a read-only view of `VegetationRulesService` (server, `GET /api/vegetation-rules`, builder only): the four generators in zone-stack order, then the trees (detection and export, species and models from the course palette.json, VSP or Arborist from arborist-species.json, the drawn tree species areas and the palette's models per species). Each section folds to one line with a tag counting the rules the course sets; a rule row shows the value the planting uses, a course value tinted with the default beside it, and its explanation as a tooltip. **Explain** (remembered in localStorage) shows the explanations and each generator's steps inline. A generator lists the mixes of its zone types: a variant with no items is "off" (the far and dark mixes only grow where the course binds items). Re-read on every open; no editing yet.
+
 ## Rules lines live in Furniture
 
 The penalty areas and OOB (`RULES_TYPES` in `draw/feature-palette.ts`) are

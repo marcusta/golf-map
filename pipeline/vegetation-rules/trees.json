@@ -1,0 +1,124 @@
+{
+  "format": "golfmap-vegetation-rule-defaults-v1",
+  "source": "trees",
+  "label": "Trees",
+  "script": "golfpipe trees-stems / canopy, gspro.py trees",
+  "summary": "Which lidar crowns become trees: roofs suppressed, each stem's height, crown radius and broadleaf/conifer kind, rocks left out, closed stands made woodland floor, and what the trees export moves or drops before Unity picks the models.",
+  "steps": [
+    "Lidar canopy (golfpipe canopy): per 1 m cell the highest return minus the mean ground height; cells 2 m or more up where under 10 % of the returns come from multi-return pulses, in patches of 15 m² or more, are roofs and are zeroed (a pulse on a roof comes back once, one into foliage splits).",
+    "The cleaned canopy grid (heights clamped to 0..40 m, under 1 m dropped, small gaps closed, each cell its local crown top) gives the canopy tiles and the woodland stands: 3 m+ canopy bridged over 5 m, kept 5 m off roofs, at least 2500 m² and half covered becomes a woodland_floor zone.",
+    "Stems (golfpipe trees-stems) come from the roof-suppressed heights, not the cleaned grid: cells 1 m or more up are smoothed, each local top seeds a crown and a watershed shares the cells out; a crown needs 4 m² of cells, or 2 m² when its top reaches 3 m, and a tall crown under 12 m² must be more than 3 m from a roof cell.",
+    "A stem's height is the top of its own crown; its crown radius is the equal-area circle, capped at 0.35 x height (but at least 1.5 m, at most 10 m); a flat, compact crown keeps its equal-area radius, and a flat low lobe beside a tall tree becomes a stem of its own.",
+    "Kind comes from the newest leaf-off ortho (every date Oct-Apr): the upper crown's greenness (G - R) / (R + G + B) is ramped 0.02..0.12 to a conifer score; 0.5 or more is conifer, less broadleaf; a score within 0.05 of 0.5, too little photo, or a stem under 4 m is unknown.",
+    "Rock filter: a stem under 5 m whose returns are almost all single pulses and whose leaf-off pixels are pale and grey is no tree (a boulder, a shed, a car, a wall); it is left out and written beside the stems as a rock candidate.",
+    "The trees export (gspro.py trees) keeps the stems on the terrain's square and flags a crown wider than 0.35 x its height as a bush; a stem on or within 0.8 m of a drawn path is moved just outside it; stems in a power line's corridor (+3 m) are dropped, and so are stems under 6 m on a rock slab (+0.5 m; not a riseMode dem cliff) or a placed rock.",
+    "Each stem inside a drawn tree species area takes that area's id; where areas overlap the topmost one wins.",
+    "In Unity (GolfMapBiome.cs, twin unity/tree-matching.mjs) the course's docs/gspro/<course>/palette.json rules pick the model: a stem up to shrubMaxHeightM is a shrub, taller a tree; only models of that form and the stem's kind count (unknown takes either), each scaled to fit the height and crown width.",
+    "Species: inside a tree area its mix races by weight (when it has a model of the stem's form); elsewhere the palette's speciesWeights race among the species that fit within speciesFitSlack of the best, and unknown-kind stems skip the weights; a tree with woodlandMinNeighbours others within woodlandRadiusM fits as woodland; every pick hashes the stem's id, so a replant gives the same trees.",
+    "The planter (GolfMapTreePlanter.cs) leaves out stems within 1 m of a placed building and stems under any other placed prop; hand-edited stems stay.",
+    "Arborist (pipeline/arborist.py, docs/gspro/<course>/arborist-species.json): prefabs named under vsp stay in VSP, the rest become Arborist items; trees beyond billboardBeyondM (outside the boundary and away from play) are billboard-only, and outerKeep thins those far ones."
+  ],
+  "groups": [
+    {
+      "title": "Canopy and roofs (golfpipe canopy)",
+      "rules": [
+        { "key": "canopy-min-height", "value": 1.0, "unit": "m", "text": "The cleaned canopy grid drops cells lower than this above the ground." },
+        { "key": "canopy-max-height", "value": 40.0, "unit": "m", "text": "Canopy heights are clamped to this." },
+        { "key": "roof-min-height", "value": 2.0, "unit": "m", "text": "A roof cell stands at least this high above the ground." },
+        { "key": "roof-max-multi-fraction", "value": 0.1, "unit": "share", "text": "A roof cell has fewer than this share of its returns from multi-return pulses (foliage splits a pulse, a roof does not)." },
+        { "key": "roof-min-area", "value": 15.0, "unit": "m²", "text": "Roof-like patches smaller than this are single-return holes inside crowns, not roofs, and are kept." }
+      ]
+    },
+    {
+      "title": "Which crowns become stems (golfpipe trees-stems)",
+      "rules": [
+        { "key": "stem-min-height", "value": 1.0, "unit": "m", "flag": true, "text": "Height above the ground a cell needs to join a crown." },
+        { "key": "stem-min-area", "value": 4.0, "unit": "m²", "flag": true, "text": "Cells a crown under tall-height needs." },
+        { "key": "tall-height", "value": 3.0, "unit": "m", "flag": true, "text": "From this crown top the smaller tall-min-area is enough." },
+        { "key": "tall-min-area", "value": 2.0, "unit": "m²", "flag": true, "text": "Cells a crown reaching tall-height needs (thin young trees)." },
+        { "key": "roof-guard-area", "value": 12.0, "unit": "m²", "text": "A tall crown (and a trees-features polygon) smaller than this must keep roof-guard off every roof cell, or it is a roof edge." },
+        { "key": "roof-guard", "value": 3.0, "unit": "m", "text": "How far a small tall crown must stand from a roof cell." }
+      ]
+    },
+    {
+      "title": "Crown radius",
+      "rules": [
+        { "key": "crown-radius-per-height", "value": 0.35, "unit": "x height", "text": "A crown's radius is its equal-area circle, capped at this times its height." },
+        { "key": "low-crown-radius", "value": 1.5, "unit": "m", "text": "The height cap never goes under this (bushes are wider than tall)." },
+        { "key": "crown-max-radius", "value": 10.0, "unit": "m", "text": "No crown radius over this from the cap." },
+        { "key": "flat-crown-top-fraction", "value": 0.85, "unit": "x height", "text": "A crown is flat when 75 % of its cells reach this share of its height ..." },
+        { "key": "flat-crown-compactness", "value": 0.55, "unit": "share", "text": "... and compact when its equal-area radius is at least this share of its farthest cell's distance: then it keeps its equal-area radius." },
+        { "key": "flat-crown-max-radius", "value": 10.0, "unit": "m", "text": "Largest radius a flat compact crown keeps." },
+        { "key": "lobe-top-fraction", "value": 0.6, "unit": "x top", "text": "Cells of a crown below this share of its top may form a low lobe of their own ..." },
+        { "key": "lobe-min-area", "value": 20.0, "unit": "m²", "text": "... when the lobe covers at least this and is a flat compact crown ..." },
+        { "key": "lobe-max-top-edge-fraction", "value": 0.5, "unit": "share", "text": "... and no more than this share of its crest touches the taller crown (else it is that tree's skirt)." }
+      ]
+    },
+    {
+      "title": "Kind: broadleaf, conifer or unknown",
+      "rules": [
+        { "key": "kind-min-height", "value": 4.0, "unit": "m", "text": "A stem lower than this is always unknown." },
+        { "key": "greenness-anchors", "value": [0.02, 0.12], "unit": "greenness", "text": "Upper-crown greenness (G - R) / (R + G + B) in the leaf-off photo mapped to a conifer score: the first is 0, the second 1." },
+        { "key": "conifer-threshold", "value": 0.5, "unit": "score", "text": "A score at or above this is a conifer (still green in April), below a broadleaf." },
+        { "key": "unknown-band", "value": 0.05, "unit": "score", "text": "A score this close to the threshold stays unknown." },
+        { "key": "upper-crown-fraction", "value": 0.5, "unit": "x top", "text": "Cells at or above this share of the crown's top are the upper crown the colour is read from." },
+        { "key": "min-ortho-coverage", "value": 0.5, "unit": "share", "text": "The photo must cover at least this share of the upper crown, or the kind is unknown." },
+        { "key": "leaf-off-months", "value": [10, 11, 12, 1, 2, 3, 4], "unit": "months", "text": "A photo vintage is leaf-off when every date it was flown falls in these months; the newest one is used." }
+      ]
+    },
+    {
+      "title": "Rocks and other solid objects",
+      "rules": [
+        { "key": "solid-max-height", "value": 5.0, "unit": "m", "text": "Only stems lower than this can be a solid object." },
+        { "key": "solid-max-multi-fraction", "value": 0.2, "unit": "share", "text": "A solid object has at most this share of its returns from multi-return pulses ..." },
+        { "key": "solid-max-saturation", "value": 0.16, "unit": "saturation", "text": "... a mean colour saturation of at most this in the leaf-off photo (grey) ..." },
+        { "key": "solid-min-brightness", "value": 0.38, "unit": "brightness 0..1", "text": "... and a mean brightness of at least this (pale): then it is left out as a rock candidate." },
+        { "key": "solid-min-ortho-coverage", "value": 0.5, "unit": "share", "text": "The photo must cover at least this share of the crown for the test." }
+      ]
+    },
+    {
+      "title": "Trees export (gspro.py trees)",
+      "rules": [
+        { "key": "bush-radius-fraction", "value": 0.35, "unit": "x height", "text": "A crown wider than this times its height is flagged a bush for the planter." },
+        { "key": "path-clearance", "value": 0.8, "unit": "m", "text": "A stem on a drawn path or this close to its edge is moved to this far outside it." },
+        { "key": "power-line-clearance", "value": 3.0, "unit": "m", "text": "Stems within a power line's drawn corridor plus this on each side are dropped, whatever their height." },
+        { "key": "rock-max-height", "value": 6.0, "unit": "m", "text": "Stems lower than this on a rock slab or a placed rock are dropped (taller ones are real trees)." },
+        { "key": "rock-slab-margin", "value": 0.5, "unit": "m", "text": "A rock slab counts this far beyond its edge (the detector's cells are 1 m)." },
+        { "key": "rock-boulder-radius-fraction", "value": 0.5, "unit": "x length", "text": "A placed rock's keep-out is a circle of this times its length ..." },
+        { "key": "rock-boulder-min-radius", "value": 0.5, "unit": "m", "text": "... but never smaller than this." },
+        { "key": "tree-area-simplify", "value": 0.5, "unit": "m", "text": "Tree species area outlines are simplified to this tolerance in the file." }
+      ]
+    },
+    {
+      "title": "Woodland stands (woodland_floor zones)",
+      "rules": [
+        { "key": "woodland-min-height", "value": 3.0, "unit": "m", "flag": true, "text": "Canopy height a cell needs to count as tree cover." },
+        { "key": "woodland-close", "value": 5.0, "unit": "m", "flag": true, "text": "Crowns up to about twice this apart join one stand." },
+        { "key": "woodland-min-area", "value": 2500.0, "unit": "m²", "flag": true, "text": "Smallest stand." },
+        { "key": "woodland-min-hole-area", "value": 400.0, "unit": "m²", "flag": true, "text": "Clearings smaller than this are filled." },
+        { "key": "woodland-edge", "value": 2.0, "unit": "m", "flag": true, "text": "How far the floor runs out past the outermost crowns." },
+        { "key": "woodland-min-cover", "value": 0.5, "unit": "share", "flag": true, "text": "Least canopy cover inside a stand (looser is parkland)." },
+        { "key": "woodland-roof-buffer", "value": 5.0, "unit": "m", "flag": true, "text": "Around a roof is never woodland (garden trees)." },
+        { "key": "woodland-round", "value": 3.0, "unit": "m", "flag": true, "text": "Outline rounding radius." },
+        { "key": "woodland-simplify", "value": 1.0, "unit": "m", "flag": true, "text": "Outline simplification tolerance." },
+        { "key": "woodland-min-weight", "value": 0.3, "unit": "weight", "flag": true, "text": "Zone weight of a stand without understory (a bare spruce floor still has moss)." },
+        { "key": "woodland-full-understory", "value": 0.2, "unit": "share", "text": "A stand with this share of cells holding a 0.5..3 m return gets weight 1; sparser ones scale down." },
+        { "key": "woodland-zone-feather", "value": 4.0, "unit": "m", "text": "The stand zones' feather." },
+        { "key": "woodland-zone-noise", "value": 2.0, "unit": "m", "text": "The stand zones' edge noise." }
+      ]
+    },
+    {
+      "title": "Woodland floor colour",
+      "rules": [
+        { "key": "floor-min-pixels", "value": 200, "unit": "pixels", "text": "A stand needs this many floor pixels in the photo for a colour of its own." },
+        { "key": "floor-red-over-green", "value": 0.9, "unit": "x green", "text": "A floor pixel's red is at least this times its green (not leaf green) ..." },
+        { "key": "floor-red-over-blue", "value": 20.0, "unit": "0..255", "text": "... its red is this much over its blue (warm: not crown shade, not grey gravel) ..." },
+        { "key": "floor-min-luma", "value": 45.0, "unit": "luminance 0..255", "text": "... and its luminance is at least this (not deep shadow) ..." },
+        { "key": "floor-max-luma", "value": 125.0, "unit": "luminance 0..255", "text": "... and at most this (not a bright track)." },
+        { "key": "floor-gap-min-height", "value": 0.5, "unit": "m", "text": "Pixels in lidar gaps (canopy under this) are preferred ..." },
+        { "key": "floor-gap-buffer", "value": 1.0, "unit": "m", "text": "... at least this far from a taller cell." },
+        { "key": "floor-inset", "value": 1.0, "unit": "m", "text": "The colour is read only this far inside the edge band woodland-edge grew." }
+      ]
+    }
+  ]
+}

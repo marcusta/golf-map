@@ -1,0 +1,102 @@
+{
+  "format": "golfmap-vegetation-rule-defaults-v1",
+  "source": "rock-shore",
+  "label": "Rock shore",
+  "script": "rock_shore_zones.py",
+  "zoneTypes": ["rock_shore"],
+  "summary": "Grass and moss in the cracks of the rock slabs by a big lake, heath on their ledges and thin soil, scrub hugging the rock and along the water, and grass under and between the bushes.",
+  "steps": [
+    "Reads Unity's surface map of the built course (golfmap.surfaces.export) and the course DEM next to it, both at 0.5 m cells: the rock slabs (surface Slab) and the water come from the map, the slope from the DEM.",
+    "Finds the big lake: the largest connected water body of the map, if it is at least lake-min. A pond or a creek pool is not a shore.",
+    "Plants only on the shore: within lake-reach of the lake and on a slab or within slab-reach of one, both fading over reach-ramp. With inland above 0 every slab is dressed, lake or not.",
+    "Crack (rock_shore/crack, a mix layer): grass and moss in noise patches on the rock, favouring ledges (gentle slope) and never on faces steeper than face-slope, plus a ragged fringe in over the slab's edge and a skirt out onto the land beside it.",
+    "Heath (rock_shore/heath): heather and lingonberry in sparse patches on the slab's ledges and on the thin soil just outside it.",
+    "Scrub (rock_shore/scrub): bushes on land in a band out from the slab's edge, densest against the rock and thinning inland, and along the lake's water; in clumps that close up against the rock. Inland slabs get a narrower band at the inland weight.",
+    "Grass (rock_shore/grass, a mix layer): grass under the bushes and between the clumps in the same band.",
+    "Keeps clear of tees, greens, fairways, semi, bunkers and blend strips with the tall rough's clearances (tall-grass clearances, without water and rock: a shore bush stands on the waterline and against the rock), of houses (the tall rough's building margin, fading in over block-ramp), and of the paths and roads, cut out of the polygons as the tall rough cuts them.",
+    "Which plants each variant holds is the course's grass palette and bindings; the variant keys crack, heath, scrub and grass are fixed. Scrub and heath replace the tall rough and woodland floor beneath them; grass and crack plant over whatever is there.",
+    "Each variant's weight field is written as nested contour bands, one zone per band polygon, stacked scrub, heath, grass, crack from the bottom."
+  ],
+  "groups": [
+    {
+      "title": "Where it grows",
+      "rules": [
+        { "key": "lake-min", "value": 20000.0, "unit": "m²", "flag": true, "text": "The largest water body of the map is the big lake only if it is at least this large." },
+        { "key": "lake-reach", "value": 40.0, "unit": "m", "flag": true, "text": "The shore: within this of the big lake ..." },
+        { "key": "slab-reach", "value": 10.0, "unit": "m", "flag": true, "text": "... and on a rock slab or within this of one." },
+        { "key": "reach-ramp", "value": 4.0, "unit": "m", "text": "Both limits fade over this, centred on them." },
+        { "key": "inland", "value": 0.0, "unit": "weight", "flag": true, "text": "0 = the shore only; above 0 every slab gets crack and heath in full, and scrub and grass away from the lake at this weight." },
+        { "key": "inland-scrub-band", "value": 4.0, "unit": "m", "flag": true, "text": "Away from the lake (inland above 0) the scrub band ends this far from the slab's edge." },
+        { "key": "land-surfaces", "value": ["deep", "rough", "other"], "unit": "surfaces", "text": "The land scrub, grass, heath and the crack skirt grow on (never on the slab)." },
+        { "key": "water-margin", "value": 0.3, "unit": "m", "text": "Nothing on land within this of the lake: no bush with its foot in the water." }
+      ]
+    },
+    {
+      "title": "Slope",
+      "rules": [
+        { "key": "slope-smooth", "value": 0.5, "unit": "m", "text": "The DEM is smoothed over this before the slope is taken (lidar speckle)." },
+        { "key": "ledge-slope", "value": [30.0, 45.0], "unit": "deg", "text": "A ledge: full below the first slope, none above the second." },
+        { "key": "face-slope", "value": 70.0, "unit": "deg", "text": "Rock steeper than this is a face: nothing grows on it." }
+      ]
+    },
+    {
+      "title": "Crack grass and moss (rock_shore/crack)",
+      "rules": [
+        { "key": "crack-cover", "value": 0.35, "unit": "share", "flag": true, "text": "Share of the slab (not faces) under crack patches." },
+        { "key": "crack-noise-size", "value": 2.5, "unit": "m", "text": "Size of the crack patches' noise blobs." },
+        { "key": "crack-ledge-bonus", "value": 0.6, "unit": "noise", "text": "How much a ledge counts against the noise: the patches favour ledges." },
+        { "key": "crack-soft", "value": 0.15, "unit": "noise", "text": "The patch edge fades over this much noise either side of the cut-off (heath patches too)." },
+        { "key": "crack-fringe", "value": 0.5, "unit": "m", "text": "Reaches in over the slab's edge (0 to 2 x this by noise) ..." },
+        { "key": "crack-skirt", "value": 0.6, "unit": "m", "text": "... and out onto the land beside it (0 to 2 x this by noise)." },
+        { "key": "crack-edge-noise-size", "value": 1.2, "unit": "m", "text": "Size of the noise blobs that make the fringe and skirt ragged." }
+      ]
+    },
+    {
+      "title": "Heath (rock_shore/heath)",
+      "rules": [
+        { "key": "heath-cover", "value": 0.2, "unit": "share", "flag": true, "text": "Share of the ledges and thin soil under heath patches." },
+        { "key": "heath-reach", "value": 3.0, "unit": "m", "text": "Thin soil: this far out from the slab's edge." },
+        { "key": "heath-fade", "value": 1.0, "unit": "m", "text": "On the thin soil the heath fades out over the last metres of heath-reach." },
+        { "key": "heath-ledge", "value": 0.5, "unit": "weight", "text": "On the slab heath grows only where the ledge weight is above this." },
+        { "key": "heath-noise-size", "value": 4.0, "unit": "m", "text": "Size of the heath patches' noise blobs." }
+      ]
+    },
+    {
+      "title": "Scrub and grass (rock_shore/scrub, rock_shore/grass)",
+      "rules": [
+        { "key": "scrub-start", "value": 0.5, "unit": "m", "text": "The scrub band begins this far off the slab's edge (the crack fringe and skirt are there) ..." },
+        { "key": "scrub-full", "value": [1.0, 2.5], "unit": "m", "text": "... is full from the first to the second distance ..." },
+        { "key": "scrub-band", "value": 8.0, "unit": "m", "flag": true, "text": "... and thins to scrub-far-weight at this distance from the slab's edge." },
+        { "key": "scrub-far-weight", "value": 0.3, "unit": "density", "text": "The band's density at its outer edge." },
+        { "key": "scrub-fade", "value": 1.0, "unit": "m", "text": "Beyond the band (and the inland band) it is gone over this." },
+        { "key": "shore-band", "value": 25.0, "unit": "m", "flag": true, "text": "Scrub also grows along the lake within this of its water ..." },
+        { "key": "shore-full", "value": 8.0, "unit": "m", "text": "... full to this, then thinning to nothing at shore-band ..." },
+        { "key": "shore-weight", "value": 0.8, "unit": "density", "text": "... at this density." },
+        { "key": "scrub-noise-size", "value": 6.0, "unit": "m", "text": "Size of the scrub clumps' noise blobs." },
+        { "key": "scrub-cover", "value": [-0.35, 0.05], "unit": "noise", "text": "Noise from the first to the second value takes a clump from none to full (about two thirds of the band)." },
+        { "key": "scrub-edge-close", "value": 0.45, "unit": "noise", "text": "Against the rock the clumps close up: the noise is lifted by this at the slab's edge ..." },
+        { "key": "scrub-edge", "value": [1.0, 4.0], "unit": "m", "text": "... fading out from the first to the second distance from it." },
+        { "key": "grass-between", "value": 0.55, "unit": "share", "text": "The grass between the clumps, as a share of the band's weight (under a clump, the clump's)." }
+      ]
+    },
+    {
+      "title": "Kept clear",
+      "rules": [
+        { "key": "no-clearance-from", "value": ["water", "rock"], "unit": "surfaces", "text": "The tall rough's clearances are kept, except from these (a shore bush stands on the waterline and against the rock)." },
+        { "key": "block-ramp", "value": 1.5, "unit": "m", "text": "Beyond the house margin (the tall rough's building-margin) it fades in over this." }
+      ]
+    },
+    {
+      "title": "Zones written",
+      "rules": [
+        { "key": "zone-type", "value": "rock_shore", "text": "The zone type of the zones." },
+        { "key": "mix-layers", "value": ["grass", "crack"], "unit": "variants", "text": "These variants plant over what grows there (blend mix); the others replace it." },
+        { "key": "band-levels", "value": [0.1, 0.3, 0.5, 0.7, 0.9], "unit": "weights", "text": "The contour levels each weight field is written at (one zone per band; the top band has weight 1)." },
+        { "key": "band-feather", "value": 0.5, "unit": "m", "text": "Feather of each band zone." },
+        { "key": "band-noise", "value": 0, "unit": "m", "text": "Edge noise of the band zones (none: the fields' own edges are ragged)." },
+        { "key": "simplify", "value": 0.25, "unit": "m", "text": "Outlines are simplified to this tolerance." },
+        { "key": "min-area", "value": { "crack": 1.5, "heath": 3.0, "scrub": 8.0, "grass": 8.0 }, "unit": "m²", "text": "Band pieces smaller than this are dropped, per variant." }
+      ]
+    }
+  ]
+}

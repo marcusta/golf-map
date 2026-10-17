@@ -88,7 +88,7 @@ import { FeatureHistoryService, type CodeVersion } from './feature-history.servi
 import { CourseFeaturesService } from './course-features.service';
 import { ZoneTypesService } from './zone-types.service';
 import {
-    CREEK_BANKS, VEGETATION_GENERATORS, VEGETATION_RULES_FILE, generateVegetation, vegetationRulesArgs,
+    CREEK_BANKS, VEGETATION_GENERATORS, VEGETATION_RULES_FILE, generateVegetation, readRuleDefaults, vegetationRulesArgs,
     type GeneratorFingerprint, type VegetationGenerator, type VegetationInputs, type VegetationOptions, type VegetationRun,
 } from './vegetation-generators';
 import { CREEK_BANK_ZONE_TYPE } from '../../shared/features/creek-vegetation';
@@ -1823,7 +1823,10 @@ export class GsproExportService {
         // The course's own generator rules (e.g. Vreta's thinner tall rough from 10 m), if it has any.
         const rulesFile = path.join(this.courseDocsRoot, courseSlug(course.name), VEGETATION_RULES_FILE);
         const courseRules = await statOrNull(rulesFile)
-            ? { file: rulesFile, args: vegetationRulesArgs(JSON.parse(await readFile(rulesFile, 'utf8')), rulesFile) }
+            ? {
+                file: rulesFile,
+                args: vegetationRulesArgs(JSON.parse(await readFile(rulesFile, 'utf8')), rulesFile, undefined, await readRuleDefaults(this.pipelineDir)),
+            }
             : null;
         const work = await mkdtemp(path.join(os.tmpdir(), 'vegetation-'));
         try {

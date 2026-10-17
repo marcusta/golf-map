@@ -85,21 +85,27 @@ from golfpipe.detect_trees import NODATA
 from golfpipe import trees_features as trees_features_mod
 from golfpipe.trees_features import denoise_mask, near_roof_mask
 from golfpipe.water import GEOJSON_CRS_3006
+import vegetation_rules
+
+# The rules (heights, areas, crown radius, kind, the rock filter) live in
+# pipeline/vegetation-rules/trees.json, each with its unit and what it does (vegetation_rules.py).
+R = vegetation_rules.load("trees")
 
 FIELDS = ["x", "y", "heightM", "crownRadiusM", "groundM", "kind"]
 ASSET_VERSION = 2
-DEFAULT_MIN_HEIGHT_M = 1.0
-DEFAULT_MIN_AREA_M2 = 4.0
-TALL_HEIGHT_M = 3.0
-TALL_MIN_AREA_M2 = 2.0
-LOW_CROWN_MAX_RADIUS_M = 1.5
-TREE_CROWN_RADIUS_PER_HEIGHT = 0.35
-FLAT_CROWN_TOP_FRACTION = 0.85
-FLAT_CROWN_COMPACTNESS = 0.55
-FLAT_CROWN_MAX_RADIUS_M = 10.0
-LOBE_TOP_FRACTION = 0.6
-LOBE_MIN_AREA_M2 = 20.0
-LOBE_MAX_TOP_EDGE_FRACTION = 0.5
+DEFAULT_MIN_HEIGHT_M = R["stem-min-height"]
+DEFAULT_MIN_AREA_M2 = R["stem-min-area"]
+TALL_HEIGHT_M = R["tall-height"]
+TALL_MIN_AREA_M2 = R["tall-min-area"]
+LOW_CROWN_MAX_RADIUS_M = R["low-crown-radius"]
+TREE_CROWN_RADIUS_PER_HEIGHT = R["crown-radius-per-height"]
+TREE_CROWN_MAX_RADIUS_M = R["crown-max-radius"]
+FLAT_CROWN_TOP_FRACTION = R["flat-crown-top-fraction"]
+FLAT_CROWN_COMPACTNESS = R["flat-crown-compactness"]
+FLAT_CROWN_MAX_RADIUS_M = R["flat-crown-max-radius"]
+LOBE_TOP_FRACTION = R["lobe-top-fraction"]
+LOBE_MIN_AREA_M2 = R["lobe-min-area"]
+LOBE_MAX_TOP_EDGE_FRACTION = R["lobe-max-top-edge-fraction"]
 ROOF_GUARD_AREA_M2 = trees_features_mod.ROOF_GUARD_AREA_M2
 ROOF_GUARD_M = trees_features_mod.ROOF_GUARD_M
 
@@ -112,16 +118,16 @@ ROOF_GUARD_M = trees_features_mod.ROOF_GUARD_M
 KIND_BROADLEAF = 0
 KIND_CONIFER = 1
 KIND_UNKNOWN = 2
-KIND_MIN_HEIGHT_M = 4.0
+KIND_MIN_HEIGHT_M = R["kind-min-height"]
 # Mean (G - R) / (R + G + B) over the upper crown, mapped linearly onto a
 # conifer score in [0, 1]. Landeryd labelled stems: broadleaf median 0.029,
 # conifer median 0.095; the 0.5 score (greenness 0.07) separates 39 of 40.
-GREENNESS_ANCHORS = (0.02, 0.12)
-CONIFER_THRESHOLD = 0.5
-UNKNOWN_BAND = 0.05                  # greenness within 0.065..0.075 stays unknown
-UPPER_CROWN_FRACTION = 0.5           # cells at or above this fraction of the segment top count as crown
-MIN_ORTHO_COVERAGE = 0.5             # fraction of upper-crown cells the leaf-off ortho must cover
-LEAF_OFF_MONTHS = frozenset({10, 11, 12, 1, 2, 3, 4})
+GREENNESS_ANCHORS = R["greenness-anchors"]
+CONIFER_THRESHOLD = R["conifer-threshold"]
+UNKNOWN_BAND = R["unknown-band"]                  # greenness within 0.065..0.075 stays unknown
+UPPER_CROWN_FRACTION = R["upper-crown-fraction"]  # cells at or above this fraction of the segment top count as crown
+MIN_ORTHO_COVERAGE = R["min-ortho-coverage"]      # fraction of upper-crown cells the leaf-off ortho must cover
+LEAF_OFF_MONTHS = frozenset(R["leaf-off-months"])
 LEAF_OFF_ZOOM = 18
 
 
@@ -139,11 +145,11 @@ LEAF_OFF_ZOOM = 18
 # the photo none was a tree (boulders, sheds, vehicles, log piles, walls, a bridge, bare ground,
 # and two clipped hedges by the car park).
 # It needs both the return counts and the leaf-off ortho; without either nothing is left out.
-SOLID_MAX_HEIGHT_M = 5.0
-SOLID_MAX_MULTI_FRACTION = 0.2
-SOLID_MAX_SATURATION = 0.16
-SOLID_MIN_BRIGHTNESS = 0.38
-SOLID_MIN_ORTHO_COVERAGE = 0.5
+SOLID_MAX_HEIGHT_M = R["solid-max-height"]
+SOLID_MAX_MULTI_FRACTION = R["solid-max-multi-fraction"]
+SOLID_MAX_SATURATION = R["solid-max-saturation"]
+SOLID_MIN_BRIGHTNESS = R["solid-min-brightness"]
+SOLID_MIN_ORTHO_COVERAGE = R["solid-min-ortho-coverage"]
 
 
 @dataclass(frozen=True)
@@ -534,7 +540,7 @@ def stems_from_ndsm(ndsm, ground, transform, min_height_m=DEFAULT_MIN_HEIGHT_M, 
                     solid_objects.append(SolidObject(x, y, height, float(area[idx])))
                 continue
         equal_area = math.sqrt(area[idx] / math.pi)
-        radius = min(equal_area, max(cell / 2, TREE_CROWN_RADIUS_PER_HEIGHT * height, LOW_CROWN_MAX_RADIUS_M), 10.0)
+        radius = min(equal_area, max(cell / 2, TREE_CROWN_RADIUS_PER_HEIGHT * height, LOW_CROWN_MAX_RADIUS_M), TREE_CROWN_MAX_RADIUS_M)
         if equal_area > radius and is_flat_crown(height, p75[idx], equal_area, extent[idx]):
             radius = min(equal_area, FLAT_CROWN_MAX_RADIUS_M)
         x, y = transform * (col + .5, row + .5)

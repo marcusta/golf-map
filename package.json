@@ -23,6 +23,7 @@
         "gspro:bisect": "bun scripts/gspro-bisect.ts",
         "zones": "bun scripts/vegetation-zones.ts",
         "grass:zones": "bun scripts/grass-zones.ts",
+        "vegetation:rules": "bun scripts/vegetation-rules.ts",
         "terrain:generate": "bun scripts/terrain-generate.ts",
         "features:union": "bun scripts/features-union.ts",
         "water:edge": "bun scripts/water-edge.ts",

@@ -64,6 +64,7 @@ from golfpipe.trees_features import (
     round_outlines,
 )
 from golfpipe.water import GEOJSON_CRS_3006
+import vegetation_rules
 
 __all__ = [
     "DEFAULT_MIN_HEIGHT_M", "DEFAULT_CLOSE_M", "DEFAULT_MIN_AREA_M2", "DEFAULT_MIN_HOLE_AREA_M2",
@@ -74,29 +75,38 @@ __all__ = [
     "build_woodland_feature_collection",
 ]
 
-DEFAULT_MIN_HEIGHT_M = 3.0
-DEFAULT_CLOSE_M = 5.0
-DEFAULT_MIN_AREA_M2 = 2500.0
-DEFAULT_MIN_HOLE_AREA_M2 = 400.0
-DEFAULT_EDGE_M = 2.0
-DEFAULT_MIN_COVER = 0.5
-DEFAULT_ROOF_BUFFER_M = 5.0
-DEFAULT_ROUND_M = 3.0
-DEFAULT_SIMPLIFY_M = 1.0
+# The stand rules live in pipeline/vegetation-rules/trees.json (the woodland-* and floor-* keys), each
+# with its unit and what it does (vegetation_rules.py).
+R = vegetation_rules.load("trees")
+
+DEFAULT_MIN_HEIGHT_M = R["woodland-min-height"]
+DEFAULT_CLOSE_M = R["woodland-close"]
+DEFAULT_MIN_AREA_M2 = R["woodland-min-area"]
+DEFAULT_MIN_HOLE_AREA_M2 = R["woodland-min-hole-area"]
+DEFAULT_EDGE_M = R["woodland-edge"]
+DEFAULT_MIN_COVER = R["woodland-min-cover"]
+DEFAULT_ROOF_BUFFER_M = R["woodland-roof-buffer"]
+DEFAULT_ROUND_M = R["woodland-round"]
+DEFAULT_SIMPLIFY_M = R["woodland-simplify"]
 # Weight from understory: a stand where FULL_UNDERSTORY_SHARE of the cells
 # hold a 0.5..3 m return gets weight 1; sparser stands scale down linearly,
 # never under DEFAULT_MIN_WEIGHT (a bare spruce floor still has moss).
 # Vreta's leaf-off 2 points/m² scan gives 1 to 13 % across its 14 stands,
 # so 20 % is "full"; a denser scan wants --full-understory raised.
-DEFAULT_MIN_WEIGHT = 0.3
-FULL_UNDERSTORY_SHARE = 0.2
+DEFAULT_MIN_WEIGHT = R["woodland-min-weight"]
+FULL_UNDERSTORY_SHARE = R["woodland-full-understory"]
 # Floor colour: a stand needs this many floor pixels for a colour of its own,
 # and a floor pixel is ground-coloured (see floor_colors).
-MIN_FLOOR_PIXELS = 200
-GROUND_RED_OVER_GREEN = 0.9
-GROUND_RED_OVER_BLUE = 20.0
-GROUND_MIN_LUMA = 45.0
-GROUND_MAX_LUMA = 125.0
+MIN_FLOOR_PIXELS = R["floor-min-pixels"]
+GROUND_RED_OVER_GREEN = R["floor-red-over-green"]
+GROUND_RED_OVER_BLUE = R["floor-red-over-blue"]
+GROUND_MIN_LUMA = R["floor-min-luma"]
+GROUND_MAX_LUMA = R["floor-max-luma"]
+# Floor pixels in lidar gaps (canopy under FLOOR_GAP_MIN_HEIGHT_M, FLOOR_GAP_BUFFER_M from a taller
+# cell) are preferred; the colour is read FLOOR_INSET_M inside the band DEFAULT_EDGE_M grew (floor_colors).
+FLOOR_GAP_MIN_HEIGHT_M = R["floor-gap-min-height"]
+FLOOR_GAP_BUFFER_M = R["floor-gap-buffer"]
+FLOOR_INSET_M = R["floor-inset"]
 # The longest side the ortho window of one stand is read at; larger stands
 # are read decimated (a median colour does not need 16 cm pixels).
 FLOOR_SAMPLE_MAX_PX = 2048
@@ -105,8 +115,8 @@ FEATURE_TYPE = "vegetation_zone"
 SOURCE = "lidar-woodland"
 LICENSE = "CC0-1.0"
 ZONE_TYPE = "woodland_floor"
-ZONE_FEATHER_M = 4.0
-ZONE_NOISE_M = 2.0
+ZONE_FEATHER_M = R["woodland-zone-feather"]
+ZONE_NOISE_M = R["woodland-zone-noise"]
 
 
 @dataclass
@@ -227,10 +237,10 @@ def floor_colors(
     canopy: np.ndarray,
     canopy_transform: "rasterio.Affine",
     ortho_path: Path,
-    gap_min_height_m: float = 0.5,
-    gap_buffer_m: float = 1.0,
+    gap_min_height_m: float = FLOOR_GAP_MIN_HEIGHT_M,
+    gap_buffer_m: float = FLOOR_GAP_BUFFER_M,
     min_pixels: int = MIN_FLOOR_PIXELS,
-    inset_m: float = DEFAULT_EDGE_M + 1.0,
+    inset_m: float = DEFAULT_EDGE_M + FLOOR_INSET_M,
 ) -> int:
     """Sets floor_color / floor_stdev on each stand from the ortho (an RGB
     GeoTIFF in EPSG:3006), over the pixels at least inset_m inside the

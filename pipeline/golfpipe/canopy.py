@@ -51,6 +51,7 @@ from scipy.ndimage import binary_closing, distance_transform_edt, gaussian_filte
 
 from golfpipe.detect_common import STRUCTURE_8
 from golfpipe.detect_trees import NODATA
+import vegetation_rules
 
 __all__ = [
     "MIN_CANOPY_HEIGHT_M", "MAX_CANOPY_HEIGHT_M", "BUILDING_MIN_HEIGHT_M",
@@ -59,12 +60,16 @@ __all__ = [
     "suppress_buildings", "clean_canopy", "crown_shape", "canopy_color_rgba", "resample_dem_to_grid",
 ]
 
-MIN_CANOPY_HEIGHT_M = 1.0
-MAX_CANOPY_HEIGHT_M = 40.0
-BUILDING_MIN_HEIGHT_M = 2.0
-BUILDING_MAX_MULTI_FRACTION = 0.10
+# The canopy and roof rules live in pipeline/vegetation-rules/trees.json, each with its unit and
+# what it does (vegetation_rules.py).
+R = vegetation_rules.load("trees")
+
+MIN_CANOPY_HEIGHT_M = R["canopy-min-height"]
+MAX_CANOPY_HEIGHT_M = R["canopy-max-height"]
+BUILDING_MIN_HEIGHT_M = R["roof-min-height"]
+BUILDING_MAX_MULTI_FRACTION = R["roof-max-multi-fraction"]
 # A roof is a contiguous patch; smaller candidate patches are crown interiors.
-BUILDING_MIN_AREA_M2 = 15.0
+BUILDING_MIN_AREA_M2 = R["roof-min-area"]
 # 3 m radius at 1 m resolution: 7x7 window.
 CROWN_FILTER_SIZE = 7
 # crown_shape (surface DSM only): edge taper radius, Gaussian sigma, the

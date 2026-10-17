@@ -21,7 +21,7 @@
 // each generator flags of its script (Vreta: the tall rough 0.6 as thick beyond 20 m
 // from play, 0.3 beyond 50 m); the CLI's tuning flags come after them and win.
 import * as path from 'node:path';
-import { readFile } from 'node:fs/promises';
+import { readFile, readdir } from 'node:fs/promises';
 import type { CourseFeaturesService, GeneratedFeatureCollection } from './course-features.service';
 import { DEFAULT_ZONE_TYPES, type CourseZoneType, type ZoneTypesService } from './zone-types.service';
 import { CREEK_BANK_ZONE_TYPE } from '../../shared/features/creek-vegetation';
@@ -93,8 +93,16 @@ export function groundRender(surfaces: string): string {
     return surfaces.replace(/\.json$/i, '-ground.png');
 }
 
-/** The scripts every generator goes through: its own imports grass_zones/creek_bank_zones/gspro/golfpipe. */
-const GENERATOR_SCRIPTS = ['grass_zones.py', 'creek_bank_zones.py', 'gspro.py', 'golfpipe/__init__.py'];
+/**
+ * The generators' rules files, relative to the pipeline dir: `<source>.json` per generator
+ * (pipeline/vegetation_rules.py binds them to the scripts' constants), plus `trees.json` and the
+ * notes on the per-course tree files.
+ */
+export const RULE_DEFAULTS_DIR = 'vegetation-rules';
+
+/** The scripts every generator goes through: its own imports grass_zones/creek_bank_zones/gspro/golfpipe, and the rules files. */
+const GENERATOR_SCRIPTS = ['grass_zones.py', 'creek_bank_zones.py', 'gspro.py', 'golfpipe/__init__.py', 'vegetation_rules.py',
+    ...['tall-grass', 'woodland-floor', 'rock-shore', 'creek-bank'].map((s) => `${RULE_DEFAULTS_DIR}/${s}.json`)];
 
 const NO_SURFACE_MAP = 'no surface map from Unity - run golfmap.surfaces.export in the course\'s Unity project';
 
@@ -243,20 +251,79 @@ export interface CourseVegetationRules {
     args: Record<string, string[]>;
 }
 
+/** One rule of a generator's rules file (pipeline/vegetation-rules/<source>.json). */
+export interface RuleDefault {
+    key: string;
+    /** As the script has it; null in a notes file = set per course only. */
+    value: unknown;
+    unit?: string;
+    /** The script has a flag of this name that defaults to it. */
+    flag?: boolean;
+    text: string;
+}
+
+/** A rules file (`golfmap-vegetation-rule-defaults-v1`): what the view shows and the scripts plant with. */
+export interface RuleDefaultsDoc {
+    source: string;
+    label: string;
+    script?: string;
+    zoneTypes?: string[];
+    summary: string;
+    steps: string[];
+    groups: { title: string; rules: RuleDefault[] }[];
+}
+
+export const RULE_DEFAULTS_FORMAT = 'golfmap-vegetation-rule-defaults-v1';
+/** The flag that carries a course's rules without a flag of their own (pipeline/vegetation_rules.py). */
+export const RULE_OVERRIDES_FLAG = '--rule-overrides';
+
+/** Every rules file in `<pipelineDir>/vegetation-rules/`, by source ({} when there is none). */
+export async function readRuleDefaults(pipelineDir: string): Promise<Map<string, RuleDefaultsDoc>> {
+    const dir = path.join(pipelineDir, RULE_DEFAULTS_DIR);
+    const out = new Map<string, RuleDefaultsDoc>();
+    let names: string[];
+    try {
+        names = (await readdir(dir)).filter((n) => n.endsWith('.json')).sort();
+    } catch {
+        return out;
+    }
+    for (const name of names) {
+        const doc = JSON.parse(await readFile(path.join(dir, name), 'utf8')) as RuleDefaultsDoc & { format?: string };
+        if (doc.format !== RULE_DEFAULTS_FORMAT) throw new Error(`${path.join(dir, name)}: not ${RULE_DEFAULTS_FORMAT}`);
+        out.set(doc.source, doc);
+    }
+    return out;
+}
+
+/** A rule of a rules file by key, or undefined. */
+export function ruleOf(doc: RuleDefaultsDoc | undefined, key: string): RuleDefault | undefined {
+    for (const g of doc?.groups ?? []) {
+        const r = g.rules.find((x) => x.key === key);
+        if (r) return r;
+    }
+    return undefined;
+}
+
 /**
- * The flags a course's rules file gives each generator:
+ * The arguments a course's rules file gives each generator:
  * `{"format": "golfmap-vegetation-rules-v1", "generators": {"tall-grass": {"far-start": 8, ...}}}`
- * -> `{"tall-grass": ["--far-start", "8", ...]}`. Keys are the script's own flag names; keys
- * starting with `_` are comments. Throws on a source no generator has or a value that is not
- * a number or string, so a typo does not plant the course with the defaults unnoticed. Pure.
+ * -> `{"tall-grass": ["--far-start", "8", ...]}`. A key the generator's rules file (`defaults`)
+ * has without a flag (`verge-cover`, `clearances`, ...) goes instead into one
+ * `--rule-overrides <json>` of every such key, passed to EVERY generator (a script that imports
+ * another's rules - CLEARANCES - then has the course's value too); any other key is the script's
+ * own flag name. Keys starting with `_` are comments. Throws on a source no generator has or a
+ * flag value that is not a number or string, so a typo does not plant the course with the
+ * defaults unnoticed (the script rejects an unknown flag or rule key). Pure.
  */
 export function vegetationRulesArgs(doc: unknown, file: string,
-                                    all: readonly VegetationGenerator[] = VEGETATION_GENERATORS): Record<string, string[]> {
+                                    all: readonly VegetationGenerator[] = VEGETATION_GENERATORS,
+                                    defaults: ReadonlyMap<string, RuleDefaultsDoc> = new Map()): Record<string, string[]> {
     const d = doc as { format?: unknown; generators?: unknown } | null;
     if (!d || d.format !== VEGETATION_RULES_FORMAT || typeof d.generators !== 'object' || d.generators === null) {
         throw new Error(`${file}: not ${VEGETATION_RULES_FORMAT} (needs "format" and a "generators" object)`);
     }
     const out: Record<string, string[]> = {};
+    const overrides: Record<string, Record<string, unknown>> = {};
     for (const [source, flags] of Object.entries(d.generators as Record<string, unknown>)) {
         if (source.startsWith('_')) continue;
         if (!all.some((g) => g.source === source)) {
@@ -265,12 +332,22 @@ export function vegetationRulesArgs(doc: unknown, file: string,
         const args: string[] = [];
         for (const [name, value] of Object.entries((flags ?? {}) as Record<string, unknown>)) {
             if (name.startsWith('_')) continue;
+            const rule = ruleOf(defaults.get(source), name);
+            if (rule && !rule.flag) {
+                if (value === null || value === undefined) throw new Error(`${file}: ${source}.${name} needs a value`);
+                (overrides[source] ??= {})[name] = value;
+                continue;
+            }
             if (!/^[a-z][a-z0-9-]*$/.test(name) || (typeof value !== 'number' && typeof value !== 'string')) {
                 throw new Error(`${file}: ${source}.${name} must be a flag name with a number or string value`);
             }
             args.push(`--${name}`, String(value));
         }
         out[source] = args;
+    }
+    if (Object.keys(overrides).length > 0) {
+        const json = JSON.stringify(overrides);
+        for (const g of all) out[g.source] = [...(out[g.source] ?? []), RULE_OVERRIDES_FLAG, json];
     }
     return out;
 }

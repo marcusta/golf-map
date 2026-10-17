@@ -60,59 +60,72 @@ import numpy as np
 from shapely.geometry.base import BaseGeometry
 
 import gspro
+import vegetation_rules
 from golfpipe.detect_common import _each_polygon
 from grass_zones import (CLEARANCES, S_DEEP, S_OTHER, S_ROUGH, S_SLAB, S_WATER, Rules, _union, load_buildings,
-                         load_path_surfaces, load_roads, load_surfaces_map, ways_cut)
+                         load_path_surfaces, load_roads, load_surfaces_map, surface_codes, ways_cut)
 
-ZONE_TYPE = "rock_shore"
+# The rules (reaches, bands, covers, slopes, ...) live in pipeline/vegetation-rules/rock-shore.json,
+# each with its unit and what it does; a course changes them in docs/gspro/<course>/vegetation-rules.json
+# (vegetation_rules.py). The clearances are the tall rough's (tall-grass.json).
+R = vegetation_rules.load("rock-shore")
+
+ZONE_TYPE = R["zone-type"]
 DEFAULT_SOURCE = "rock-shore"
 CRACK, HEATH, SCRUB, GRASS = "crack", "heath", "scrub", "grass"
 VARIANTS = (SCRUB, HEATH, GRASS, CRACK)   # zone-stack order, bottom first: the heath patches open the scrub
-MIX_LAYERS = (GRASS, CRACK)               # planted over what grows there (blend: mix)
-LAND = (S_DEEP, S_ROUGH, S_OTHER)
+MIX_LAYERS = R["mix-layers"]                    # planted over what grows there (blend: mix)
+LAND = surface_codes(R["land-surfaces"])        # deep rough, rough, other
 
-LAKE_MIN_M2 = 20000.0          # the big lake: a pond or a creek pool is not a shore
-LAKE_REACH_M = 40.0            # the shore: within this of the lake ...
-SLAB_REACH_M = 10.0            # ... and on a slab or within this of one
-REACH_RAMP_M = 4.0             # both limits fade over this (centred on them)
+LAKE_MIN_M2 = R["lake-min"]                     # the big lake: a pond or a creek pool is not a shore
+LAKE_REACH_M = R["lake-reach"]                  # the shore: within this of the lake ...
+SLAB_REACH_M = R["slab-reach"]                  # ... and on a slab or within this of one
+REACH_RAMP_M = R["reach-ramp"]                  # both limits fade over this (centred on them)
 
-SLOPE_SMOOTH_M = 0.5           # DEM smoothing before the slope (lidar speckle)
-LEDGE_SLOPE_DEG = (30.0, 45.0) # a ledge: full below the first, none above the second
-FACE_SLOPE_DEG = 70.0          # a face: nothing grows on it
+SLOPE_SMOOTH_M = R["slope-smooth"]              # DEM smoothing before the slope (lidar speckle)
+LEDGE_SLOPE_DEG = R["ledge-slope"]              # a ledge: full below the first, none above the second
+FACE_SLOPE_DEG = R["face-slope"]                # a face: nothing grows on it
 
-CRACK_COVER = 0.35             # share of the slab under crack patches
-CRACK_FEATURE_M = 2.5          # the patches' size
-CRACK_LEDGE_BONUS = 0.6        # how much a ledge counts against the noise
-CRACK_FRINGE_M = 0.5           # in over the slab's edge (0 .. 2x by noise) ...
-CRACK_SKIRT_M = 0.6            # ... and out onto the land beside it
-CRACK_SOFT = 0.15              # the patch edge: noise this far either side of the cut-off fades 0 .. 1
+CRACK_COVER = R["crack-cover"]                  # share of the slab under crack patches
+CRACK_FEATURE_M = R["crack-noise-size"]         # the patches' size
+CRACK_LEDGE_BONUS = R["crack-ledge-bonus"]      # how much a ledge counts against the noise
+CRACK_FRINGE_M = R["crack-fringe"]              # in over the slab's edge (0 .. 2x by noise) ...
+CRACK_SKIRT_M = R["crack-skirt"]                # ... and out onto the land beside it
+CRACK_EDGE_NOISE_M = R["crack-edge-noise-size"]  # the noise that makes the fringe and skirt ragged
+CRACK_SOFT = R["crack-soft"]                    # the patch edge: noise this far either side of the cut-off fades 0 .. 1
 
-HEATH_REACH_M = 3.0            # thin soil: this far out from the slab's edge
-HEATH_COVER = 0.2              # share of the ledges and thin soil under heath patches
-HEATH_FEATURE_M = 4.0
+HEATH_REACH_M = R["heath-reach"]                # thin soil: this far out from the slab's edge
+HEATH_COVER = R["heath-cover"]                  # share of the ledges and thin soil under heath patches
+HEATH_FEATURE_M = R["heath-noise-size"]
+HEATH_FADE_M = R["heath-fade"]                  # on the thin soil it fades out over the last metres of HEATH_REACH_M
+HEATH_LEDGE = R["heath-ledge"]                  # on the slab: only where the ledge weight is above this
 
-SCRUB_START_M = 0.5            # the band begins this far off the slab's edge (the crack fringe and skirt are there) ...
-SCRUB_FULL_M = (1.0, 2.5)      # ... is full from the first to the second ...
-SCRUB_BAND_M = 8.0             # ... and thins to SCRUB_FAR_WEIGHT here, gone a metre on
-SCRUB_FAR_WEIGHT = 0.3
-INLAND_SCRUB_BAND_M = 4.0      # away from the lake (inland > 0): the scrub band ends here, gone a metre on
-SHORE_BAND_M = 25.0            # along the lake: within this of its water ...
-SHORE_FULL_M = 8.0             # ... full to here
-SHORE_WEIGHT = 0.8
-SCRUB_FEATURE_M = 6.0          # the clumps' size
-SCRUB_COVER = (-0.35, 0.05)    # noise -> clump weight 0 .. 1 (about two thirds of the band)
-SCRUB_EDGE_CLOSE = 0.45        # against the rock the clumps close up: noise lifted by this at the edge ...
-SCRUB_EDGE_M = (1.0, 4.0)      # ... fading out over these metres from it
-WATER_MARGIN_M = 0.3           # no bush with its foot in the water
-GRASS_BETWEEN = 0.55           # the grass between the clumps, as a share of the band's weight
+SCRUB_START_M = R["scrub-start"]                # the band begins this far off the slab's edge (the crack fringe and skirt are there) ...
+SCRUB_FULL_M = R["scrub-full"]                  # ... is full from the first to the second ...
+SCRUB_BAND_M = R["scrub-band"]                  # ... and thins to SCRUB_FAR_WEIGHT here, gone SCRUB_FADE_M on
+SCRUB_FAR_WEIGHT = R["scrub-far-weight"]
+SCRUB_FADE_M = R["scrub-fade"]                  # beyond the band (and the inland band) gone over this
+INLAND = R["inland"]                            # 0 = the shore only; above 0 every slab dressed, its scrub and grass inland at this weight
+INLAND_SCRUB_BAND_M = R["inland-scrub-band"]    # away from the lake (inland > 0): the scrub band ends here, gone SCRUB_FADE_M on
+SHORE_BAND_M = R["shore-band"]                  # along the lake: within this of its water ...
+SHORE_FULL_M = R["shore-full"]                  # ... full to here
+SHORE_WEIGHT = R["shore-weight"]
+SCRUB_FEATURE_M = R["scrub-noise-size"]         # the clumps' size
+SCRUB_COVER = R["scrub-cover"]                  # noise -> clump weight 0 .. 1 (about two thirds of the band)
+SCRUB_EDGE_CLOSE = R["scrub-edge-close"]        # against the rock the clumps close up: noise lifted by this at the edge ...
+SCRUB_EDGE_M = R["scrub-edge"]                  # ... fading out over these metres from it
+WATER_MARGIN_M = R["water-margin"]              # no bush with its foot in the water
+GRASS_BETWEEN = R["grass-between"]              # the grass between the clumps, as a share of the band's weight
 
-PLAY_CLEARANCES = tuple(c for c in CLEARANCES if not set(c[0]) & {S_WATER, 11})   # tee/green, fairway, semi/bunker, blend
-BLOCK_RAMP_M = 1.5
+NO_CLEARANCE_FROM = surface_codes(R["no-clearance-from"])  # water, rock
+PLAY_CLEARANCES = tuple(c for c in CLEARANCES if not set(c[0]) & set(NO_CLEARANCE_FROM))   # tee/green, fairway, semi/bunker, blend
+BLOCK_RAMP_M = R["block-ramp"]
 
-BAND_LEVELS = (0.1, 0.3, 0.5, 0.7, 0.9)   # w >= level; the top band has weight 1
-BAND_FEATHER_M = 0.5
-SIMPLIFY_M = 0.25
-MIN_AREA_M2 = {CRACK: 1.5, HEATH: 3.0, SCRUB: 8.0, GRASS: 8.0}
+BAND_LEVELS = R["band-levels"]                  # w >= level; the top band has weight 1
+BAND_FEATHER_M = R["band-feather"]
+BAND_NOISE_M = R["band-noise"]
+SIMPLIFY_M = R["simplify"]
+MIN_AREA_M2 = R["min-area"]                     # per variant key
 
 
 def _ramp(a, lo: float, hi: float):
@@ -152,7 +165,7 @@ def _quantile_cut(score: np.ndarray, where: np.ndarray, cover: float, soft: floa
 def shore_weights(cls: np.ndarray, cell: float, z: np.ndarray, blocked: np.ndarray | None = None,
                   lake_reach: float = LAKE_REACH_M, slab_reach: float = SLAB_REACH_M, crack_cover: float = CRACK_COVER,
                   heath_cover: float = HEATH_COVER, scrub_band: float = SCRUB_BAND_M, shore_band: float = SHORE_BAND_M,
-                  lake_min_m2: float = LAKE_MIN_M2, inland: float = 0.0, inland_scrub_band: float = INLAND_SCRUB_BAND_M,
+                  lake_min_m2: float = LAKE_MIN_M2, inland: float = INLAND, inland_scrub_band: float = INLAND_SCRUB_BAND_M,
                   seed: int = 0) -> dict[str, np.ndarray]:
     """Weight 0..1 per cell of the surface map for each variant (see the module doc). `inland` 0 = the shore
     only; above 0 every slab is dressed, its scrub and grass away from the lake at that weight."""
@@ -193,7 +206,7 @@ def shore_weights(cls: np.ndarray, cell: float, z: np.ndarray, blocked: np.ndarr
     score = smooth_noise(cls.shape, cell, CRACK_FEATURE_M, seed + 1) + CRACK_LEDGE_BONUS * ledge
     rock = slab & not_face
     patches = _quantile_cut(score, rock, crack_cover, CRACK_SOFT)
-    edge_noise = 1.0 + smooth_noise(cls.shape, cell, 1.2, seed + 2)          # 0 .. 2
+    edge_noise = 1.0 + smooth_noise(cls.shape, cell, CRACK_EDGE_NOISE_M, seed + 2)          # 0 .. 2
     fringe = slab & (inside - cell / 2 < CRACK_FRINGE_M * edge_noise)
     skirt = land & (d_slab - cell / 2 < CRACK_SKIRT_M * edge_noise)
     crack = np.where(rock, patches, 0.0)
@@ -201,19 +214,19 @@ def shore_weights(cls: np.ndarray, cell: float, z: np.ndarray, blocked: np.ndarr
 
     # heath: sparse patches on the ledges and the thin soil just outside.
     thin = land & (d_slab <= HEATH_REACH_M)
-    heath_ground = (slab & not_face & (ledge > 0.5)) | thin
+    heath_ground = (slab & not_face & (ledge > HEATH_LEDGE)) | thin
     heath_score = smooth_noise(cls.shape, cell, HEATH_FEATURE_M, seed + 3)
     heath = _quantile_cut(heath_score, heath_ground, heath_cover, CRACK_SOFT) * heath_ground
-    heath = heath * np.where(slab, ledge, 1.0 - _ramp(d_slab, HEATH_REACH_M - 1.0, HEATH_REACH_M))
+    heath = heath * np.where(slab, ledge, 1.0 - _ramp(d_slab, HEATH_REACH_M - HEATH_FADE_M, HEATH_REACH_M))
 
     # scrub and grass: the band off the slab's edge and along the lake, on land.
     off_slab = _ramp(d_slab, SCRUB_START_M - cell / 2, SCRUB_FULL_M[0]) * \
         (1.0 - (1.0 - SCRUB_FAR_WEIGHT) * _ramp(d_slab, SCRUB_FULL_M[1], scrub_band)) * \
-        (1.0 - _ramp(d_slab, scrub_band, scrub_band + 1.0))
+        (1.0 - _ramp(d_slab, scrub_band, scrub_band + SCRUB_FADE_M))
     along = SHORE_WEIGHT * (1.0 - _ramp(d_lake, SHORE_FULL_M, shore_band))
     if inland > 0:
         # inland: a narrower band at the `inland` weight, blending into the shore's over the lake reach's ramp
-        narrow = 1.0 - _ramp(d_slab, inland_scrub_band, inland_scrub_band + 1.0)
+        narrow = 1.0 - _ramp(d_slab, inland_scrub_band, inland_scrub_band + SCRUB_FADE_M)
         off_slab = off_slab * (lakeside + (1.0 - lakeside) * inland * narrow)
     band = np.maximum(off_slab, along) * land
     close = SCRUB_EDGE_CLOSE * (1.0 - _ramp(d_slab, *SCRUB_EDGE_M))
@@ -257,7 +270,7 @@ def feature_collection(slots: list[tuple[str, list[tuple[float, BaseGeometry]]]]
                 props = {
                     "type": "vegetation_zone", "source": source, "source_ref": f"{source}:{variant}:{len(features)}",
                     "zoneType": ZONE_TYPE, "zoneVariant": variant, "weight": round(level, 3),
-                    "feather": BAND_FEATHER_M, "noise": 0, "areaM2": round(poly.area, 1),
+                    "feather": BAND_FEATHER_M, "noise": BAND_NOISE_M, "areaM2": round(poly.area, 1),
                 }
                 if variant in MIX_LAYERS:
                     props["blend"] = gspro.ZONE_BLEND_MIX
@@ -289,10 +302,11 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--scrub-band", type=float, default=SCRUB_BAND_M, help=f"metres of scrub out from the slab's edge (default {SCRUB_BAND_M:g})")
     p.add_argument("--shore-band", type=float, default=SHORE_BAND_M, help=f"metres of scrub along the lake (default {SHORE_BAND_M:g})")
     p.add_argument("--lake-min", type=float, default=LAKE_MIN_M2, help=f"m2 of water that makes the big lake (default {LAKE_MIN_M2:g})")
-    p.add_argument("--inland", type=float, default=0.0, help="0 (default) = the shore only; 0..1 = every slab dressed, its scrub and grass away from the lake at this weight")
+    p.add_argument("--inland", type=float, default=INLAND, help=f"0 = the shore only (default {INLAND:g}); 0..1 = every slab dressed, its scrub and grass away from the lake at this weight")
     p.add_argument("--inland-scrub-band", type=float, default=INLAND_SCRUB_BAND_M, help=f"metres of scrub out from an inland slab (default {INLAND_SCRUB_BAND_M:g})")
     p.add_argument("--seed", type=int, default=0)
     p.add_argument("--source", default=DEFAULT_SOURCE)
+    vegetation_rules.add_overrides_flag(p)
     args = p.parse_args(argv)
 
     surfaces = Path(args.surfaces)

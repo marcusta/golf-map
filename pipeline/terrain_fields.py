@@ -24,10 +24,16 @@ from dataclasses import dataclass
 
 import numpy as np
 
-WORK_CELL_M = 2.0
-TPI_RADIUS_M = 50.0
-TWI_SMOOTH_M = 3.0          # a wet strip, not a one-cell thread down the flow line
-MIN_SLOPE_DEG = 0.5         # dead flat ground would give infinite wetness
+import vegetation_rules
+
+# The rules live with the woodland floor's, its only user: pipeline/vegetation-rules/woodland-floor.json
+# ("Ground from the DEM"); a course changes them in docs/gspro/<course>/vegetation-rules.json.
+R = vegetation_rules.load("woodland-floor")
+
+WORK_CELL_M = R["work-cell"]
+TPI_RADIUS_M = R["tpi-radius"]
+TWI_SMOOTH_M = R["twi-smooth"]          # a wet strip, not a one-cell thread down the flow line
+MIN_SLOPE_DEG = R["min-slope"]         # dead flat ground would give infinite wetness
 FILL_EPSILON_M = 1e-4       # filled flats keep a fall towards their outlet
 FLOW_EXPONENT = 1.1         # Freeman's multiple flow direction
 

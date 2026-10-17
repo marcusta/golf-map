@@ -1,0 +1,61 @@
+{
+  "format": "golfmap-vegetation-rule-defaults-v1",
+  "source": "tree-palette",
+  "label": "Tree species and models",
+  "script": "Unity: GolfMapBiome.cs (twin: unity/tree-matching.mjs)",
+  "courseFile": "palette.json",
+  "summary": "Which species and which model every detected tree gets in Unity, and at what size: set per course in its palette.json.",
+  "steps": [
+    "Every stem from the lidar has a height, a crown radius and a kind (broadleaf, conifer or unknown).",
+    "A stem up to shrubMaxHeightM is a shrub and only races against shrub assets; taller stems race against the tree assets.",
+    "A broadleaf or conifer stem keeps only assets of its kind; an unknown one (under 4 m, or any outer tree) keeps both.",
+    "Each asset is scaled to fit the stem's height and crown width (between minScale and maxScale); the fit gives a score.",
+    "Inside a drawn tree species area its mix picks the species (by weight), and the fit only decides the size.",
+    "Elsewhere the species weights pick among the assets that fit within speciesFitSlack of the best one. Unknown-kind stems skip the weights: the best fit wins.",
+    "Stems with at least woodlandMinNeighbours others within woodlandRadiusM are woodland: wider crowns, a size boost and a looser species fit.",
+    "Among close fits (variationBand) a deterministic hash of the stem picks the model, its rotation, jitter and lean, so a re-plant gives the same forest.",
+    "A fit worse than maxHeightError / maxWidthError, or an unknown kind, is planted but flagged for review."
+  ],
+  "groups": [
+    {
+      "title": "Size fit",
+      "rules": [
+        { "key": "rules.minScale", "value": null, "unit": "x", "text": "Smallest scale a model may be planted at." },
+        { "key": "rules.maxScale", "value": null, "unit": "x", "text": "Largest scale a model may be planted at." },
+        { "key": "rules.scalePenalty", "value": null, "unit": "score", "text": "How much a scale far from 1 counts against a model." },
+        { "key": "rules.maxHeightError", "value": null, "unit": "share", "text": "Height off by more than this: planted, flagged for review." },
+        { "key": "rules.maxWidthError", "value": null, "unit": "share", "text": "Crown width off by more than this: planted, flagged for review." },
+        { "key": "rules.variationBand", "value": null, "unit": "score", "text": "Models scoring within this of the best one are picked between by hash (variety)." },
+        { "key": "rules.shrubMaxHeightM", "value": null, "unit": "m", "text": "Stems up to this height are shrubs: only shrub assets." }
+      ]
+    },
+    {
+      "title": "Species",
+      "rules": [
+        { "key": "rules.speciesWeights", "value": null, "unit": "shares", "text": "Outside the tree species areas: the share of each species among the stems of known kind." },
+        { "key": "rules.speciesFitSlack", "value": null, "unit": "score", "text": "Only assets within this of the best fit take part in the species race." }
+      ]
+    },
+    {
+      "title": "Woodland and open-grown trees",
+      "rules": [
+        { "key": "rules.woodlandRadiusM", "value": null, "unit": "m", "text": "A stem with enough neighbours within this radius is a woodland tree ..." },
+        { "key": "rules.woodlandMinNeighbours", "value": null, "unit": "stems", "text": "... at least this many." },
+        { "key": "rules.woodlandCrownMultiplier", "value": null, "unit": "x", "text": "Woodland crowns are fitted this much wider than the lidar crown (they overlap)." },
+        { "key": "rules.woodlandWidthWeight", "value": null, "unit": "weight", "text": "How much the crown width counts in a woodland tree's fit." },
+        { "key": "rules.woodlandScaleBoost", "value": null, "unit": "x", "text": "Woodland trees are scaled up by this (up to maxScale)." },
+        { "key": "rules.woodlandSpeciesFitSlack", "value": null, "unit": "score", "text": "Looser species fit for woodland trees." },
+        { "key": "rules.openCrownPadM", "value": null, "unit": "m", "text": "Open-grown trees: the crown width fitted is the lidar crown plus this (0 / missing = off)." },
+        { "key": "rules.openWidthWeight", "value": null, "unit": "weight", "text": "How much the crown width counts for an open-grown tree (0 / missing = default)." }
+      ]
+    },
+    {
+      "title": "Variety",
+      "rules": [
+        { "key": "rules.scaleJitter", "value": null, "unit": "share", "text": "Random size variation per stem, plus or minus (missing = none)." },
+        { "key": "rules.maxLeanDeg", "value": null, "unit": "deg", "text": "Random lean off vertical, up to this (missing = none)." },
+        { "key": "seed", "value": null, "text": "Seed of every deterministic pick (model, rotation, jitter)." }
+      ]
+    }
+  ]
+}

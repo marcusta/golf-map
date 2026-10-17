@@ -58,6 +58,10 @@ Every step is a CLI or a bridge command; the `unity` MCP server drives Unity
 
 ## Where tall grass grows (pipeline/grass_zones.py, tests in pipeline/tests/test_grass_zones.py)
 
+The numbers below (and every generator's) are config: `pipeline/vegetation-rules/<source>.json`, bound to the
+constants named here at import; a course overrides any of them in its `vegetation-rules.json` (pipeline/AGENTS.md
+"Vegetation rules"). Change a default in the JSON, not in the .py. `bun run vegetation:rules -- <course>` lists them.
+
 From the surface map the rules are a **weight field** (0..1 per 0.5 m cell), written as nested
 contour bands (weights 0.1 ... 1.0, one `vegetation_zone` per band polygon, 0.5 m feather (`--band-feather`, centred on the
 edge), no zone noise: the field's own edges are ragged, and zone noise wobbled bare patches into the deep rough along every

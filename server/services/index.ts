@@ -28,6 +28,7 @@ import { CleanupAreasService } from './cleanup-areas.service';
 import { HydroService } from './hydro.service';
 import { OsmService } from './osm.service';
 import { TerrainEditsService } from './terrain-edits.service';
+import { VegetationRulesService } from './vegetation-rules.service';
 import { ZoneTypesService } from './zone-types.service';
 import { TerrainGeneratorsService } from './terrain-generators.service';
 import { PondEdgeService } from './pond-edge.service';
@@ -89,6 +90,8 @@ export function createServices(db: Kysely<Database>, config: ServicesConfig = {}
     const osmService = new OsmService({ courses: coursesService, assets: assetsService });
     const terrainEditsService = new TerrainEditsService(db);
     const zoneTypesService = new ZoneTypesService(db);
+    // The planting rules for reading (Vegetation mode's Planting rules panel); builder-only API.
+    const vegetationRulesService = new VegetationRulesService({ courses: coursesService, features: courseFeaturesService, zoneTypes: zoneTypesService });
     const gsproExportService = new GsproExportService({ db, courses: coursesService, assets: assetsService, dataDir, terrainEdits: terrainEditsService });
     // Blender shaping (recipe library, apply job → shaping worker → Unity refresh); builder-only API.
     const shapingService = new ShapingService({ courses: coursesService, exportSettings: gsproExportService, dataDir });
@@ -141,6 +144,7 @@ export function createServices(db: Kysely<Database>, config: ServicesConfig = {}
         terrainGeneratorsService,
         pondEdgeService,
         gsproExportService,
+        vegetationRulesService,
         shapingService,
         gsproSyncService,
         publishService,

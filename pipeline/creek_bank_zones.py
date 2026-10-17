@@ -72,60 +72,71 @@ from shapely.geometry import shape
 from shapely.geometry.base import BaseGeometry
 
 import gspro
+import vegetation_rules
 from golfpipe.detect_common import _each_polygon
-from grass_zones import _union, load_buildings, load_roads, load_surfaces_map
+from grass_zones import _union, load_buildings, load_roads, load_surfaces_map, surface_codes
 
-ZONE_TYPE = "creek_bank"
+# The rules (bank widths, slope, cover, wet edge, clearances, ...) live in
+# pipeline/vegetation-rules/creek-bank.json, each with its unit and what it does;
+# a course changes them in docs/gspro/<course>/vegetation-rules.json (vegetation_rules.py).
+# The palette keys (bankVeg, 'default', '<palette>_wet') are a contract with the zone types
+# and shared/features/creek-vegetation.ts: they stay here.
+R = vegetation_rules.load("creek-bank")
+
+ZONE_TYPE = R["zone-type"]
 DEFAULT_SOURCE = "creek-bank"
 BANK_VEG_ATTRIBUTE = "bankVeg"
 BANK_VEG_DEFAULT = "default"
 BANK_VEG_COVER_ATTRIBUTE = "bankVegCover"
 BANK_VEG_MAX_ATTRIBUTE = "bankVegMaxM"
 BANK_VEG_WET_ATTRIBUTE = "bankVegWetM"
-PLANTABLE_TYPES = ("water_creek", "water")   # BANK_VEG_FEATURE_TYPES in the shared module
-DEFAULT_COVER = 0.5
-DEFAULT_MAX_M = 4.5
+PLANTABLE_TYPES = R["plantable-types"]   # BANK_VEG_FEATURE_TYPES in the shared module
+# OPCD water surface this close to a creek's outline is its water; beyond OWN_WATER_REACH_M of
+# that it is other water.
+WATER_SURFACE_REACH_M = R["water-surface-reach"]
+OWN_WATER_REACH_M = R["own-water-reach"]
+# The tall rough's water clearance is lifted on the marked creeks + this (marked_water_mask).
+MARKED_WATER_MARGIN_M = R["marked-water-margin"]
+DEFAULT_COVER = R["cover"]
+DEFAULT_MAX_M = R["max-bank"]
 
 CELL_M = 0.25
-SLOPE_DEG = 10.0          # the bank ends where the ground flattens below this
-SLOPE_SMOOTH_M = 0.5      # DEM smoothing before the slope (lidar speckle)
-MIN_BANK_M = 1.0          # grass at least this far from the water, flat banks too
-FADE_M = 1.0              # weight 1 -> 0 beyond the top of the bank
-TOP_NOISE_M = 0.8         # the fade shifted by up to this much, in and out
-TOP_NOISE_FEATURE_M = 4.0
-WATER_NOISE_FEATURE_M = 1.5
-WATER_NOISE = 0.7         # noise against the shore -> mid-stream score (0..1)
-HALF_WIDTH_WINDOW_M = 6.0 # the local half-width is the deepest water within this window
-MIN_CLUMP_M2 = 0.5
-BAND_LEVELS = (0.15, 0.4, 0.65, 0.9)   # w >= level; the top band has weight 1
-BAND_FEATHER_M = 0.3
-MIN_AREA_M2 = 0.25
-SIMPLIFY_M = 0.1
-BUILDING_MARGIN_M = 4.0
-ROAD_MARGIN_M = 1.0
+SLOPE_DEG = R["slope"]        # the bank ends where the ground flattens below this
+SLOPE_SMOOTH_M = R["slope-smooth"]    # DEM smoothing before the slope (lidar speckle)
+MIN_BANK_M = R["min-bank"]        # grass at least this far from the water, flat banks too
+FADE_M = R["fade"]            # weight 1 -> 0 beyond the top of the bank
+TOP_NOISE_M = R["top-noise"]       # the fade shifted by up to this much, in and out
+TOP_NOISE_FEATURE_M = R["top-noise-size"]
+WATER_NOISE_FEATURE_M = R["water-noise-size"]
+WATER_NOISE = R["water-noise"]       # noise against the shore -> mid-stream score (0..1)
+HALF_WIDTH_WINDOW_M = R["half-width-window"] # the local half-width is the deepest water within this window
+MIN_CLUMP_M2 = R["min-clump"]
+BAND_LEVELS = R["band-levels"]   # w >= level; the top band has weight 1
+BAND_FEATHER_M = R["band-feather"]
+MIN_AREA_M2 = R["min-area"]
+SIMPLIFY_M = R["simplify"]
+BUILDING_MARGIN_M = R["building-margin"]
+ROAD_MARGIN_M = R["road-margin"]
 # Paths (the app's `path` features; not in the surface map): nothing within this, full weight
 # PATH_RAMP_M further out. A leaning 1 m card must not hang over the path.
-PATH_CLEARANCE_M = 1.2
-PATH_RAMP_M = 0.8
+PATH_CLEARANCE_M = R["path-clearance"]
+PATH_RAMP_M = R["path-ramp"]
 
 # Surface map codes (unity/Editor/GolfMap/GolfMapSurfaces.cs): (codes, clearance, ramp) in metres.
 S_WATER, S_OTHER = 8, 10
-CLEARANCES = (
-    ((6, 5), 2.0, 2.0),     # tee, green
-    ((4,), 1.0, 1.5),       # fairway
-    ((3, 7), 0.5, 1.0),     # semi, bunker
-    ((S_OTHER,), 0.3, 1.0), # OPCD meshes that are none of the course surfaces (paths are not here: see PATH_CLEARANCE_M)
-)
-OTHER_WATER = (0.0, 1.0)
-BLOCK_RAMP_M = 1.0
+# e.g. ((6, 5), 2.0, 2.0): tee, green; 'other' = OPCD meshes that are none of the course surfaces
+# (paths are not here: see PATH_CLEARANCE_M)
+CLEARANCES = tuple((surface_codes(c["surfaces"]), c["clear"], c["ramp"]) for c in R["clearances"])
+OTHER_WATER = (R["other-water-clear"], R["other-water-ramp"])
+BLOCK_RAMP_M = R["block-ramp"]
 WET_SUFFIX = "_wet"
-WET_M = 1.0               # the wet mix up to this far from the water (default; a creek's bankVegWetM) ...
-WET_RAMP_M = 0.6          # ... handing over to the palette's own mix over this
-WET_NOISE_M = 0.5         # (ramp and noise shrink with a shorter reach, so a narrow edge stays an edge)
-WET_NOISE_FEATURE_M = 2.5
-SECTION_BLEND_M = 2.0     # a section's palette hands over to the next over this, along the creek ...
-SECTION_NOISE_M = 1.5     # ... shifted by this much noise, so the change is not a straight cut
-SECTION_NOISE_FEATURE_M = 3.0
+WET_M = R["wet"]             # the wet mix up to this far from the water (default; a creek's bankVegWetM) ...
+WET_RAMP_M = R["wet-ramp"]        # ... handing over to the palette's own mix over this
+WET_NOISE_M = R["wet-noise"]       # (ramp and noise shrink with a shorter reach, so a narrow edge stays an edge)
+WET_NOISE_FEATURE_M = R["wet-noise-size"]
+SECTION_BLEND_M = R["section-blend"]   # a section's palette hands over to the next over this, along the creek ...
+SECTION_NOISE_M = R["section-noise"]   # ... shifted by this much noise, so the change is not a straight cut
+SECTION_NOISE_FEATURE_M = R["section-noise-size"]
 
 
 @dataclass
@@ -254,9 +265,9 @@ def water_clumps(water: np.ndarray, cell: float, cover: float, noise: np.ndarray
 # SLAB_PATCH_COVER patches), and a ragged ring of it grows round the rock in the water, SLAB_RING_M out (0 .. 2x by
 # noise, never under SLAB_RING_MIN_M), so the rock stands in reeds and grass rather than in bare water (Marcus, 2026-10-15).
 S_SLAB = 12
-SLAB_RING_M = 1.2
-SLAB_RING_MIN_M = 0.5      # never narrower: grass right up against the rock all round
-SLAB_RING_NOISE_FEATURE_M = 1.5
+SLAB_RING_M = R["slab-ring"]
+SLAB_RING_MIN_M = R["slab-ring-min"]     # never narrower: grass right up against the rock all round
+SLAB_RING_NOISE_FEATURE_M = R["slab-ring-noise-size"]
 
 
 def _round_rocks(w: np.ndarray, cls: np.ndarray, cell: float, seed: int) -> np.ndarray:
@@ -381,8 +392,8 @@ def creek_bands(creek: Creek, cls_full: np.ndarray, z_full: np.ndarray, cell_ful
     poly = raster([creek.geometry])
     if poly is None or not poly.any():
         return [], {"waterM2": 0.0}
-    water = poly | ((cls == S_WATER) & (_dist(poly, cell) <= 1.0))
-    near = _dist(water, cell) <= 1.5
+    water = poly | ((cls == S_WATER) & (_dist(poly, cell) <= WATER_SURFACE_REACH_M))
+    near = _dist(water, cell) <= OWN_WATER_REACH_M
     other = raster(others)
     other_water = ((cls == S_WATER) & ~near) | (other & ~poly if other is not None else False)
     w = creek_weight(water, z, cls, raster(blockers), other_water, cell, creek.cover, creek.max_m, _seed(creek.id),
@@ -489,7 +500,7 @@ def load_creeks(db_path: Path, course_ident: str, sections: list[Section] = ()) 
 
 
 def marked_water_mask(db_path: Path, course_ident: str, shape_: tuple[int, int], cell: float,
-                      west: float, north: float, margin: float = 1.0) -> np.ndarray:
+                      west: float, north: float, margin: float = MARKED_WATER_MARGIN_M) -> np.ndarray:
     """The marked creeks (+ `margin`) on a surface-map grid: grass_zones.py lifts its
     water clearance there (the creek-bank zones take the banks)."""
     from rasterio import features
@@ -543,6 +554,7 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--buildings", help="building survey GeoJSON (EPSG:3006)")
     p.add_argument("--roads", help="road centerlines GeoJSON with widthM (EPSG:3006)")
     p.add_argument("--source", default=DEFAULT_SOURCE)
+    vegetation_rules.add_overrides_flag(p)
     args = p.parse_args(argv)
 
     surfaces = Path(args.surfaces)

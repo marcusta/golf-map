@@ -66,50 +66,60 @@ import numpy as np
 from shapely.geometry.base import BaseGeometry
 
 import gspro
+import vegetation_rules
 from golfpipe.detect_common import _each_polygon
 from grass_zones import (Rules, S_SLAB, _union, load_buildings, load_path_surfaces, load_roads,
                          load_surfaces_map, ways_cut, weight_field)
 from terrain_fields import Fields, terrain_fields
 
-ZONE_TYPE = "woodland_floor"
+# The rules (reach, closures, which floor where, bands, ...) live in
+# pipeline/vegetation-rules/woodland-floor.json, each with its unit and what it does;
+# a course changes them in docs/gspro/<course>/vegetation-rules.json (vegetation_rules.py).
+R = vegetation_rules.load("woodland-floor")
+
+ZONE_TYPE = R["zone-type"]
 DEFAULT_SOURCE = "woodland-floor"
 HEATH, BILBERRY, HERB, FERN, EDGE, BRUSH = "heath", "bilberry", "herb", "fern", "edge", "brush"
 FLOORS = (HEATH, BILBERRY, HERB, FERN)
 MIX_LAYERS = (EDGE, BRUSH)     # planted over the floor (blend: mix)
 
 KIND_BROADLEAF, KIND_CONIFER = 0, 1          # golfpipe/trees_stems.py; 2 = unknown
-CONIFER_SPECIES = ("pine", "spruce", "fir", "larch", "juniper", "cedar", "cypress")
+CONIFER_SPECIES = R["conifer-species"]
 
-MIN_CROWN_M = 1.5              # a stem's crown on the ground is at least this wide a disc
-CLOSURE_SMOOTH_M = 6.0
-FLOOR_CLOSURE = (0.15, 0.4)    # floor weight 0 below, 1 above
-EDGE_CLOSURE = (0.05, 0.15, 0.3) # the rim: 0 below, 1 at the middle, 0 above
-STAND_SMOOTH_M = 15.0          # a rim belongs to a stand: crowns over this much ground ...
-STAND_CLOSURE = (0.12, 0.25)   # ... close this far (a lone tree's own rim gets no brush)
-KIND_SMOOTH_M = 10.0           # the stand around a point, not the one tree over it
-FOREST_SMOOTH_M = 25.0         # decidedly forest: crowns over this much ground ...
-FOREST_CLOSURE = (0.28, 0.38)  # ... close this far (a corridor between two holes does not). Vreta's floor: median 0.31;
+MIN_CROWN_M = R["min-crown"]              # a stem's crown on the ground is at least this wide a disc
+CLOSURE_SMOOTH_M = R["closure-smooth"]
+FLOOR_CLOSURE = R["floor-closure"]    # floor weight 0 below, 1 above
+EDGE_CLOSURE = R["edge-closure"] # the rim: 0 below, 1 at the middle, 0 above
+STAND_SMOOTH_M = R["stand-smooth"]          # a rim belongs to a stand: crowns over this much ground ...
+STAND_CLOSURE = R["stand-closure"]   # ... close this far (a lone tree's own rim gets no brush)
+KIND_SMOOTH_M = R["kind-smooth"]           # the stand around a point, not the one tree over it
+FOREST_SMOOTH_M = R["forest-smooth"]         # decidedly forest: crowns over this much ground ...
+FOREST_CLOSURE = R["forest-closure"]  # ... close this far (a corridor between two holes does not). Vreta's floor: median 0.31;
                                # (0.35, 0.5) left 1 ha of brush on 20 ha of floor, too thin to notice
-BRUSH_FEATURE_M = 12.0         # the brush stands in drifts this size ...
-BRUSH_COVER = (-0.2, 0.2)      # ... where its noise passes this (about two thirds of the forest)
-DEFAULT_REACH_M = 50.0         # the floor is geometry: none further than this from play
-REACH_RAMP_M = 15.0
+BRUSH_FEATURE_M = R["brush-size"]         # the brush stands in drifts this size ...
+BRUSH_COVER = R["brush-cover"]    # ... where its noise passes this (about two thirds of the forest)
+DEFAULT_REACH_M = R["reach"]         # the floor is geometry: none further than this from play
+REACH_RAMP_M = R["reach-ramp"]
+SPILL_M = R["spill"]                 # into the mown rough: none
 
 # Scores 0..1 (see the module doc). Vreta's woodland: tpi -1.3 (p5) .. 1.1 (p95) m, twi 4.3 .. 11.
-KNOLL_TPI_M = (0.4, 1.3)
-WET_TWI = (8.5, 10.0)
-WET_MAX_SLOPE_DEG = (6.0, 10.0)      # water does not stay on a slope
-TYPE_NOISE = 0.3                     # how far the noise moves a score
-TYPE_NOISE_FEATURE_M = 14.0
-TYPE_BLEND_M = 2.0
-POCKET_FEATURE_M = 5.0
-POCKET_SCORE = 0.35            # how much the score still counts in a pocket (the noise counts 1)
-POCKET_SHARE = 0.4
+KNOLL_TPI_M = R["knoll-tpi"]
+WET_TWI = R["wet-twi"]
+WET_MAX_SLOPE_DEG = R["wet-max-slope"]      # water does not stay on a slope
+KNOLL_HEATH_BROADLEAF = R["knoll-heath-broadleaf"]   # a broadleaf knoll is a dry herb slope as often as heath
+KNOLL_BILBERRY = R["knoll-bilberry"]
+KNOLL_HERB = R["knoll-herb"]
+TYPE_NOISE = R["type-noise"]                     # how far the noise moves a score
+TYPE_NOISE_FEATURE_M = R["type-noise-size"]
+TYPE_BLEND_M = R["type-blend"]
+POCKET_FEATURE_M = R["pocket-size"]
+POCKET_SCORE = R["pocket-score"]            # how much the score still counts in a pocket (the noise counts 1)
+POCKET_SHARE = R["pocket-share"]
 
-BAND_LEVELS = (0.2, 0.5, 0.8)        # w >= level; the top band has weight 1
-BAND_FEATHER_M = 1.5
-SIMPLIFY_M = 0.5
-MIN_AREA_M2 = 20.0
+BAND_LEVELS = R["band-levels"]        # w >= level; the top band has weight 1
+BAND_FEATHER_M = R["band-feather"]
+SIMPLIFY_M = R["simplify"]
+MIN_AREA_M2 = R["min-area"]
 
 
 @dataclass
@@ -171,9 +181,9 @@ def floor_shares(fields: Fields, conifers: np.ndarray, cell: float, seed: int = 
     level = (1.0 - wet) * (1.0 - knoll)
     scores = {
         FERN: wet,
-        HEATH: knoll * (0.4 + 0.6 * conifers),       # a broadleaf knoll is a dry herb slope as often as heath
-        BILBERRY: level * conifers + knoll * 0.3 * conifers,
-        HERB: level * (1.0 - conifers) + knoll * 0.6 * (1.0 - conifers),
+        HEATH: knoll * (KNOLL_HEATH_BROADLEAF + (1.0 - KNOLL_HEATH_BROADLEAF) * conifers),
+        BILBERRY: level * conifers + knoll * KNOLL_BILBERRY * conifers,
+        HERB: level * (1.0 - conifers) + knoll * KNOLL_HERB * (1.0 - conifers),
     }
 
     def pick(score: float, noise: float, feature_m: float, blend_m: float, seed_: int) -> list[np.ndarray]:
@@ -193,7 +203,7 @@ def floor_weights(cls: np.ndarray, cell: float, z: np.ndarray, trees: Trees, blo
                   reach: float = DEFAULT_REACH_M, seed: int = 0, fields: Fields | None = None) -> dict[str, np.ndarray]:
     """Weight 0..1 per cell for each floor type, the edge brush and the forest brush (see the module doc)."""
     from creek_bank_zones import smooth_noise
-    ground = weight_field(cls, cell, blocked, Rules(max_distance=reach, spill=0.0), reach_ramp=REACH_RAMP_M, seed=seed)
+    ground = weight_field(cls, cell, blocked, Rules(max_distance=reach, spill=SPILL_M), reach_ramp=REACH_RAMP_M, seed=seed)
     ground[cls == S_SLAB] = 0.0      # weight_field grows grass in over a rock slab's edge; the floor stays off it
     closure, stand, forest, conifers = closure_and_conifers(trees, cls.shape, cell)
     floor = ground * _ramp(closure, *FLOOR_CLOSURE)
@@ -297,6 +307,7 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--roads", help="road centerlines GeoJSON with widthM (EPSG:3006)")
     p.add_argument("--reach", type=float, default=DEFAULT_REACH_M, help=f"max metres from a rough/fairway/green/bunker (default {DEFAULT_REACH_M:g})")
     p.add_argument("--source", default=DEFAULT_SOURCE)
+    vegetation_rules.add_overrides_flag(p)
     args = p.parse_args(argv)
 
     surfaces = Path(args.surfaces)

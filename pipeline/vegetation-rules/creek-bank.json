@@ -1,0 +1,106 @@
+{
+  "format": "golfmap-vegetation-rule-defaults-v1",
+  "source": "creek-bank",
+  "label": "Creek and pond banks",
+  "script": "creek_bank_zones.py",
+  "zoneTypes": ["creek_bank"],
+  "summary": "Tall, uneven grass on the banks of the creeks and ponds a builder marked, from the water's edge up to the top of the bank, and in clumps out into the water.",
+  "steps": [
+    "Plants a creek or pond when its bankVeg attribute names a palette: 'default' is the creek_bank type's Default mix, any other value one of its variants (vass, reed, thicket, lush, ...). An unmarked one is planted only inside a hand-drawn creek_bank section.",
+    "Per creek it works on a 0.25 m grid from Unity's surface map and the terrain's edited DEM. The water is the creek's outline plus the OPCD water surface right beside it.",
+    "The bank is the ground next to the water that rises at the slope limit or more and is connected to the water through such ground: walking out from the water, it ends where the ground first flattens (the top of the bank), never further than the creek's bankVegMaxM and never nearer than min-bank.",
+    "The weight is 1 on the bank and fades to 0 just beyond its top; noise shifts that edge in and out so it is ragged.",
+    "Out in the water, grass grows in from both shores with a ragged edge and some clumps further out until it covers the creek's bankVegCover share of the water; a winding strip of open water usually stays down the middle.",
+    "A rock slab standing in the water or on the bank gets a ragged ring of grass round it in the water, and only tall-rough's slab fringe and patches on the rock itself.",
+    "When the course's creek_bank type has a '<palette>_wet' variant, the water and the lower bank (bankVegWetM from the water) go to that wet mix (cattails, reeds) and the rest of the bank to the palette's own mix.",
+    "A hand-drawn creek_bank zone (a section) gives the banks inside it its own palette, blending into the creek's palette over a ragged hand-over; later sections sit on top. The section itself is not planted.",
+    "Keeps off tees, greens, fairways, semis, bunkers, other OPCD meshes, other water, paths and bridges, houses and roads, each with a clearance and a fade.",
+    "The weight field is written as nested contour bands, one creek_bank zone per band polygon with the palette as its variant. These zones sit above the tall rough, which runs up to the marked creeks without its water clearance."
+  ],
+  "groups": [
+    {
+      "title": "Where it grows",
+      "rules": [
+        { "key": "plantable-types", "value": ["water_creek", "water"], "unit": "feature types", "text": "The drawn features whose banks can be planted (marked with bankVeg, or inside a section)." },
+        { "key": "cover", "value": 0.5, "unit": "share", "text": "Share of the water surface the grass covers, when the creek has no bankVegCover of its own." },
+        { "key": "max-bank", "value": 4.5, "unit": "m", "text": "How far up the bank the grass reaches at most, when the creek has no bankVegMaxM of its own." },
+        { "key": "min-bank", "value": 1.0, "unit": "m", "text": "Grass at least this far from the water, flat banks too." },
+        { "key": "slope", "value": 10.0, "unit": "deg", "text": "The bank ends where the ground flattens below this slope (the top of the bank)." },
+        { "key": "slope-smooth", "value": 0.5, "unit": "m", "text": "The DEM is smoothed over this before the slope is measured (lidar speckle)." },
+        { "key": "water-surface-reach", "value": 1.0, "unit": "m", "text": "OPCD water surface within this of the creek's outline counts as the creek's water." },
+        { "key": "own-water-reach", "value": 1.5, "unit": "m", "text": "Water surface further than this from the creek's water is other water (kept clear)." }
+      ]
+    },
+    {
+      "title": "Top of the bank",
+      "rules": [
+        { "key": "fade", "value": 1.0, "unit": "m", "text": "Beyond the top of the bank the weight falls from 1 to 0 over this." },
+        { "key": "top-noise", "value": 0.8, "unit": "m", "text": "The fade is shifted in and out by up to this much, so the top edge is ragged." },
+        { "key": "top-noise-size", "value": 4.0, "unit": "m", "text": "Size of the noise blobs that shift the top edge." }
+      ]
+    },
+    {
+      "title": "In the water",
+      "rules": [
+        { "key": "water-noise", "value": 0.7, "unit": "score", "text": "How much noise is added to the shore-to-mid-stream score (0..1) that decides which water cells get grass." },
+        { "key": "water-noise-size", "value": 1.5, "unit": "m", "text": "Size of the noise blobs of the clumps in the water." },
+        { "key": "half-width-window", "value": 6.0, "unit": "m", "text": "The creek's local half-width is its deepest water within a window this wide." },
+        { "key": "min-clump", "value": 0.5, "unit": "m²", "text": "Clumps in the water smaller than this are dropped." }
+      ]
+    },
+    {
+      "title": "Rocks in the water",
+      "rules": [
+        { "key": "slab-ring", "value": 1.2, "unit": "m", "text": "A ring of grass this wide on average (0 to 2 x by noise) round a rock slab in the water or on the bank." },
+        { "key": "slab-ring-min", "value": 0.5, "unit": "m", "text": "The ring is never narrower than this: grass right up against the rock all round." },
+        { "key": "slab-ring-noise-size", "value": 1.5, "unit": "m", "text": "Size of the noise blobs that vary the ring's width." }
+      ]
+    },
+    {
+      "title": "Wet edge (<palette>_wet)",
+      "rules": [
+        { "key": "wet", "value": 1.0, "unit": "m", "text": "The wet mix reaches this far up the bank from the water, when the creek has no bankVegWetM of its own." },
+        { "key": "wet-ramp", "value": 0.6, "unit": "m", "text": "It hands over to the palette's own mix over this (shorter with a shorter reach)." },
+        { "key": "wet-noise", "value": 0.5, "unit": "m", "text": "The hand-over is shifted by up to this much noise (less with a shorter reach)." },
+        { "key": "wet-noise-size", "value": 2.5, "unit": "m", "text": "Size of the noise blobs that shift the hand-over." }
+      ]
+    },
+    {
+      "title": "Sections",
+      "rules": [
+        { "key": "section-blend", "value": 2.0, "unit": "m", "text": "A section's palette hands over to the next one over this, along the creek." },
+        { "key": "section-noise", "value": 1.5, "unit": "m", "text": "The hand-over is shifted by up to this much noise, so the change is not a straight cut." },
+        { "key": "section-noise-size", "value": 3.0, "unit": "m", "text": "Size of the noise blobs that shift the hand-over." }
+      ]
+    },
+    {
+      "title": "Kept clear",
+      "rules": [
+        { "key": "clearances", "value": [
+            { "surfaces": ["tee", "green"], "clear": 2.0, "ramp": 2.0 },
+            { "surfaces": ["fairway"], "clear": 1.0, "ramp": 1.5 },
+            { "surfaces": ["semi", "bunker"], "clear": 0.5, "ramp": 1.0 },
+            { "surfaces": ["other"], "clear": 0.3, "ramp": 1.0 }
+          ], "unit": "m", "text": "Per surface: no grass within 'clear' metres, full grass beyond clear + ramp. Other = OPCD meshes that are none of the course surfaces." },
+        { "key": "other-water-clear", "value": 0.0, "unit": "m", "text": "No grass within this of other water (another creek or pond, or water surface away from this creek) ..." },
+        { "key": "other-water-ramp", "value": 1.0, "unit": "m", "text": "... full grass beyond the clearance plus this." },
+        { "key": "path-clearance", "value": 1.2, "unit": "m", "text": "No grass within this of the drawn paths and bridges: grass cards are about 1 m wide and lean, so they must not hang over the path." },
+        { "key": "path-ramp", "value": 0.8, "unit": "m", "text": "Full grass beyond the path clearance plus this." },
+        { "key": "building-margin", "value": 4.0, "unit": "m", "text": "Kept clear around house footprints (the building survey)." },
+        { "key": "road-margin", "value": 1.0, "unit": "m", "text": "Kept clear beyond a surveyed road's edge (centerline + half its width, an estimate)." },
+        { "key": "block-ramp", "value": 1.0, "unit": "m", "text": "Beyond the house and road margins the grass fades in over this." },
+        { "key": "marked-water-margin", "value": 1.0, "unit": "m", "text": "The tall rough keeps no water clearance on the marked creeks and this far round them (the bank zones take the banks)." }
+      ]
+    },
+    {
+      "title": "Zones written",
+      "rules": [
+        { "key": "zone-type", "value": "creek_bank", "text": "The zone type of the zones (its Default mix and variants are the palettes)." },
+        { "key": "band-levels", "value": [0.15, 0.4, 0.65, 0.9], "unit": "weights", "text": "The contour levels the weight field is written at (one zone per band; the top band has weight 1)." },
+        { "key": "band-feather", "value": 0.3, "unit": "m", "text": "Feather of each band zone." },
+        { "key": "min-area", "value": 0.25, "unit": "m²", "text": "Band pieces smaller than this are dropped." },
+        { "key": "simplify", "value": 0.1, "unit": "m", "text": "Outlines are simplified to this tolerance." }
+      ]
+    }
+  ]
+}

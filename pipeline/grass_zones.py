@@ -85,26 +85,43 @@ from shapely.geometry.base import BaseGeometry
 from shapely.ops import unary_union
 
 import gspro
+import vegetation_rules
 from golfpipe.detect_common import _each_polygon
 
-HABITAT_TYPES = ("deep_rough",)
-SPILL_TYPES = ("rough",)
-PLAY_TYPES = ("rough", "fairway", "green", "bunker")
-FORBIDDEN_TYPES = ("semi_rough", "fairway", "green", "tee", "bunker", "water", "water_creek", "path")
+# The rules (distances, densities, surfaces kept clear, ...) live in
+# pipeline/vegetation-rules/tall-grass.json, each with its unit and what it does;
+# a course changes them in docs/gspro/<course>/vegetation-rules.json (vegetation_rules.py).
+R = vegetation_rules.load("tall-grass")
+
+# Surface map codes (unity/Editor/GolfMap/GolfMapSurfaces.cs, golfmap-surfaces-v1), by the
+# names the rules file uses.
+SURFACE_CODES = {"none": 0, "deep": 1, "rough": 2, "semi": 3, "fairway": 4, "green": 5, "tee": 6, "bunker": 7,
+                 "water": 8, "blend": 9, "other": 10, "rock": 11, "slab": 12}
+
+
+def surface_codes(names) -> tuple:
+    """Surface names of a rules file -> their surface map codes, in that order."""
+    return tuple(SURFACE_CODES[n] for n in names)
+
+
+HABITAT_TYPES = R["habitat-types"]
+SPILL_TYPES = R["spill-types"]
+PLAY_TYPES = R["play-types"]
+FORBIDDEN_TYPES = R["forbidden-types"]
 # Surfaces that paint over whatever lies below them; the OPCD surface types.
 SURFACE_TYPES = tuple(gspro.TYPE_SURFACE)
 
-DEFAULT_MAX_DISTANCE_M = 75.0
-DEFAULT_SPILL_M = 0.3    # a foot or so into the mown rough, ragged (was 1.5, before that 5: a wide fade)
-DEFAULT_FEATHER_M = 4.0
-DEFAULT_NOISE_M = 1.0
-DEFAULT_BUILDING_MARGIN_M = 4.0
-DEFAULT_ROAD_MARGIN_M = 0.5   # centerline + width is an estimate of the road's edge
-DEFAULT_PATH_MARGIN_M = 0.15  # the grass's feet stand a hand off the path's edge: its blades lean over it (0: slightly too much on the road)
-DEFAULT_MIN_AREA_M2 = 25.0
-DEFAULT_SIMPLIFY_M = 0.3
+DEFAULT_MAX_DISTANCE_M = R["max-distance"]
+DEFAULT_SPILL_M = R["spill"]    # a foot or so into the mown rough, ragged (was 1.5, before that 5: a wide fade)
+DEFAULT_FEATHER_M = R["feather"]
+DEFAULT_NOISE_M = R["noise"]
+DEFAULT_BUILDING_MARGIN_M = R["building-margin"]
+DEFAULT_ROAD_MARGIN_M = R["road-margin"]   # centerline + width is an estimate of the road's edge
+DEFAULT_PATH_MARGIN_M = R["path-margin"]  # the grass's feet stand a hand off the path's edge: its blades lean over it (0: slightly too much on the road)
+DEFAULT_MIN_AREA_M2 = R["min-area"]
+DEFAULT_SIMPLIFY_M = R["simplify"]
 DEFAULT_SOURCE = "tall-grass"
-DEFAULT_ZONE_TYPE = "rough_tall"
+DEFAULT_ZONE_TYPE = R["zone-type"]
 
 
 @dataclass
@@ -123,46 +140,40 @@ class Rules:
     # level, so the thinned field is written at exactly that weight). Nobody walks there, it is
     # seen from a distance, and it is most of the grass the player's machine draws (Marcus
     # 2026-10-13). far_weight 1 = off.
-    far_start: float = 30.0
-    far_ramp: float = 10.0
-    far_weight: float = 0.56
+    far_start: float = R["far-start"]
+    far_ramp: float = R["far-ramp"]
+    far_weight: float = R["far-weight"]
     # A course can thin nearer as well (docs/gspro/<course>/vegetation-rules.json, which can also move
     # the far rule): beyond near_start the weight falls over near_ramp to near_weight, and the two
     # multiply, so no stretch is ever thicker than the far rule alone makes it (Vreta, 2026-10-15:
     # 0.6 from 20 m, 0.3 from 50 m). near_weight 1 = off.
-    near_start: float = 0.0
-    near_ramp: float = 0.0
-    near_weight: float = 1.0
+    near_start: float = R["near-start"]
+    near_ramp: float = R["near-ramp"]
+    near_weight: float = R["near-weight"]
     # Further out still, where no ball is played from, the mix itself changes: beyond out_start
     # metres from play the ordinary mix hands over, across out_ramp metres, to the type's
     # FAR_VARIANT (zones of slot <type>/far): few, large, wide cards that read as the same grass
     # from the fairway at a fraction of the instances. Distance from play, not the drawn `oob`
     # ring: on Vreta that ring holds only the western holes. Only with far_variant set, which
     # main() does when the course binds items to the variant (an unbound one would plant nothing).
-    out_start: float = 40.0
-    out_ramp: float = 10.0
+    out_start: float = R["out-start"]
+    out_ramp: float = R["out-ramp"]
     far_variant: bool = False
     # Dark ground (the module doc): full ordinary mix where the ground render's smoothed linear
     # luminance is dark_light or more, full DARK_VARIANT at dark_dark or less, a cross-fade
     # between. Omberg 2026-10-17: deep rough on holes 1 and 5 0.056-0.064 (the brightened mix
     # matches it), the dark crop fields 0.043-0.047, a pale meadow 0.066. dark_variant /
     # far_dark_variant: main() sets them when the course binds items to those variants.
-    dark_light: float = 0.056
-    dark_dark: float = 0.046
+    dark_light: float = R["dark-light"]
+    dark_dark: float = R["dark-dark"]
     dark_variant: bool = False
     far_dark_variant: bool = False
 
 
 # (surface codes, clearance: zero weight within this many metres, ramp: full weight beyond clearance + ramp)
-CLEARANCES = (
-    ((6, 5), 4.0, 4.0),    # tee, green
-    ((4,), 3.0, 3.0),      # fairway
-    ((3, 7), 2.0, 3.0),    # semi, bunker
-    ((8,), 1.5, 2.0),      # water
-    ((9,), 1.0, 2.0),      # blend strips
-    ((11,), 0.2, 1.0),     # rock: klippor and tee-wall faces (stone-painted course mesh)
-)
-BAND_LEVELS = (0.1, 0.25, 0.4, 0.55, 0.7, 0.85, 0.97)   # w >= level; the top band has weight 1
+# e.g. ((6, 5), 4.0, 4.0): tee, green; rock = klippor and tee-wall faces (stone-painted course mesh)
+CLEARANCES = tuple((surface_codes(c["surfaces"]), c["clear"], c["ramp"]) for c in R["clearances"])
+BAND_LEVELS = R["band-levels"]   # w >= level; the top band has weight 1
 
 
 def band_levels(rules: Rules, levels=BAND_LEVELS) -> tuple:
@@ -171,25 +182,25 @@ def band_levels(rules: Rules, levels=BAND_LEVELS) -> tuple:
     60 % thinner, not half). The top level stays last: its band has weight 1."""
     extra = {w for w in (rules.far_weight, rules.near_weight, rules.far_weight * rules.near_weight) if 0.0 < w < levels[-1]}
     return tuple(sorted({*levels[:-1], *extra})) + (levels[-1],)
-DEFAULT_BAND_FEATHER_M = 0.5   # centred on the band's edge: full a quarter metre inside it
-DEFAULT_BAND_NOISE_M = 0.0     # the field's own edges are ragged; zone noise would open bare patches along them
-DEFAULT_REACH_RAMP_M = 10.0
-DEFAULT_BLOCK_RAMP_M = 1.5
+DEFAULT_BAND_FEATHER_M = R["band-feather"]   # centred on the band's edge: full a quarter metre inside it
+DEFAULT_BAND_NOISE_M = R["band-noise"]     # the field's own edges are ragged; zone noise would open bare patches along them
+DEFAULT_REACH_RAMP_M = R["reach-ramp"]
+DEFAULT_BLOCK_RAMP_M = R["block-ramp"]
 # Mown rough between the deep rough and a tee, green, fairway, ... is the buffer: behind
 # ROUGH_BUFFER_M of it the surface's own clearance starts to give way, and behind
 # ROUGH_BUFFER_M + ROUGH_BUFFER_RAMP_M it no longer applies. The same goes for the grass
 # that spills into the rough: none within ROUGH_BUFFER_M of the surface.
-ROUGH_BUFFER_M = 1.0
-ROUGH_BUFFER_RAMP_M = 1.0
-EDGE_NOISE_FEATURE_M = 3.0     # blobs of the noise that decides where the grass spills into the rough
+ROUGH_BUFFER_M = R["rough-buffer"]
+ROUGH_BUFFER_RAMP_M = R["rough-buffer-ramp"]
+EDGE_NOISE_FEATURE_M = R["spill-noise-size"]     # blobs of the noise that decides where the grass spills into the rough
 # Loose paths (gravel, dirt): a tuft every TUFT_SPACING_M of edge on average (never closer
 # than TUFT_MIN_GAP_M), each a disc on the edge reaching its radius onto the path.
-LOOSE_SURFACES = ("gravel", "dirt")
-TUFT_SPACING_M = 9.0
-TUFT_MIN_GAP_M = 2.0
-TUFT_RADIUS_M = (0.36, 0.42)   # >= half the diagonal of a 0.5 m mask pixel: each tuft holds one
-ROAD_DRAWN_REACH_M = 3.0       # a road centerline this close to a drawn path (or its own width) is that path
-PATH_SEAM_M = 1.0              # the surface map's cells this close to a drawn path are its mesh and seam
+LOOSE_SURFACES = R["loose-surfaces"]
+TUFT_SPACING_M = R["tuft-spacing"]
+TUFT_MIN_GAP_M = R["tuft-min-gap"]
+TUFT_RADIUS_M = R["tuft-radius"]   # >= half the diagonal of a 0.5 m mask pixel: each tuft holds one
+ROAD_DRAWN_REACH_M = R["road-drawn-reach"]       # a road centerline this close to a drawn path (or its own width) is that path
+PATH_SEAM_M = R["path-seam"]              # the surface map's cells this close to a drawn path are its mesh and seam
 # The verge of a loose path: an unmown strip of straw and weeds beside it, as a mix layer over whatever
 # grows there (zone variant VERGE_VARIANT, blend mix). In deep rough only: mown rough is cut right up to
 # the gravel (Vreta, 2026-10: a verge there read as weeds on a kept lawn). Ragged (reach x 0.4 .. 1.6 by
@@ -199,17 +210,17 @@ VERGE_VARIANT = "verge"
 FAR_VARIANT = "far"            # the thin mix beyond Rules.out_start from play (Rules.far_variant)
 DARK_VARIANT = "dark"          # the ordinary mix on dark ground (Rules.dark_*)
 FAR_DARK_VARIANT = "far_dark"  # the far mix on dark ground
-DARK_SMOOTH_M = 4.0            # sigma of the ground luminance's smoothing: fields, not single cells, pick the mix
-VERGE_DEEP_M = 1.8
-VERGE_ROUGH_M = 0.0
-VERGE_NOISE_FEATURE_M = 4.0    # blobs of the noise that bends the verge's outer edge
-VERGE_GAP_FEATURE_M = 9.0      # ... and of the one that opens gaps along it
-VERGE_COVER = 0.75             # share of the path's length that has a verge
-VERGE_CLEAR = ((3, 4, 5, 6, 7), 4.0), ((8,), 2.0)   # semi/fairway/green/tee/bunker, water: none within this
-VERGE_PATH_MARGIN_M = 0.35     # its feet stand this far off the path's edge
-VERGE_FEATHER_M = 0.4
-VERGE_MIN_M2 = 0.3
-MIN_SLIVER_M2 = 2.0            # band pieces smaller than this after the paths are cut out are dropped
+DARK_SMOOTH_M = R["dark-smooth"]            # sigma of the ground luminance's smoothing: fields, not single cells, pick the mix
+VERGE_DEEP_M = R["verge-deep"]
+VERGE_ROUGH_M = R["verge-rough"]
+VERGE_NOISE_FEATURE_M = R["verge-noise-size"]    # blobs of the noise that bends the verge's outer edge
+VERGE_GAP_FEATURE_M = R["verge-gap-size"]      # ... and of the one that opens gaps along it
+VERGE_COVER = R["verge-cover"]             # share of the path's length that has a verge
+VERGE_CLEAR = tuple((surface_codes(c["surfaces"]), c["clear"]) for c in R["verge-clear"])   # none within this
+VERGE_PATH_MARGIN_M = R["verge-path-margin"]     # its feet stand this far off the path's edge
+VERGE_FEATHER_M = R["verge-feather"]
+VERGE_MIN_M2 = R["verge-min-area"]
+MIN_SLIVER_M2 = R["min-sliver"]            # band pieces smaller than this after the paths are cut out are dropped
 
 
 @dataclass
@@ -278,16 +289,16 @@ def cut_blockers(area: BaseGeometry, buildings: list[BaseGeometry], roads: list[
 
 # Surface map codes (unity/Editor/GolfMap/GolfMapSurfaces.cs, golfmap-surfaces-v1).
 S_NONE, S_DEEP, S_ROUGH, S_WATER, S_BLEND, S_OTHER = 0, 1, 2, 8, 9, 10
-S_PLAY = (2, 3, 4, 5, 6, 7)   # rough, semi, fairway, green, tee, bunker
+S_PLAY = surface_codes(R["play-surfaces"])   # rough, semi, fairway, green, tee, bunker
 S_FORBIDDEN = (3, 4, 5, 6, 7, 8, 9, 11)   # semi, fairway, green, tee, bunker, water, blend, rock
 # A rock slab cut out into its own mesh (Spline_<name>_Rock_-_Mesh): bare, but the grass around
 # it reaches SLAB_FRINGE_M in over its edge on average (0 .. 2x, by noise: no mesh edge shows),
 # and patches cover SLAB_PATCH_COVER of the rock. No clearance around it.
 S_SLAB = 12
-SLAB_FRINGE_M = 0.4            # 0.6 took a metre all round: half of a 5 m slab
-SLAB_PATCH_COVER = 0.15
-SLAB_NOISE_FEATURE_M = 1.2
-SLAB_SKIRT_M = 0.5             # out into mown rough beside it (0 .. 2x): no clean grass line along the rock
+SLAB_FRINGE_M = R["slab-fringe"]            # 0.6 took a metre all round: half of a 5 m slab
+SLAB_PATCH_COVER = R["slab-patch-cover"]
+SLAB_NOISE_FEATURE_M = R["slab-noise-size"]
+SLAB_SKIRT_M = R["slab-skirt"]             # out into mown rough beside it (0 .. 2x): no clean grass line along the rock
 
 
 def slab_grass(cls: np.ndarray, cell: float, seed: int = 0) -> np.ndarray | None:
@@ -709,6 +720,7 @@ def main(argv: list[str] | None = None) -> int:
                    help=f"ground render luminance (linear) at and above which the ordinary mix grows alone (<type>/{DARK_VARIANT} below)")
     p.add_argument("--dark-dark", type=float, default=Rules.dark_dark,
                    help=f"ground render luminance at and below which <type>/{DARK_VARIANT} grows alone")
+    vegetation_rules.add_overrides_flag(p)
     args = p.parse_args(argv)
 
     buildings = load_buildings(Path(args.buildings) if args.buildings else None)

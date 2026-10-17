@@ -1,0 +1,84 @@
+{
+  "format": "golfmap-vegetation-rule-defaults-v1",
+  "source": "woodland-floor",
+  "label": "Woodland floor",
+  "script": "woodland_floor_zones.py",
+  "zoneTypes": ["woodland_floor"],
+  "summary": "The floor under closed stands of trees on the deep rough near play: heath on dry knolls, bilberry under conifers, herbs under broadleaves and ferns in wet hollows, with brush along a stand's rim and in drifts inside the forest.",
+  "steps": [
+    "Reads Unity's surface map of the built course (golfmap.surfaces.export), the terrain's DEM next to it and the planted trees (<prefix>-<terrain>-trees.json); without planted trees it writes no floor.",
+    "Each tree's crown is a disc on the ground (at least min-crown wide), conifer or broadleaf; a tree species area whose mix is all conifers (conifer-species) or all broadleaves sets the kind of the stems inside it.",
+    "Grows only on deep rough, never on a rock slab, within reach of play, with the tall rough's clearances from tees, greens, fairways, bunkers, water and houses (the tall-grass rules), and it does not spill into the mown rough.",
+    "It also takes the tall rough's default thinning far from play (far-start, far-ramp, far-weight in tall-grass.json: 0.56 beyond 40 m) - the code default, not the course's own tall-grass values, which reach only the tall rough.",
+    "The floor comes in where the crowns, smoothed over closure-smooth, close past floor-closure: a lone tree or a loose row keeps the tall rough under it, a gap in a stand opens the floor.",
+    "From the DEM it works out the slope, the terrain position (height above the mean ground within tpi-radius) and a wetness index (where water gathers and stays).",
+    "Which floor (woodland_floor/fern, heath, bilberry, herb): wet ground that is not a slope is fern; a knoll is heath, mostly under conifers; level ground is bilberry under conifers and herb under broadleaves, by the conifer share of the crowns around a point.",
+    "Each floor's score gets its own smooth noise so patches have ragged borders, and two floors cross-fade over type-blend; it picks again in small pockets where the noise counts for more, so a bilberry floor holds pockets of fern, heather or grass.",
+    "Along a stand's rim towards open ground it plants woodland_floor/edge (bushes and saplings), a mix layer over whatever floor or tall rough is there; a lone tree's own rim gets none.",
+    "Inside what is decidedly forest, not a tree corridor between two holes, it plants woodland_floor/brush (saplings and bushes) in drifts, a mix layer too.",
+    "Written like the tall rough: nested weight bands, one zone per band polygon, with paths and roads cut out; the floors first, then the edge and brush layers."
+  ],
+  "groups": [
+    {
+      "title": "Where it grows",
+      "rules": [
+        { "key": "reach", "value": 50.0, "unit": "m", "flag": true, "text": "No floor further than this from play (rough, semi, fairway, green, tee, bunker)." },
+        { "key": "reach-ramp", "value": 15.0, "unit": "m", "text": "Over the last metres before reach the floor fades out instead of stopping." },
+        { "key": "spill", "value": 0.0, "unit": "m", "text": "How far the floor reaches from the deep rough into the mown rough (none)." },
+        { "key": "min-crown", "value": 1.5, "unit": "m", "text": "A tree's crown on the ground is at least a disc this wide (radius)." },
+        { "key": "closure-smooth", "value": 6.0, "unit": "m", "text": "The crowns are smoothed over this (sigma) to give the canopy closure." },
+        { "key": "floor-closure", "value": [0.15, 0.4], "unit": "closure", "text": "No floor below the first closure, full floor above the second: a lone tree keeps the tall rough under it." }
+      ]
+    },
+    {
+      "title": "Which floor",
+      "rules": [
+        { "key": "conifer-species", "value": ["pine", "spruce", "fir", "larch", "juniper", "cedar", "cypress"], "unit": "species", "text": "A tree species area whose species all contain one of these makes its stems conifers; none of them, broadleaves." },
+        { "key": "kind-smooth", "value": 10.0, "unit": "m", "text": "The conifer share is that of the stand around a point (crowns smoothed over this), not of the one tree over it." },
+        { "key": "wet-twi", "value": [8.5, 10.0], "unit": "wetness index", "text": "Fern ground: not wet below the first wetness, fully wet above the second (Vreta's woodland: 4.3 .. 11)." },
+        { "key": "wet-max-slope", "value": [6.0, 10.0], "unit": "deg", "text": "Water does not stay on a slope: wet ground counts fully below the first slope and not at all above the second." },
+        { "key": "knoll-tpi", "value": [0.4, 1.3], "unit": "m", "text": "Heath ground: not a knoll below this height above the ground around it, fully one above the second (Vreta's woodland: -1.3 .. 1.1)." },
+        { "key": "knoll-heath-broadleaf", "value": 0.4, "unit": "score", "text": "Heath's score on a knoll under broadleaves, against 1 under conifers (a broadleaf knoll is a dry herb slope as often as heath)." },
+        { "key": "knoll-bilberry", "value": 0.3, "unit": "score", "text": "Bilberry's score on a conifer knoll (1 on level conifer ground)." },
+        { "key": "knoll-herb", "value": 0.6, "unit": "score", "text": "Herb's score on a broadleaf knoll (1 on level broadleaf ground)." },
+        { "key": "type-noise", "value": 0.3, "unit": "score", "text": "How far each floor's noise moves its score, so the patches have ragged borders." },
+        { "key": "type-noise-size", "value": 14.0, "unit": "m", "text": "Size of the noise blobs, so of the floor patches." },
+        { "key": "type-blend", "value": 2.0, "unit": "m", "text": "Two floors cross-fade over this (sigma) instead of meeting on a line; pockets over half of it." },
+        { "key": "pocket-size", "value": 5.0, "unit": "m", "text": "Size of the pockets of another floor inside a patch." },
+        { "key": "pocket-score", "value": 0.35, "unit": "score", "text": "How much the score still counts when the pockets are picked (the noise counts 1)." },
+        { "key": "pocket-share", "value": 0.4, "unit": "share", "text": "Share of the floor's weight that goes to the pockets." }
+      ]
+    },
+    {
+      "title": "Ground from the DEM",
+      "rules": [
+        { "key": "work-cell", "value": 2.0, "unit": "m", "text": "Slope, terrain position and wetness are worked out on cells this size (a 0.5 m lidar grid is noise at the scale plants answer to)." },
+        { "key": "tpi-radius", "value": 50.0, "unit": "m", "text": "The terrain position is the height above the mean ground within this radius." },
+        { "key": "twi-smooth", "value": 3.0, "unit": "m", "text": "The wetness index is smoothed over this (sigma): a wet strip, not a one-cell thread down the flow line." },
+        { "key": "min-slope", "value": 0.5, "unit": "deg", "text": "Flatter ground counts as this steep for the wetness index (dead flat ground would be endlessly wet)." }
+      ]
+    },
+    {
+      "title": "Edge and brush",
+      "rules": [
+        { "key": "edge-closure", "value": [0.05, 0.15, 0.3], "unit": "closure", "text": "The rim of a stand (woodland_floor/edge): none below the first closure, full at the second, none again above the third." },
+        { "key": "stand-smooth", "value": 15.0, "unit": "m", "text": "A rim belongs to a stand: the crowns smoothed over this (sigma) ..." },
+        { "key": "stand-closure", "value": [0.12, 0.25], "unit": "closure", "text": "... must close this far (no edge below the first, full above the second), so a lone tree's own rim gets no brush." },
+        { "key": "forest-smooth", "value": 25.0, "unit": "m", "text": "Decidedly forest (woodland_floor/brush): the crowns smoothed over this (sigma) ..." },
+        { "key": "forest-closure", "value": [0.28, 0.38], "unit": "closure", "text": "... close this far, which a tree corridor between two holes does not (Vreta's floor: median 0.31)." },
+        { "key": "brush-size", "value": 12.0, "unit": "m", "text": "The brush stands in drifts of about this size ..." },
+        { "key": "brush-cover", "value": [-0.2, 0.2], "unit": "noise", "text": "... where its noise passes these levels (none below the first, full above the second: about two thirds of the forest)." }
+      ]
+    },
+    {
+      "title": "Zones written",
+      "rules": [
+        { "key": "zone-type", "value": "woodland_floor", "text": "The zone type of the zones (variants heath, bilberry, herb, fern, edge, brush)." },
+        { "key": "band-levels", "value": [0.2, 0.5, 0.8], "unit": "weights", "text": "The contour levels the weight field is written at (one zone per band; the top band has weight 1)." },
+        { "key": "band-feather", "value": 1.5, "unit": "m", "text": "Feather of each weight band." },
+        { "key": "simplify", "value": 0.5, "unit": "m", "text": "Outlines are simplified to this tolerance." },
+        { "key": "min-area", "value": 20.0, "unit": "m²", "text": "Band pieces smaller than this are dropped (also after the paths and roads are cut out)." }
+      ]
+    }
+  ]
+}

@@ -1,0 +1,127 @@
+{
+  "format": "golfmap-vegetation-rule-defaults-v1",
+  "source": "tall-grass",
+  "label": "Tall rough",
+  "script": "grass_zones.py",
+  "zoneTypes": ["rough_tall"],
+  "summary": "Tall grass on the deep rough and a little into the mown rough, faded away from tees, greens, fairways, bunkers, water, houses and roads, and thinned with distance from play.",
+  "steps": [
+    "Reads Unity's surface map of the built course (golfmap.surfaces.export): what surface is visible in every 0.5 m cell, including OPCD's Outer_Deep fill outside the holes. Without it the drawn features stand in (they miss that fill).",
+    "Grows on every deep rough cell, and spills a ragged foot or so into the mown rough beside it (noise decides how far, 0 to 2 x spill).",
+    "Fades to nothing towards each surface it must not touch (Clearances: none within the first distance, full beyond it plus the ramp). Where mown rough lies between the deep rough and that surface, the rough is the buffer and the grass grows right up to it.",
+    "Only within the reach of play (rough, semi, fairway, green, tee, bunker), fading over the last metres. Houses keep a margin and fade in; roads and paths are cut out by their drawn outline to the centimetre, with small tufts onto gravel and dirt paths.",
+    "Thinner far from play for frame time: beyond far-start the weight falls over far-ramp to far-weight; a course can add a nearer rule (near-*), and the two multiply.",
+    "Beyond out-start from play the mix hands over to the type's far variant (few, large cards), when the course binds items to rough_tall/far.",
+    "On dark ground (Unity's top-down ground render, smoothed) the mix hands over to rough_tall/dark (and far to far_dark), when the course binds those variants.",
+    "Rock slabs get a ragged grass fringe over their edge, patches on the rock and a skirt into the mown rough beside them.",
+    "Gravel and dirt paths through deep rough get a verge: an unmown strip of straw and weeds as a mix layer (rough_tall/verge), with gaps, never near play or water.",
+    "The weight field is written as nested contour bands, one zone per band polygon (weight 0.1 ... 1); the rasterizer keeps the highest per type, so they stack into the ramp."
+  ],
+  "groups": [
+    {
+      "title": "Where it grows",
+      "rules": [
+        { "key": "spill", "value": 0.3, "unit": "m", "flag": true, "text": "How far the grass reaches from the deep rough into the mown rough (ragged: 0 to 2 x this by noise)." },
+        { "key": "spill-noise-size", "value": 3.0, "unit": "m", "text": "Size of the noise blobs that decide how far it spills into the rough." },
+        { "key": "max-distance", "value": 75.0, "unit": "m", "flag": true, "text": "No tall grass further than this from play (rough, semi, fairway, green, tee, bunker)." },
+        { "key": "reach-ramp", "value": 10.0, "unit": "m", "text": "Over the last metres before max-distance the grass fades out instead of stopping." },
+        { "key": "play-surfaces", "value": ["rough", "semi", "fairway", "green", "tee", "bunker"], "unit": "surfaces", "text": "What counts as play for max-distance and for the thinning by distance." },
+        { "key": "habitat-types", "value": ["deep_rough"], "unit": "feature types", "text": "Without a surface map: the drawn features it grows on." },
+        { "key": "spill-types", "value": ["rough"], "unit": "feature types", "text": "Without a surface map: the drawn features it spills into." },
+        { "key": "play-types", "value": ["rough", "fairway", "green", "bunker"], "unit": "feature types", "text": "Without a surface map: the drawn features max-distance is measured from." }
+      ]
+    },
+    {
+      "title": "Kept clear",
+      "rules": [
+        { "key": "clearances", "value": [
+            { "surfaces": ["tee", "green"], "clear": 4.0, "ramp": 4.0 },
+            { "surfaces": ["fairway"], "clear": 3.0, "ramp": 3.0 },
+            { "surfaces": ["semi", "bunker"], "clear": 2.0, "ramp": 3.0 },
+            { "surfaces": ["water"], "clear": 1.5, "ramp": 2.0 },
+            { "surfaces": ["blend"], "clear": 1.0, "ramp": 2.0 },
+            { "surfaces": ["rock"], "clear": 0.2, "ramp": 1.0 }
+          ], "unit": "m", "text": "Per surface: no grass within 'clear' metres, full grass beyond clear + ramp. Rock = cliffs and tee-wall faces. Water on creeks marked for bank vegetation keeps no clearance (the creek-bank zones take the bank)." },
+        { "key": "rough-buffer", "value": 1.0, "unit": "m", "text": "Mown rough this wide between deep rough and a surface is the buffer: the surface's clearance starts to give way behind it ..." },
+        { "key": "rough-buffer-ramp", "value": 1.0, "unit": "m", "text": "... and no longer applies behind rough-buffer + this." },
+        { "key": "building-margin", "value": 4.0, "unit": "m", "flag": true, "text": "Kept clear around house footprints (the building survey)." },
+        { "key": "block-ramp", "value": 1.5, "unit": "m", "text": "Beyond the house margin the grass fades in over this." },
+        { "key": "road-margin", "value": 0.5, "unit": "m", "flag": true, "text": "Kept clear beyond a surveyed road's edge (centerline + half its width, an estimate)." },
+        { "key": "path-margin", "value": 0.15, "unit": "m", "flag": true, "text": "Kept clear beside the drawn path features: the grass's feet stand a hand off the edge, its blades lean over it." },
+        { "key": "road-drawn-reach", "value": 3.0, "unit": "m", "text": "A surveyed road this close to a drawn path (or within its own width) is that path: only the drawing cuts." },
+        { "key": "path-seam", "value": 1.0, "unit": "m", "text": "Surface-map cells this close to a drawn path are its mesh and OPCD's seam: they take the surface beside the path." },
+        { "key": "forbidden-types", "value": ["semi_rough", "fairway", "green", "tee", "bunker", "water", "water_creek", "path"], "unit": "feature types", "text": "Without a surface map: the drawn features kept clear (by noise + 0.5 m)." }
+      ]
+    },
+    {
+      "title": "Density by distance from play",
+      "rules": [
+        { "key": "far-start", "value": 30.0, "unit": "m", "flag": true, "text": "From here the grass starts to thin." },
+        { "key": "far-ramp", "value": 10.0, "unit": "m", "flag": true, "text": "It thins over this many metres from far-start." },
+        { "key": "far-weight", "value": 0.56, "unit": "density", "flag": true, "text": "Its density beyond far-start + far-ramp (1 = no thinning)." },
+        { "key": "near-start", "value": 0.0, "unit": "m", "flag": true, "text": "A course's own, nearer thinning starts here (off by default)." },
+        { "key": "near-ramp", "value": 0.0, "unit": "m", "flag": true, "text": "It thins over this many metres from near-start." },
+        { "key": "near-weight", "value": 1.0, "unit": "density", "flag": true, "text": "Its density beyond near-start + near-ramp, times the far rule's (1 = off)." },
+        { "key": "band-levels", "value": [0.1, 0.25, 0.4, 0.55, 0.7, 0.85, 0.97], "unit": "weights", "text": "The contour levels the weight field is written at (one zone per band; the top band has weight 1). The thinning weights are added as levels of their own." }
+      ]
+    },
+    {
+      "title": "Far mix (rough_tall/far)",
+      "rules": [
+        { "key": "out-start", "value": 40.0, "unit": "m", "flag": true, "text": "From this far from play the far mix takes over (only when the course binds items to the far variant)." },
+        { "key": "out-ramp", "value": 10.0, "unit": "m", "text": "The hand-over from the ordinary mix to the far mix takes this many metres." }
+      ]
+    },
+    {
+      "title": "Dark ground (rough_tall/dark, far_dark)",
+      "rules": [
+        { "key": "dark-light", "value": 0.056, "unit": "luminance", "flag": true, "text": "Ground render luminance (linear) at and above which the ordinary mix grows alone." },
+        { "key": "dark-dark", "value": 0.046, "unit": "luminance", "flag": true, "text": "At and below this the dark mix grows alone; a cross-fade between." },
+        { "key": "dark-smooth", "value": 4.0, "unit": "m", "text": "The ground luminance is smoothed over this (sigma), so fields, not single cells, pick the mix." }
+      ]
+    },
+    {
+      "title": "Rock slabs",
+      "rules": [
+        { "key": "slab-fringe", "value": 0.4, "unit": "m", "text": "Grass reaches this far in over a slab's edge on average (0 to 2 x by noise), so no mesh edge shows." },
+        { "key": "slab-patch-cover", "value": 0.15, "unit": "share", "text": "Share of the rock covered by grass patches." },
+        { "key": "slab-noise-size", "value": 1.2, "unit": "m", "text": "Size of the noise blobs of the fringe, skirt and patches." },
+        { "key": "slab-skirt", "value": 0.5, "unit": "m", "text": "Tufts out into the mown rough beside a slab (0 to 2 x), so there is no clean grass line along the rock." }
+      ]
+    },
+    {
+      "title": "Loose paths: tufts and verges",
+      "rules": [
+        { "key": "loose-surfaces", "value": ["gravel", "dirt"], "unit": "path surfaces", "text": "Paths with these surfaces get tufts onto them and a verge beside them." },
+        { "key": "tuft-spacing", "value": 9.0, "unit": "m", "text": "On average one tuft growing onto the path per this much of its edge ..." },
+        { "key": "tuft-min-gap", "value": 2.0, "unit": "m", "text": "... never closer together than this ..." },
+        { "key": "tuft-radius", "value": [0.36, 0.42], "unit": "m", "text": "... each a disc of a radius between these reaching onto the path." },
+        { "key": "verge-deep", "value": 1.8, "unit": "m", "text": "Width of the verge (straw and weeds, rough_tall/verge) beside a loose path through deep rough." },
+        { "key": "verge-rough", "value": 0.0, "unit": "m", "text": "... and through mown rough (none: mown rough is cut right up to the gravel)." },
+        { "key": "verge-noise-size", "value": 4.0, "unit": "m", "text": "Size of the noise blobs that bend the verge's outer edge (width x 0.4 to 1.6)." },
+        { "key": "verge-gap-size", "value": 9.0, "unit": "m", "text": "Size of the noise blobs that open gaps along it." },
+        { "key": "verge-cover", "value": 0.75, "unit": "share", "text": "Share of a loose path's length that has a verge." },
+        { "key": "verge-clear", "value": [
+            { "surfaces": ["semi", "fairway", "green", "tee", "bunker"], "clear": 4.0 },
+            { "surfaces": ["water"], "clear": 2.0 }
+          ], "unit": "m", "text": "No verge within this of these surfaces." },
+        { "key": "verge-path-margin", "value": 0.35, "unit": "m", "text": "The verge's feet stand this far off the path's edge (its cards lean over it)." },
+        { "key": "verge-feather", "value": 0.4, "unit": "m", "text": "Feather of the verge zones." },
+        { "key": "verge-min-area", "value": 0.3, "unit": "m²", "text": "Verge pieces smaller than this are dropped." }
+      ]
+    },
+    {
+      "title": "Zones written",
+      "rules": [
+        { "key": "zone-type", "value": "rough_tall", "flag": true, "text": "The zone type of the zones." },
+        { "key": "band-feather", "value": 0.5, "unit": "m", "flag": true, "text": "Feather of each weight band (centred on its edge: full a quarter metre inside it)." },
+        { "key": "band-noise", "value": 0.0, "unit": "m", "text": "Edge noise of the bands (none: the field's own edges are ragged; noise would open bare patches)." },
+        { "key": "feather", "value": 4.0, "unit": "m", "flag": true, "text": "Without a surface map: the zones' inward feather." },
+        { "key": "noise", "value": 1.0, "unit": "m", "flag": true, "text": "Without a surface map: the zones' edge noise (the clearance is this + 0.5 m)." },
+        { "key": "min-area", "value": 25.0, "unit": "m²", "text": "Band pieces smaller than this are dropped (not on rock slabs)." },
+        { "key": "min-sliver", "value": 2.0, "unit": "m²", "text": "Pieces left smaller than this after the paths are cut out are dropped." },
+        { "key": "simplify", "value": 0.3, "unit": "m", "text": "Outlines are simplified to this tolerance." }
+      ]
+    }
+  ]
+}

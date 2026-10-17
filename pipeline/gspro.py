@@ -98,6 +98,7 @@ from golfpipe import stac
 from golfpipe import commands
 from golfpipe import grid_dem as grid_dem_mod
 from golfpipe.raster import mosaic_and_crop
+import vegetation_rules
 
 WGS84 = CRS.from_epsg(4326)
 SWEREF99 = CRS.from_epsg(3006)
@@ -1003,8 +1004,11 @@ def cmd_dem(bbox, dem_path: Path, out: Path, resolution: float = DEFAULT_DEM_RES
 # --- Command: trees ---------------------------------------------------------
 
 UNITY_TREES_FORMAT = "unity-trees-v1"
+# The export's rules (bush, path, power line and rock clearances) live in
+# pipeline/vegetation-rules/trees.json with the detector's, each with its unit and what it does.
+TREE_RULES = vegetation_rules.load("trees")
 # A crown wider than this fraction of its height reads as a bush to the planter.
-BUSH_RADIUS_FRACTION = 0.35
+BUSH_RADIUS_FRACTION = TREE_RULES["bush-radius-fraction"]
 
 
 def _load_stems(path: Path) -> list[dict]:
@@ -1027,7 +1031,7 @@ def _load_stems(path: Path) -> list[dict]:
 # one attribute string, comma-separated `<species>[=<weight>]` (relative, default 1).
 TREE_AREA_FEATURE_TYPE = "tree_area"
 _TREE_SPECIES_ENTRY = re.compile(r"([a-z][a-z0-9_-]*)(?:=([0-9]*\.?[0-9]+))?")
-TREE_AREA_SIMPLIFY_M = 0.5
+TREE_AREA_SIMPLIFY_M = TREE_RULES["tree-area-simplify"]
 
 
 def _parse_species_mix(raw) -> list[dict] | None:
@@ -1126,7 +1130,7 @@ def _place_tree_areas(areas: list[dict], extent: Extent, exclude: Extent | None,
 # A stem the survey puts on a road or path (a crown leaning over it, a detection a
 # metre off) is moved to the nearest spot this far outside the path's edge: room for
 # the trunk and its root flare.
-TREE_PATH_CLEARANCE_M = 0.8
+TREE_PATH_CLEARANCE_M = TREE_RULES["path-clearance"]
 
 
 def _load_path_geometries(db_path: Path, course_ident: str) -> list:
@@ -1182,10 +1186,11 @@ def _move_stems_off_paths(trees: list[dict], paths: list, e0: float, n0: float,
 POWER_LINE_FEATURE_TYPE = "power_line"
 # The corridor is drawn about as wide as the wires hang (8 m by default); the keep-out reaches this far
 # beyond it on both sides, so no crown is planted into the outer wires.
-TREE_POWER_LINE_CLEARANCE_M = 3.0
-TREE_ROCK_MAX_HEIGHT_M = 6.0
-TREE_ROCK_SLAB_MARGIN_M = 0.5          # the detector's cells are 1 m: a stem this far off a slab's edge is the slab
-TREE_ROCK_BOULDER_RADIUS_FRACTION = 0.5   # of lengthM: a boulder's keep-out is the circle round its long side
+TREE_POWER_LINE_CLEARANCE_M = TREE_RULES["power-line-clearance"]
+TREE_ROCK_MAX_HEIGHT_M = TREE_RULES["rock-max-height"]
+TREE_ROCK_SLAB_MARGIN_M = TREE_RULES["rock-slab-margin"]          # the detector's cells are 1 m: a stem this far off a slab's edge is the slab
+TREE_ROCK_BOULDER_RADIUS_FRACTION = TREE_RULES["rock-boulder-radius-fraction"]   # of lengthM: a boulder's keep-out is the circle round its long side
+TREE_ROCK_BOULDER_MIN_RADIUS_M = TREE_RULES["rock-boulder-min-radius"]   # ... never smaller than this
 
 
 def _load_feature_geometries(db_path: Path, course_ident: str, feature_type: str) -> list:
@@ -1233,7 +1238,7 @@ def _load_placed_rocks(rocks_path: Path) -> list:
             e, n, length = float(b["e"]), float(b["n"]), float(b.get("lengthM", 1.0))
         except (KeyError, TypeError, ValueError):
             continue
-        out.append(Point(e, n).buffer(max(length * TREE_ROCK_BOULDER_RADIUS_FRACTION, 0.5), quad_segs=6))
+        out.append(Point(e, n).buffer(max(length * TREE_ROCK_BOULDER_RADIUS_FRACTION, TREE_ROCK_BOULDER_MIN_RADIUS_M), quad_segs=6))
     return out
 
 

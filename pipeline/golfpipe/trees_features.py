@@ -80,6 +80,10 @@ from golfpipe.detect_common import (
     mask_to_polygons,
 )
 from golfpipe.water import GEOJSON_CRS_3006
+import vegetation_rules
+
+# The roof guard is a tree rule: pipeline/vegetation-rules/trees.json (vegetation_rules.py).
+R = vegetation_rules.load("trees")
 
 __all__ = [
     "DEFAULT_MIN_HEIGHT_M", "DEFAULT_MIN_AREA_M2", "DEFAULT_MIN_HOLE_AREA_M2", "DEFAULT_CLOSE_M",
@@ -96,8 +100,8 @@ DEFAULT_MIN_AREA_M2 = 4.0
 # ROOF_GUARD_M. Landeryd, hole 5 east corner: five thin birches 8.9 to 13.3 m
 # tall occupy 4 to 11 cells; the clubhouse window at 4 m² without the guard
 # gains 69 stems, 52 of them roof-edge fragments within 3 m of a roof cell.
-ROOF_GUARD_AREA_M2 = 12.0
-ROOF_GUARD_M = 3.0
+ROOF_GUARD_AREA_M2 = R["roof-guard-area"]
+ROOF_GUARD_M = R["roof-guard"]
 DEFAULT_MIN_HOLE_AREA_M2 = 50.0
 DEFAULT_CLOSE_M = 1.0
 DEFAULT_ROUND_M = 1.5

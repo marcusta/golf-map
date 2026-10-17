@@ -25,6 +25,7 @@ import { createPublishClient } from '../../shared/api/publish.gen';
 import { createGsproExportClient } from '../../shared/api/gspro-export.gen';
 import { createGsproSyncClient } from '../../shared/api/gspro-sync.gen';
 import { createZoneTypesClient } from '../../shared/api/zone-types.gen';
+import { createVegetationRulesClient } from '../../shared/api/vegetation-rules.gen';
 import { createPhotosClient } from '../../shared/api/photos.gen';
 import { createShapingClient } from '../../shared/api/shaping.gen';
 
@@ -67,6 +68,7 @@ export const api = {
     gsproExport: createGsproExportClient(API_BASE),
     gsproSync: createGsproSyncClient(API_BASE),
     zoneTypes: createZoneTypesClient(API_BASE),
+    vegetationRules: createVegetationRulesClient(API_BASE),
     photos: createPhotosClient(API_BASE),
     shaping: createShapingClient(API_BASE),
 };

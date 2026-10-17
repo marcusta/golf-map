@@ -30,11 +30,17 @@ import tempfile
 import zlib
 from pathlib import Path
 
+import vegetation_rules
+
 HERE = Path(__file__).resolve().parent
 WRAP = HERE / "arborist-wrap.ps1"
 DEFAULT_KEY = HERE.parent / "data" / "arborist-wrapper.key"
 CELL_M = 100.0  # VSP's vegetation cell size, GSPro's Arborist system included
 CATALOG_VERSION = 20250709005421  # the asset catalogue the templates were saved against
+# The far rule's distances when the species file has no billboardBeyondM (pipeline/vegetation-rules/arborist.json).
+RULES = vegetation_rules.load("arborist")
+BILLBOARD_OUTSIDE_OOB_M = RULES["billboardBeyondM.outsideOob"]
+BILLBOARD_FROM_PLAY_M = RULES["billboardBeyondM.fromPlay"]
 TRIAL_SOURCE_ID = 1
 
 
@@ -577,7 +583,7 @@ def trees(args) -> None:
         gkds = [Path(args.gkd)] if args.gkd else sorted(Path(args.course_dir).glob("*.GKD"))
         if not gkds:
             sys.exit("No .GKD in the course folder for the course boundary; give --gkd.")
-        rule = FarRule(Path(args.surfaces), gkds[0], (x0, z0, x1, z1), float(beyond.get("outsideOob", 40)), float(beyond.get("fromPlay", 40)))
+        rule = FarRule(Path(args.surfaces), gkds[0], (x0, z0, x1, z1), float(beyond.get("outsideOob", BILLBOARD_OUTSIDE_OOB_M)), float(beyond.get("fromPlay", BILLBOARD_FROM_PLAY_M)))
     rows, unmapped, outside, thinned, left, trim = [], [], 0, 0, {}, []
     # "forstRing" (ForstRing): the "vsp" trees beyond the ring and inside the far rule become full models here.
     ring = ForstRing(species_file["forstRing"]) if rule and species_file.get("forstRing") else None
@@ -911,7 +917,7 @@ def main() -> None:
     p.add_argument("--terrains-square", nargs=4, type=float, required=True, metavar=("X0", "Z0", "X1", "Z1"))
     p.add_argument("--drop-package", nargs="*", default=["GolfMap trial trees"], help="packages to remove with their instances")
     p.add_argument("--no-far", dest="far", action="store_false", help="every tree a full model, no billboard-only copies")
-    p.add_argument("--surfaces", help="<course>-inner-surfaces.json of the export: turns on the far rule (FarRule; distances under billboardBeyondM in the species file, 40 m each)")
+    p.add_argument("--surfaces", help=f"<course>-inner-surfaces.json of the export: turns on the far rule (FarRule; distances under billboardBeyondM in the species file, default {BILLBOARD_OUTSIDE_OOB_M:g} / {BILLBOARD_FROM_PLAY_M:g} m)")
     p.add_argument("--gkd", help="the course's .GKD for the boundary (default: the one in --course-dir)")
     p.add_argument("--key-file")
     p = sub.add_parser("lower", help="the palettes' prefab items (bushes, woodland floor) spread by the zones export's masks")
