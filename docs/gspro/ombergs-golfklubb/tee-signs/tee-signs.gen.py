@@ -33,7 +33,7 @@ from rasterio.warp import transform as warp
 from rasterio.windows import from_bounds
 from PIL import Image, ImageDraw, ImageFilter, ImageFont
 from shapely.geometry import Point, Polygon
-from shapely.ops import unary_union, nearest_points
+from shapely.ops import unary_union
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.abspath(os.path.join(HERE, "..", "..", "..", ".."))
@@ -210,8 +210,9 @@ EMPTY = Point(0, 0).buffer(0.01)
 
 
 def place(h, group, feats, stems, taken):
-    """Beside the tee box, 1.5-5 m off its edge, not out in front of it, clear of hazards, paths and
-    tree stems; by the path when there is one (that is where players walk onto the tee); facing the tee."""
+    """Beside the tee box, level with the rearmost tee on the sign (across the line of play from it), 1.5-4 m
+    off the box's edge, clear of hazards, paths and tree stems; on the path's side when there is one. The
+    printed side looks across the line of play at the box."""
     pts = [t["at"] for t in group]
     T = (sum(p[0] for p in pts) / len(pts), sum(p[1] for p in pts) / len(pts))
     first = h["aims"][0] if h["aims"] else h["green"]
@@ -232,36 +233,37 @@ def place(h, group, feats, stems, taken):
     loose = unary_union([p for t, p in near if t in BLOCK and t != "fairway"] or [EMPTY]).buffer(0.6).union(paths.buffer(0.8))
     have_path = paths.distance(tee) < 25
     trees = [(x, y, r) for x, y, _, r, _, _ in stems if abs(x - T[0]) < 45 and abs(y - T[1]) < 45]
-    # the tee box's front along the line of play: the sign stands no further forward than `ahead` m behind it
-    front = max((x - T[0]) * dx + (y - T[1]) * dy for x, y in tee.convex_hull.exterior.coords)
+    rear = min((q[0] - T[0]) * dx + (q[1] - T[1]) * dy for q in pts)  # the rearmost tee along the line of play
     best = None
-    # looser steps only when nothing is free: under the canopy, further off the box, level with its front
-    for clear, dmax, ahead, bl in ((1.0, 5.0, 2.0, blocked), (0.6, 5.0, 2.0, blocked), (0.3, 7.0, 0.0, blocked),
-                                   (0.0, 9.0, -3.0, blocked), (0.3, 6.0, 0.0, loose)):
-        for ox in np.arange(-25, 25.01, 0.5):
-            for oy in np.arange(-25, 25.01, 0.5):
+    # looser steps only when nothing is free: under the canopy, further off the box, further from level
+    for tol, dmin, dmax, clear, bl in ((1.0, 1.5, 4.0, 1.0, blocked), (1.0, 1.5, 4.0, 0.6, blocked), (2.5, 1.5, 6.0, 0.3, blocked),
+                                       (4.0, 1.0, 8.0, 0.0, blocked), (2.5, 1.0, 6.0, 0.3, loose)):
+        for ox in np.arange(-25, 25.01, 0.25):
+            for oy in np.arange(-25, 25.01, 0.25):
+                s = ox * dx + oy * dy
+                if abs(s - rear) > tol:
+                    continue
                 p = (T[0] + ox, T[1] + oy)
                 P = Point(p)
                 dt = tee.distance(P)
-                s = ox * dx + oy * dy
-                if not (1.5 <= dt <= dmax) or s > front - ahead or bl.contains(P):
+                if not (dmin <= dt <= dmax) or bl.contains(P):
                     continue
                 if any(math.hypot(p[0] - x, p[1] - y) < r * clear + 0.6 for x, y, r in trees):
                     continue
                 if any(math.dist(p, q) < 4.0 for q in taken):
                     continue
-                score = dt * 0.6 + max(0.0, s - (front - 6.0)) * 0.4
+                score = abs(dt - 2.0) * 0.8 + abs(s - rear) * 1.0
                 if have_path:
-                    score += abs(paths.distance(P) - 1.6) * 1.0
+                    score += min(abs(paths.distance(P) - 1.6), 6.0) * 0.4
                 if best is None or score < best[0]:
-                    best = (score, p)
+                    best = (score, p, ox * dy - oy * dx)
         if best:
             break
     if best is None:
         raise RuntimeError("no spot for a sign by %s" % [t["color"] for t in group])
-    p = best[1]
-    q = nearest_points(tee, Point(p))[0]
-    face_bearing = math.degrees(math.atan2(q.x - p[0], q.y - p[1]))  # the printed side looks at the tee box
+    _, p, side = best
+    fx, fy = (-dy, dx) if side > 0 else (dy, -dx)  # across the line of play, towards the box
+    face_bearing = math.degrees(math.atan2(fx, fy))
     return p, face_bearing, bool(boxes)
 
 

@@ -166,12 +166,16 @@
    "image": "../../../../data/props/317d1f83-3ade-431c-8201-605ac0bd2871/tee-signs/tee_sign_13_red.png",
    "smoothness": 0.45
   },
-  "tee_sign_face_14_white": {
-   "image": "../../../../data/props/317d1f83-3ade-431c-8201-605ac0bd2871/tee-signs/tee_sign_14_white.png",
+  "tee_sign_face_14_white_yellow": {
+   "image": "../../../../data/props/317d1f83-3ade-431c-8201-605ac0bd2871/tee-signs/tee_sign_14_white_yellow.png",
    "smoothness": 0.45
   },
-  "tee_sign_face_14_yellow": {
-   "image": "../../../../data/props/317d1f83-3ade-431c-8201-605ac0bd2871/tee-signs/tee_sign_14_yellow.png",
+  "tee_sign_face_14_blue": {
+   "image": "../../../../data/props/317d1f83-3ade-431c-8201-605ac0bd2871/tee-signs/tee_sign_14_blue.png",
+   "smoothness": 0.45
+  },
+  "tee_sign_face_14_red": {
+   "image": "../../../../data/props/317d1f83-3ade-431c-8201-605ac0bd2871/tee-signs/tee_sign_14_red.png",
    "smoothness": 0.45
   },
   "tee_sign_face_15_white": {
@@ -809,13 +813,13 @@
     }
    ]
   },
-  "omberg_tee_sign_14_white": {
+  "omberg_tee_sign_14_white_yellow": {
    "category": "prop",
    "collider": "box",
    "parts": [
     {
      "kind": "plank_sign",
-     "face": "tee_sign_face_14_white",
+     "face": "tee_sign_face_14_white_yellow",
      "back": "tee_plank_back",
      "mat": "tee_post_wood",
      "width": 0.46,
@@ -824,13 +828,28 @@
     }
    ]
   },
-  "omberg_tee_sign_14_yellow": {
+  "omberg_tee_sign_14_blue": {
    "category": "prop",
    "collider": "box",
    "parts": [
     {
      "kind": "plank_sign",
-     "face": "tee_sign_face_14_yellow",
+     "face": "tee_sign_face_14_blue",
+     "back": "tee_plank_back",
+     "mat": "tee_post_wood",
+     "width": 0.46,
+     "height": 0.32,
+     "bottom": 0.55
+    }
+   ]
+  },
+  "omberg_tee_sign_14_red": {
+   "category": "prop",
+   "collider": "box",
+   "parts": [
+    {
+     "kind": "plank_sign",
+     "face": "tee_sign_face_14_red",
      "back": "tee_plank_back",
      "mat": "tee_post_wood",
      "width": 0.46,
@@ -1008,417 +1027,425 @@
  "instances": [
   {
    "asset": "omberg_tee_sign_01_white",
-   "e": 477806.01,
-   "n": 6457632.33,
-   "yawDeg": 80.04,
+   "e": 477812.51,
+   "n": 6457626.58,
+   "yawDeg": 182.67,
    "ground": "centre",
    "teeBox": "drawn"
   },
   {
    "asset": "omberg_tee_sign_01_yellow_blue",
-   "e": 477809.46,
-   "n": 6457622.21,
-   "yawDeg": 104.83,
+   "e": 477812.46,
+   "n": 6457612.46,
+   "yawDeg": 182.71,
    "ground": "centre",
    "teeBox": "drawn"
   },
   {
    "asset": "omberg_tee_sign_01_red",
-   "e": 477803.35,
-   "n": 6457575.66,
-   "yawDeg": 102.24,
+   "e": 477796.6,
+   "n": 6457569.41,
+   "yawDeg": 1.62,
    "ground": "centre",
    "teeBox": "drawn"
   },
   {
    "asset": "omberg_tee_sign_02_white",
-   "e": 477860.72,
-   "n": 6457264.62,
-   "yawDeg": 219.57,
+   "e": 477859.47,
+   "n": 6457263.37,
+   "yawDeg": 212.09,
    "ground": "centre",
    "teeBox": "drawn"
   },
   {
    "asset": "omberg_tee_sign_02_yellow_blue",
-   "e": 477862.26,
-   "n": 6457293.48,
-   "yawDeg": 218.58,
+   "e": 477859.26,
+   "n": 6457294.48,
+   "yawDeg": 217.1,
    "ground": "centre",
    "teeBox": "drawn"
   },
   {
    "asset": "omberg_tee_sign_02_red",
-   "e": 477869.69,
-   "n": 6457315.59,
-   "yawDeg": 218.42,
+   "e": 477857.44,
+   "n": 6457326.34,
+   "yawDeg": 39.17,
    "ground": "centre",
    "teeBox": "drawn"
   },
   {
    "asset": "omberg_tee_sign_03_white",
-   "e": 478221.18,
-   "n": 6457628.44,
-   "yawDeg": 299.0,
+   "e": 478223.68,
+   "n": 6457630.44,
+   "yawDeg": 309.79,
    "ground": "centre",
    "teeBox": "drawn"
   },
   {
    "asset": "omberg_tee_sign_03_yellow",
-   "e": 478232.05,
-   "n": 6457664.3,
-   "yawDeg": 295.04,
+   "e": 478232.3,
+   "n": 6457681.3,
+   "yawDeg": 121.91,
    "ground": "centre",
    "teeBox": "drawn"
   },
   {
    "asset": "omberg_tee_sign_03_blue_red",
-   "e": 478178.51,
-   "n": 6457695.62,
-   "yawDeg": 197.11,
+   "e": 478170.51,
+   "n": 6457692.62,
+   "yawDeg": 305.65,
    "ground": "centre",
    "teeBox": "drawn"
   },
   {
    "asset": "omberg_tee_sign_04_white",
-   "e": 477843.14,
-   "n": 6457791.64,
-   "yawDeg": 311.29,
+   "e": 477844.39,
+   "n": 6457797.89,
+   "yawDeg": 14.8,
    "ground": "centre",
    "teeBox": "drawn"
   },
   {
    "asset": "omberg_tee_sign_04_yellow_blue",
-   "e": 477840.29,
-   "n": 6457819.15,
-   "yawDeg": 334.93,
+   "e": 477855.29,
+   "n": 6457821.15,
+   "yawDeg": 196.81,
    "ground": "centre",
    "teeBox": "drawn"
   },
   {
    "asset": "omberg_tee_sign_04_red",
-   "e": 477864.44,
-   "n": 6457865.83,
-   "yawDeg": 319.96,
+   "e": 477873.94,
+   "n": 6457868.83,
+   "yawDeg": 194.87,
    "ground": "centre",
    "teeBox": "drawn"
   },
   {
    "asset": "omberg_tee_sign_05_white_yellow",
-   "e": 477825.52,
-   "n": 6458063.78,
-   "yawDeg": 188.53,
+   "e": 477814.77,
+   "n": 6458072.53,
+   "yawDeg": 4.96,
    "ground": "centre",
    "teeBox": "drawn"
   },
   {
    "asset": "omberg_tee_sign_05_blue",
-   "e": 477809.72,
-   "n": 6458039.64,
-   "yawDeg": 44.31,
+   "e": 477805.47,
+   "n": 6458032.14,
+   "yawDeg": 3.55,
    "ground": "centre",
    "teeBox": "drawn"
   },
   {
    "asset": "omberg_tee_sign_05_red",
-   "e": 477801.75,
-   "n": 6457990.03,
-   "yawDeg": 18.08,
+   "e": 477813.25,
+   "n": 6457987.28,
+   "yawDeg": 181.6,
    "ground": "centre",
    "teeBox": "drawn"
   },
   {
    "asset": "omberg_tee_sign_06_white",
-   "e": 477727.53,
-   "n": 6457849.58,
-   "yawDeg": 125.35,
+   "e": 477724.03,
+   "n": 6457851.33,
+   "yawDeg": 84.65,
    "ground": "centre",
    "teeBox": "drawn"
   },
   {
    "asset": "omberg_tee_sign_06_yellow",
-   "e": 477709.7,
-   "n": 6457854.63,
-   "yawDeg": 109.56,
+   "e": 477704.95,
+   "n": 6457855.38,
+   "yawDeg": 83.19,
    "ground": "centre",
    "teeBox": "drawn"
   },
   {
    "asset": "omberg_tee_sign_06_blue_red",
    "e": 477654.01,
-   "n": 6457858.68,
-   "yawDeg": 92.89,
+   "n": 6457856.68,
+   "yawDeg": 81.21,
    "ground": "centre",
    "teeBox": "drawn"
   },
   {
    "asset": "omberg_tee_sign_07_white",
-   "e": 477415.19,
-   "n": 6457620.72,
-   "yawDeg": 8.25,
+   "e": 477414.69,
+   "n": 6457620.22,
+   "yawDeg": 0.5,
    "ground": "centre",
    "teeBox": "drawn"
   },
   {
    "asset": "omberg_tee_sign_07_yellow",
-   "e": 477415.33,
-   "n": 6457609.7,
-   "yawDeg": 68.99,
+   "e": 477421.08,
+   "n": 6457605.2,
+   "yawDeg": 179.54,
    "ground": "centre",
    "teeBox": "drawn"
   },
   {
    "asset": "omberg_tee_sign_07_blue_red",
-   "e": 477403.21,
-   "n": 6457570.15,
-   "yawDeg": 2.12,
+   "e": 477413.71,
+   "n": 6457569.4,
+   "yawDeg": 177.28,
    "ground": "centre",
-   "teeBox": "assumed"
+   "teeBox": "drawn"
   },
   {
    "asset": "omberg_tee_sign_08_white",
-   "e": 477496.45,
-   "n": 6457265.43,
-   "yawDeg": 231.88,
+   "e": 477500.2,
+   "n": 6457272.18,
+   "yawDeg": 188.25,
    "ground": "centre",
-   "teeBox": "assumed"
+   "teeBox": "drawn"
   },
   {
    "asset": "omberg_tee_sign_08_yellow",
-   "e": 477496.73,
-   "n": 6457279.57,
-   "yawDeg": 221.14,
+   "e": 477500.23,
+   "n": 6457285.07,
+   "yawDeg": 188.91,
    "ground": "centre",
-   "teeBox": "assumed"
+   "teeBox": "drawn"
   },
   {
    "asset": "omberg_tee_sign_08_blue_red",
-   "e": 477509.74,
-   "n": 6457393.42,
-   "yawDeg": 348.44,
+   "e": 477508.99,
+   "n": 6457397.42,
+   "yawDeg": 6.8,
    "ground": "centre",
-   "teeBox": "assumed"
+   "teeBox": "drawn"
   },
   {
    "asset": "omberg_tee_sign_09_white",
-   "e": 477581.48,
-   "n": 6457795.21,
-   "yawDeg": 15.37,
+   "e": 477589.23,
+   "n": 6457787.21,
+   "yawDeg": 273.13,
    "ground": "centre",
    "teeBox": "drawn"
   },
   {
    "asset": "omberg_tee_sign_09_yellow_blue",
-   "e": 477593.04,
-   "n": 6457809.98,
-   "yawDeg": 56.09,
+   "e": 477608.04,
+   "n": 6457807.73,
+   "yawDeg": 97.97,
    "ground": "centre",
    "teeBox": "drawn"
   },
   {
    "asset": "omberg_tee_sign_09_red",
-   "e": 477622.06,
-   "n": 6457792.54,
-   "yawDeg": 301.93,
+   "e": 477627.06,
+   "n": 6457800.79,
+   "yawDeg": 95.3,
    "ground": "centre",
    "teeBox": "drawn"
   },
   {
    "asset": "omberg_tee_sign_10_white_yellow",
-   "e": 477780.79,
-   "n": 6457641.2,
-   "yawDeg": 178.14,
+   "e": 477766.79,
+   "n": 6457640.45,
+   "yawDeg": 9.7,
    "ground": "centre",
-   "teeBox": "assumed"
+   "teeBox": "drawn"
   },
   {
    "asset": "omberg_tee_sign_10_blue",
-   "e": 477788.17,
-   "n": 6457619.42,
-   "yawDeg": 118.46,
+   "e": 477777.17,
+   "n": 6457610.17,
+   "yawDeg": 14.62,
    "ground": "centre",
-   "teeBox": "assumed"
+   "teeBox": "drawn"
   },
   {
    "asset": "omberg_tee_sign_10_red",
-   "e": 477771.4,
-   "n": 6457574.47,
-   "yawDeg": 20.24,
+   "e": 477770.9,
+   "n": 6457573.47,
+   "yawDeg": 15.4,
    "ground": "centre",
-   "teeBox": "assumed"
+   "teeBox": "drawn"
   },
   {
    "asset": "omberg_tee_sign_11_white",
-   "e": 477592.4,
-   "n": 6457331.72,
-   "yawDeg": 327.13,
+   "e": 477592.65,
+   "n": 6457330.47,
+   "yawDeg": 312.01,
    "ground": "centre",
-   "teeBox": "assumed"
+   "teeBox": "drawn"
   },
   {
    "asset": "omberg_tee_sign_11_yellow_blue",
-   "e": 477610.97,
-   "n": 6457309.26,
-   "yawDeg": 294.05,
+   "e": 477620.72,
+   "n": 6457329.01,
+   "yawDeg": 132.95,
    "ground": "centre",
-   "teeBox": "assumed"
+   "teeBox": "drawn"
   },
   {
    "asset": "omberg_tee_sign_11_red",
-   "e": 477630.47,
-   "n": 6457302.15,
-   "yawDeg": 297.52,
+   "e": 477639.72,
+   "n": 6457320.15,
+   "yawDeg": 136.43,
    "ground": "centre",
-   "teeBox": "assumed"
+   "teeBox": "drawn"
   },
   {
    "asset": "omberg_tee_sign_12_white",
-   "e": 477858.2,
-   "n": 6457261.41,
-   "yawDeg": 223.22,
+   "e": 477861.95,
+   "n": 6457266.66,
+   "yawDeg": 205.96,
    "ground": "centre",
    "teeBox": "drawn"
   },
   {
    "asset": "omberg_tee_sign_12_yellow",
-   "e": 477826.85,
-   "n": 6457222.67,
-   "yawDeg": 202.64,
+   "e": 477825.1,
+   "n": 6457224.67,
+   "yawDeg": 197.79,
    "ground": "centre",
-   "teeBox": "assumed"
+   "teeBox": "drawn"
   },
   {
    "asset": "omberg_tee_sign_12_blue_red",
-   "e": 477796.59,
-   "n": 6457186.37,
-   "yawDeg": 182.75,
+   "e": 477781.84,
+   "n": 6457187.62,
+   "yawDeg": 1.14,
    "ground": "centre",
-   "teeBox": "assumed"
+   "teeBox": "drawn"
   },
   {
    "asset": "omberg_tee_sign_13_white",
-   "e": 477812.07,
-   "n": 6456842.28,
-   "yawDeg": 142.89,
+   "e": 477808.07,
+   "n": 6456845.28,
+   "yawDeg": 119.92,
    "ground": "centre",
-   "teeBox": "assumed"
+   "teeBox": "drawn"
   },
   {
    "asset": "omberg_tee_sign_13_yellow_blue",
-   "e": 477793.91,
-   "n": 6456840.68,
-   "yawDeg": 268.53,
+   "e": 477793.66,
+   "n": 6456851.68,
+   "yawDeg": 120.76,
    "ground": "centre",
-   "teeBox": "assumed"
+   "teeBox": "drawn"
   },
   {
    "asset": "omberg_tee_sign_13_red",
-   "e": 477773.7,
-   "n": 6456868.1,
-   "yawDeg": 277.15,
+   "e": 477768.95,
+   "n": 6456866.1,
+   "yawDeg": 292.27,
    "ground": "centre",
-   "teeBox": "assumed"
+   "teeBox": "drawn"
   },
   {
-   "asset": "omberg_tee_sign_14_white",
-   "e": 477698.62,
-   "n": 6456817.17,
-   "yawDeg": 300.91,
+   "asset": "omberg_tee_sign_14_white_yellow",
+   "e": 477694.66,
+   "n": 6456820.15,
+   "yawDeg": 323.93,
    "ground": "centre",
-   "teeBox": "assumed"
+   "teeBox": "drawn"
   },
   {
-   "asset": "omberg_tee_sign_14_yellow",
-   "e": 477689.71,
-   "n": 6456828.62,
-   "yawDeg": 301.03,
+   "asset": "omberg_tee_sign_14_blue",
+   "e": 477641.11,
+   "n": 6456888.74,
+   "yawDeg": 324.6,
    "ground": "centre",
-   "teeBox": "assumed"
+   "teeBox": "drawn"
+  },
+  {
+   "asset": "omberg_tee_sign_14_red",
+   "e": 477615.84,
+   "n": 6456949.1,
+   "yawDeg": 143.64,
+   "ground": "centre",
+   "teeBox": "drawn"
   },
   {
    "asset": "omberg_tee_sign_15_white",
-   "e": 477288.42,
-   "n": 6457220.29,
-   "yawDeg": 18.39,
+   "e": 477299.92,
+   "n": 6457213.79,
+   "yawDeg": 271.43,
    "ground": "centre",
-   "teeBox": "assumed"
+   "teeBox": "drawn"
   },
   {
    "asset": "omberg_tee_sign_15_yellow_blue",
-   "e": 477303.25,
-   "n": 6457219.27,
-   "yawDeg": 18.99,
+   "e": 477314.75,
+   "n": 6457221.02,
+   "yawDeg": 91.18,
    "ground": "centre",
-   "teeBox": "assumed"
+   "teeBox": "drawn"
   },
   {
    "asset": "omberg_tee_sign_15_red",
-   "e": 477319.94,
-   "n": 6457218.48,
-   "yawDeg": 27.92,
+   "e": 477327.94,
+   "n": 6457211.23,
+   "yawDeg": 271.17,
    "ground": "centre",
-   "teeBox": "assumed"
+   "teeBox": "drawn"
   },
   {
    "asset": "omberg_tee_sign_16_white",
-   "e": 477459.29,
-   "n": 6457281.79,
-   "yawDeg": 59.52,
+   "e": 477468.04,
+   "n": 6457276.54,
+   "yawDeg": 154.43,
    "ground": "centre",
-   "teeBox": "assumed"
+   "teeBox": "drawn"
   },
   {
    "asset": "omberg_tee_sign_16_yellow",
-   "e": 477479.86,
-   "n": 6457264.75,
-   "yawDeg": 44.21,
+   "e": 477477.11,
+   "n": 6457254.75,
+   "yawDeg": 337.88,
    "ground": "centre",
-   "teeBox": "assumed"
+   "teeBox": "drawn"
   },
   {
    "asset": "omberg_tee_sign_16_blue_red",
-   "e": 477524.03,
-   "n": 6457208.37,
-   "yawDeg": 24.58,
+   "e": 477522.53,
+   "n": 6457201.37,
+   "yawDeg": 346.97,
    "ground": "centre",
-   "teeBox": "assumed"
+   "teeBox": "drawn"
   },
   {
    "asset": "omberg_tee_sign_17_white_yellow",
-   "e": 477806.57,
-   "n": 6456928.51,
-   "yawDeg": 162.61,
+   "e": 477798.32,
+   "n": 6456922.01,
+   "yawDeg": 323.14,
    "ground": "centre",
-   "teeBox": "assumed"
+   "teeBox": "drawn"
   },
   {
    "asset": "omberg_tee_sign_17_blue_red",
-   "e": 477771.96,
-   "n": 6456976.12,
-   "yawDeg": 291.86,
+   "e": 477767.46,
+   "n": 6456979.62,
+   "yawDeg": 319.24,
    "ground": "centre",
-   "teeBox": "assumed"
+   "teeBox": "drawn"
   },
   {
    "asset": "omberg_tee_sign_18_white",
-   "e": 477512.03,
-   "n": 6457271.99,
-   "yawDeg": 262.03,
+   "e": 477506.28,
+   "n": 6457279.24,
+   "yawDeg": 29.54,
    "ground": "centre",
    "teeBox": "drawn"
   },
   {
    "asset": "omberg_tee_sign_18_yellow",
-   "e": 477509.84,
-   "n": 6457291.75,
-   "yawDeg": 15.77,
+   "e": 477509.34,
+   "n": 6457291.5,
+   "yawDeg": 30.55,
    "ground": "centre",
    "teeBox": "drawn"
   },
   {
    "asset": "omberg_tee_sign_18_blue_red",
-   "e": 477537.72,
-   "n": 6457358.5,
-   "yawDeg": 38.3,
+   "e": 477535.72,
+   "n": 6457356.5,
+   "yawDeg": 39.16,
    "ground": "centre",
    "teeBox": "drawn"
   }
@@ -1426,9 +1453,9 @@
  "signs": [
   {
    "asset": "omberg_tee_sign_01_white",
-   "e": 477806.01,
-   "n": 6457632.33,
-   "yawDeg": 80.04,
+   "e": 477812.51,
+   "n": 6457626.58,
+   "yawDeg": 182.67,
    "ground": "centre",
    "tees": [
     {
@@ -1440,9 +1467,9 @@
   },
   {
    "asset": "omberg_tee_sign_01_yellow_blue",
-   "e": 477809.46,
-   "n": 6457622.21,
-   "yawDeg": 104.83,
+   "e": 477812.46,
+   "n": 6457612.46,
+   "yawDeg": 182.71,
    "ground": "centre",
    "tees": [
     {
@@ -1458,9 +1485,9 @@
   },
   {
    "asset": "omberg_tee_sign_01_red",
-   "e": 477803.35,
-   "n": 6457575.66,
-   "yawDeg": 102.24,
+   "e": 477796.6,
+   "n": 6457569.41,
+   "yawDeg": 1.62,
    "ground": "centre",
    "tees": [
     {
@@ -1472,9 +1499,9 @@
   },
   {
    "asset": "omberg_tee_sign_02_white",
-   "e": 477860.72,
-   "n": 6457264.62,
-   "yawDeg": 219.57,
+   "e": 477859.47,
+   "n": 6457263.37,
+   "yawDeg": 212.09,
    "ground": "centre",
    "tees": [
     {
@@ -1486,9 +1513,9 @@
   },
   {
    "asset": "omberg_tee_sign_02_yellow_blue",
-   "e": 477862.26,
-   "n": 6457293.48,
-   "yawDeg": 218.58,
+   "e": 477859.26,
+   "n": 6457294.48,
+   "yawDeg": 217.1,
    "ground": "centre",
    "tees": [
     {
@@ -1504,9 +1531,9 @@
   },
   {
    "asset": "omberg_tee_sign_02_red",
-   "e": 477869.69,
-   "n": 6457315.59,
-   "yawDeg": 218.42,
+   "e": 477857.44,
+   "n": 6457326.34,
+   "yawDeg": 39.17,
    "ground": "centre",
    "tees": [
     {
@@ -1518,9 +1545,9 @@
   },
   {
    "asset": "omberg_tee_sign_03_white",
-   "e": 478221.18,
-   "n": 6457628.44,
-   "yawDeg": 299.0,
+   "e": 478223.68,
+   "n": 6457630.44,
+   "yawDeg": 309.79,
    "ground": "centre",
    "tees": [
     {
@@ -1532,9 +1559,9 @@
   },
   {
    "asset": "omberg_tee_sign_03_yellow",
-   "e": 478232.05,
-   "n": 6457664.3,
-   "yawDeg": 295.04,
+   "e": 478232.3,
+   "n": 6457681.3,
+   "yawDeg": 121.91,
    "ground": "centre",
    "tees": [
     {
@@ -1546,9 +1573,9 @@
   },
   {
    "asset": "omberg_tee_sign_03_blue_red",
-   "e": 478178.51,
-   "n": 6457695.62,
-   "yawDeg": 197.11,
+   "e": 478170.51,
+   "n": 6457692.62,
+   "yawDeg": 305.65,
    "ground": "centre",
    "tees": [
     {
@@ -1564,9 +1591,9 @@
   },
   {
    "asset": "omberg_tee_sign_04_white",
-   "e": 477843.14,
-   "n": 6457791.64,
-   "yawDeg": 311.29,
+   "e": 477844.39,
+   "n": 6457797.89,
+   "yawDeg": 14.8,
    "ground": "centre",
    "tees": [
     {
@@ -1578,9 +1605,9 @@
   },
   {
    "asset": "omberg_tee_sign_04_yellow_blue",
-   "e": 477840.29,
-   "n": 6457819.15,
-   "yawDeg": 334.93,
+   "e": 477855.29,
+   "n": 6457821.15,
+   "yawDeg": 196.81,
    "ground": "centre",
    "tees": [
     {
@@ -1596,9 +1623,9 @@
   },
   {
    "asset": "omberg_tee_sign_04_red",
-   "e": 477864.44,
-   "n": 6457865.83,
-   "yawDeg": 319.96,
+   "e": 477873.94,
+   "n": 6457868.83,
+   "yawDeg": 194.87,
    "ground": "centre",
    "tees": [
     {
@@ -1610,9 +1637,9 @@
   },
   {
    "asset": "omberg_tee_sign_05_white_yellow",
-   "e": 477825.52,
-   "n": 6458063.78,
-   "yawDeg": 188.53,
+   "e": 477814.77,
+   "n": 6458072.53,
+   "yawDeg": 4.96,
    "ground": "centre",
    "tees": [
     {
@@ -1628,9 +1655,9 @@
   },
   {
    "asset": "omberg_tee_sign_05_blue",
-   "e": 477809.72,
-   "n": 6458039.64,
-   "yawDeg": 44.31,
+   "e": 477805.47,
+   "n": 6458032.14,
+   "yawDeg": 3.55,
    "ground": "centre",
    "tees": [
     {
@@ -1642,9 +1669,9 @@
   },
   {
    "asset": "omberg_tee_sign_05_red",
-   "e": 477801.75,
-   "n": 6457990.03,
-   "yawDeg": 18.08,
+   "e": 477813.25,
+   "n": 6457987.28,
+   "yawDeg": 181.6,
    "ground": "centre",
    "tees": [
     {
@@ -1656,9 +1683,9 @@
   },
   {
    "asset": "omberg_tee_sign_06_white",
-   "e": 477727.53,
-   "n": 6457849.58,
-   "yawDeg": 125.35,
+   "e": 477724.03,
+   "n": 6457851.33,
+   "yawDeg": 84.65,
    "ground": "centre",
    "tees": [
     {
@@ -1670,9 +1697,9 @@
   },
   {
    "asset": "omberg_tee_sign_06_yellow",
-   "e": 477709.7,
-   "n": 6457854.63,
-   "yawDeg": 109.56,
+   "e": 477704.95,
+   "n": 6457855.38,
+   "yawDeg": 83.19,
    "ground": "centre",
    "tees": [
     {
@@ -1685,8 +1712,8 @@
   {
    "asset": "omberg_tee_sign_06_blue_red",
    "e": 477654.01,
-   "n": 6457858.68,
-   "yawDeg": 92.89,
+   "n": 6457856.68,
+   "yawDeg": 81.21,
    "ground": "centre",
    "tees": [
     {
@@ -1702,9 +1729,9 @@
   },
   {
    "asset": "omberg_tee_sign_07_white",
-   "e": 477415.19,
-   "n": 6457620.72,
-   "yawDeg": 8.25,
+   "e": 477414.69,
+   "n": 6457620.22,
+   "yawDeg": 0.5,
    "ground": "centre",
    "tees": [
     {
@@ -1716,9 +1743,9 @@
   },
   {
    "asset": "omberg_tee_sign_07_yellow",
-   "e": 477415.33,
-   "n": 6457609.7,
-   "yawDeg": 68.99,
+   "e": 477421.08,
+   "n": 6457605.2,
+   "yawDeg": 179.54,
    "ground": "centre",
    "tees": [
     {
@@ -1730,9 +1757,9 @@
   },
   {
    "asset": "omberg_tee_sign_07_blue_red",
-   "e": 477403.21,
-   "n": 6457570.15,
-   "yawDeg": 2.12,
+   "e": 477413.71,
+   "n": 6457569.4,
+   "yawDeg": 177.28,
    "ground": "centre",
    "tees": [
     {
@@ -1744,13 +1771,13 @@
      "length": 297
     }
    ],
-   "teeBox": "assumed"
+   "teeBox": "drawn"
   },
   {
    "asset": "omberg_tee_sign_08_white",
-   "e": 477496.45,
-   "n": 6457265.43,
-   "yawDeg": 231.88,
+   "e": 477500.2,
+   "n": 6457272.18,
+   "yawDeg": 188.25,
    "ground": "centre",
    "tees": [
     {
@@ -1758,13 +1785,13 @@
      "length": 506
     }
    ],
-   "teeBox": "assumed"
+   "teeBox": "drawn"
   },
   {
    "asset": "omberg_tee_sign_08_yellow",
-   "e": 477496.73,
-   "n": 6457279.57,
-   "yawDeg": 221.14,
+   "e": 477500.23,
+   "n": 6457285.07,
+   "yawDeg": 188.91,
    "ground": "centre",
    "tees": [
     {
@@ -1772,13 +1799,13 @@
      "length": 493
     }
    ],
-   "teeBox": "assumed"
+   "teeBox": "drawn"
   },
   {
    "asset": "omberg_tee_sign_08_blue_red",
-   "e": 477509.74,
-   "n": 6457393.42,
-   "yawDeg": 348.44,
+   "e": 477508.99,
+   "n": 6457397.42,
+   "yawDeg": 6.8,
    "ground": "centre",
    "tees": [
     {
@@ -1790,13 +1817,13 @@
      "length": 380
     }
    ],
-   "teeBox": "assumed"
+   "teeBox": "drawn"
   },
   {
    "asset": "omberg_tee_sign_09_white",
-   "e": 477581.48,
-   "n": 6457795.21,
-   "yawDeg": 15.37,
+   "e": 477589.23,
+   "n": 6457787.21,
+   "yawDeg": 273.13,
    "ground": "centre",
    "tees": [
     {
@@ -1808,9 +1835,9 @@
   },
   {
    "asset": "omberg_tee_sign_09_yellow_blue",
-   "e": 477593.04,
-   "n": 6457809.98,
-   "yawDeg": 56.09,
+   "e": 477608.04,
+   "n": 6457807.73,
+   "yawDeg": 97.97,
    "ground": "centre",
    "tees": [
     {
@@ -1826,9 +1853,9 @@
   },
   {
    "asset": "omberg_tee_sign_09_red",
-   "e": 477622.06,
-   "n": 6457792.54,
-   "yawDeg": 301.93,
+   "e": 477627.06,
+   "n": 6457800.79,
+   "yawDeg": 95.3,
    "ground": "centre",
    "tees": [
     {
@@ -1840,9 +1867,9 @@
   },
   {
    "asset": "omberg_tee_sign_10_white_yellow",
-   "e": 477780.79,
-   "n": 6457641.2,
-   "yawDeg": 178.14,
+   "e": 477766.79,
+   "n": 6457640.45,
+   "yawDeg": 9.7,
    "ground": "centre",
    "tees": [
     {
@@ -1854,13 +1881,13 @@
      "length": 344
     }
    ],
-   "teeBox": "assumed"
+   "teeBox": "drawn"
   },
   {
    "asset": "omberg_tee_sign_10_blue",
-   "e": 477788.17,
-   "n": 6457619.42,
-   "yawDeg": 118.46,
+   "e": 477777.17,
+   "n": 6457610.17,
+   "yawDeg": 14.62,
    "ground": "centre",
    "tees": [
     {
@@ -1868,13 +1895,13 @@
      "length": 324
     }
    ],
-   "teeBox": "assumed"
+   "teeBox": "drawn"
   },
   {
    "asset": "omberg_tee_sign_10_red",
-   "e": 477771.4,
-   "n": 6457574.47,
-   "yawDeg": 20.24,
+   "e": 477770.9,
+   "n": 6457573.47,
+   "yawDeg": 15.4,
    "ground": "centre",
    "tees": [
     {
@@ -1882,13 +1909,13 @@
      "length": 287
     }
    ],
-   "teeBox": "assumed"
+   "teeBox": "drawn"
   },
   {
    "asset": "omberg_tee_sign_11_white",
-   "e": 477592.4,
-   "n": 6457331.72,
-   "yawDeg": 327.13,
+   "e": 477592.65,
+   "n": 6457330.47,
+   "yawDeg": 312.01,
    "ground": "centre",
    "tees": [
     {
@@ -1896,13 +1923,13 @@
      "length": 177
     }
    ],
-   "teeBox": "assumed"
+   "teeBox": "drawn"
   },
   {
    "asset": "omberg_tee_sign_11_yellow_blue",
-   "e": 477610.97,
-   "n": 6457309.26,
-   "yawDeg": 294.05,
+   "e": 477620.72,
+   "n": 6457329.01,
+   "yawDeg": 132.95,
    "ground": "centre",
    "tees": [
     {
@@ -1914,13 +1941,13 @@
      "length": 158
     }
    ],
-   "teeBox": "assumed"
+   "teeBox": "drawn"
   },
   {
    "asset": "omberg_tee_sign_11_red",
-   "e": 477630.47,
-   "n": 6457302.15,
-   "yawDeg": 297.52,
+   "e": 477639.72,
+   "n": 6457320.15,
+   "yawDeg": 136.43,
    "ground": "centre",
    "tees": [
     {
@@ -1928,13 +1955,13 @@
      "length": 139
     }
    ],
-   "teeBox": "assumed"
+   "teeBox": "drawn"
   },
   {
    "asset": "omberg_tee_sign_12_white",
-   "e": 477858.2,
-   "n": 6457261.41,
-   "yawDeg": 223.22,
+   "e": 477861.95,
+   "n": 6457266.66,
+   "yawDeg": 205.96,
    "ground": "centre",
    "tees": [
     {
@@ -1946,9 +1973,9 @@
   },
   {
    "asset": "omberg_tee_sign_12_yellow",
-   "e": 477826.85,
-   "n": 6457222.67,
-   "yawDeg": 202.64,
+   "e": 477825.1,
+   "n": 6457224.67,
+   "yawDeg": 197.79,
    "ground": "centre",
    "tees": [
     {
@@ -1956,13 +1983,13 @@
      "length": 344
     }
    ],
-   "teeBox": "assumed"
+   "teeBox": "drawn"
   },
   {
    "asset": "omberg_tee_sign_12_blue_red",
-   "e": 477796.59,
-   "n": 6457186.37,
-   "yawDeg": 182.75,
+   "e": 477781.84,
+   "n": 6457187.62,
+   "yawDeg": 1.14,
    "ground": "centre",
    "tees": [
     {
@@ -1974,13 +2001,13 @@
      "length": 299
     }
    ],
-   "teeBox": "assumed"
+   "teeBox": "drawn"
   },
   {
    "asset": "omberg_tee_sign_13_white",
-   "e": 477812.07,
-   "n": 6456842.28,
-   "yawDeg": 142.89,
+   "e": 477808.07,
+   "n": 6456845.28,
+   "yawDeg": 119.92,
    "ground": "centre",
    "tees": [
     {
@@ -1988,13 +2015,13 @@
      "length": 137
     }
    ],
-   "teeBox": "assumed"
+   "teeBox": "drawn"
   },
   {
    "asset": "omberg_tee_sign_13_yellow_blue",
-   "e": 477793.91,
-   "n": 6456840.68,
-   "yawDeg": 268.53,
+   "e": 477793.66,
+   "n": 6456851.68,
+   "yawDeg": 120.76,
    "ground": "centre",
    "tees": [
     {
@@ -2006,13 +2033,13 @@
      "length": 121
     }
    ],
-   "teeBox": "assumed"
+   "teeBox": "drawn"
   },
   {
    "asset": "omberg_tee_sign_13_red",
-   "e": 477773.7,
-   "n": 6456868.1,
-   "yawDeg": 277.15,
+   "e": 477768.95,
+   "n": 6456866.1,
+   "yawDeg": 292.27,
    "ground": "centre",
    "tees": [
     {
@@ -2020,41 +2047,59 @@
      "length": 92
     }
    ],
-   "teeBox": "assumed"
+   "teeBox": "drawn"
   },
   {
-   "asset": "omberg_tee_sign_14_white",
-   "e": 477698.62,
-   "n": 6456817.17,
-   "yawDeg": 300.91,
+   "asset": "omberg_tee_sign_14_white_yellow",
+   "e": 477694.66,
+   "n": 6456820.15,
+   "yawDeg": 323.93,
    "ground": "centre",
    "tees": [
     {
      "color": "white",
      "length": 563
-    }
-   ],
-   "teeBox": "assumed"
-  },
-  {
-   "asset": "omberg_tee_sign_14_yellow",
-   "e": 477689.71,
-   "n": 6456828.62,
-   "yawDeg": 301.03,
-   "ground": "centre",
-   "tees": [
+    },
     {
      "color": "yellow",
      "length": 549
     }
    ],
-   "teeBox": "assumed"
+   "teeBox": "drawn"
+  },
+  {
+   "asset": "omberg_tee_sign_14_blue",
+   "e": 477641.11,
+   "n": 6456888.74,
+   "yawDeg": 324.6,
+   "ground": "centre",
+   "tees": [
+    {
+     "color": "blue",
+     "length": 476
+    }
+   ],
+   "teeBox": "drawn"
+  },
+  {
+   "asset": "omberg_tee_sign_14_red",
+   "e": 477615.84,
+   "n": 6456949.1,
+   "yawDeg": 143.64,
+   "ground": "centre",
+   "tees": [
+    {
+     "color": "red",
+     "length": 413
+    }
+   ],
+   "teeBox": "drawn"
   },
   {
    "asset": "omberg_tee_sign_15_white",
-   "e": 477288.42,
-   "n": 6457220.29,
-   "yawDeg": 18.39,
+   "e": 477299.92,
+   "n": 6457213.79,
+   "yawDeg": 271.43,
    "ground": "centre",
    "tees": [
     {
@@ -2062,13 +2107,13 @@
      "length": 159
     }
    ],
-   "teeBox": "assumed"
+   "teeBox": "drawn"
   },
   {
    "asset": "omberg_tee_sign_15_yellow_blue",
-   "e": 477303.25,
-   "n": 6457219.27,
-   "yawDeg": 18.99,
+   "e": 477314.75,
+   "n": 6457221.02,
+   "yawDeg": 91.18,
    "ground": "centre",
    "tees": [
     {
@@ -2080,13 +2125,13 @@
      "length": 144
     }
    ],
-   "teeBox": "assumed"
+   "teeBox": "drawn"
   },
   {
    "asset": "omberg_tee_sign_15_red",
-   "e": 477319.94,
-   "n": 6457218.48,
-   "yawDeg": 27.92,
+   "e": 477327.94,
+   "n": 6457211.23,
+   "yawDeg": 271.17,
    "ground": "centre",
    "tees": [
     {
@@ -2094,13 +2139,13 @@
      "length": 131
     }
    ],
-   "teeBox": "assumed"
+   "teeBox": "drawn"
   },
   {
    "asset": "omberg_tee_sign_16_white",
-   "e": 477459.29,
-   "n": 6457281.79,
-   "yawDeg": 59.52,
+   "e": 477468.04,
+   "n": 6457276.54,
+   "yawDeg": 154.43,
    "ground": "centre",
    "tees": [
     {
@@ -2108,13 +2153,13 @@
      "length": 470
     }
    ],
-   "teeBox": "assumed"
+   "teeBox": "drawn"
   },
   {
    "asset": "omberg_tee_sign_16_yellow",
-   "e": 477479.86,
-   "n": 6457264.75,
-   "yawDeg": 44.21,
+   "e": 477477.11,
+   "n": 6457254.75,
+   "yawDeg": 337.88,
    "ground": "centre",
    "tees": [
     {
@@ -2122,13 +2167,13 @@
      "length": 446
     }
    ],
-   "teeBox": "assumed"
+   "teeBox": "drawn"
   },
   {
    "asset": "omberg_tee_sign_16_blue_red",
-   "e": 477524.03,
-   "n": 6457208.37,
-   "yawDeg": 24.58,
+   "e": 477522.53,
+   "n": 6457201.37,
+   "yawDeg": 346.97,
    "ground": "centre",
    "tees": [
     {
@@ -2140,13 +2185,13 @@
      "length": 380
     }
    ],
-   "teeBox": "assumed"
+   "teeBox": "drawn"
   },
   {
    "asset": "omberg_tee_sign_17_white_yellow",
-   "e": 477806.57,
-   "n": 6456928.51,
-   "yawDeg": 162.61,
+   "e": 477798.32,
+   "n": 6456922.01,
+   "yawDeg": 323.14,
    "ground": "centre",
    "tees": [
     {
@@ -2158,13 +2203,13 @@
      "length": 406
     }
    ],
-   "teeBox": "assumed"
+   "teeBox": "drawn"
   },
   {
    "asset": "omberg_tee_sign_17_blue_red",
-   "e": 477771.96,
-   "n": 6456976.12,
-   "yawDeg": 291.86,
+   "e": 477767.46,
+   "n": 6456979.62,
+   "yawDeg": 319.24,
    "ground": "centre",
    "tees": [
     {
@@ -2176,13 +2221,13 @@
      "length": 346
     }
    ],
-   "teeBox": "assumed"
+   "teeBox": "drawn"
   },
   {
    "asset": "omberg_tee_sign_18_white",
-   "e": 477512.03,
-   "n": 6457271.99,
-   "yawDeg": 262.03,
+   "e": 477506.28,
+   "n": 6457279.24,
+   "yawDeg": 29.54,
    "ground": "centre",
    "tees": [
     {
@@ -2194,9 +2239,9 @@
   },
   {
    "asset": "omberg_tee_sign_18_yellow",
-   "e": 477509.84,
-   "n": 6457291.75,
-   "yawDeg": 15.77,
+   "e": 477509.34,
+   "n": 6457291.5,
+   "yawDeg": 30.55,
    "ground": "centre",
    "tees": [
     {
@@ -2208,9 +2253,9 @@
   },
   {
    "asset": "omberg_tee_sign_18_blue_red",
-   "e": 477537.72,
-   "n": 6457358.5,
-   "yawDeg": 38.3,
+   "e": 477535.72,
+   "n": 6457356.5,
+   "yawDeg": 39.16,
    "ground": "centre",
    "tees": [
     {
