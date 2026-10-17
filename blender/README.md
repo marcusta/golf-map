@@ -839,9 +839,9 @@ heights):
 ## Shaping: rounded hard-road edge
 
 `golfmap.path_kerb` (`tools/shape_kerb.py`, tests `python blender/tools/shape_kerb_test.py`): an asphalt road is
-laid 4-5 cm thick and rolled out at its edge, so in reality it ends in a rounded lip above the verge; OPCD's road,
-fringe strip and grass meet flush and read as a flat line. `shaping-global` emits it after the footprints whenever
-a path is asphalt, concrete or paving:
+laid 4-5 cm thick and rolled out at its edge, so in reality it ends in a rounded lip above the verge, dirt and shadow
+in its angle and grass leaning over it; OPCD's road, fringe strip and grass meet flush and read as a flat line.
+`shaping-global` emits it after the footprints whenever a path is asphalt, concrete or paving:
 
 ```json
 { "id": "paths-kerb", "op": "golfmap.path_kerb", "select": { "type": "path" } }
@@ -849,17 +849,25 @@ a path is asphalt, concrete or paving:
 
 - **Strips**: per road shape, on every blend of a hard surface (`surfaces`, default asphalt, concrete, paving; the
   surface as `golfmap.path_edge_fade` reads it), the faces with a vertex on a hard piece's boundary and the rest on
-  no road mesh (a strip between two roads stays flat).
-- **Lip**: each rung (road edge to grass edge, ~0.12 m) is cut `cuts` times (default 2) and every strip vertex drops
-  `depthM` (default 0.03) x `profile(t)`, a quarter ellipse: 0 on the road edge, a few mm at the first cut, ~1 cm
-  at the second, the full drop on the grass edge. Omberg `roads_1f`: 0, -0.4, -1.2, -2.3, -3.0 cm across the strip.
-- **Verge**: every other mesh's vertex on a strip's outer edge (within 1 mm) drops `depthM` too, so nothing opens;
-  the grass slopes back up over its first row of faces (~1 m). Strip objects get smooth shading, custom normals
-  dropped; names, paint (the new vertices interpolate the strip's ramp) and materials stay. Blends carry
-  `golfmap_kerb` = `path-kerb-v1`. Afrod's `raised_path_blitz` recipe does the same on a single closed path
-  mesh, but its loopcut finds no loop on OPCD's road pieces (2026-10-17), hence this op.
-- **Report**: per blend `strip` faces, `rungs`, `outer` vertices, `new` vertices; `moved` = verge vertices
-  lowered per object.
+  no road mesh (a strip between two roads stays flat). Each rung (road edge to grass edge, ~0.12 m) is cut `cuts`
+  times (default 3).
+- **Lip line**: the strips' inner edges, chained and offset `roadM` (default 0.12 m) into the road, are cut into the
+  road pieces with split_surfaces' cut (`_kerb_cut`: exact edge chains, sliver collapse, T-junction weld, custom
+  normals from before the cut), so the lip starts there.
+- **Drop**: every piece and strip vertex closer than W = strip width + `roadM` to the grass edge drops `depthM`
+  (default 0.045) x profile(1 - d / W), a quarter ellipse; every vertex of any mesh at the same place (within 1 mm:
+  the verge welded to the strip, a gravel piece at a junction) drops the same, so nothing opens and the verge slopes
+  back up over its first row of faces (~1 m). Omberg `roads_1f`: flat 0.27 m in on the asphalt, -0.6 cm at the
+  road edge, -2.0 cm mid-strip, -4.5 cm at the grass edge.
+- **Paint** (strips, `strip_paint`): green = the road surface from the inner edge, a dark band a third of the way
+  in from the grass (what r + g leaves: MAHS black, the neighbour's dirt), red = grass at the outer edge reaching
+  10-45 % up in tufts. That is the green/red fringe convention: Unity's `golfmap.paths.materials` gives the strip
+  "<surface> to <neighbour>" and `golfmap.roughgrass.plant` grows Stix on its red, so grass leans over the edge.
+- Strip objects get smooth shading, custom normals dropped; names and materials stay. Blends carry `golfmap_kerb`
+  = `path-kerb-v2`. Report: per blend `strip`, `rungs`, `outer`, `painted`; `lipLines`, `cut`, `moved` per object.
+  The path check counts more steep faces on the cut pieces (Omberg `roads_1f` 29 -> 77, all millimetre slivers
+  along the lip line; shading faults 11 -> 14). Afrod's `raised_path_blitz` recipe does a lip on a single closed
+  path mesh, but its loopcut finds no loop on OPCD's road pieces (2026-10-17), hence this op.
 
 ## Shaping: path transitions
 

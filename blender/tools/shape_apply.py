@@ -23,6 +23,7 @@ import os
 import random
 import sys
 import time
+import zlib
 
 import bpy
 import numpy as np
@@ -5115,7 +5116,8 @@ def op_path_kerb(ctx, op):
             others = [o for o in near if o not in blends and o not in roads]
             t = time.time()
             run.update(kb.kerb_core(pieces, blends, roads, others, depth=float(op.get("depthM", kb.DEPTH_M)),
-                                    cuts=int(op.get("cuts", kb.CUTS))))
+                                    road_m=float(op.get("roadM", kb.ROAD_M)), cuts=int(op.get("cuts", kb.CUTS)),
+                                    cut=_kerb_cut, seed=zlib.crc32(unit.id.encode()) & 0xFFFF))
             for o in blends:
                 o[KERB_PROP] = kb.CONVENTION
             run["seconds"] = round(time.time() - t, 2)
@@ -5129,6 +5131,21 @@ def op_path_kerb(ctx, op):
 
 
 KERB_PROP = "golfmap_kerb"
+
+
+def _kerb_cut(pieces, lines):
+    """golfmap.path_kerb's lip lines into the road pieces: split_surfaces' cut (exact edge chains, z on the face
+    plane), its sliver collapse and T-junction weld, custom normals from the smooth normals before the cut."""
+    names = [o.name for o in pieces]
+    snap = {o.name: {"co": positions(o).astype(np.float64)} for o in pieces}
+    stats = {o.name: _cut_mesh(o, [], lines) for o in pieces}
+    slivers = collapse_cut_slivers(names, snap, SLIVER_M, mark_attr=SPLIT_EDGE_ATTR)
+    welds = weld_tjunctions(names)
+    for o in pieces:
+        _drop_cut_attrs(o.data)
+    return {"objects": {n: {k: v for k, v in s.items() if v} for n, s in stats.items()},
+            "slivers": slivers.get("merged") if isinstance(slivers, dict) else slivers,
+            "welds": welds.get("split") if isinstance(welds, dict) else None}
 
 
 def op_path_edge_fade(ctx, op):

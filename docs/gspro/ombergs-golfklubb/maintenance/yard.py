@@ -55,6 +55,12 @@ PAVE_EAST = [
 # edges (vertex i -> i+1) of the polygons that lie on the road mesh (within 0.7 m of its smoothed outline)
 ROAD_EDGES_EAST = range(12, 73)
 ROAD_EDGES_WEST = range(19, 77)
+# edges where the traced apron runs under the course's grass (Outer_Deep 0.1-7 cm above it, probed in Unity
+# 2026-10-17): the course's road edge there is a rounded lip whose verge drops 4.5 cm (golfmap.path_kerb), so the
+# apron sinks SINK_M there, faded out over SINK_FADE_M, and stays under the grass instead of showing through it
+SINK_EDGES_WEST = range(12, 19)
+SINK_M = 0.10
+SINK_FADE_M = 1.5
 PAVE_WEST = [
     (700.6, 864.5), (696.8, 871.2), (694.9, 875.9), (692.4, 881.6), (690.5, 886.6), (689.1, 890.7), (686.7, 900.3),
     (685.3, 905.2), (683.8, 909.6), (683.2, 914), (683.4, 915.8), (689.9, 915.7), (690.2, 926), (690.6, 934.2),
@@ -510,14 +516,30 @@ def tilt_trailer(g, with_carts=True):
 
 
 # ---- build ---------------------------------------------------------------------------------------------
-def build_asphalt(add, new, ev, name, poly_off, road_edges):
+def _seg_dist(x, y, a, b):
+    dx, dy = b[0] - a[0], b[1] - a[1]
+    L = dx * dx + dy * dy
+    t = 0.0 if L <= 0 else max(0.0, min(1.0, ((x - a[0]) * dx + (y - a[1]) * dy) / L))
+    return math.hypot(a[0] + t * dx - x, a[1] + t * dy - y)
+
+
+def build_asphalt(add, new, ev, name, poly_off, road_edges, sink_edges=()):
     F = world_frame(ev, poly_off)
     g = new()
     g.category = "structure"
     poly = [(OFF[0] + e - F.e, OFF[1] + n - F.n) for e, n in poly_off]
     taper = [(poly[i], poly[(i + 1) % len(poly)]) for i in road_edges]
+    sink = [(poly[i], poly[(i + 1) % len(poly)]) for i in sink_edges]
+
+    def sunk(x, y):
+        if not sink:
+            return 0.0
+        d = min(_seg_dist(x, y, a, b) for a, b in sink)
+        t = max(0.0, min(1.0, 1.0 - d / SINK_FADE_M))
+        return SINK_M * t * t * (3 - 2 * t)
+
     # planar world UVs: one texture field across the whole apron (and across both assets' tiles, as 4 m repeats)
-    surface(g, F, poly, "yard_asphalt", lambda x, y: F.smooth(x, y) + ASPHALT_LIFT,
+    surface(g, F, poly, "yard_asphalt", lambda x, y: F.smooth(x, y) + ASPHALT_LIFT - sunk(x, y),
             lambda x, y: (F.e + x - OFF[0], F.n + y - OFF[1]), step=1.0, skirt=0.12, name=name, taper=taper)
     add("omberg_maint_" + name, g, F.e, F.n, 90.0, F.z0)
 
@@ -628,7 +650,7 @@ def build_vehicles(add, new, ev):
 def build(add, new, ev):
     STATS.clear()
     build_asphalt(add, new, ev, "yard_asphalt_east", PAVE_EAST, ROAD_EDGES_EAST)
-    build_asphalt(add, new, ev, "yard_asphalt_west", PAVE_WEST, ROAD_EDGES_WEST)
+    build_asphalt(add, new, ev, "yard_asphalt_west", PAVE_WEST, ROAD_EDGES_WEST, SINK_EDGES_WEST)
     build_bays(add, new, ev)
     build_stones(add, new, ev, "edge_stones_east", STONES_EAST, True)
     build_stones(add, new, ev, "edge_stones_west", STONES_WEST, False)
