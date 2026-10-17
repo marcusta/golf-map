@@ -1,5 +1,5 @@
 import { test, expect } from 'bun:test';
-import { svgFeatures, matchSvgFilter, variantFileName, loadExclusions, NO_FILTER, COURSE_WIDE, landmarksOf, nearLabel, shapeName } from '../src/export/svg-exclusions';
+import { svgFeatures, matchSvgFilter, variantFileName, loadExclusions, NO_FILTER, COURSE_WIDE, landmarksOf, nearLabel, shapeName, svgShapeName, findByShapeName } from '../src/export/svg-exclusions';
 import type { CourseFeature } from '../../shared/api/course-features.gen';
 
 // The exclusion list's filter and the variant file name (svg-exclusions.ts).
@@ -62,4 +62,19 @@ test('the shape name is the hole plus the feature number in hex, as the SVG and 
     expect(shapeName(f('water', 281), undefined)).toBe('others_119');
     expect(shapeName(f('path', 10), 3)).toBe('a');                  // merged into the Roads layer's shapes
     expect(shapeName(f('trees', null, '7B-20e4aa'), undefined)).toBe('others_7b20e');   // generated: no number
+});
+
+test('a shape is found by its SVG name, an OPCD mesh name or its number', () => {
+    const f = (id: string, type: string, holeId: string | null, no: number) => ({ id, type, holeId, no }) as CourseFeature;
+    const items = [f('t', 'tee', 'h5', 0x15c), f('r', 'rough', null, 0x178), f('p', 'path', null, 0x1f), f('g', 'green', 'h102', 0x136)];
+    const holes: Record<string, number> = { h5: 5, h102: 102 };
+    const find = (q: string) => findByShapeName(items, id => id ? holes[id] : undefined, q).map(x => x.id);
+    expect(find('hole_5_15c')).toEqual(['t']);
+    expect(find('  Spline_hole_5_15c_Tee_-_Mesh ')).toEqual(['t']);
+    expect(find('others_178')).toEqual(['r']);
+    expect(find('roads_1f')).toEqual(['p']);
+    expect(find('136')).toEqual(['g']);
+    expect(find('hole_4_15c')).toEqual([]);
+    expect(find('')).toEqual([]);
+    expect(svgShapeName(items[2], undefined)).toBe('roads_1f');
 });

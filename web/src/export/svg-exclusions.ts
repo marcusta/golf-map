@@ -60,6 +60,35 @@ export function shapeName(f: CourseFeature, holeNumber: number | undefined): str
     return holeNumber !== undefined ? `hole_${holeNumber}_${id}` : `others_${id}`;
 }
 
+/**
+ * `shapeName` as the SVG spells it for every type: a road piece as
+ * `roads_<number>` (a merged road shape takes its lowest-numbered piece's name).
+ */
+export function svgShapeName(f: CourseFeature, holeNumber: number | undefined): string {
+    const name = shapeName(f, holeNumber);
+    return f.type === 'path' ? `roads_${name}` : name;
+}
+
+/**
+ * The features a typed shape name points at: the SVG name (`hole_5_15c`,
+ * `others_178`, `roads_1f`), an OPCD mesh name that carries one
+ * (`Spline_hole_5_15c_Tee_-_Mesh`), or only the number part (`15c`).
+ * Case and surrounding spaces do not matter.
+ */
+export function findByShapeName(
+    features: readonly CourseFeature[],
+    holeNumberOf: (holeId: string | null) => number | undefined,
+    query: string,
+): CourseFeature[] {
+    const q = query.trim().toLowerCase();
+    if (!q) return [];
+    const full = /(hole_\d+_[0-9a-z]+|others_[0-9a-z]+|roads_[0-9a-z]+)/.exec(q)?.[1];
+    return features.filter(f => {
+        const name = svgShapeName(f, holeNumberOf(f.holeId));
+        return full ? name === full : name.slice(name.lastIndexOf('_') + 1) === q;
+    });
+}
+
 /** The features matching the filter. */
 export function matchSvgFilter(
     features: readonly CourseFeature[],

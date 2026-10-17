@@ -43,6 +43,7 @@ import {
     SUGGESTED_TREE_SPECIES, TREE_AREA_IGNORE_KIND_ATTRIBUTE, TREE_AREA_NAME_ATTRIBUTE, TREE_AREA_SPECIES_ATTRIBUTE, TREE_AREA_TYPE,
     formatSpeciesMix, speciesMixOf, treeAreaIgnoresKind, treeAreaNameOf, type TreeSpeciesShare,
 } from '../../../shared/features/tree-areas';
+import { svgShapeName } from '../export/svg-exclusions';
 import {
     ROCK_SLAB_MARGIN_ATTRIBUTE, ROCK_SLAB_MARGIN_RANGE_M, ROCK_SLAB_TILE_ATTRIBUTE, ROCK_SLAB_TYPE, rockSlabMarginOf, rockSlabTileOf,
 } from '../../../shared/features/rock-slab';
@@ -58,6 +59,7 @@ const MIXED_PALETTE = '__mixed';
 const tpl = template(`
     <div class="sel-panel" bind="root" data-testid="selection-panel">
         <h4 class="section-title">Selection</h4>
+        <div bind="shapeId" class="shape-id" title="Shape id in the GSPro SVG and the OPCD mesh names" data-testid="selection-shape-id"></div>
         <div bind="selInfo" class="sel-info"></div>
         <div bind="generatedBadge" class="generated-badge" data-testid="selection-generated-badge"></div>
         <label bind="moveField" class="move-field"><span bind="moveLabel"></span>
@@ -242,6 +244,13 @@ export class SelectionPanelComponent extends Component {
             & .section-title {
                 margin: 0;
                 ${panelTitle()}
+            }
+
+            & .shape-id {
+                font-family: ui-monospace, monospace;
+                font-size: 0.75rem;
+                user-select: all;
+                &:empty { display: none; }
             }
 
             & .sel-info {
@@ -501,6 +510,11 @@ export class SelectionPanelComponent extends Component {
     render(): DocumentFragment {
         const frag = this.wire(tpl, {
             root: { className: () => this.features.selectedIds.get().size > 0 ? 'sel-panel show' : 'sel-panel' },
+            shapeId: () => {
+                const f = this.features.selectedIds.get().size === 1 ? this.features.selected.get() : null;
+                if (!f) return '';
+                return svgShapeName(f, this.courseDetail.drawScopes.get().find(h => h.id === f.holeId)?.number);
+            },
             selInfo: () => {
                 const count = this.features.selectedIds.get().size;
                 if (count > 1) return `${count} features selected`;

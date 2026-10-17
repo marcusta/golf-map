@@ -6,6 +6,9 @@ import { FeaturesService, fillScopeOptions, scopeFromKey, scopeKey, scopeOf } fr
 import { DrawToolService } from './draw-tool.service';
 import { FEATURE_STYLES } from './feature-palette';
 import { icon } from '../ui/icons';
+import { MapService } from '../map/map.service';
+import { sweref99tmToWgs84 } from '../geo/transform';
+import { findByShapeName, svgShapeName } from '../export/svg-exclusions';
 import type { CourseFeature } from '../../../shared/api/course-features.gen';
 import { ROUGHS_LAYER } from '../../../shared/render/stack-key';
 import { ZoneTypesService, zoneTypeKeyOf, zoneVariantKeyOf } from '../zones/zone-types.service';
@@ -96,6 +99,8 @@ const tpl = template(`
             <label class="scope-field">Scope
                 <select bind="scopeSelect" data-testid="stack-panel-scope"></select>
             </label>
+            <input bind="findShape" type="search" class="find-shape" placeholder="Find shape id, e.g. hole_5_15c"
+                aria-label="Find shape by id" title="Shape id from the GSPro SVG or an OPCD mesh name; Enter selects and zooms to it" data-testid="stack-find-shape" />
             <button bind="editLayerOrder" type="button" class="op-btn" data-testid="layer-order-edit">Edit layer order…</button>
             <button bind="roughsToggle" type="button" class="layer-toggle" data-testid="stack-roughs-toggle"></button>
         </div>
@@ -180,6 +185,10 @@ export class FeatureStackPanelComponent extends Component {
             }
 
             & .scope-field { ${field()} }
+            & .find-shape {
+                ${input()} width: 100%; box-sizing: border-box; padding: ${s('sm')} ${s('md')}; font-size: 0.8rem;
+                &.not-found { outline: 1px solid ${t('color-status-negative')}; }
+            }
             & .layer-list {
                 min-height: 12rem;
                 & option { padding: ${s('xs')} ${s('sm')}; }
@@ -344,6 +353,7 @@ export class FeatureStackPanelComponent extends Component {
     private features = this.inject(FeaturesService);
     private courseDetail = this.inject(CourseDetailService);
     private zoneTypes = this.inject(ZoneTypesService);
+    private map = this.inject(MapService);
     /** Vegetation mode: the list defaults to every zone, grouped by hole. */
     private vegetation = new Computed(() => this.tool.scope.get() === 'vegetation');
 
@@ -535,6 +545,14 @@ export class FeatureStackPanelComponent extends Component {
                 groupNameInput.value = group?.drawingGroupName ?? '';
             });
         }));
+
+        const findShape = this.ref(frag, 'findShape') as HTMLInputElement;
+        findShape.addEventListener('input', () => findShape.classList.remove('not-found'));
+        findShape.addEventListener('keydown', (e) => {
+            if (e.key !== 'Enter') return;
+            const found = this.findShape(findShape.value);
+            findShape.classList.toggle('not-found', found === 0 && findShape.value.trim() !== '');
+        });
 
         this.scopeSelect = this.ref(frag, 'scopeSelect') as HTMLSelectElement;
         this.scopeSelect.addEventListener('change', () => {
@@ -778,6 +796,33 @@ export class FeatureStackPanelComponent extends Component {
         else this.features.select(id);
     }
 
+    private holeNumberOf(holeId: string | null): number | undefined {
+        return holeId ? this.courseDetail.drawScopes.peek().find(h => h.id === holeId)?.number : undefined;
+    }
+
+    /**
+     * Select the features a typed shape id names (`findByShapeName`) and fit
+     * the map to them, so a name from the SVG, an OPCD log or a bisect is one
+     * Enter away. Returns how many were found.
+     */
+    private findShape(query: string): number {
+        const found = findByShapeName(this.features.store.items.peek(), id => this.holeNumberOf(id), query);
+        if (!found.length) return 0;
+        this.features.setSelection(found.map(f => f.id));
+        let w = Infinity, s = Infinity, e = -Infinity, n = -Infinity;
+        for (const f of found) {
+            for (const ring of f.geometry.rings) {
+                for (const p of ring.points) {
+                    const { lat, lon } = sweref99tmToWgs84(p.x, p.y);
+                    w = Math.min(w, lon); e = Math.max(e, lon);
+                    s = Math.min(s, lat); n = Math.max(n, lat);
+                }
+            }
+        }
+        if (Number.isFinite(w)) this.map.fitBounds([w, s, e, n], { maxZoom: 19 });
+        return found.length;
+    }
+
     /** The row's hidden look: its own eye, or the Roughs layer's for a row of that layer. */
     private paintHidden(id: string): void {
         const el = this.rowEls.get(id);
@@ -874,6 +919,7 @@ export class FeatureStackPanelComponent extends Component {
             const next = { swatch: this.swatchStyle(f), label: this.rowLabel(f), badge: generatedBadge(f), points: pointCount(f), layer: f.layer };
             if (!shown || shown.swatch !== next.swatch) swatch.setAttribute('style', next.swatch);
             if (!shown || shown.label !== next.label) label.textContent = next.label;
+            el.title = svgShapeName(f, untrack(() => this.holeNumberOf(f.holeId)));
             // A row moved into or out of the Roughs layer follows its eye.
             if (shown && shown.layer !== next.layer) untrack(() => this.paintHidden(id));
             if (!shown || shown.badge !== next.badge) {
