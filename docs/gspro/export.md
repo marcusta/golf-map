@@ -247,6 +247,11 @@ the next 10 m (`SIDE_STEP_M`) so a hand-typed area is never a decimal-metre terr
   1 m², dropped) and carry no `data-surface`: which part is gravel and which asphalt is not the SVG's
   business. A piece without a surface (a kerb fillet, an OSM way without the tag) has `surface: null`
   in the sidecar and does not count towards its shape's dominant surface.
+  **Gravel tracks** (`surface: gravel-track`, gravel with grass down the middle, "grusväg med gräsmitt"; OSM
+  `highway=track` of `tracktype` grade2/grade3 imports as one) are gravel to the whole export (`_row_surface`):
+  their only difference is the sidecar's `transitions` entry, whose `wear` always has two wheel tracks and a
+  `grassMiddle` (`_path_wear`, `_grass_middle_spans`: the grass stops `GRASS_MIDDLE_CLEAR_M` = 1.5 m short of any
+  road that is no gravel track and narrows to nothing over `GRASS_MIDDLE_TAPER_M` before that).
   **Grass tracks** (`surface: grass`) are not hard ground: they are written as their own shapes with
   the rough fill (`GRASS_TRACK_FILL`, merged among themselves) under every hard road, so OPCD makes
   them rough, not a path mesh; they carry `data-surface="grass"`, the only road shapes that do. A

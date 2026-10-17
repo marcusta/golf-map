@@ -53,6 +53,14 @@ assert all(st.wear(a,.8,two,3.5)>.5 and st.wear(a,-.8,two,3.5)>.5 for a in range
 assert all(st.wear(a,0,two,3.5)<.05 and st.wear(a,1.7,two,3.5)==0 for a in range(0,200,7))
 one=dict(tracks=1,trackWidthM=.9,trackSpacingM=0,strength=.8,seed=5)
 assert all(st.wear(a,0,one,2)>.4 and st.wear(a,.95,one,2)==0 for a in range(0,200,7))
+# A gravel track's grass middle: grass between the tracks, none in them, narrowing to nothing at a span's end.
+track=dict(tracks=2,trackWidthM=.6,trackSpacingM=1.6,edgeM=.12,strength=1,seed=5,
+           grassMiddle=dict(halfWidthM=.35,edgeM=.1,taperM=1.5,spans=[[0,100]]))
+middle=[st.grass_middle(a/4,0,track) for a in range(40,360)]
+assert sum(middle)/len(middle)>.5 and sum(g>.5 for g in middle)>.7*len(middle)
+assert all(st.grass_middle(a,.8,track)==0 and st.grass_middle(a,-.8,track)==0 for a in range(5,95,3))
+assert st.grass_middle(.2,0,track)<.1 and st.grass_middle(99.8,0,track)<.1 and st.grass_middle(120,0,track)==0
+assert st.grass_middle(50,0,two)==0
 # Worn green leaves the sum (MAHS black); red and blue keep their bytes.
 assert st.byte_weights((.2,.6,.2),.5)==(51/255,76/255,51/255,1.)
 assert st.byte_weights((0,1,0),1)==(0,0,0,1.)

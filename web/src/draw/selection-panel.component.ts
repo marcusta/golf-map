@@ -10,7 +10,7 @@ import { ZONE_EDGE_BLEND_DEFAULT_M, ZoneTypesService, type ZoneAttributes } from
 import { generatedHeightLabel, isGeneratedFeature, provenanceBadgeLabel } from './generated-features';
 import type { CourseFeature } from '../../../shared/api/course-features.gen';
 import {
-    PATH_SURFACE_ATTRIBUTE, PATH_SURFACE_LABELS, PATH_SURFACES, pathSurfaceOf, type PathSurface,
+    PATH_SURFACE_ATTRIBUTE, PATH_SURFACE_LABELS, PATH_SURFACES, isLoosePathSurface, pathSurfaceOf, type PathSurface,
 } from '../../../shared/features/path-surface';
 import { KERB_FILLETS_ATTRIBUTE, kerbFilletsOn } from '../../../shared/features/road-junctions';
 import { MapService } from '../map/map.service';
@@ -1211,7 +1211,7 @@ export class SelectionPanelComponent extends Component {
      * along unchanged; a path already on that surface is not written.
      */
     private savePathSurface(surface: PathSurface | ''): void {
-        const invalid = surface !== 'gravel' && surface !== 'dirt' && this.pathSelection().some(f => {
+        const invalid = !isLoosePathSurface(surface) && this.pathSelection().some(f => {
             const transitions = (f.attributes as unknown as {pathTransitions?: unknown[]})?.pathTransitions;
             return Array.isArray(transitions) && transitions.length > 0;
         });

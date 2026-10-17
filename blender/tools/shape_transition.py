@@ -138,6 +138,29 @@ def wear(along, lateral, spec, width):
     return max(0., min(1., spec.get('strength', 1.)*ribbon*patch*shoulder))
 
 
+def grass_middle(along, lateral, spec):
+    """Share (0..1) of grass down the middle of a gravel track (wear's `grassMiddle`): a ragged strip
+    `halfWidthM` either side of the wandering centre, inside its `spans` only, narrowing to nothing over `taperM`
+    at each span end (the wheels turn in and out near another road), with a bald patch here and there."""
+    g = spec.get('grassMiddle')
+    if not g:
+        return 0.
+    taper = g.get('taperM', 1.5)
+    reach = 0.
+    for a, b in g.get('spans', ()):
+        if a <= along <= b:
+            reach = max(reach, smoothstep(0, taper, along-a)*smoothstep(0, taper, b-along))
+    if reach <= 0:
+        return 0.
+    seed = int(spec.get('seed', 0))
+    x = lateral-.1*value_noise(along/7, .3, seed+42)  # the same wander as the wheel tracks (wear)
+    half = g.get('halfWidthM', .3)*reach*(1+.3*value_noise(along/1.1, lateral/.4, seed+7))
+    edge = g.get('edgeM', .1)
+    strip = 1-smoothstep(half-edge*.5, half+edge*.5, abs(x))
+    bald = smoothstep(.35, .75, value_noise(along/2.3, .7, seed+131))  # worn through where wheels cut across
+    return max(0., min(1., strip*(1-.8*bald)))
+
+
 def byte_weights(rgb, worn=0.):
     """RGB bytes summing to 255, then `worn` of the path's green taken out: what is missing from the sum is
     MAHS's black, the packed look of the surface (red, the grass Stix grows on, is not touched)."""
@@ -489,10 +512,11 @@ def apply(objects, entries, frame, max_edge=.3):
                 rgb = weights(s,l,spec,entry['widthM'])
                 if rgb is not None:
                     return rgb+(wears or 0.,)
-            if worn is None:
-                worn = wears
-        # A worn path outside every transition is all path.
-        return None if worn is None else (0.,1.,0.,worn)
+            if worn is None and wears is not None:
+                worn = (grass_middle(s,l,entry['wear']), wears)
+        # A worn path outside every transition is all path, but for a gravel track's grass middle (red: Unity
+        # grows its grass there).
+        return None if worn is None else (worn[0],1.-worn[0],0.,worn[1])
     report = {}
     seam = {}
     from mathutils.kdtree import KDTree

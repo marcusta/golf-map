@@ -27,7 +27,7 @@ The same features carry the width tapers where a road ends in a narrower one
 ### Drawable path transitions
 
 `attributes.pathTransitions` is an optional array (unset or empty means the existing path).
-It is supported on gravel/dirt centerline paths. Grass tracks must first become a hard
+It is supported on gravel/dirt centerline paths (a gravel track, gravel with a grass middle, counts as gravel). Grass tracks must first become a hard
 path surface and be rebuilt through SVG/OPCD. Each entry has a stable `id`, `pattern`
 (`soft-fade`, `overgrown-gravel`, `wheel-tracks`), `placement` (`start`, `end`, `section`),
 `startM`, `direction` (1/-1), `transitionLengthM`, `holdLengthM`, `fadeLengthM`, `ending`

@@ -970,7 +970,9 @@ from Blender: `golfmap.path_transition` takes the path's green out where the exp
 have packed the stones (blender/README.md "Shaping: path transitions"), on every gravel path drawn as a centreline
 of 1.4 m or wider - two tracks from 1.8 m, one trodden middle below. Vreta's gravel: the Ground032 stones at 1.5 m
 a repeat instead of 3.5, flatter normals, tint `#66625a`, the Ground032 height map so stones show through. A worn piece carries green paint, so it wears its road's
-strip material; with no red on it, it gets no Stix renderer. A gravel path drawn as an outline has no
+strip material; with no red on it, it gets no Stix renderer. A gravel track (gravel with a grass middle) has red down
+its middle, so it gets both: the strip material's red is the rough beside the road and `golfmap.roughgrass.plant`
+grows Stix blades there (blade chance = red). A gravel path drawn as an outline has no
 centreline and stays unworn.
 
 ## Vertex paint

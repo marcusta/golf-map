@@ -28,6 +28,15 @@ separates them into one object per surface. This module is the geometry of that 
 - **Seams** (`Regions.seams`): every piece outline cut at every crossing with another; a sub-segment is a seam when
   the points just left and right of it are covered by different surfaces. Chained into polylines, low (lower-ranked)
   surface on the left of the direction of travel, simplified (Douglas-Peucker, 5 mm).
+- **Ragged seams** (`ragged` > 0, golfmap.split_surfaces' `raggedM`): where a loose road (gravel, dirt) meets a hard
+  one (asphalt, concrete, paving) the seam is no straight kerb line: tyres drag gravel out onto the asphalt in
+  lobes, and the asphalt edge crumbles. Such a chain is resampled every RAGGED_STEP and moved off the kerb: up to
+  `ragged` m onto the hard road (the spill, a few broad lobes with smaller ones on them) and a few cm either way
+  (the crumbled edge), tapering to nothing over RAGGED_END_M at an open chain's ends so it still meets the outline
+  where the kerb does. A point that would leave the hard road (or come within RAGGED_MARGIN of its far side) is
+  pulled back, and a chain that would cross itself is retried at half the reach (twice), then left straight. The
+  mesh cut follows the ragged line, so the two surfaces meet in a hard but uneven edge, not a fade; `region` then
+  answers by the ragged line near it (`straight` keeps the kerb line for the fade lines).
 - **Fade lines** (`Regions.fade_lines(width)`): the seams offset `width` into the lower surface (not for sharp
   pairs: asphalt / concrete), kept only where they really are `width` from every fading seam and inside the lower
   region: shape_apply cuts them so the vertex-paint fade (red at `width`, black at the seam) has vertices to live on.
@@ -48,6 +57,12 @@ SHARP_PAIRS = (frozenset(("asphalt", "concrete")),)  # seams with no paint fade 
 DEFAULT_TIE = 0.15
 DEFAULT_SLIT = 0.8  # outlines of two surfaces closer than this across uncovered ground: a slit (the SVG merge closes
 #                     gaps up to 2 x ROADS_CLOSE_M = 0.6 m; a little more so the medial line reaches the mesh edge)
+RAGGED_HARD = ("asphalt", "concrete", "paving")
+RAGGED_LOOSE = ("gravel", "dirt")
+DEFAULT_RAGGED = 0.35  # split_surfaces' raggedM: how far gravel spills onto the hard road at most (m)
+RAGGED_STEP = 0.1     # vertex spacing of a ragged seam (m): 5-10 cm, above the cut's sliver collapse (5 cm)
+RAGGED_END_M = 0.5    # the displacement tapers to nothing over this much chain at an open chain's ends
+RAGGED_MARGIN = 0.25  # a spill lobe keeps this far inside the hard road (its far side, a hole, another seam)
 SIMPLIFY_M = 0.005
 SIDE_EPS = 1e-3  # how far left/right of a sub-segment its sides are sampled (m)
 KEY_DIGITS = 6  # endpoint keys round to 1 um
@@ -100,6 +115,45 @@ def higher(a, b):
 
 def is_sharp(a, b):
     return frozenset((a, b)) in SHARP_PAIRS
+
+
+def is_ragged(high, low):
+    """A seam that is drawn ragged (a loose road against a hard one)."""
+    return high in RAGGED_HARD and low in RAGGED_LOOSE
+
+
+def _hash(ix, iy, seed):
+    n = (ix * 374761393 + iy * 668265263 + seed * 2147483647) & 0xFFFFFFFF
+    n = ((n ^ (n >> 13)) * 1274126177) & 0xFFFFFFFF
+    n = n ^ (n >> 16)
+    return (n & 0xFFFF) / 32767.5 - 1.0
+
+
+def _noise(x, y, seed):
+    """Smooth value noise in [-1, 1] on a 1-unit lattice (shape_edgefade.value_noise's, without importing it)."""
+    ix, iy = math.floor(x), math.floor(y)
+    fx, fy = x - ix, y - iy
+    sx, sy = fx * fx * (3 - 2 * fx), fy * fy * (3 - 2 * fy)
+    a, b = _hash(ix, iy, seed), _hash(ix + 1, iy, seed)
+    c, d = _hash(ix, iy + 1, seed), _hash(ix + 1, iy + 1, seed)
+    top = a + (b - a) * sx
+    return top + ((c + (d - c) * sx) - top) * sy
+
+
+def ragged_offset(s, length, reach, seed, closed=False):
+    """How far (m) a ragged seam lies left of its kerb line at `s` m along it: negative = onto the hard road (on
+    the right). Lobes of spilled gravel (0.1..1 x reach, broad ones ~2 m apart with ~0.5 m ones on them), a
+    crumbled edge of bays and teeth (~6 cm at 0.3 m) and a jagged grit of +-3.5 cm per vertex; zero at an open
+    chain's ends."""
+    u = 0.5 + 0.5 * _noise(s / 2.0, 0.0, seed)
+    v = 0.5 + 0.5 * _noise(s / 0.5, 3.1, seed)
+    spill = reach * (0.1 + 0.65 * u * u + 0.25 * v * v)
+    crumble = 0.06 * _noise(s / 0.3, 7.7, seed) + 0.035 * _hash(int(round(s / RAGGED_STEP)), 9, seed)
+    taper = 1.0
+    if not closed or length < 4 * RAGGED_END_M:
+        e = min(s, length - s) / RAGGED_END_M
+        taper = 0.0 if e <= 0 else 1.0 if e >= 1 else e * e * (3 - 2 * e)
+    return taper * (crumble - spill)
 
 
 # ---------------------------------------------------------------- small geometry
@@ -293,7 +347,8 @@ class Regions:
     pieces: the sidecar's `regions[<shape>].pieces`; to_xy: SVG (x, y) -> working (x, y) (default identity);
     dominant: the shape's dominant surface (a derived piece touching no known one falls back to it)."""
 
-    def __init__(self, pieces, to_xy=None, tie=DEFAULT_TIE, dominant=None, eps=SIDE_EPS, slit=DEFAULT_SLIT):
+    def __init__(self, pieces, to_xy=None, tie=DEFAULT_TIE, dominant=None, eps=SIDE_EPS, slit=DEFAULT_SLIT,
+                 ragged=0.0):
         to_xy = to_xy or (lambda x, y: (x, y))
         self.tie = tie
         self.eps = eps
@@ -323,6 +378,11 @@ class Regions:
         self.assignment = []  # report rows for derived pieces
         self._assign_derived()
         self._seams_and_outline()
+        self.ragged = max(0.0, float(ragged or 0.0))
+        self.ragged_grid = None
+        self.ragged_report = {"chains": 0, "straight": 0, "halved": 0, "pulledBack": 0}
+        if self.ragged > 0:
+            self._ragged_seams()
 
     # ---- building blocks
 
@@ -375,9 +435,12 @@ class Regions:
         return known if known is not None else derived
 
     def region(self, x, y):
-        """(surface, filled): the covered surface, or the nearest covered region's (filled = True)."""
+        """(surface, filled): the covered surface, or the nearest covered region's (filled = True). Near a ragged
+        seam, the side of the ragged line the point is on."""
         s = self.covered(x, y)
         if s is not None:
+            if self.ragged_grid is not None:
+                s = self._ragged_side(x, y, s)
             return s, False
         d, i = self.outer.nearest(x, y)
         if i is None:
@@ -482,6 +545,102 @@ class Regions:
                 self.seam_grid.add(p, q, (chain["high"], chain["low"]))
         self.slits = slits
         self.seams = self._chain(list(seam_subs.values())) + slits
+
+    def _ragged_side(self, x, y, s):
+        """`s` (the covered surface) or, within reach of a ragged seam between `s` and another surface, the
+        surface on the point's side of the ragged line (left = the loose one)."""
+        g = self.ragged_grid
+        r = self.ragged + 0.1
+        best = None
+        for i in g.query_box(x - r, y - r, x + r, y + r):
+            a, b, (hi, lo) = g.items[i]
+            if s not in (hi, lo):
+                continue
+            d, _ = seg_point_distance(x, y, a[0], a[1], b[0], b[1])
+            if d <= r and (best is None or d < best[0]):
+                best = (d, a, b, hi, lo)
+        if best is None:
+            return s
+        _, a, b, hi, lo = best
+        cross = (b[0] - a[0]) * (y - a[1]) - (b[1] - a[1]) * (x - a[0])
+        return lo if cross > 0 else hi
+
+    def _ragged_chain(self, chain, reach, seed):
+        """(ragged points of one chain at `reach`, points pulled back), the points None when they cross."""
+        closed = chain["closed"]
+        pts = resample(chain["points"], RAGGED_STEP)
+        n = len(pts)
+        hi, lo = chain["high"], chain["low"]
+        stations = [0.0]
+        for p, q in zip(pts, pts[1:]):
+            stations.append(stations[-1] + math.dist(p, q))
+        length = stations[-1]
+        normals = []
+        for i in range(n):
+            a = pts[i - 1] if i > 0 else (pts[-2] if closed and n > 2 else pts[i])
+            b = pts[i + 1] if i < n - 1 else (pts[1] if closed and n > 2 else pts[i])
+            dx, dy = b[0] - a[0], b[1] - a[1]
+            L = math.hypot(dx, dy) or 1.0
+            normals.append((-dy / L, dx / L))  # left: the loose side
+        want = [ragged_offset(st, length, reach, seed, closed) for st in stations]
+        scale = [1.0] * n
+        pulled = 0
+        for i, (p, nv, d) in enumerate(zip(pts, normals, want)):
+            if abs(d) < 1e-6:
+                continue  # on the kerb (an end): nothing to check
+            scale[i] = 0.0
+            for f in (1.0, 0.5, 0.25):
+                dd = d * f
+                q = (p[0] + nv[0] * dd, p[1] + nv[1] * dd)
+                if dd < 0:
+                    far = (p[0] + nv[0] * (dd - RAGGED_MARGIN), p[1] + nv[1] * (dd - RAGGED_MARGIN))
+                    ok = self.covered(*q) == hi and self.covered(*far) == hi
+                else:
+                    ok = self.covered(*q) in (hi, lo)
+                if ok:
+                    scale[i] = f
+                    break
+            if scale[i] < 1.0:
+                pulled += 1
+        # a pulled-back point pulls its neighbours with it (no spikes): the smallest scale within 5 points
+        smooth = [min(scale[max(0, i - 5):i + 6]) for i in range(n)]
+        out = [(p[0] + nv[0] * d * f, p[1] + nv[1] * d * f) for p, nv, d, f in zip(pts, normals, want, smooth)]
+        if closed:
+            out[-1] = out[0]
+        else:
+            out[0], out[-1] = pts[0], pts[-1]
+        if _self_crossing(out, closed):
+            return None, pulled
+        return out, pulled
+
+    def _ragged_seams(self):
+        """Replace every ragged pair's chain in self.seams by its ragged line; self.ragged_grid indexes them."""
+        import zlib
+        self.ragged_grid = SegmentGrid(2.0)
+        for chain in self.seams:
+            if not is_ragged(chain["high"], chain["low"]) or chain["length"] < 2 * RAGGED_STEP:
+                continue
+            k = _key(chain["points"][0])
+            seed = zlib.crc32(("%s|%s|%.3f|%.3f" % (chain["high"], chain["low"], k[0], k[1])).encode()) & 0x7FFFFFFF
+            reach, out, pulled = self.ragged, None, 0
+            for _ in range(3):
+                out, pulled = self._ragged_chain(chain, reach, seed)
+                if out is not None:
+                    break
+                reach *= 0.5
+                self.ragged_report["halved"] += 1
+            self.ragged_report["chains"] += 1
+            if out is None:
+                self.ragged_report["straight"] += 1
+                continue
+            self.ragged_report["pulledBack"] += pulled
+            chain["straight"] = chain["points"]
+            chain["points"] = out
+            chain["length"] = polyline_length(out)
+            chain["ragged"] = round(reach, 3)
+            for p, q in zip(out, out[1:]):
+                if _key(p) != _key(q):
+                    self.ragged_grid.add(p, q, (chain["high"], chain["low"]))
 
     def _slit_seams(self, step=0.1):
         """Where the outlines of two surfaces face each other across uncovered ground closer than `slit`
@@ -619,7 +778,7 @@ class Regions:
         for chain in self.seams:
             if is_sharp(chain["high"], chain["low"]) or len(chain["points"]) < 2:
                 continue
-            off = offset_polyline(chain["points"], width, chain["closed"])
+            off = offset_polyline(chain.get("straight", chain["points"]), width, chain["closed"])
             lo = chain["low"]
 
             def good(pt):
@@ -649,8 +808,38 @@ class Regions:
         for p in self.pieces:
             s = p["surface"] if not p["derived"] else self.assigned.get(self.pieces.index(p))
             area[s or "none"] = round(area.get(s or "none", 0.0) + sum(r.area() for r in p["rings"]), 1)
-        return {"surfaces": self.surfaces(), "dominant": self.dominant, "pieces": len(self.pieces),
-                "derived": self.assignment, "pieceAreaM2": area, "seamChains": len(self.seams), "seamM": pairs}
+        out = {"surfaces": self.surfaces(), "dominant": self.dominant, "pieces": len(self.pieces),
+               "derived": self.assignment, "pieceAreaM2": area, "seamChains": len(self.seams), "seamM": pairs}
+        if self.ragged > 0:
+            out["ragged"] = dict(self.ragged_report, reachM=self.ragged)
+        return out
+
+
+def resample(points, step):
+    """The polyline with a vertex at least every `step` m (its own vertices kept)."""
+    out = [tuple(points[0])]
+    for p, q in zip(points, points[1:]):
+        k = max(1, math.ceil(math.dist(p, q) / step))
+        for j in range(1, k + 1):
+            t = j / k
+            out.append((p[0] + (q[0] - p[0]) * t, p[1] + (q[1] - p[1]) * t))
+    return out
+
+
+def _self_crossing(pts, closed=False):
+    """Whether two non-adjacent segments of the polyline cross or touch."""
+    g = SegmentGrid(1.0)
+    segs = list(zip(pts, pts[1:]))
+    for i, (a, b) in enumerate(segs):
+        g.add(a, b, i)
+    m = len(segs)
+    for i, (a, b) in enumerate(segs):
+        for j in g.query_box(min(a[0], b[0]), min(a[1], b[1]), max(a[0], b[0]), max(a[1], b[1])):
+            if j <= i + 1 or (closed and i == 0 and j == m - 1):
+                continue
+            if seg_intersections(a, b, *segs[j]):
+                return True
+    return False
 
 
 def offset_polyline(points, d, closed=False):

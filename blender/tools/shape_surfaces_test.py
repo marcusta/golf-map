@@ -151,6 +151,65 @@ class Regions(unittest.TestCase):
         json.dumps(rep)
 
 
+class RaggedSeams(unittest.TestCase):
+    """The gravel road's seam against the asphalt kerb (y = 3, x -2..2) is drawn ragged: gravel spills onto the
+    asphalt in lobes, the asphalt edge crumbles, the ends stay on the kerb."""
+
+    def ragged(self, R):
+        chains = [c for c in R.seams if (c["high"], c["low"]) == ("asphalt", "gravel")]
+        self.assertEqual(len(chains), 1)
+        return chains[0]
+
+    def test_the_seam_spills_onto_the_asphalt_and_keeps_its_ends(self):
+        R = ss.Regions([ASPHALT, GRAVEL], dominant="asphalt", ragged=0.3)
+        c = self.ragged(R)
+        ys = [p[1] for p in c["points"]]
+        self.assertGreater(len(c["points"]), 30)  # every 10 cm or closer, not the kerb's two vertices
+        self.assertGreaterEqual(min(ys), 3 - 0.3 - 0.1)  # no further than the reach (and the crumble)
+        self.assertLessEqual(max(ys), 3 + 0.1)  # a few cm into the gravel at most
+        self.assertLess(min(ys), 3 - 0.15)  # a real lobe somewhere
+        self.assertLess(sum(ys) / len(ys), 3 - 0.05)  # mostly onto the asphalt
+        self.assertEqual(sorted((round(c["points"][0][0], 6), round(c["points"][-1][0], 6))), [-2, 2])
+        for end in (c["points"][0], c["points"][-1]):
+            self.assertAlmostEqual(end[1], 3, places=6)
+        self.assertEqual([p[1] for p in c["straight"]], [3, 3])
+        self.assertFalse(ss._self_crossing(c["points"]))
+        self.assertEqual(R.report()["ragged"]["chains"], 1)
+
+    def test_region_follows_the_ragged_line(self):
+        R = ss.Regions([ASPHALT, GRAVEL], dominant="asphalt", ragged=0.3)
+        c = self.ragged(R)
+        x, y = min(c["points"], key=lambda p: p[1])  # the deepest lobe: gravel just above its tip on the asphalt
+        self.assertEqual(R.covered(x, y + 0.03), "asphalt")
+        self.assertEqual(R.region(x, y + 0.03), ("gravel", False))
+        self.assertEqual(R.region(x, y - 0.03), ("asphalt", False))
+        self.assertEqual(R.region(0, 1.0), ("asphalt", False))  # far from it: the pieces decide
+        self.assertEqual(R.region(0, 5.0), ("gravel", False))
+
+    def test_same_lines_every_run_and_fade_lines_off_the_kerb(self):
+        a = ss.Regions([ASPHALT, GRAVEL], dominant="asphalt", ragged=0.3)
+        b = ss.Regions([ASPHALT, GRAVEL], dominant="asphalt", ragged=0.3)
+        self.assertEqual(self.ragged(a)["points"], self.ragged(b)["points"])
+        straight = ss.Regions([ASPHALT, GRAVEL], dominant="asphalt")
+        self.assertEqual(a.fade_lines(0.5), straight.fade_lines(0.5))
+        self.assertNotIn("straight", self.ragged(straight))
+
+    def test_a_narrow_hard_road_holds_the_spill_back(self):
+        narrow = piece([rect(-20, 2.6, 20, 3)], "asphalt", "osm", 1)  # 0.4 m of asphalt below the gravel road
+        R = ss.Regions([narrow, piece([rect(-2, 2.9, 2, 20)], "gravel", "osm", 2)], dominant="gravel", ragged=0.3)
+        c = self.ragged(R)
+        self.assertGreaterEqual(min(p[1] for p in c["points"]), 2.6 + ss.RAGGED_MARGIN - 0.3 * 0.25 - 0.1)
+        self.assertGreater(R.report()["ragged"]["pulledBack"], 0)
+
+    def test_hard_pairs_and_loose_pairs_stay_straight(self):
+        R = ss.Regions([piece([rect(0, 0, 10, 4)], "asphalt", None, 1), piece([rect(9, 0, 20, 4)], "concrete", None, 2)],
+                       ragged=0.3)
+        self.assertTrue(all("straight" not in c for c in R.seams))
+        R = ss.Regions([piece([rect(0, 0, 10, 4)], "gravel", None, 1), piece([rect(9, 0, 20, 4)], "dirt", None, 2)],
+                       ragged=0.3)
+        self.assertTrue(all("straight" not in c for c in R.seams))
+
+
 class Helpers(unittest.TestCase):
     def test_rank_orders_hard_surfaces_first(self):
         order = sorted(["dirt", "gravel", "wood", "paving", "concrete", "asphalt", "grass", None], key=ss.rank)

@@ -2077,7 +2077,7 @@ def _path_fill_rows(rows: list) -> list:
     return [r for r in rows if r["type"] == "path" and _row_surface(r) not in PATH_FILL_SKIP_SURFACES]
 
 
-def _row_surface(row) -> str | None:
+def _row_raw_surface(row) -> str | None:
     raw = row["attributes_json"] if "attributes_json" in row.keys() else None
     if not raw:
         return None
@@ -2085,6 +2085,13 @@ def _row_surface(row) -> str | None:
         return json.loads(raw).get("surface")
     except (ValueError, AttributeError):
         return None
+
+
+def _row_surface(row) -> str | None:
+    """The row's surface as the export, Blender and Unity know it: a gravel track (gravel with a grass middle) is
+    gravel everywhere; only its wear entry (`_path_wear`) adds the grass."""
+    surface = _row_raw_surface(row)
+    return "gravel" if surface == GRAVEL_TRACK_SURFACE else surface
 
 
 def _grass_tracks_as_turf(rows: list) -> list:
@@ -2614,13 +2621,62 @@ PATH_WEAR_TWO_TRACKS_M = 1.8    # from this width on: two wheel tracks; below, o
 PATH_WEAR_EDGE_M = 0.12         # how far past a track's width the packed look fades out (a soft edge would close the middle string)
 
 
-def _path_wear(surface: str, width: float, feature_id: str) -> dict | None:
+GRAVEL_TRACK_SURFACE = "gravel-track"  # gravel with grass down the middle (grusväg med gräsmitt)
+GRASS_MIDDLE_CLEAR_M = 1.5    # the grass middle stops this far from any other road (wheels turn in and out there)
+GRASS_MIDDLE_TAPER_M = 1.5    # ... and narrows to nothing over this much road before that
+GRASS_MIDDLE_STEP_M = 0.25    # centreline sampling for where it is clear of the other roads
+GRASS_MIDDLE_TOL = 0.05       # flattening tolerance of the other roads' outlines for that test
+
+
+def _grass_middle_spans(line: list, others) -> list:
+    """Stations [a, b] of the centreline farther than GRASS_MIDDLE_CLEAR_M from every other road (`others`, a
+    shapely geometry or None): where a gravel track keeps its grass middle."""
+    from shapely.geometry import Point
+    length = sum(math.dist(a, b) for a, b in zip(line, line[1:]))
+    if length <= 0:
+        return []
+    if others is None or others.is_empty:
+        return [[0.0, round(length, 3)]]
+    n = max(1, math.ceil(length / GRASS_MIDDLE_STEP_M))
+    stations = [length * i / n for i in range(n + 1)]
+    clear = []
+    for st in stations:
+        at, x, y = 0.0, line[-1][0], line[-1][1]
+        for a, b in zip(line, line[1:]):
+            d = math.dist(a, b)
+            if at + d >= st and d > 0:
+                t = (st - at) / d
+                x, y = a[0] + (b[0] - a[0]) * t, a[1] + (b[1] - a[1]) * t
+                break
+            at += d
+        clear.append(others.distance(Point(x, y)) > GRASS_MIDDLE_CLEAR_M)
+    spans, start = [], None
+    for st, ok in zip(stations, clear):
+        if ok and start is None:
+            start = st
+        elif not ok and start is not None:
+            spans.append([round(start, 3), round(st, 3)])
+            start = None
+    if start is not None:
+        spans.append([round(start, 3), round(length, 3)])
+    return [s for s in spans if s[1] - s[0] > 2 * GRASS_MIDDLE_TAPER_M]
+
+
+def _path_wear(surface: str, width: float, feature_id: str, grass_middle: list | None = None) -> dict | None:
     """Where traffic has packed a gravel path's stones into the fines (blender/README.md "Shaping: path
-    transitions", wear): two wheel tracks on a road, one trodden band on a footpath. Metres from the centreline."""
-    if surface != "gravel" or width < PATH_WEAR_MIN_WIDTH_M:
+    transitions", wear): two wheel tracks on a road, one trodden band on a footpath. Metres from the centreline.
+    `grass_middle` (a gravel track's spans, `_grass_middle_spans`): two tracks whatever the width, grass between
+    them instead of the loose string."""
+    if surface != "gravel" or (width < PATH_WEAR_MIN_WIDTH_M and grass_middle is None):
         return None
     import zlib
     seed = zlib.crc32(feature_id.encode("utf-8")) & 0x7FFFFFFF
+    if grass_middle is not None:
+        track, spacing = round(min(0.6, width * 0.22), 2), round(min(1.6, width * 0.55), 2)
+        return {"tracks": 2, "trackWidthM": track, "trackSpacingM": spacing, "edgeM": PATH_WEAR_EDGE_M,
+                "strength": 1, "seed": seed,
+                "grassMiddle": {"halfWidthM": round(max(0.12, (spacing - track) / 2 * 0.7), 2), "edgeM": 0.1,
+                                "taperM": GRASS_MIDDLE_TAPER_M, "spans": grass_middle}}
     if width < PATH_WEAR_TWO_TRACKS_M:
         return {"tracks": 1, "trackWidthM": round(width * 0.45, 2), "trackSpacingM": 0, "edgeM": PATH_WEAR_EDGE_M,
                 "strength": 0.8, "seed": seed}
@@ -2633,6 +2689,7 @@ def _path_transition_entries(rows: list, feature_shapes: dict) -> list:
     """The sidecar's `transitions`: per gravel / dirt path feature with a centreline, its end and section
     transitions and, on gravel, its wear. A feature with neither has no entry."""
     entries = []
+    others = None  # the roads that are no gravel track, for where a gravel track's grass middle stops
     for row in rows:
         surface = _row_surface(row)
         if row["type"] != "path" or surface not in ("gravel", "dirt"):
@@ -2647,11 +2704,19 @@ def _path_transition_entries(rows: list, feature_shapes: dict) -> list:
             continue
         if not isinstance(transitions, list):
             transitions = []
-        wear = _path_wear(surface, centerline["widthM"], row["id"])
-        if not transitions and not wear:
-            continue
         line = _transition_centerline(centerline)
         length = sum(math.dist(a, b) for a, b in zip(line, line[1:]))
+        grass_middle = None
+        if _row_raw_surface(row) == GRAVEL_TRACK_SURFACE and len(line) >= 2:
+            if others is None:
+                from shapely import unary_union
+                shapes = [_row_shape(r, GRASS_MIDDLE_TOL) for r in rows
+                          if r["type"] in ROADS_TYPES and _row_raw_surface(r) != GRAVEL_TRACK_SURFACE]
+                others = unary_union([g for g in shapes if g is not None])
+            grass_middle = _grass_middle_spans(line, others)
+        wear = _path_wear(surface, centerline["widthM"], row["id"], grass_middle)
+        if not transitions and not wear:
+            continue
         valid = []
         occupied = []
         ids = set()

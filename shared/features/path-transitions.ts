@@ -1,4 +1,5 @@
 import { flattenCenterline, type CenterlinePoint, type FeatureCenterline } from './centerline';
+import { isLoosePathSurface } from './path-surface';
 
 export type PathTransitionPattern = 'soft-fade' | 'overgrown-gravel' | 'wheel-tracks';
 export interface PathTransition {
@@ -70,7 +71,7 @@ export function pathTransitionsError(value: unknown, centerline?: FeatureCenterl
     if (value === undefined) return null;
     if (!Array.isArray(value) || value.length > 32) return 'pathTransitions must be an array of at most 32 entries';
     if (!value.length) return null;
-    if (type !== 'path' || !centerline || !['gravel', 'dirt'].includes(String(surface))) return 'pathTransitions requires a gravel or dirt centerline path';
+    if (type !== 'path' || !centerline || !isLoosePathSurface(surface)) return 'pathTransitions requires a gravel or dirt centerline path';
     const length = centerlineStations(centerline.points).lengthM, ids = new Set<string>();
     const occupied: Array<[number, number]> = [];
     for (const t of value) {

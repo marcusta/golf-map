@@ -2,7 +2,7 @@ import { effect } from '@basics/core/client/core';
 import maplibregl from 'maplibre-gl';
 import type { FeatureCollection } from 'geojson';
 import type { CourseFeature } from '../../../shared/api/course-features.gen';
-import { pathSurfaceOf } from '../../../shared/features/path-surface';
+import { isLoosePathSurface, pathSurfaceOf } from '../../../shared/features/path-surface';
 import { centerlineStations, centerlinePointAtStation, projectCenterlineStation, pathTransitionDefaults, transitionRange, transitionFootprint, pathTransitionsError, type PathTransition } from '../../../shared/features/path-transitions';
 import { bufferCenterlinePolyline, type FeatureCenterline } from '../../../shared/features/centerline';
 import { sweref99tmToWgs84, lngLatToSweref99tm } from '../geo/transform';
@@ -141,7 +141,7 @@ export function mountPathTransitions(host: HTMLElement, features: FeaturesServic
         if (!current || current.type !== 'path') { host.hidden = true; return; }
         host.hidden = false;
         const heading = document.createElement('h4'); heading.className = 'section-title'; heading.textContent = 'Transitions'; host.append(heading);
-        if (count !== 1 || !current.geometry.centerline || (surface !== 'gravel' && surface !== 'dirt')) {
+        if (count !== 1 || !current.geometry.centerline || !isLoosePathSurface(surface)) {
             const hint = document.createElement('p'); hint.textContent = 'Select one gravel or dirt centerline path to edit its transitions.'; host.append(hint); return;
         }
         const line = current.geometry.centerline;

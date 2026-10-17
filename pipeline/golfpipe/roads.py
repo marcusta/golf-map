@@ -166,7 +166,7 @@ class RoadWay:
 # network (grass tracks apart, as rough); the surfaces go to the `-paths.json`
 # sidecar and pick the look and the collider material in Unity (Blender cuts a
 # mixed shape's mesh along the seams first).
-PATH_SURFACES = ("asphalt", "concrete", "paving", "gravel", "dirt", "grass", "wood")
+PATH_SURFACES = ("asphalt", "concrete", "paving", "gravel", "gravel-track", "dirt", "grass", "wood")
 
 # OSM `surface=*` -> a PATH_SURFACES value. Generic `paved` is asphalt (what a
 # paved Swedish road almost always is), generic `unpaved` gravel; anything
@@ -182,8 +182,17 @@ OSM_SURFACE: dict[str, str] = {
 }
 
 
+# A farm track of tracktype grade2/grade3 (mostly gravel, or gravel and soil mixed) is a gravel road with grass
+# down the middle between the wheel tracks (grusväg med gräsmitt) unless it says it is paved or plain soil.
+OSM_GRAVEL_TRACK_TYPES = ("grade2", "grade3")
+
+
 def osm_surface(tags: dict) -> str | None:
-    return OSM_SURFACE.get(str(tags.get("surface", "")).strip().lower())
+    surface = OSM_SURFACE.get(str(tags.get("surface", "")).strip().lower())
+    if (tags.get("highway") == "track" and str(tags.get("tracktype", "")).strip().lower() in OSM_GRAVEL_TRACK_TYPES
+            and surface in (None, "gravel")):
+        return "gravel-track"
+    return surface
 
 
 def parse_width_m(raw) -> float | None:

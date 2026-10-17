@@ -2849,7 +2849,8 @@ def flatten_footprint(ctx, op):
 # turns them into one region per surface and the seams between them (the higher road's own kerb lines), and per
 # mixed shape (a unit) this:
 #
-# 1. cuts every road mesh of the shape along the seam polylines (insert_polyline: crossed edges split at the exact
+# 1. cuts every road mesh of the shape along the seam polylines (a gravel / dirt road's seam against asphalt, concrete
+#    or paving ragged: Regions `raggedM`, default shape_surfaces.DEFAULT_RAGGED; 0 = the straight kerb) (insert_polyline: crossed edges split at the exact
 #    crossing, faces split between consecutive crossings with the polyline's own bends as new vertices, z from the
 #    face plane; the seam is an exact edge chain both sides share), plus a fade line `fadeM` into the lower side
 #    (Regions.fade_lines) so the paint fade has vertices to live on (OPCD's ~1 m triangles have none);
@@ -3708,7 +3709,8 @@ def split_surfaces(ctx, op, unit):
     width = float(op.get("fadeM", SPLIT_FADE_M))
     min_area = float(op.get("minPartM2", SPLIT_MIN_PART_M2))
     regions = ss.Regions(entry.get("pieces") or [], to_xy=ss.svg_to_blend(ctx.frame), tie=float(op.get("junctionTie", ss.DEFAULT_TIE)),
-                         dominant=entry.get("surface"), slit=float(op.get("slitM", ss.DEFAULT_SLIT)))
+                         dominant=entry.get("surface"), slit=float(op.get("slitM", ss.DEFAULT_SLIT)),
+                         ragged=float(op.get("raggedM", ss.DEFAULT_RAGGED)))
     surfaces = regions.surfaces()
     seams = [c["points"] for c in regions.seams if c["length"] >= 1e-3]
     fades = [f["points"] for f in regions.fade_lines(width)] if width > 0 else []

@@ -65,6 +65,36 @@ def test_path_transition_sidecar_and_shaping_are_meter_based_and_deterministic(t
     assert road == wear("gravel", 4)
     conn.close()
 
+def test_a_gravel_track_exports_as_gravel_with_a_grass_middle_that_stops_short_of_other_roads(tmp_path):
+    centerline = {"points": [{"x": X0, "y": Y0}, {"x": X0 + 40, "y": Y0}], "widthM": 3}
+    track = _feature("track", "path", [_rect(0, -1.5, 40, 1.5)], 10, attrs={"surface": "gravel-track"},
+                     centerline=centerline)
+    asphalt = _feature("main", "path", [_rect(38, -20, 46, 20)], 11, attrs={"surface": "asphalt"})
+    db = tmp_path / "track.sqlite"
+    _make_db(db, [track, asphalt], [])
+    conn = sqlite3.connect(db)
+    conn.row_factory = sqlite3.Row
+    rows = list(conn.execute("SELECT * FROM course_features ORDER BY id"))
+    by_id = {r["id"]: r for r in rows}
+    assert gspro._row_surface(by_id["track"]) == "gravel" and gspro._row_raw_surface(by_id["track"]) == "gravel-track"
+    [entry] = gspro._path_transition_entries(rows, {"track": ["roads_a"]})
+    assert entry["surface"] == "gravel" and entry["transitions"] == []
+    wear = entry["wear"]
+    assert wear["tracks"] == 2 and wear["trackSpacingM"] + wear["trackWidthM"] < 3
+    middle = wear["grassMiddle"]
+    [[start, end]] = middle["spans"]
+    assert start == 0 and end == pytest.approx(38 - gspro.GRASS_MIDDLE_CLEAR_M, abs=gspro.GRASS_MIDDLE_STEP_M)
+    assert 0 < middle["halfWidthM"] < (wear["trackSpacingM"] - wear["trackWidthM"]) / 2
+    # Narrower than plain gravel ever wears, a track still has its two tracks and its grass.
+    geometry = json.loads(by_id["track"]["geometry_json"])
+    geometry["centerline"]["widthM"] = 1.3
+    conn.execute("UPDATE course_features SET geometry_json=? WHERE id='track'", (json.dumps(geometry),))
+    rows = list(conn.execute("SELECT * FROM course_features ORDER BY id"))
+    [narrow] = gspro._path_transition_entries(rows, {"track": ["roads_a"]})
+    assert narrow["wear"]["tracks"] == 2 and narrow["wear"]["grassMiddle"]["spans"]
+    conn.close()
+
+
 COURSE = "11111111-1111-1111-1111-111111111111"
 SITE = "site-1"
 X0, Y0 = 530000.0, 6487000.0  # EPSG:3006 metres

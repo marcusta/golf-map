@@ -565,6 +565,16 @@ on OPCD's meshes: `golfmap.split_surfaces` (`tools/shape_apply.py`; the geometry
   face each other across uncovered ground narrower than `slitM` (0.8 m; the merge closes gaps up to 0.6 m), the
   slit's medial line, which is what the nearest-region fill splits it on. Chains have the lower surface on their
   left, Douglas-Peucker 5 mm.
+- **Ragged seams** (`raggedM`, default 0.3 m; 0 = the straight kerb): a gravel or dirt road meets asphalt,
+  concrete or paving in a hard but uneven edge, not a fade, as on a Swedish farm road's mouth: the seam chain is
+  resampled every 10 cm (above the 5 cm sliver collapse) and moved off the kerb by `shape_surfaces.ragged_offset`:
+  gravel dragged out onto the hard road in lobes (0.15..1 x `raggedM`, broad ones ~1.3 m apart with ~0.45 m ones
+  on them) and the asphalt edge crumbled a few cm either way, tapered to nothing over 0.5 m at an open chain's
+  ends so it still meets the outline where the kerb does. A point whose lobe would leave the hard road or come
+  within 0.25 m of its far side is pulled back (and its five neighbours on each side with it); a chain that would
+  cross itself is retried at half the reach, twice, then left straight. Classification answers by the ragged
+  line within reach of it, the fade lines stay offsets of the kerb. Report `regions.ragged` = `{chains, straight,
+  halved, pulledBack, reachM}`. Fixed per chain (the seed is the chain's surfaces and start point).
 - **Cut** (each road mesh of the shape): every chain end inside a face becomes a vertex first (the face poked, its
   centre moved there: chains meeting at a node inside a face would otherwise both stop at its edges); then each seam
   polyline goes in as an exact edge chain (`insert_polyline`: crossed edges split at the crossing, z linear,
@@ -858,6 +868,12 @@ vertices copy the path's actual bytes;
 the fringe otherwise retains its transverse grass ramp. No faces transfer between
 objects and no original vertex moves. Existing UVs, corner colours, material indices,
 smooth flags and source corner normals interpolate onto new triangles.
+
+**Grass middle.** A gravel track's `wear` (export `surface: gravel-track`) carries `grassMiddle` = `{halfWidthM,
+edgeM, taperM, spans: [[a, b], ...]}`: `shape_transition.grass_middle` paints that share red (grass) in a ragged
+strip down the middle between the tracks, wandering with them, only inside the spans and narrowing to nothing over
+`taperM` at each span end, with a bald patch here and there; the rest of the path is G path less the wear. The red
+on the road mesh is what Unity grows Stix grass on (unity/README.md "Worn gravel").
 
 **Wear.** An entry may also carry `wear` (`tracks` 1 or 2, `trackWidthM`, `trackSpacingM`, `edgeM` = how far past
 the track's width it fades out, `strength`, `seed`; `pipeline/gspro.py` `_path_wear` writes it for every gravel

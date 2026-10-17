@@ -394,3 +394,10 @@ def test_osm_surface_tags_map_to_the_app_path_surfaces():
     assert roads.osm_surface({"surface": "metal"}) is None
     assert roads.osm_surface({}) is None
     assert set(roads.OSM_SURFACE.values()) <= set(roads.PATH_SURFACES)
+    # A farm track of grade2/grade3 is gravel with a grass middle, unless it says it is something else.
+    assert roads.osm_surface({"highway": "track", "tracktype": "grade3"}) == "gravel-track"
+    assert roads.osm_surface({"highway": "track", "tracktype": "grade2", "surface": "gravel"}) == "gravel-track"
+    assert roads.osm_surface({"highway": "track", "tracktype": "grade2", "surface": "asphalt"}) == "asphalt"
+    assert roads.osm_surface({"highway": "track", "tracktype": "grade1"}) is None
+    assert roads.osm_surface({"highway": "service", "tracktype": "grade3"}) is None
+    assert "gravel-track" in roads.PATH_SURFACES
