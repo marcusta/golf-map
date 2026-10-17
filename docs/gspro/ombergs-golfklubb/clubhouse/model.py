@@ -170,7 +170,7 @@ def entry_stone_texture(bank):
     return rgb,h,1.8
 
 
-def entry_details(g, length, width):
+def entry_details(g, length, width, apron):
     front=length/2+.015
     # Four bays: narrower fixed sidelights and the two central sliding leaves.
     edges=[-1.95,-1.10,0,1.10,1.95]
@@ -186,7 +186,8 @@ def entry_details(g, length, width):
     for y in [-.11,.11]:
         g.box((front+.16,y,1.22),(.06,.035,.26),"black_steel")
     sign(g,"Ombergs Golf Resort",(front+.10,0,3.20),3.24,.42,rot=90,size=.35)
-    entrance_logo(g,front+.11)
+    # Lidar puts the entry ridge at 4.68 m, so the emblem is scaled to sit under its fascia.
+    entrance_logo(g,front+.11,scale=.85,height=.5)
     # Paired wall lanterns, with glazed bodies and pyramidal caps.
     for y in [-2.38,2.38]:
         g.beam((front,y,2.25),(front+.36,y,2.25),.08,.08,"black_steel")
@@ -199,7 +200,8 @@ def entry_details(g, length, width):
         for a,b in zip(corners,corners[1:]+corners[:1]):
             g.poly([a,b,(front+.395,y,2.85)],"black_steel")
         g.sphere((front+.395,y,2.89),.05,"black_steel",seg=8,rings=4)
-    g.box((front+1.55,0,.02),(3.1,7.0,.13),"brick_paving")
+    ax,ay,sx,sy,zt=apron
+    g.box((ax,ay,zt-.065),(sx,sy,.13),"brick_paving")
 
 
 
@@ -212,65 +214,248 @@ def render(sc, path, loc, target, ortho):
 
 
 
-def clip(poly, axis, value, keep_low):
+AXIS=math.radians(1.5)  # bearing of the long OSM walls (survey buildings[].axisBearingFromNorthDeg)
+
+
+def to_st(x, y):
+    """Asset-local x,y to the building frame: s across the ridges, t along them."""
+    return x*math.cos(AXIS)-y*math.sin(AXIS), x*math.sin(AXIS)+y*math.cos(AXIS)
+
+
+def from_st(s, t):
+    return s*math.cos(AXIS)+t*math.sin(AXIS), -s*math.sin(AXIS)+t*math.cos(AXIS)
+
+
+def at(s, t, z):
+    x,y=from_st(s,t)
+    return (x,y,z)
+
+
+class Gable:
+    """One true symmetric gable from two lidar planes, in the building frame.
+
+    The fitted planes' slopeN terms are only the 1.5 degree axis skew: along the
+    axis their ridges are level to a few cm, so the ridge is a straight line along
+    t at s=sr, height zr, and both slopes share one pitch m (dz/ds)."""
+
+    def __init__(self, pz, west, east, t0, t1):
+        slope=lambda k: pz(k,*from_st(1,0))-pz(k,*from_st(0,0))
+        sa,sb=slope(west),slope(east)
+        self.m=(sa-sb)/2
+        ridge=[]
+        for i in range(9):
+            t=t0+(t1-t0)*i/8
+            za,zb=pz(west,*from_st(0,t)),pz(east,*from_st(0,t))
+            s=(zb-za)/(sa-sb)
+            ridge.append((s,za+sa*s))
+        self.sr=sum(r[0] for r in ridge)/len(ridge)
+        self.zr=sum(r[1] for r in ridge)/len(ridge)
+
+    def z(self, s):
+        return self.zr-self.m*abs(s-self.sr)
+
+
+def tris(poly):
+    """CCW triangles of a planar (s,t) polygon, concave ones included."""
+    from mathutils.geometry import tessellate_polygon
     out=[]
-    for a,b in zip(poly,poly[1:]+poly[:1]):
-        ia=(a[axis]<=value) if keep_low else (a[axis]>=value)
-        ib=(b[axis]<=value) if keep_low else (b[axis]>=value)
-        if ia:
-            out.append(a)
-        if ia!=ib:
-            t=(value-a[axis])/(b[axis]-a[axis])
-            out.append(tuple(a[k]+t*(b[k]-a[k]) for k in range(2)))
+    for tri in tessellate_polygon([[Vector((s,t,0)) for s,t in poly]]):
+        a,b,c=[poly[i] for i in tri]
+        if (b[0]-a[0])*(c[1]-a[1])-(b[1]-a[1])*(c[0]-a[0])<0:
+            b,c=c,b
+        out.append((a,b,c))
     return out
 
 
-def shell(g, poly, zfunc, wall="omberg_red", floor=0):
-    """Wall polygon whose top follows the actual roof height at each vertex."""
+def roof_slab(g, poly, zf, fascia, thick=.16, mat="omberg_terracotta", xy=None, under="omberg_ivory_trim", edge="omberg_ivory_trim"):
+    """One roof plane over a CCW plan polygon (default frame: building s,t): top,
+    soffit `thick` below it, and a fascia/bargeboard on the edges listed in
+    `fascia`. Ridge and valley edges get none: the two slabs share them, so the
+    surface and the underside close without a gap. zf(point) is the plane."""
+    xy=xy or (lambda p: from_st(*p))
+    P=lambda p,dz=0: (*xy(p),zf(p)+dz)
+    for a,b,c in tris(poly):
+        g.poly([P(p) for p in (a,b,c)],mat)
+        g.poly([P(p,-thick) for p in (a,c,b)],under)
+    for i,(a,b) in enumerate(zip(poly,poly[1:]+poly[:1])):
+        if i in fascia:
+            g.poly([P(a,-thick),P(b,-thick),P(b),P(a)],edge)
+
+
+def outward(g, pts, centre, mat):
+    """Convex-solid face wound CCW seen from outside, whichever way it was listed."""
+    pts=[Vector(p) for p in pts]
+    n=sum(((pts[i]-pts[0]).cross(pts[i+1]-pts[0]) for i in range(1,len(pts)-1)),Vector())
+    mid=sum(pts,Vector())/len(pts)
+    g.poly([tuple(p) for p in (pts if n.dot(mid-centre)>=0 else pts[::-1])],mat)
+
+
+def ridge_cap(g, gable, t0, t1, mat="omberg_terracotta"):
+    """Trapezoid cap on the ridge, ending flush with the gable fascias."""
+    sr,zr,m=gable.sr,gable.zr,gable.m
+    prof=[(sr-.24,zr-m*.24-.02),(sr+.24,zr-m*.24-.02),(sr+.08,zr+.10),(sr-.08,zr+.10)]
+    c=Vector(at(sr,(t0+t1)/2,zr-.05))
+    for i in range(4):
+        a,b=prof[i],prof[(i+1)%4]
+        if i==0:
+            continue  # sits on the roof
+        outward(g,[at(a[0],t0,a[1]),at(a[0],t1,a[1]),at(b[0],t1,b[1]),at(b[0],t0,b[1])],c,mat)
+    for t in (t0,t1):
+        outward(g,[at(s,t,z) for s,z in prof],c,mat)
+
+
+def gutter(g, a, b, out, mat="omberg_ivory_trim", r=.07):
+    """Half-round gutter hung on the fascia of an eave from a=(x,y,z) to b=(x,y,z)
+    (z of the roof's top edge); out is the horizontal unit vector away from the wall.
+    Returns the (x,y,z) of the bottom of its start, for the downpipe."""
+    n=6
+    prof=[(.045+r*math.cos(math.pi+math.pi*k/n),-.10+r*math.sin(math.pi+math.pi*k/n)) for k in range(n+1)]
+    pos=lambda p,o,dz: (p[0]+out[0]*o,p[1]+out[1]*o,p[2]+dz)
+    for k in range(n):
+        (oa,za),(ob,zb)=prof[k],prof[k+1]
+        q=[pos(a,oa,za),pos(b,oa,za),pos(b,ob,zb),pos(a,ob,zb)]
+        g.poly(q,mat)
+        g.poly(q[::-1],mat)
+    for p in (a,b):
+        cap=[pos(p,o,z) for o,z in prof]
+        g.poly(cap,mat)
+        g.poly(cap[::-1],mat)
+    return pos(a,.045,-.10-r)
+
+
+def downpipe(g, top, wall, ground, mat="omberg_ivory_trim"):
+    """Outlet below the gutter at `top`, a jog to the wall point `wall` (x,y), then
+    straight down to the ground height."""
+    jog=math.dist(top[:2],wall)
+    a=top
+    b=(top[0],top[1],top[2]-.3)
+    c=(wall[0],wall[1],top[2]-.3-jog)
+    d=(wall[0],wall[1],ground)
+    for p,q in ((a,b),(b,c),(c,d)):
+        g.pipe(p,q,.04,mat,seg=6)
+
+
+def clip_plane(poly, f):
+    """Part of a convex polygon where the linear function f(point) >= 0."""
+    out=[]
+    for a,b in zip(poly,poly[1:]+poly[:1]):
+        fa,fb=f(a),f(b)
+        if fa>=0:
+            out.append(a)
+        if (fa>=0)!=(fb>=0):
+            t=fa/(fa-fb)
+            out.append((a[0]+(b[0]-a[0])*t,a[1]+(b[1]-a[1])*t))
+    return out
+
+
+def foyer(g, low, s_wall, over):
+    """The entrance foyer: a stone gable volume in front of the wing's east wall,
+    its ridge running back over the wing's eave until the roof dies into the
+    wing's slope (two valleys with step flashing).
+
+    Placement is from the lidar and the 2025 ortho, in a frame at the OSM front-edge
+    centre F0 (q out along bearing 59 deg, v across). Class-1 points fit a ridge at
+    v 0.5, 4.68 m, pitch 20.8 deg (9 cm RMS), eaves at v -2.7 and 3.7, roof front
+    edge q 1.15; the ortho shows the same white roof, 5.4 m wide and running 9 m
+    back to the wing's slope. Walls are the roof less its 0.46 m eave and 0.32 m
+    gable overhang, as on the survey photographs.
+    Returns the t range the foyer covers along the wing's east eave line."""
+    F0=(-1.42,15.43)
+    a=math.radians(31)
+    d,pv=(math.cos(a),math.sin(a)),(-math.sin(a),math.cos(a))
+    fp=lambda q,v: (F0[0]+q*d[0]+v*pv[0],F0[1]+q*d[1]+v*pv[1])
+    VC,HW,ZR,M=.5,2.75,4.68,.38
+    OV,GOV=.46,.32
+    QW=.83                    # stone front face
+    QR=QW+GOV                 # roof front edge
+    vo=HW+OV
+    ze=lambda v: ZR-M*abs(v-VC)
+    zw=lambda x,y: low.zr-low.m*(to_st(x,y)[0]-low.sr)       # the wing's east slope under the foyer
+    zm=lambda q,v: zw(*fp(q,v))
+    def q_where(v,fn):     # q where fn(q) == 0 along the line at v (fn is linear in q)
+        f0,f1=fn(0),fn(1)
+        return -f0/(f1-f0)
+    zg=.05                    # the courtyard paving is 3 cm above the DEM here; the apron sits on it
+    g.push(Matrix.Translation((*fp(QW-1.925,VC),0)) @ Matrix.Rotation(a,4,"Z"))
+    # apron: q 0..3.1, v +-3.5 (the area courtyard.py leaves out of the paving)
+    entry_details(g,3.85,5.5,(1.55-(QW-1.925),-VC,3.1,7.0,zg))
+    g.pop()
+    centre=Vector((*fp(QW-2,VC),2))
+    z0=-.3
+    for v in (VC+HW,VC-HW):
+        qb=q_where(v,lambda q: to_st(*fp(q,v))[0]-s_wall)          # side line meets the wing wall
+        ez=ze(v)
+        outward(g,[(*fp(QW,v),z0),(*fp(qb,v),z0),(*fp(qb,v),ez),(*fp(QW,v),ez)],centre,"omberg_entry_stone")
+        zb=zm(qb,v)
+        if zb<ez:      # cheek of stone on the wing's slope, up to the soffit
+            q1=q_where(v,lambda q: zm(qb-q,v)-ez)
+            outward(g,[(*fp(qb,v),zb),(*fp(qb,v),ez),(*fp(qb-q1,v),ez)],centre,"omberg_entry_stone")
+    outward(g,[(*fp(QW,VC-HW),z0),(*fp(QW,VC+HW),z0),(*fp(QW,VC+HW),ze(VC+HW)),(*fp(QW,VC),ZR),(*fp(QW,VC-HW),ze(VC-HW))],centre,"omberg_entry_stone")
+    # Roof: each slope cut where it meets the wing's slope (a straight line in
+    # plan, both being planes), fascia on the front rake and the eaves only.
+    qa,qz=QR,-14
+    up=(-math.cos(AXIS),math.sin(AXIS))          # toward the wing's ridge
+    for v_out in (VC+vo,VC-vo):
+        poly=[(qa,VC),(qa,v_out),(qz,v_out),(qz,VC)]
+        if v_out<VC:
+            poly=poly[::-1]
+        poly=clip_plane(poly,lambda p: ze(p[1])-zm(*p))
+        fascia={i for i,(p,r) in enumerate(zip(poly,poly[1:]+poly[:1]))
+                if (abs(p[0]-qa)<1e-6 and abs(r[0]-qa)<1e-6) or (abs(p[1]-v_out)<1e-6 and abs(r[1]-v_out)<1e-6)}
+        roof_slab(g,poly,lambda p: ze(p[1]),fascia,mat="omberg_silver_roof",xy=lambda p: fp(*p))
+        for p,r in zip(poly,poly[1:]+poly[:1]):
+            if abs(ze(p[1])-zm(*p))<1e-6 and abs(ze(r[1])-zm(*r))<1e-6:
+                # zinc sheet on the wing's slope, laid over the valley line
+                A,B=fp(*p),fp(*r)
+                P=[(*A,zw(*A)+.035),(*B,zw(*B)+.035)]
+                for X in (B,A):
+                    X2=(X[0]+up[0]*.3,X[1]+up[1]*.3)
+                    P.append((*X2,zw(*X2)+.035))
+                outward(g,P,Vector((*A,zw(*A)-1)),"galvanised")
+    # Gutters on the eaves, a downpipe on each front corner, ridge cap
+    for sgn in (1,-1):
+        v_e=VC+sgn*vo
+        qc=-q_where(v_e,lambda q: ze(v_e)-zm(-q,v_e))
+        top=gutter(g,(*fp(QR-.05,v_e),ze(v_e)),(*fp(qc+.05,v_e),ze(v_e)),(sgn*pv[0],sgn*pv[1]))
+        downpipe(g,top,fp(QW+.12,VC+sgn*(HW+.07)),zg)
+    qc=-q_where(VC,lambda q: ZR-zm(-q,VC))
+    g.beam((*fp(QR,VC),ZR+.03),(*fp(qc,VC),ZR+.03),.2,.1,"omberg_silver_roof")
+    # where the foyer's roof crosses the wing's east eave line
+    ts=[]
+    for v in (VC-vo,VC+vo):
+        q=q_where(v,lambda q: to_st(*fp(q,v))[0]-(s_wall+over))
+        ts.append(to_st(*fp(q,v))[1])
+    return min(ts),max(ts)
+
+
+def shell(g, poly, top, breaks=(), wall="omberg_red", floor=0):
+    """Wall polygon whose top follows the roof surface. `top(p,q)` is the roof
+    height at wall point p, picking the roof by probe point q (nudged inside the
+    building and along the edge, so a corner takes the roof of its own wall).
+    Breaks are the s of every ridge and valley: tops are exact at the creases,
+    and a straight wall needs no other vertices."""
     poly=ccw(poly)
     for a,b in zip(poly,poly[1:]+poly[:1]):
-        # Add enough wall-top vertices to follow a ridge between roof corners.
-        n=max(1,int(math.dist(a,b)/.4))
-        top=[(a[0]+(b[0]-a[0])*t/n,a[1]+(b[1]-a[1])*t/n) for t in range(n+1)]
-        # Separate quads remain valid across a roof ownership/height change.
-        # One long, concave wall ngon could triangulate across a courtyard void.
-        for p,q in zip(top[:-1],top[1:]):
-            zp,zq=max(floor+.23,zfunc(*p)-.1),max(floor+.23,zfunc(*q)-.1)
-            g.poly([(p[0],p[1],floor+.22),(q[0],q[1],floor+.22),
-                    (q[0],q[1],zq),(p[0],p[1],zp)],wall)
+        length=math.dist(a,b)
+        ux,uy=(b[0]-a[0])/length,(b[1]-a[1])/length
+        sa,sb=to_st(*a)[0],to_st(*b)[0]
+        ts={0.0,1.0}
+        for v in breaks:
+            if abs(sb-sa)>1e-6 and 0<(v-sa)/(sb-sa)<1:
+                ts.add((v-sa)/(sb-sa))
+        ts=sorted(ts)
+        for t0,t1 in zip(ts[:-1],ts[1:]):
+            p=(a[0]+(b[0]-a[0])*t0,a[1]+(b[1]-a[1])*t0)
+            q=(a[0]+(b[0]-a[0])*t1,a[1]+(b[1]-a[1])*t1)
+            k=min(.2,(t1-t0)*length*.45)
+            inx,iny=-uy*.2,ux*.2
+            zp=max(floor+.23,top(p,(p[0]+inx+ux*k,p[1]+iny+uy*k))-.1)
+            zq=max(floor+.23,top(q,(q[0]+inx-ux*k,q[1]+iny-uy*k))-.1)
+            g.poly([(p[0],p[1],floor+.22),(q[0],q[1],floor+.22),(q[0],q[1],zq),(p[0],p[1],zp)],wall)
         g.poly([(a[0],a[1],-1),(b[0],b[1],-1),(b[0],b[1],floor+.23),(a[0],a[1],floor+.23)],"concrete")
 
 
-def fitted_roof(g, poly, zfunc, ridge_e, mat="omberg_terracotta"):
-    """Two fitted gable planes clipped against the surveyed concave roof outline."""
-    poly=ccw(poly)
-    for low in [True,False]:
-        q=clip(poly,0,ridge_e,low)
-        if len(q)<3:
-            continue
-        # Explicit identical triangulation keeps the underside below the top
-        # even where the measured ridge drifts slightly along a long roof.
-        # Blender may choose different diagonals for two reversed warped ngons.
-        from mathutils.geometry import tessellate_polygon
-        top=[Vector((x,y,zfunc(x,y))) for x,y in q]
-        for tri in tessellate_polygon([top]):
-            pts=[top[v] if isinstance(v,int) else v for v in tri]
-            g.poly([tuple(v) for v in pts],mat)
-            g.poly([(v.x,v.y,v.z-.14) for v in reversed(pts)],"omberg_ivory_trim")
-    for a,b in zip(poly,poly[1:]+poly[:1]):
-        # Roof boundary pieces need an explicit ridge split on cross-gables.
-        pts=[a]
-        if (a[0]-ridge_e)*(b[0]-ridge_e)<0:
-            t=(ridge_e-a[0])/(b[0]-a[0])
-            pts.append((ridge_e,a[1]+(b[1]-a[1])*t))
-        pts.append(b)
-        for p,q in zip(pts[:-1],pts[1:]):
-            g.poly([(p[0],p[1],zfunc(*p)-.14),(q[0],q[1],zfunc(*q)-.14),
-                    (q[0],q[1],zfunc(*q)),(p[0],p[1],zfunc(*p))],"omberg_ivory_trim")
-    # Raised metal or tile ridge cap follows the long axis; keep inside outline.
-    ys=[p[1] for p in poly]
-    g.beam((ridge_e,min(ys)+.18,zfunc(ridge_e,min(ys)+.18)+.04),
-           (ridge_e,max(ys)-.18,zfunc(ridge_e,max(ys)-.18)+.04),.18,.10,mat)
+ROOF_REPORT={}
 
 
 def main():
@@ -355,6 +540,7 @@ def main():
         survey="clubhouse/survey.json",references="clubhouse/references.md",
         authoredBlend="omberg-clubhouse-authored.blend",texturesPacked=True,flatArchitecturalNormals=True,
         courtyardNormals="Smooth faces and shared vertex normals; all inherited sharp-edge flags cleared.",
+        roofModel=ROOF_REPORT,
         assets=len(manifest["assets"]),instances=len(instances),materials=len(table),
         triangles=sum(v["tris"] for v in manifest["assets"].values()),
         perAsset=manifest["assets"],
@@ -421,8 +607,9 @@ def build_architecture():
     def new():
         return kit.Geo()
 
-    # Main clubhouse: the two unequal red roofs are from four independently
-    # fitted laser planes. A generic symmetric gable loses its recognisable shape.
+    # Main clubhouse: two gable roofs side by side, regularised from the four
+    # fitted laser planes. All roof geometry lives in the building frame (s across
+    # the ridges, t along them, 1.5 degrees off north like the long OSM walls).
     origin=(477808.07,6457659.24)
     ground=109.09
     g=new()
@@ -430,42 +617,116 @@ def build_architecture():
     def pz(key,x,y):
         p=planes[key]
         return p["zAtOrigin"]+p["slopeE"]*(x+origin[0]-p["originEN"][0])+p["slopeN"]*(y+origin[1]-p["originEN"][1])-ground
-    def lowz(x,y):
-        return min(pz("west-wing-west-slope",x,y),pz("west-wing-east-slope",x,y))
-    def highz(x,y):
-        return min(pz("tall-roof-west-slope",x,y),pz("tall-roof-east-slope",x,y))
-    def poly(section):
-        return [(e-origin[0],n-origin[1]) for e,n in sections[section]["roofEdge3006"]]
     wallpoints=byid["687779192"]["footprint3006"][:-1]
-    # The foyer projection is authored below with its own stone shell. Leaving
-    # its original OSM front edge here creates an overlapping red facade.
+    # OSM vertices 1 and 2 are the foyer's front corners; foyer() builds the foyer
+    # with its own stone walls, and the wing's red east wall runs straight behind it.
     wallpoints=[p for i,p in enumerate(wallpoints) if i not in [1,2]]
     wallpoly=[(e-origin[0],n-origin[1]) for e,n in wallpoints]
-    def wall_top(x,y):
-        east=x+origin[0]
-        north=y+origin[1]
-        tall=(north<=6457664.1 and east>=477801.2) or (north<=6457670.2 and east>=477817.1)
-        return max(lowz(x,y),highz(x,y)) if tall else lowz(x,y)
-    shell(g,wallpoly,wall_top)
-    lowpoly=poly("clubhouse-west-low")
-    # The two fitted roofs meet at E477801.3 along the southern body.
-    # Keep the low eastern eave north of the high roof's courtyard wall only.
-    lowpoly=ccw([(477789.04-origin[0],6457681.65-origin[1]),
-                 (477803.28-origin[0],6457681.33-origin[1]),
-                 (477803.28-origin[0],6457663.0-origin[1]),
-                 (477801.3-origin[0],6457663.0-origin[1]),
-                 (477801.3-origin[0],6457633.49-origin[1]),
-                 (477789.04-origin[0],6457634.29-origin[1])])
-    fitted_roof(g,lowpoly,lowz,477796.3-origin[0])
-    highpoly=poly("clubhouse-east-tall")
-    # Ortho roof lean had placed the northern edge south of its ground wall.
-    # Cover the surveyed courtyard wall plus a modest eave overhang.
-    highpoly=[(x,max(y,6457664.1-origin[1])) if i in [0,1] else (x,y) for i,(x,y) in enumerate(highpoly)]
-    fitted_roof(g,highpoly,highz,477817.5-origin[0])
+    # Wall lines in the building frame (mean of each OSM edge's two ends).
+    ws=[to_st(*p) for p in wallpoly]
+    line=lambda i,j,k: (ws[i][k]+ws[j][k])/2
+    T_COURT,S_NOTCH,T_NOTCH=line(2,3,1),line(3,4,0),line(4,5,1)   # courtyard wall, notch wall, notch end
+    S_EAST,T_SOUTH,S_TALLW=line(5,6,0),line(8,9,1),line(9,10,0)    # east wall, south wall, tall west wall
+    S_WINGE=(ws[1][0]+ws[2][0])/2                                  # east wall of the low wing, north of the courtyard
+    # The wing meets the white connector, whose south wall is the plane N 6457679.16
+    # (main_building). The lidar roof of the wing stops there too. The wing's walls
+    # and roof end on that plane (1 cm inside it), so nothing shows between them
+    # and nothing pokes through. The end edges follow N, not the roof axis.
+    Y_END=6457679.17-origin[1]
+    t_end=lambda s: (Y_END+s*math.sin(AXIS))/math.cos(AXIS)
+    # One square outline for the tall block: the OSM south wall steps 1.6 m at
+    # the east end, which made two gable planes under one roof. Straighten it.
+    new_wall=list(wallpoly)
+    new_wall[6]=from_st(S_EAST,T_SOUTH)
+    for i in (12,13):      # north corners of the wing
+        new_wall[i]=from_st(ws[i][0],t_end(ws[i][0]))
+    del new_wall[7]
+    wallpoly=new_wall
+    low=Gable(pz,"west-wing-west-slope","west-wing-east-slope",-24,19)
+    tall=Gable(pz,"tall-roof-west-slope","tall-roof-east-slope",-23,T_COURT)
+    # Valley: where the low east slope meets the tall west slope. The lidar
+    # section shows both slopes ending 0.3 m apart at z 113.1-113.4, i.e. a V
+    # (planes cross at z 113.2) with the low roof running into the tall one.
+    SV=(low.zr+low.m*low.sr-tall.zr+tall.m*tall.sr)/(low.m+tall.m)
+    ZV=low.z(SV)
+    OVER=.5          # one overhang on every eave and gable of the tall block, and on the wing's courtyard eave
+    T_S=T_SOUTH-OVER # south ends: the lidar roof edge is -24.2 (low) / -25.2 (tall)
+    S_LW=sum(to_st(e-origin[0],n-origin[1])[0] for e,n in [sections["clubhouse-west-low"]["roofEdge3006"][i] for i in (0,3)])/2
+    S_LE=S_WINGE+OVER                # low east eave, north of the tall roof
+    S_TE=S_EAST+OVER                 # tall east eave
+    S_TN=S_NOTCH-OVER                # west edge of the tall roof's northern block
+    T_TC=T_COURT+OVER                # tall courtyard gable end
+    T_TN=T_NOTCH+OVER                # tall north end (notch block)
+    Z=lambda s: low.z(s)
+    ZT=lambda s: tall.z(s)
+    def wall_top(p,q):
+        s,_=to_st(*p)
+        sq,tq=to_st(*q)
+        inside_tall=sq>=SV and (tq<=T_COURT+.02 or (sq>=S_NOTCH and tq<=T_NOTCH+.1))
+        return (ZT if inside_tall else Z)(s)
+    ROOF_REPORT.update(axisDeg=math.degrees(AXIS),overhang=OVER,
+        low=dict(ridgeS=low.sr,ridgeZabs=low.zr+ground,pitchDeg=math.degrees(math.atan(low.m)),westEaveS=S_LW,eastEaveS=S_LE),
+        tall=dict(ridgeS=tall.sr,ridgeZabs=tall.zr+ground,pitchDeg=math.degrees(math.atan(tall.m)),eastEaveS=S_TE),
+        valley=dict(s=SV,zAbs=ZV+ground),southEndT=T_S,wallLines=dict(east=S_EAST,south=T_SOUTH,courtyard=T_COURT,notch=S_NOTCH,notchEnd=T_NOTCH,wingEast=S_WINGE))
+    shell(g,wallpoly,wall_top,breaks=[low.sr,tall.sr,SV])
+    # Roof planes as plan polygons (s,t), CCW; `fascia` lists the edges that get a
+    # fascia/bargeboard (not the shared ridge and valley edges).
+    Zp=lambda p: Z(p[0])
+    ZTp=lambda p: ZT(p[0])
+    te=t_end
+    roof_slab(g,[(S_LW,T_S),(low.sr,T_S),(low.sr,te(low.sr)),(S_LW,te(S_LW))],Zp,{0,2,3})
+    roof_slab(g,[(low.sr,T_S),(SV,T_S),(SV,T_COURT),(S_LE,T_COURT),(S_LE,te(S_LE)),(low.sr,te(low.sr))],Zp,{0,3,4})
+    roof_slab(g,[(SV,T_S),(tall.sr,T_S),(tall.sr,T_TN),(S_TN,T_TN),(S_TN,T_TC),(SV,T_TC)],ZTp,{0,2,3,4})
+    roof_slab(g,[(tall.sr,T_S),(S_TE,T_S),(S_TE,T_TN),(tall.sr,T_TN)],ZTp,{0,1,2})
+    ridge_cap(g,low,T_S,te(low.sr))
+    ridge_cap(g,tall,T_S,T_TN)
+    # Gutters on the exposed eaves, downpipes on the east wall and the wing's
+    # courtyard wall. The V valley drains through its own flashing.
+    sd=lambda s,t,z: (*from_st(s,t),z)
+    ex,ey=from_st(1,0)
+    gutter(g,sd(S_LW,T_S+.05,Z(S_LW)),sd(S_LW,te(S_LW)-.05,Z(S_LW)),(-ex,-ey))
+    top=gutter(g,sd(S_TE,T_S+.05,ZT(S_TE)),sd(S_TE,T_TN-.05,ZT(S_TE)),(ex,ey))
+    for t in (T_SOUTH+1.0,T_NOTCH-.5):
+        downpipe(g,(*from_st(S_TE+.045,t),top[2]),from_st(S_EAST+.07,t),.05)
+    t_lo,t_hi=foyer(g,low,S_WINGE,OVER)
+    for ta,tb in [(T_COURT+.05,t_lo-.15),(t_hi+.15,te(S_LE)-.05)]:
+        gutter(g,sd(S_LE,ta,Z(S_LE)),sd(S_LE,tb,Z(S_LE)),(ex,ey))
+    for t in (T_COURT+1.0,te(S_LE)-.8):
+        downpipe(g,(*from_st(S_LE+.045,t),Z(S_LE)-.10-.07),from_st(S_WINGE+.07,t),.05)
+    # Valley flashing: one raised zinc sheet laid on both slopes along the crease,
+    # with a low skirt on each outer edge so no sliver of roof shows under it.
+    hw,lift,ta,tb=.3,.035,T_S+.35,T_COURT
+    left,right,mid=(SV-hw,Z),(SV+hw,ZT),(SV,Z)
+    inside=Vector(at(SV,(ta+tb)/2,ZV-1))
+    for (s0,f0),(s1,f1) in ((left,mid),(mid,right)):
+        outward(g,[at(s0,ta,f0(s0)+lift),at(s1,ta,f1(s1)+lift),at(s1,tb,f1(s1)+lift),at(s0,tb,f0(s0)+lift)],inside,"galvanised")
+    for s,f,sgn in ((left[0],Z,-1),(right[0],ZT,1)):
+        outward(g,[at(s,ta,f(s)),at(s,tb,f(s)),at(s,tb,f(s)+lift),at(s,ta,f(s)+lift)],Vector(at(s-sgn,(ta+tb)/2,ZV)),"galvanised")
+    # The low roof abuts the tall volume's courtyard wall. That wall stops at the
+    # wing's east wall, so a wedge of it closes the gap between the low slope and
+    # the tall slope's soffit, with step flashing up the wall.
+    s0=SV+.1/(low.m+tall.m)
+    south=lambda s,z: Vector(at(s,T_COURT-1,z))
+    outward(g,[at(s0,T_COURT,Z(s0)),at(S_WINGE,T_COURT,Z(S_WINGE)),at(S_WINGE,T_COURT,ZT(S_WINGE)-.1)],south(S_WINGE,Z(S_WINGE)),"omberg_red")
+    outward(g,[at(s0,T_COURT,Z(s0)),at(S_LE,T_COURT,Z(S_LE)),at(S_LE,T_COURT+.3,Z(S_LE)+.03),at(s0,T_COURT+.3,Z(s0)+.03)],Vector(at(s0,T_COURT,Z(s0)-1)),"galvanised")
+    outward(g,[at(s0,T_COURT+.015,Z(s0)+.03),at(S_LE,T_COURT+.015,Z(S_LE)+.03),at(S_LE,T_COURT+.015,Z(S_LE)+.17),at(s0,T_COURT+.015,Z(s0)+.17)],south(s0,Z(s0)),"galvanised")
+    # Terrace end: the low roof runs 8 m past the wing's south wall over the
+    # sheltered terrace. Close its gable with a glazed ground floor and a red
+    # board gable above, on the tall block's south wall line.
+    sa,sb=S_LW,S_TALLW
+    xg=477787.9-origin[0]                    # the terrace's west glazing line: the south glazing starts there
+    xa,ya=xg,(T_SOUTH-xg*math.sin(AXIS))/math.cos(AXIS)
+    xb,yb=from_st(sb,T_SOUTH)
+    framed_face(g,(xa,ya,0),(xb,yb,0),.25,2.65,7,"omberg_dark_brown",bars=1)
+    topw=lambda s: (ZT if s>=SV else Z)(s)-.1
+    north=Vector(at(0,T_SOUTH+5,5))
+    outward(g,[at(sa,T_SOUTH,2.65),at(SV,T_SOUTH,2.65),at(SV,T_SOUTH,topw(SV)),at(low.sr,T_SOUTH,topw(low.sr)),at(sa,T_SOUTH,topw(sa))],north,"omberg_red")
+    outward(g,[at(SV,T_SOUTH,2.65),at(sb,T_SOUTH,2.65),at(sb,T_SOUTH,topw(sb)),at(SV,T_SOUTH,topw(SV))],north,"omberg_red")
     # Sheltered western dining terrace, clearly visible in both ortho vintages.
     deckx=477785.5-origin[0]
     deckx1=477791.7-origin[0]
-    y0,y1=6457633.4-origin[1],6457679-origin[1]
+    # The ortho shows the deck ending at the south wall line (N 6457635.8), not at the traced 6457633.4.
+    y0,y1=6457635.8-origin[1],6457679-origin[1]
     g.box(((deckx+deckx1)/2,(y0+y1)/2,.08),(deckx1-deckx,y1-y0,.28),"omberg_deck")
     framed_face(g,(477787.9-origin[0],y1,0),(477787.9-origin[0],y0,0),.25,2.65,23,"omberg_dark_brown",bars=1)
     for y in [y0+i*(y1-y0)/12 for i in range(13)]:
@@ -478,17 +739,8 @@ def build_architecture():
             kit.opening(g,opening("+x",n-origin[1],w=1.5,h=1.5,sill=sill,plane=facade_e-origin[0]),fp,None,"omberg_ivory_trim")
     for e in [477805,477809,477813,477817,477821]:
         for sill in [.95,4.0]:
-            facade_n=(6457635.86+(e-477802.08)*(-.38/14.36)) if e<477816.5 else (6457637.06+(e-477816.48)*(-.19/7.2))
+            facade_n=6457635.86+(e-477802.08)*(-.38/14.36)   # one south wall line (the OSM step is straightened)
             kit.opening(g,opening("-y",e-origin[0],w=1.45,h=1.45,sill=sill,plane=facade_n-origin[1]-.045),fp,None,"omberg_ivory_trim")
-    # Surveyed NE courtyard-facing entry. Its 5.5 m front edge runs SE;
-    # the outward-facing gable normal is bearing59deg, not the former mirror.
-    g.push(Matrix.Translation((477805.0-origin[0],6457673.67-origin[1],0)) @ Matrix.Rotation(math.radians(31),4,"Z"))
-    # Photo front: broad shallow gable and a clear stone shoulder above the
-    # portal. Preserve ridge, lift the eave for a 26-degree roof pitch.
-    roof_building(g,3.85,5.5,3.75,5.1,roof="omberg_silver_roof",wall="omberg_entry_stone",
-                  openings=[],cladding={},cornerBoards=False)
-    entry_details(g,3.85,5.5)
-    g.pop()
     # West terrace tables and chairs, kept deliberately light in triangle count.
     for n in [6457638,6457643,6457648,6457653,6457658,6457673]:
         cx,cy=477786.1-origin[0],n-origin[1]
