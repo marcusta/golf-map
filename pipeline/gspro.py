@@ -3202,6 +3202,61 @@ GREEN_BORDER_NOTHING = "nothing (OPCD outer deep rough)"
 HIDDEN_VISIBLE_SHARE = 0.01
 
 
+# A corner sharper than this is a spike, not a drawn bend: a lumpy union, a
+# road-edge fill's wedge (Omberg's driving-range fairway failed OPCD with two
+# 19° spikes and 2 cm steps). Measured between the outline points at least
+# SHARP_CORNER_REACH_M along the edge on each side, so a densely flattened
+# curve reads as the bend it is, not as its tiny segments.
+SHARP_CORNER_DEG = 25.0
+SHARP_CORNER_REACH_M = 0.5
+
+
+def _sharp_corners(shape) -> list[tuple[float, float, float]]:
+    """The spikes in a shape's outline: [(x, y, angle in degrees)], one per
+    run of sharp vertices (its sharpest), on every ring."""
+    import math
+
+    out = []
+    for poly in _polygons(shape):
+        for ring in (poly.exterior, *poly.interiors):
+            pts = list(ring.coords)[:-1]
+            pts = [p for k, p in enumerate(pts) if k == 0 or p != pts[k - 1]]
+            n = len(pts)
+            if n < 3 or ring.length < 4 * SHARP_CORNER_REACH_M:
+                continue
+            seg = [math.dist(pts[k], pts[(k + 1) % n]) for k in range(n)]
+
+            def reach(k, step):
+                j, run = k, 0.0
+                while run < SHARP_CORNER_REACH_M:
+                    run += seg[j if step > 0 else (j - 1) % n]
+                    j = (j + step) % n
+                    if j == k:
+                        break
+                return pts[j]
+
+            angles = []
+            for k in range(n):
+                a, b, c = reach(k, -1), pts[k], reach(k, 1)
+                v1, v2 = (a[0] - b[0], a[1] - b[1]), (c[0] - b[0], c[1] - b[1])
+                d = math.hypot(*v1) * math.hypot(*v2)
+                angles.append(math.degrees(math.acos(max(-1.0, min(1.0, (v1[0] * v2[0] + v1[1] * v2[1]) / d)))) if d else 180.0)
+            sharp = [k for k in range(n) if angles[k] < SHARP_CORNER_DEG]
+            # One spike per run of neighbouring sharp vertices (they share the reach).
+            runs: list[list[int]] = []
+            for k in sharp:
+                if runs and k - runs[-1][-1] <= 2:
+                    runs[-1].append(k)
+                else:
+                    runs.append([k])
+            if len(runs) > 1 and runs[0][0] + n - runs[-1][-1] <= 2:
+                runs[0] = runs.pop() + runs[0]
+            for r in runs:
+                k = min(r, key=lambda k: angles[k])
+                out.append((pts[k][0], pts[k][1], angles[k]))
+    return out
+
+
 def _paint_tops(paint: list, i: int, area) -> dict[str, float]:
     """What is seen on top within `area`, painting `paint` (bottom first) but
     leaving out shape `i`: {kind: m2}, plus GREEN_BORDER_NOTHING for the part
@@ -3506,6 +3561,13 @@ def cmd_svg(bbox, out: Path, db_path: Path, course_ident: str,
         detail = ", ".join(f"{k} {a:.1f} m2" for k, a in sorted(meets.items(), key=lambda kv: -kv[1]))
         print(f"  warning: green {name} meets more than fairway/semi rough at its edge ({detail}): "
               f"OPCD's green blend can fail the whole build - surround it with fairway or semi rough")
+    for _, name, kind, shape in paint:
+        spikes = _sharp_corners(shape) if shape is not None else []
+        if spikes:
+            x, y, angle = min(spikes, key=lambda s: s[2])
+            sx, sy = to_svg((x, y))
+            print(f"  warning: {kind} {name} has {len(spikes)} spike(s) under {SHARP_CORNER_DEG:g}° "
+                  f"(sharpest {angle:.0f}° at SVG {sx:.0f},{sy:.0f}): a lumpy union or a fill artefact? smooth it")
     for name, above in _hidden_shapes(paint):
         listed = ", ".join(above[:3]) + (" …" if len(above) > 3 else "")
         print(f"  warning: {name} is covered by the shapes above it ({listed}): OPCD makes no mesh for it")

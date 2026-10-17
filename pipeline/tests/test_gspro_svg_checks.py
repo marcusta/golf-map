@@ -63,3 +63,18 @@ def test_a_shape_on_top_is_never_hidden():
     p = paint(("Hole1", "hole_1_1", "fairway", box(0, 0, 20, 20)),
               ("Hole1", "hole_1_2", "green", box(5, 5, 10, 10)))
     assert gspro._hidden_shapes(p) == []
+
+
+def test_a_spike_is_reported_once_with_its_angle():
+    # A thin wedge (Omberg's driving-range fairway had two 19° spikes after the road-edge fill).
+    from shapely.geometry import Polygon
+    wedge = Polygon([(0, 0), (40, 6), (0, 12), (-20, 6)])
+    spikes = gspro._sharp_corners(wedge)
+    assert len(spikes) == 1
+    x, y, angle = spikes[0]
+    assert (x, y) == (40, 6) and 15 < angle < 18
+
+
+def test_bends_and_dense_curves_are_not_spikes():
+    assert gspro._sharp_corners(box(0, 0, 10, 10)) == []          # 90° corners
+    assert gspro._sharp_corners(Point(0, 0).buffer(30, quad_segs=256)) == []   # 1000+ tiny segments
