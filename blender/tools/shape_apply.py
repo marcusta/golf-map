@@ -1891,6 +1891,17 @@ def plan_units(ctx, op):
             units.append(Unit(svg_id, names, None,
                               (lambda names: lambda margin=0.0: set(names))(names), extra=extra))
         return units, problems
+    if kind == "golfmap.path_kerb":
+        # one unit per road shape (its hard pieces' strips); reads = the shape's objects + the meshes beside them,
+        # whose vertices on a strip's outer edge drop with it (their boxes + 1 m)
+        recs, problems = sl.select(dict(op["select"], kind="any"), ctx.index)
+        src = _file_sha(os.path.join(HERE, "shape_kerb.py"))
+        units = []
+        for svg_id, group in sl.group_by_feature(recs):
+            names = [r["name"] for r in group]
+            units.append(Unit(svg_id, names, None,
+                              (lambda names: lambda margin=0.0: near_boxes(ctx, names, 1.0 + margin))(names), extra=src))
+        return units, problems
     if kind == "golfmap.path_edge_fade":
         # one unit per road shape: its path pieces and every blend object (the strips of several pieces share one);
         # reads = the shape's objects + what the weld afterwards can reach (their boxes + 1 m)
@@ -5077,6 +5088,49 @@ def op_path_transition(ctx, op):
     return runs, problems
 
 
+def op_path_kerb(ctx, op):
+    """golfmap.path_kerb (shape_kerb.py): the fringe strips of hard roads rounded into a lip, the verge beside them
+    `depthM` lower."""
+    import shape_kerb as kb
+    import shape_surfaces as ss
+    units, problems = plan_units(ctx, op)
+    try:
+        doc = ss.load_sidecar(_split_sidecar(ctx, op))
+    except (OSError, ValueError):
+        doc = None
+    surfaces = set(op.get("surfaces") or kb.SURFACES)
+    runs = []
+    for unit in units:
+        def compute(unit=unit):
+            object_mode()
+            objs = [bpy.data.objects[n] for n in unit.targets if n in bpy.data.objects]
+            hard = [o for o in objs if _edge_fade_surface(ctx, o, doc) in surfaces and not o.get(KERB_PROP)]
+            pieces = [o for o in hard if o.get("opcd_kind") != "blend"]
+            blends = [o for o in hard if o.get("opcd_kind") == "blend"]
+            run = {"feature": unit.id, "targets": list(unit.targets), "result": ["FINISHED"]}
+            if not pieces or not blends:
+                return dict(run, note="no %s road in %s" % ("/".join(sorted(surfaces)), unit.id))
+            near = [bpy.data.objects[n] for n in sorted(unit.reads()) if n in bpy.data.objects]
+            roads = [o for o in near if "Concrete" in o.name and o.get("opcd_kind") != "blend"]
+            others = [o for o in near if o not in blends and o not in roads]
+            t = time.time()
+            run.update(kb.kerb_core(pieces, blends, roads, others, depth=float(op.get("depthM", kb.DEPTH_M)),
+                                    cuts=int(op.get("cuts", kb.CUTS))))
+            for o in blends:
+                o[KERB_PROP] = kb.CONVENTION
+            run["seconds"] = round(time.time() - t, 2)
+            print(f"[shape_apply] path_kerb {unit.id}: {len(blends)} blends, {run['outer']} edge vertices, "
+                  f"{sum(run['moved'].values())} verge vertices lowered, {run['seconds']} s")
+            return run
+        run = ctx.runner.run(ctx, op, unit, compute)
+        if run is not None:
+            runs.append(run)
+    return runs, problems
+
+
+KERB_PROP = "golfmap_kerb"
+
+
 def op_path_edge_fade(ctx, op):
     units, problems = plan_units(ctx, op)
     runs = []
@@ -5419,6 +5473,7 @@ RUNNERS = {
     "golfmap.split_surfaces": op_split_surfaces,
     "golfmap.cut_out": op_cut_out,
     "golfmap.path_edge_fade": op_path_edge_fade,
+    "golfmap.path_kerb": op_path_kerb,
     "golfmap.path_transition": op_path_transition,
     "afrod.flattentees": op_flattentees,
     "afrod.cutcartpaths": op_cutcartpaths,

@@ -53,6 +53,9 @@ OPS = {
     # Widens the fringe strips of gravel / dirt paths into the path and paints them as a noisy red (grass) to
     # green (path) ramp (shape_apply "golfmap.path_edge_fade", maths in shape_edgefade.py). After split_surfaces.
     "golfmap.path_transition": {"params": {}, "keys": {"paths", "maxEdgeM"}},
+    # Rounds the fringe strips of hard roads (asphalt, concrete, paving) into a lip `depthM` above the verge
+    # (shape_apply "golfmap.path_kerb", shape_kerb.py). After split_surfaces and the footprints.
+    "golfmap.path_kerb": {"params": {}, "keys": {"depthM", "cuts", "surfaces", "paths"}},
     "golfmap.path_edge_fade": {
         "params": {},
         "keys": {"widthM", "maxEdgeM", "amplitude", "surfaces", "weld", "paths"},
@@ -288,6 +291,15 @@ def validate_op(op):
             sys.path.insert(0, here)
         import shape_edgefade
         errors += shape_edgefade.validate_params(op)
+        if "paths" in op and not (isinstance(op["paths"], str) and op["paths"]):
+            errors.append("paths must be a sidecar file name or path")
+    if name == "golfmap.path_kerb":
+        import sys
+        here = os.path.dirname(os.path.abspath(__file__))
+        if here not in sys.path:
+            sys.path.insert(0, here)
+        import shape_kerb
+        errors += shape_kerb.validate_params(op)
         if "paths" in op and not (isinstance(op["paths"], str) and op["paths"]):
             errors.append("paths must be a sidecar file name or path")
     if name == "golfmap.weld_tjunctions" and "toleranceM" in op and not (_is_type(op["toleranceM"], float) and op["toleranceM"] > 0):

@@ -836,6 +836,31 @@ heights):
   rest its weld). The whole op on Vreta (18 road shapes) takes 48 s uncached, 21 s of that the units
   themselves and the rest the op cache hashing the state of everything their welds can reach.
 
+## Shaping: rounded hard-road edge
+
+`golfmap.path_kerb` (`tools/shape_kerb.py`, tests `python blender/tools/shape_kerb_test.py`): an asphalt road is
+laid 4-5 cm thick and rolled out at its edge, so in reality it ends in a rounded lip above the verge; OPCD's road,
+fringe strip and grass meet flush and read as a flat line. `shaping-global` emits it after the footprints whenever
+a path is asphalt, concrete or paving:
+
+```json
+{ "id": "paths-kerb", "op": "golfmap.path_kerb", "select": { "type": "path" } }
+```
+
+- **Strips**: per road shape, on every blend of a hard surface (`surfaces`, default asphalt, concrete, paving; the
+  surface as `golfmap.path_edge_fade` reads it), the faces with a vertex on a hard piece's boundary and the rest on
+  no road mesh (a strip between two roads stays flat).
+- **Lip**: each rung (road edge to grass edge, ~0.12 m) is cut `cuts` times (default 2) and every strip vertex drops
+  `depthM` (default 0.03) x `profile(t)`, a quarter ellipse: 0 on the road edge, a few mm at the first cut, ~1 cm
+  at the second, the full drop on the grass edge. Omberg `roads_1f`: 0, -0.4, -1.2, -2.3, -3.0 cm across the strip.
+- **Verge**: every other mesh's vertex on a strip's outer edge (within 1 mm) drops `depthM` too, so nothing opens;
+  the grass slopes back up over its first row of faces (~1 m). Strip objects get smooth shading, custom normals
+  dropped; names, paint (the new vertices interpolate the strip's ramp) and materials stay. Blends carry
+  `golfmap_kerb` = `path-kerb-v1`. Afrod's `raised_path_blitz` recipe does the same on a single closed path
+  mesh, but its loopcut finds no loop on OPCD's road pieces (2026-10-17), hence this op.
+- **Report**: per blend `strip` faces, `rungs`, `outer` vertices, `new` vertices; `moved` = verge vertices
+  lowered per object.
+
 ## Shaping: path transitions
 
 `golfmap.path_transition` runs last: after path surface splitting, edge fade and the rock slab cut-outs (a
