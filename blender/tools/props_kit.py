@@ -560,6 +560,8 @@ MATERIALS = {
     "granite_moss": ("granite:62,72,40:0.2", (4.0, 4.0), None, 0.05, 0.0),
     # the heap stones at hole 2's tee (photo, 2026-10-18): mid grey granite, patchy pale grey-green lichen, a few yellow-orange spots
     "granite_lichen": ("granite:112,110,106:0.5:0.9:0.7", (4.0, 4.0), None, 0.15, 0.0),
+    # hole 16's boulders: the same lichen granite, mid-to-dark grey (granite_lichen is lit to near white on the pale slabs)
+    "granite_lichen_dark": ("granite:50,49,47:0.3:0.7:0.3", (4.0, 4.0), None, 0.15, 0.0),
     # the stone box at hole 3's tees (video frame): pale grey-beige granite
     "granite_beige": ("granite:134,128,116:0.45:0.25:0.15", (4.0, 4.0), None, 0.15, 0.0),
     # ivy over the big boulders by hole 13's tees (photo cddccbea, late September: yellowing)

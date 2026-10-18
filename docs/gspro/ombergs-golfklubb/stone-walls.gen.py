@@ -171,28 +171,42 @@ H1_BOULDERS = [
 
 
 # Loose boulders on hole 16's rock round the big silver birch (Marcus's photo + video frame, 2026-10-18): the grey
-# granite of slab 126's west lobe NW of the birch with boulders of 0.5-1.2 m sitting on and between the slabs, and a
-# few on the rim of slab 150 right at the birch. Seen as pale round stones in the 2023/2025 orthos at the first
-# ones (one on the lobe, two in the grass at its west edge by a shrub, two on the east slab); the rest are placed
-# on the slabs' flat parts from the photo. e/n = centre (EPSG:3006), yawDeg = bearing of the long side.
+# granite of slab 126's west lobe NW of the birch, seen from the hole 13 fairway to the left of the birch, with boulders
+# on and between the slabs, and a few on the rim of slab 150 right at the birch. 1.0-1.5 m long, the heap stones' angular
+# shapes in the darker hgrey_N variant (props_kit granite_lichen_dark: Marcus found granite_lichen too white against the
+# slab; hole 1 and 2 keep granite_lichen). The first ones are seen as pale round stones in the 2023/2025 orthos (one on
+# the lobe, two in the grass at its west edge by a shrub, two on the east slab); the rest are placed from the photo in
+# groups of 2-4 on and around the slab. e/n = centre (EPSG:3006), yawDeg = bearing of the long side.
 def _birch_boulders():
-    rows = [  # n, asset, e, n, yaw, lengthM, note
-        ("heap_5", 477608.1, 6457102.8, 30, 1.1, "Pale round boulder on the lobe's slab (2023 and 2025 orthos)."),
-        ("heap_2", 477596.8, 6457101.9, 110, 0.9, "In the grass at the lobe's west edge, beside the shrub (ortho)."),
-        ("heap_6", 477597.0, 6457103.4, 60, 0.6, "In the grass at the lobe's west edge, beside the shrub (ortho)."),
-        ("heap_8", 477606.0, 6457100.2, 150, 1.3, "On the lobe's slab, the biggest of the band (photo)."),
-        ("heap_1", 477603.5, 6457099.5, 80, 0.8, "On the lobe's slab (photo)."),
-        ("heap_4", 477610.5, 6457098.0, 20, 0.7, "On the lobe's slab (photo)."),
-        ("heap_9", 477609.3, 6457095.5, 125, 1.1, "On the lobe's south slab (photo)."),
-        ("heap_3", 477606.5, 6457093.0, 45, 0.9, "On the lobe's south slab (photo)."),
-        ("heap_7", 477620.6, 6457094.3, 95, 1.0, "Pale boulder on the east slab (ortho)."),
-        ("heap_5", 477619.9, 6457093.0, 10, 0.7, "Pale boulder on the east slab (ortho)."),
-        ("heap_3", 477621.3, 6457064.3, 70, 1.1, "Rim of slab 150, right of the birch's trunk; lidar returns here."),
-        ("heap_6", 477622.6, 6457066.0, 130, 0.8, "Rim of slab 150, right of the birch's trunk."),
-        ("heap_9", 477623.0, 6457080.5, 55, 1.0, "North end of slab 150; lidar returns here."),
+    rows = [  # asset, e, n, yaw, lengthM, note
+        ("hgrey_5", 477608.1, 6457102.8, 30, 1.2, "Pale round boulder on the lobe's slab (2023 and 2025 orthos)."),
+        ("hgrey_2", 477596.8, 6457101.9, 110, 1.0, "In the grass at the lobe's west edge, beside the shrub (ortho)."),
+        ("hgrey_6", 477597.2, 6457103.9, 60, 1.0, "In the grass at the lobe's west edge, beside the shrub (ortho)."),
+        ("hgrey_8", 477606.0, 6457100.2, 150, 1.5, "On the lobe's slab, the biggest of the band (photo)."),
+        ("hgrey_1", 477603.5, 6457099.5, 80, 1.1, "On the lobe's slab (photo)."),
+        ("hgrey_4", 477610.5, 6457098.0, 20, 1.0, "On the lobe's slab (photo)."),
+        ("hgrey_9", 477609.3, 6457095.5, 125, 1.3, "On the lobe's south slab (photo)."),
+        ("hgrey_3", 477606.5, 6457093.0, 45, 1.1, "On the lobe's south slab (photo)."),
+        ("hgrey_7", 477620.6, 6457094.3, 95, 1.2, "Pale boulder on the east slab (ortho)."),
+        ("hgrey_5", 477619.9, 6457093.0, 10, 1.0, "Pale boulder on the east slab (ortho)."),
+        ("hgrey_3", 477621.3, 6457064.3, 70, 1.4, "Rim of slab 150, right of the birch's trunk; lidar returns here."),
+        ("hgrey_6", 477622.6, 6457066.0, 130, 1.0, "Rim of slab 150, right of the birch's trunk."),
+        ("hgrey_9", 477623.0, 6457080.5, 55, 1.3, "North end of slab 150; lidar returns here."),
+        # round 2 (Marcus): more to the left of the birch, along the lobe's west edge and in the grass at it
+        ("hgrey_2", 477599.3, 6457103.3, 75, 1.3, "Group A on the lobe's west rim."),
+        ("hgrey_7", 477600.7, 6457102.4, 140, 1.0, "Group A on the lobe's west rim."),
+        ("hgrey_4", 477600.0, 6457104.8, 35, 1.5, "Group A on the lobe's west rim."),
+        ("hgrey_1", 477600.2, 6457097.4, 100, 1.2, "Group B in the grass south-west of the lobe."),
+        ("hgrey_8", 477598.9, 6457096.6, 15, 1.0, "Group B in the grass south-west of the lobe."),
+        ("hgrey_6", 477600.7, 6457095.8, 160, 1.4, "Group B in the grass south-west of the lobe."),
+        ("hgrey_9", 477603.6, 6457106.4, 55, 1.1, "Group C at the lobe's north end."),
+        ("hgrey_5", 477604.9, 6457105.5, 120, 1.5, "Group C at the lobe's north end."),
+        ("hgrey_3", 477606.0, 6457106.6, 90, 1.0, "Group C at the lobe's north end."),
+        ("hgrey_2", 477602.2, 6457092.2, 25, 1.3, "Group D at the lobe's south end, in the grass."),
+        ("hgrey_7", 477601.3, 6457091.1, 105, 1.0, "Group D at the lobe's south end, in the grass."),
     ]
     return [{"id": "h16-birch-boulder-%02d" % (i + 1), "asset": a, "e": e, "n": n, "yawDeg": y, "lengthM": L,
-             "topM": round(0.53 * L, 2), "note": note} for i, (a, e, n, y, L, note) in enumerate(rows)]
+             "topM": round(0.5 * L, 2), "note": note} for i, (a, e, n, y, L, note) in enumerate(rows)]
 
 
 BIRCH_BOULDERS = _birch_boulders()
@@ -365,6 +379,11 @@ def stones_spec():
         assets["heap_%d" % i] = {"category": "prop", "collider": "mesh", "parts": [
             {"kind": "boulder", "sx": 1.0, "sy": sy, "sz": sz, "seed": 100 + i, "exponent": ex, "lumps": lumps,
              "flats": angular_flats(300 + i), "seg": 32, "rings": 22, "mat": "granite_lichen"}]}
+    # hole 16's boulders: the heap stones' shapes in a darker granite (Marcus: granite_lichen glows white on the slab)
+    for i, (sy, sz, ex, lumps) in enumerate(HEAP_STONES, 1):
+        assets["hgrey_%d" % i] = {"category": "prop", "collider": "mesh", "parts": [
+            {"kind": "boulder", "sx": 1.0, "sy": sy, "sz": sz, "seed": 100 + i, "exponent": ex, "lumps": lumps,
+             "flats": angular_flats(300 + i), "seg": 32, "rings": 22, "mat": "granite_lichen_dark"}]}
     # the frame's blocks: straight, square-ended boxes 1 m x 0.12 x 0.30 (scaled to their length: 0.32 thick, 0.8 high, the
     # top 0.45 over the ground, the rest sunk)
     assets["boxkerb_1"] = {"category": "prop", "collider": "mesh", "parts": [
