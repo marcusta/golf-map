@@ -1,0 +1,18 @@
+{
+  "orthoVintages": [
+    {
+      "collection": "orto-l2-2025",
+      "dates": [
+        "2025-06-14"
+      ]
+    },
+    {
+      "collection": "orto-l2-2023",
+      "dates": [
+        "2023-04-22"
+      ]
+    }
+  ],
+  "activeOrtho": "orto-l2-2025",
+  "builtOrtho": "orto-l2-2025"
+}
