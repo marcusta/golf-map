@@ -220,6 +220,77 @@ hanging off the terrain, an `Outerplot` mesh — over one cache (it also covers 
 & 'C:/Program Files/Blender Foundation/Blender 4.5/blender.exe' -b --python-exit-code 1 --python blender/tools/shape_prepare_cache_test.py
 ```
 
+### Carry-over from the previous build (2026-10-18)
+
+The conform cache and the op cache key on mesh state, and OPCD rebuilds every shape of the SVG on each
+cloud build: an unchanged shape comes back with ~1 mm of vertex jitter (zero mean) or a new triangulation,
+so a new `<prefix>_svg_<n>.blend` made both caches cold for the whole course (50-60 min of replay on Omberg)
+even when a handful of shapes changed. svg_106 → svg_107 (154 → 309 SVG shapes): of the 276 common meshes
+whose SVG shape was byte-identical, 62 came back bit-identical, 147 with the same topology and vertices up to
+5 mm off (median 1.3 mm), 54 retriangulated, 13 moved more.
+
+So before the conform `shape_prepare` (`tools/shape_carry.py`; the worker's prepare and the CLI run the same
+`run`) puts the previous build's source mesh back for every mesh whose shape is unchanged:
+
+- **Which shape is unchanged**: every SVG export writes `<stem>-shapes.json` beside the SVG (and into its
+  export snapshot): per SVG id 12 hex of sha1 over the path's layer, style, fill-rule and `d`
+  (docs/gspro/export.md "The shape table"). The table used is the one beside the SVG that built the .blend:
+  of the SVGs next to it and in `export-history/`, the one that explains its shape ids best (on a tie the
+  newest written before the .blend; OPCD's .blend can be older than the export that explains it best, when it
+  was built from an SVG that was then overwritten). A mesh depends on its own shape; a blend (`_B_`) and an
+  `Outer_Deep_Sat` fill piece also on every shape whose mesh shares a border vertex with it, and on that set
+  (`depends_on`); a fill piece that borders only fill pieces depends on none. The ids stay the names; no
+  fingerprint goes into a name.
+- **Which mesh is the same**: same name, attributes, materials and vertex groups, and either the same topology
+  with equal integer attributes and every vertex within 5 mm (`MAX_MOVE_M`) of the previous build's, or the
+  same border (`match_border`: as many border vertices, each within 5 mm of its own old one) - OPCD fills an
+  unchanged outline anew often (svg_108 → svg_107 on Omberg: 110 of the 150 meshes of another topology kept
+  their border).
+- **Seams**: OPCD's meshes tile the course, so both sides of every seam must come from one build. Every mesh
+  that passes the checks above is swapped, and a kept neighbour that is not bit-identical (another
+  triangulation, an edited shape, a fill piece, a new mesh) takes the swapped mesh's position at every border
+  vertex they shared in OPCD's new build (the weld, `weld_plan`: as far as the swapped mesh moved, ~1 mm). It
+  misses both caches anyway. The rule asked for first - swap a mesh only when every mesh sharing a border
+  vertex with it is swapped too or bit-identical (`GOLFMAP_CARRY_SEAMS=strict`, `settle_clusters`) - swapped
+  0 of 746 meshes on Omberg: every mesh is joined to every other through seams, so one retriangulated mesh
+  blocks them all. After the swap and the weld, every border vertex pair that coincided in the new build is
+  checked again (`seam_check`; a gap puts every swap and weld back - never expected), and after the conform
+  `shape_apply.slab_seam_check` runs over the swapped meshes and their neighbours.
+
+The swap writes the old arrays (positions, topology, UVs, paint) and keeps the new object's custom
+properties; for an unchanged shape they are equal, so the mesh state is the old one bit for bit and both caches
+hit. State lives in `shaping-staging/carry-over/`: `builds/<source stem>.json` (the SVG + shape table a build
+was made from, per mesh its state hash after the carry-over, shape and neighbours) and `meshes/` (the states
+by hash, shared between builds; the newest 4 build records are kept). The previous build is the newest record
+of a source `.blend` older than this one. A carried mesh keeps the mesh of the build it was first carried from
+for as long as its shape stays unchanged.
+
+**Measured on Omberg (2026-10-18)**, svg_108 recorded, svg_107 prepared from it (15 of 317 shapes differ):
+417 meshes swapped (144 of them retriangulated by OPCD inside the same border), 200 identical, 129 kept
+(89 another border: 49 `Outer_Deep_Sat` fill pieces, 23 roughs, 8 roads; 22 new, 14 shape changed, 4
+moved); 56 kept meshes welded (11 312 border vertices, ≤ 1.9 mm); after the conform 152 477 shared border points,
+none open. The carry-over costs 10 s. **Conform cache: 617 of 746 hits with it, 200 without.** **Op cache, both
+replays against only svg_108's 321 entries: 47 of 316 units hit with it (bunker recipes, ~4 s saved), 0
+without - the replay stays ~2300 s of compute either way.** The units read neighbourhoods, not single meshes:
+all 140 rock-slab cut-outs (2750 s) read the fill pieces and deep rough under the slab, every tee flatten the
+rough around it, and those big meshes are exactly the ones whose border changes when any shape inside or next
+to them is added or edited (OPCD re-cuts and renumbers its fill tiles). So the carry-over keeps the source
+meshes stable but does not yet warm the replay; that needs the cut-outs (and tees) keyed on the part of a
+mesh they read rather than on its whole state.
+
+The report's `carryOver` has the counts per reason (`swapped`, `identical`, `new`, `noShape`,
+`shapeChanged`, `topology`, `attributes`, `moved`, `seam`, `seamCheck`), a few examples each, every mesh's
+code (`meshes`), how far the swapped meshes moved back, and the seam checks. `--no-carry-over` /
+`GOLFMAP_PREPARE_NO_CARRY_OVER=1` keeps every mesh as OPCD built it. An SVG exported before the table existed
+gets one with `bun run py gspro.py svg-shapes <svg>...`. Synthetic test (pairs of builds: a jittered pair
+swapped, a mesh triangulated anew inside its border swapped, one with another border kept and welded to its
+swapped neighbour, an edited shape and the blend joining it kept, a fill piece, a bit-identical neighbour, the
+strict rule, the seams closed and a 1 mm gap seen, a third build carried from the second):
+
+```powershell
+& 'C:/Program Files/Blender Foundation/Blender 4.5/blender.exe' -b --factory-startup --python-exit-code 1 --python blender/tools/shape_carry_test.py
+```
+
 ### The grid conform path
 
 The cache only helps the meshes that did not change. A cold conform — a first export, a new terrain, half a
@@ -730,7 +801,9 @@ course meshes and lifts the inside out as one new object. Hand layer, one op per
   window only (`dem_window_sha`: the outline's box + `apronM` + 1 m + `DEM_PAD_PX`, its heights as read, rows and
   columns and the pixel grid; the frame with `minM` keys every unit anyway), so a DEM edit re-cuts only the dem
   slabs whose window it touches. Until 2026-10-17 the key was the whole file's sha1: digging one Omberg pond 2 m
-  re-cut all 141 slabs (10-75 s each, most of an hour). A window that cannot be read (outside the DEM, a TIFF the
+  re-cut all 141 slabs (10-75 s each, most of an hour). Omberg svg_106 (CLI, 2026-10-17): cold 3427 s (cut-outs
+  1521 s); then the DEM dug 2 m in a 20 x 20 m square 500 m from every slab: 261/261 units hit, the cut-outs 30 s,
+  the run 1139 s (key hashing 609 s, checks 345 s) and hash-identical to the cold run. A window that cannot be read (outside the DEM, a TIFF the
   reader refuses) keys on the whole file's sha1 and the cut cancels. A terrain.obj older than the DEM (a lake dug
   since) shows as the slab standing below or above its neighbours: re-prepare first. Report `rise` = `{mode, dem,
   demSha, window, windowSha, slabZ,

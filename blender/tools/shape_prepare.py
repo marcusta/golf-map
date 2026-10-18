@@ -89,6 +89,7 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 if HERE not in sys.path:
     sys.path.insert(0, HERE)
 import shape_apply as sa  # noqa: E402  (capture_state / apply_state / state_hash / OpCache)
+import shape_carry  # noqa: E402  (the previous build's mesh for every unchanged shape)
 import terrain_obj as to  # noqa: E402  (the terrain grid: frame_from_sidecar / grid_axes / plane_height)
 
 FORMAT = "golfmap-shape-prepare-v1"
@@ -656,8 +657,10 @@ def _bounds(obj):
 
 
 def run(terrain_path, out_path, conform_op="afrod", limit=None, seed=0, cache=True, cache_dir=None,
-        path=None):
+        path=None, carry=None):
     t_start = time.time()
+    if carry is None:  # left open: the environment decides, so the worker needs no flag of its own
+        carry = not os.environ.get(shape_carry.ENV_OFF)
     # `path` left open means the environment decides, so the worker (`shape_worker.ensure_conformed`, which
     # calls this directly) can be asked for the grid path without a flag of its own.
     if path is None:
@@ -673,6 +676,12 @@ def run(terrain_path, out_path, conform_op="afrod", limit=None, seed=0, cache=Tr
     if OPCD_MODULE not in bpy.context.preferences.addons:
         raise RuntimeError(f"OPCD Mesh Editing Tools ({OPCD_MODULE}) is not enabled")
     override = _view3d_override()
+
+    # Before anything reads the meshes: the previous build's source mesh for every one whose SVG shape is
+    # unchanged (shape_carry), so the conform cache and the shaping op cache hit for it.
+    carry_report, carry_finish = shape_carry.carry_over(
+        source, os.path.dirname(cache_dir or cache_dir_for(source)), enabled=carry)
+    print("[shape_prepare] " + "\n  ".join(shape_carry.summary_lines(carry_report)))
 
     # What Conform All reaches: visible Spline meshes (OPCD also takes Outerplot; Afrod's filter takes
     # every visible object but only projects Spline/Outerplot ones). WaterPlane/Potwall are skipped.
@@ -771,12 +780,23 @@ def run(terrain_path, out_path, conform_op="afrod", limit=None, seed=0, cache=Tr
         if np.allclose(z, before):
             unchanged.append(o.name)
 
+    swapped = [n for n, d in (carry_report.get("meshes") or {}).items() if d["code"] == "swapped"]
+    if swapped:
+        # the seams of the carried-over meshes once conformed: they and every mesh they share a border with
+        near = set(swapped)
+        for n in swapped:
+            near.update(carry_report["links"].get(n, ()))
+        carry_report["conformedSeams"] = sa.slab_seam_check([bpy.data.objects[n] for n in sorted(near)
+                                                              if n in bpy.data.objects])
+
     t0 = time.time()
     out_dir = os.path.dirname(os.path.abspath(out_path))
     os.makedirs(out_dir, exist_ok=True)
     bpy.ops.wm.save_as_mainfile(filepath=out_path, copy=True)
     t_save = time.time() - t0
     sidecar = write_terrain_sidecar(out_path, source, terrain_path, terrain_sha, conform_targets)
+    carry_report["record"] = carry_finish()
+    carry_report.pop("links", None)
 
     return {
         "format": FORMAT,
@@ -792,6 +812,7 @@ def run(terrain_path, out_path, conform_op="afrod", limit=None, seed=0, cache=Tr
         "conformPath": path,
         "terrainGrid": grid_checks or None,
         "cache": cache_report,
+        "carryOver": carry_report,
         "terrainSmooth": (bpy.context.scene.opcdtools if conform_op == "afrod" else bpy.context.scene.opcd_tools).terrainsmooth,
         "seed": seed,
         "limit": limit,
@@ -832,6 +853,7 @@ def summary(report):
             lines.append("  !! " + g["rawWarning"])
     elif g.get("why"):
         lines.append("Terrain grid unusable, the operator path: " + g["why"])
+    lines += shape_carry.summary_lines(report.get("carryOver"))
     c = report.get("cache") or {}
     if c.get("gridMeshes") or c.get("operatorWhy"):
         lines.append("Computed on the grid: {gridMeshes} meshes in {gridS} s; through the operator: "
@@ -884,6 +906,9 @@ def main(argv):
     parser.add_argument("--no-conform-cache", action="store_true",
                         help="press the Conform to Terrain button for the whole scene instead of the per-mesh cache")
     parser.add_argument("--conform-cache-dir", help="default <blend folder>/shaping-staging/conform-cache")
+    parser.add_argument("--no-carry-over", action="store_true",
+                        help="keep every mesh as OPCD built it (no previous-build mesh for unchanged shapes; "
+                             "%s=1 does the same)" % shape_carry.ENV_OFF)
     args = parser.parse_args(argv)
     source = bpy.path.abspath(bpy.data.filepath)
     folder, name = os.path.split(source)
@@ -897,7 +922,8 @@ def main(argv):
     elif conform_op == "opcd":
         path = "operator"
     report = run(terrain, out, conform_op=conform_op, limit=args.limit, seed=args.seed,
-                 cache=not args.no_conform_cache, cache_dir=args.conform_cache_dir, path=path)
+                 cache=not args.no_conform_cache, cache_dir=args.conform_cache_dir, path=path,
+                 carry=False if args.no_carry_over else None)
     print("[shape_prepare]\n" + summary(report))
     if args.json:
         with open(args.json, "w", encoding="utf-8") as f:

@@ -290,6 +290,15 @@ the next 10 m (`SIDE_STEP_M`) so a hand-typed area is never a decimal-metre terr
   changed surface, and warnings for what the meshes cannot follow without a new SVG and OPCD build (a
   road shape that came or went, an outline that moved, a grass track made a hard path or back). The
   web's **Update paths** runs it first (docs/workflows.md section 5).
+  **The shape table `<stem>-shapes.json`** (`shape_fingerprints_file`, `svg_shape_fingerprints`, format
+  `golfmap-svg-shape-fingerprints-v1`): `shapes` = `{svg id: fingerprint}` for every path, 12 hex of
+  sha1 over the path's Inkscape layer, `style`, `fill-rule` and `d` - what OPCD reads to build its mesh,
+  none of our `data-*`. Blender's `shape_prepare` compares the tables of two OPCD builds and gives the new
+  build the previous build's mesh for every shape whose fingerprint did not change, so the conform and op
+  caches stay warm (blender/README.md "Carry-over from the previous build"). The ids stay the mesh names
+  (`Spline_<id>_<surface>_-_Mesh`, FBX names, selectors, Unity's hand edits); a fingerprint never goes
+  into a name. `gspro.py svg-shapes <svg>...` writes the table for an SVG exported before it existed
+  (an export snapshot). `--paths-only` leaves it alone (the SVG does not change).
   **History**: on 2026-10-04/05 the export wrote one shape per surface (`_surface_regions`, with a
   `data-surface` on every road, the higher surface keeping the contested bits, the lower written first
   and reaching 5 cm under it, slivers handed between the shares). It was dropped: a seam through a
@@ -347,7 +356,8 @@ the next 10 m (`SIDE_STEP_M`) so a hand-typed area is never a decimal-metre terr
   to the road (`_square_off_wedge`) - the closing's slanted end ran along the kerb into a spike
   beside a notch.
   **Bisect against earlier states** (`bun run gspro:bisect`, see AGENTS.md): every full SVG export is
-  kept in `<export dir>/export-history/<local time>/` — the SVG, its `-paths.json`, `features.json`
+  kept in `<export dir>/export-history/<local time>/` — the SVG, its `-paths.json` and `-shapes.json`
+  (`SVG_SIDECARS`), `features.json`
   and `export.json` (the pipeline code: git sha + a 16-hex hash of the uncommitted diff and untracked
   files of `gspro.py`/`golfpipe/`, `pipelineCodeVersion`; the export's report lines; and a `build`
   slot that `opcd:build --status` fills with `{opcdCreated, job, status, outcome, checkedAt}`). The

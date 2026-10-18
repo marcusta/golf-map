@@ -193,6 +193,39 @@ def test_a_shape_keeps_its_name_when_other_features_on_the_hole_change(tmp_path)
     assert bunker_name([bunker, fairway, semi], "d") == ["hole_1_3"]         # listed in another order
 
 
+def test_the_export_writes_a_fingerprint_per_shape_that_moves_only_with_what_opcd_reads(tmp_path):
+    """`<stem>-shapes.json`: {SVG id: 12 hex} over each path's layer, style, fill-rule and d. Blender's
+    shape_prepare carries the previous build's mesh over for a shape whose fingerprint is unchanged, so it
+    must stay put when another shape changes and move when this one's outline or surface does."""
+    semi = ("semi_rough", 1, 0, [_ring((0.40, 0.40), 40)], "bspline", 1, "semi")
+    bunker = ("bunker", 1, 2, [_ring((0.42, 0.42), 5)], "bspline", 3, "bunker")
+    moved = ("bunker", 1, 2, [_ring((0.42, 0.43), 5)], "bspline", 3, "bunker")
+    green = ("green", 2, 0, [_ring((0.61, 0.61), 12)], "bspline", 5, "green")
+
+    def table(features, sub, **kw):
+        out = _export(tmp_path / sub, features, **kw)
+        doc = json.loads((tmp_path / sub / "course-shapes.json").read_text(encoding="utf-8"))
+        assert doc["format"] == "golfmap-svg-shape-fingerprints-v1" and doc["svg"] == "course.svg"
+        assert doc["shapes"] == gspro.svg_shape_fingerprints(out.read_text(encoding="utf-8"))
+        return doc["shapes"]
+
+    a = table([semi, bunker], "a")
+    assert sorted(a) == ["hole_1_1", "hole_1_3"]
+    assert all(re.fullmatch(r"[0-9a-f]{12}", v) for v in a.values())
+    b = table([semi, bunker, green], "b")                       # a shape on another hole added
+    assert {k: b[k] for k in a} == a
+    c = table([semi, moved], "c")                               # the bunker's outline moved
+    assert c["hole_1_1"] == a["hole_1_1"] and c["hole_1_3"] != a["hole_1_3"]
+    d = table([semi, bunker], "d", mapped={"bunker": "green"})  # same outline, another OPCD surface
+    assert d["hole_1_1"] == a["hole_1_1"] and d["hole_1_3"] != a["hole_1_3"]
+
+    # Any SVG gets one after the fact (an export snapshot from before the table): the same table.
+    again = tmp_path / "a" / "again.svg"
+    again.write_text((tmp_path / "a" / "course.svg").read_text(encoding="utf-8"), encoding="utf-8")
+    assert gspro.main(["svg-shapes", str(again)]) == 0
+    assert json.loads((tmp_path / "a" / "again-shapes.json").read_text(encoding="utf-8"))["shapes"] == a
+
+
 def test_an_unnumbered_feature_is_named_after_its_id(tmp_path):
     """Generated features have no number (and a database from before the
     server's migration 026 has none at all): 5 characters of the id, more only

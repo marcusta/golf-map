@@ -60,6 +60,14 @@ export interface SnapshotInfo {
  * on disk, not in somebody's memory of three clocks.
  */
 export const EXPORT_RECORD_FILE = 'export.json';
+
+/**
+ * The files `gspro.py svg` writes beside `<stem>.svg`, kept with it in a snapshot: the road surfaces
+ * (`-paths.json`) and the fingerprint per shape (`-shapes.json`, `golfmap-svg-shape-fingerprints-v1`: 12 hex
+ * of each path's layer, style, fill-rule and d) that Blender's shape_prepare compares between two OPCD builds
+ * to carry unchanged meshes over.
+ */
+export const SVG_SIDECARS = ['-paths.json', '-shapes.json'] as const;
 export const EXPORT_RECORD_FORMAT = 'golfmap-export-record-v1';
 
 export type BuildOutcome = 'ok' | 'failed' | 'pending';
@@ -256,9 +264,10 @@ export class FeatureHistoryService {
     }
 
     /**
-     * Keep a full SVG export: the SVG, its road-surface sidecar `<stem>-paths.json` and the features it was made
-     * from, under <dir>/export-history/<local time>/. Blender reads the sidecar next to the SVG that built a .blend,
-     * so a .blend built from an older export still splits its roads by surface after a newer export.
+     * Keep a full SVG export: the SVG, its sidecars (`SVG_SIDECARS`) and the features it was made from, under
+     * <dir>/export-history/<local time>/. Blender reads the sidecars next to the SVG that built a .blend, so a
+     * .blend built from an older export still splits its roads by surface after a newer export, and its prepare
+     * still knows which shapes it was built from (the fingerprint table).
      * `export.json` beside them records the pipeline code and the report, with an empty `build` slot that
      * `opcd:build --status` fills.
      */
@@ -270,8 +279,10 @@ export class FeatureHistoryService {
         if (await exists(svgPath)) {
             svg = path.basename(svgPath);
             await copyFile(svgPath, path.join(folder, svg));
-            const sidecar = svgPath.replace(/\.svg$/i, '') + '-paths.json';
-            if (await exists(sidecar)) await copyFile(sidecar, path.join(folder, path.basename(sidecar)));
+            for (const suffix of SVG_SIDECARS) {
+                const sidecar = svgPath.replace(/\.svg$/i, '') + suffix;
+                if (await exists(sidecar)) await copyFile(sidecar, path.join(folder, path.basename(sidecar)));
+            }
         }
         const features = [...(await this.current(courseId)).values()];
         await writeFile(path.join(folder, 'features.json'), JSON.stringify({

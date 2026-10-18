@@ -11,11 +11,11 @@
     "maxHeightError": 0.8,
     "scalePenalty": 0.2,
     "speciesWeights": {
-      "poplar": 0.118,
-      "broadleaf": 0.124,
+      "poplar": 0.12,
+      "broadleaf": 0.2,
       "elm": 0.121,
-      "birch": 0.331,
-      "oak": 0.24
+      "birch": 0.06,
+      "oak": 0.5
     },
     "speciesFitSlack": 0.8,
     "woodlandRadiusM": 20,

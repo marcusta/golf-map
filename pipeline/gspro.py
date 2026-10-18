@@ -71,6 +71,7 @@ from __future__ import annotations
 import zlib
 import argparse
 import contextlib
+import hashlib
 import copy as copy_mod
 import io
 import html
@@ -2841,6 +2842,66 @@ def _road_regions(roads: list[MergedRoad], names: list[str], rows: list, tol: fl
     return result
 
 
+SHAPE_FINGERPRINTS_FORMAT = "golfmap-svg-shape-fingerprints-v1"
+_FP_TAG = re.compile(r"<(/?)(g|path)\b([^>]*?)(/?)>", re.S)
+_FP_ATTR = re.compile(r"([\w:.-]+)\s*=\s*\"([^\"]*)\"")
+
+
+def shape_fingerprints_file(svg: Path) -> Path:
+    """The shape-fingerprint table written next to an SVG: <stem>-shapes.json."""
+    return svg.with_name(f"{svg.stem}-shapes.json")
+
+
+def svg_shape_fingerprints(text: str) -> dict[str, str]:
+    """{SVG path id: 12-hex fingerprint} of every <path id> in an SVG's text.
+
+    The fingerprint is sha1 over what decides the mesh OPCD builds from the path - the Inkscape layer it
+    sits in (OPCD builds per `Hole<N>` layer), its `style` (the fill = the OPCD surface), its `fill-rule`
+    (holes) and its `d` - and nothing else: `data-*` attributes are ours, OPCD never reads them. Blender's
+    `shape_prepare` compares two builds' tables to carry the previous build's mesh over for a shape that is
+    unchanged, so the id stays the mesh name and the fingerprint never goes into one (Unity's name limit,
+    a `d` of up to 119 000 characters). Parsed from the text, so a table can be written for any SVG,
+    including an export snapshot from before the table existed (`gspro.py svg-shapes`)."""
+    out: dict[str, str] = {}
+    stack: list[str | None] = []
+    for m in _FP_TAG.finditer(text):
+        closing, tag, attrs, selfclose = m.groups()
+        if tag == "g":
+            if closing:
+                if stack:
+                    stack.pop()
+            elif not selfclose:
+                a = dict(_FP_ATTR.findall(attrs))
+                stack.append(a.get("inkscape:label") or a.get("id"))
+            continue
+        if closing:
+            continue
+        a = dict(_FP_ATTR.findall(attrs))
+        pid = a.get("id")
+        if not pid:
+            continue
+        layer = next((s for s in reversed(stack) if s), "")
+        key = "\n".join((layer, html.unescape(a.get("style", "")), a.get("fill-rule", "nonzero"), a.get("d", "")))
+        out[pid] = hashlib.sha1(key.encode("utf-8")).hexdigest()[:12]
+    return out
+
+
+def write_shape_fingerprints(svg: Path) -> Path:
+    """Write the shape-fingerprint table of the SVG at `svg` (shape_fingerprints_file)."""
+    shapes = svg_shape_fingerprints(svg.read_text(encoding="utf-8"))
+    out = shape_fingerprints_file(svg)
+    out.write_text(json.dumps({
+        "format": SHAPE_FINGERPRINTS_FORMAT,
+        "note": "One fingerprint per path of the SVG next to this file: sha1 of its layer, style, fill-rule and d, "
+                "12 hex. A shape whose fingerprint is unchanged between two OPCD builds is built from the same "
+                "outline, surface and layer; Blender's shape_prepare carries the previous build's mesh over for it. "
+                "Never part of a mesh or asset name.",
+        "svg": svg.name,
+        "shapes": dict(sorted(shapes.items())),
+    }, indent=1) + "\n", encoding="utf-8")
+    return out
+
+
 def _write_path_surfaces(svg: Path, regions: dict) -> Path:
     """Write the road-surface sidecar of `svg` (path_surfaces_file)."""
     out = path_surfaces_file(svg)
@@ -3545,6 +3606,7 @@ def cmd_svg(bbox, out: Path, db_path: Path, course_ident: str,
     out.write_text("\n".join(lines) + "\n", encoding="utf-8")
     regions = _road_regions(roads, road_names, rows, tol, to_svg)
     surfaces_out = _write_path_surfaces(out, regions)
+    shapes_out = write_shape_fingerprints(out)
 
     total = sum(len(v) for v in layers.values())
     kinds = ", ".join(f"{k} {v}" for k, v in sorted(written.items(), key=lambda kv: -kv[1]))
@@ -3556,6 +3618,7 @@ def cmd_svg(bbox, out: Path, db_path: Path, course_ident: str,
     mixed = sorted(n for n, r in regions["regions"].items() if r["mixed"])
     print(f"  wrote {surfaces_out.name} ({len(regions['shapes'])} road shape(s) with a surface"
           + (f"; {len(mixed)} of mixed surfaces, for Blender to cut: {', '.join(mixed)}" if mixed else "") + ")")
+    print(f"  wrote {shapes_out.name} (a fingerprint per shape, for Blender to carry unchanged meshes over)")
     print(f"  {side:.1f} m square = {side:.1f} mm at 1 unit/m, {curves}, stacked {order_note}")
     if road_notes:
         print(f"  roads: {road_notes}")
@@ -7224,6 +7287,10 @@ def build_parser() -> argparse.ArgumentParser:
                    help="rewrite only <stem>-paths.json (the road surfaces) of the existing SVG at --out, "
                         "after a path changed surface; the SVG is left as it is")
 
+    p = sub.add_parser("svg-shapes", help="write <stem>-shapes.json (a fingerprint per shape) for existing SVGs, "
+                                          "e.g. export snapshots from before `svg` wrote it")
+    p.add_argument("svgs", nargs="+", metavar="SVG", help="SVG file(s)")
+
     return parser
 
 
@@ -7258,6 +7325,11 @@ def main(argv: list[str] | None = None) -> int:
         return 0
     if args.command == "holes":
         cmd_holes(args.course, Path(args.out), Path(args.db))
+        return 0
+    if args.command == "svg-shapes":
+        for svg in args.svgs:
+            out = write_shape_fingerprints(Path(svg))
+            print(f"Wrote {out} ({len(json.loads(out.read_text(encoding='utf-8'))['shapes'])} shapes)")
         return 0
     bbox, extent = _resolve_area(args)
 

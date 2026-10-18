@@ -165,6 +165,938 @@
      "mossMat": "granite_moss"
     }
    ]
+  },
+  "heap_1": {
+   "category": "prop",
+   "collider": "mesh",
+   "parts": [
+    {
+     "kind": "boulder",
+     "sx": 1.0,
+     "sy": 0.82,
+     "sz": 0.7,
+     "seed": 101,
+     "exponent": 2.6,
+     "lumps": 0.55,
+     "flats": [
+      {
+       "dir": [
+        0,
+        1,
+        0.2
+       ],
+       "at": 0.8,
+       "keep": 0.15
+      },
+      {
+       "dir": [
+        0,
+        -1,
+        0.1
+       ],
+       "at": 0.82,
+       "keep": 0.15
+      },
+      {
+       "dir": [
+        1,
+        0,
+        0.3
+       ],
+       "at": 0.84,
+       "keep": 0.2
+      },
+      {
+       "dir": [
+        0,
+        0,
+        1
+       ],
+       "at": 0.86,
+       "keep": 0.3
+      }
+     ],
+     "seg": 32,
+     "rings": 20,
+     "mat": "granite_boulder"
+    }
+   ]
+  },
+  "heap_2": {
+   "category": "prop",
+   "collider": "mesh",
+   "parts": [
+    {
+     "kind": "boulder",
+     "sx": 1.0,
+     "sy": 0.76,
+     "sz": 0.66,
+     "seed": 102,
+     "exponent": 2.9,
+     "lumps": 0.5,
+     "flats": [
+      {
+       "dir": [
+        0,
+        1,
+        0.2
+       ],
+       "at": 0.8,
+       "keep": 0.15
+      },
+      {
+       "dir": [
+        0,
+        -1,
+        0.1
+       ],
+       "at": 0.82,
+       "keep": 0.15
+      },
+      {
+       "dir": [
+        1,
+        0,
+        0.3
+       ],
+       "at": 0.84,
+       "keep": 0.2
+      },
+      {
+       "dir": [
+        0,
+        0,
+        1
+       ],
+       "at": 0.86,
+       "keep": 0.3
+      }
+     ],
+     "seg": 32,
+     "rings": 20,
+     "mat": "granite_boulder"
+    }
+   ]
+  },
+  "heap_3": {
+   "category": "prop",
+   "collider": "mesh",
+   "parts": [
+    {
+     "kind": "boulder",
+     "sx": 1.0,
+     "sy": 0.9,
+     "sz": 0.74,
+     "seed": 103,
+     "exponent": 2.4,
+     "lumps": 0.6,
+     "flats": [
+      {
+       "dir": [
+        0,
+        1,
+        0.2
+       ],
+       "at": 0.8,
+       "keep": 0.15
+      },
+      {
+       "dir": [
+        0,
+        -1,
+        0.1
+       ],
+       "at": 0.82,
+       "keep": 0.15
+      },
+      {
+       "dir": [
+        1,
+        0,
+        0.3
+       ],
+       "at": 0.84,
+       "keep": 0.2
+      },
+      {
+       "dir": [
+        0,
+        0,
+        1
+       ],
+       "at": 0.86,
+       "keep": 0.3
+      }
+     ],
+     "seg": 32,
+     "rings": 20,
+     "mat": "granite_boulder"
+    }
+   ]
+  },
+  "heap_4": {
+   "category": "prop",
+   "collider": "mesh",
+   "parts": [
+    {
+     "kind": "boulder",
+     "sx": 1.0,
+     "sy": 0.7,
+     "sz": 0.62,
+     "seed": 104,
+     "exponent": 3.0,
+     "lumps": 0.45,
+     "flats": [
+      {
+       "dir": [
+        0,
+        1,
+        0.2
+       ],
+       "at": 0.8,
+       "keep": 0.15
+      },
+      {
+       "dir": [
+        0,
+        -1,
+        0.1
+       ],
+       "at": 0.82,
+       "keep": 0.15
+      },
+      {
+       "dir": [
+        1,
+        0,
+        0.3
+       ],
+       "at": 0.84,
+       "keep": 0.2
+      },
+      {
+       "dir": [
+        0,
+        0,
+        1
+       ],
+       "at": 0.86,
+       "keep": 0.3
+      }
+     ],
+     "seg": 32,
+     "rings": 20,
+     "mat": "granite_boulder"
+    }
+   ]
+  },
+  "heap_5": {
+   "category": "prop",
+   "collider": "mesh",
+   "parts": [
+    {
+     "kind": "boulder",
+     "sx": 1.0,
+     "sy": 0.86,
+     "sz": 0.8,
+     "seed": 105,
+     "exponent": 2.5,
+     "lumps": 0.55,
+     "flats": [
+      {
+       "dir": [
+        0,
+        1,
+        0.2
+       ],
+       "at": 0.8,
+       "keep": 0.15
+      },
+      {
+       "dir": [
+        0,
+        -1,
+        0.1
+       ],
+       "at": 0.82,
+       "keep": 0.15
+      },
+      {
+       "dir": [
+        1,
+        0,
+        0.3
+       ],
+       "at": 0.84,
+       "keep": 0.2
+      },
+      {
+       "dir": [
+        0,
+        0,
+        1
+       ],
+       "at": 0.86,
+       "keep": 0.3
+      }
+     ],
+     "seg": 32,
+     "rings": 20,
+     "mat": "granite_boulder"
+    }
+   ]
+  },
+  "heap_6": {
+   "category": "prop",
+   "collider": "mesh",
+   "parts": [
+    {
+     "kind": "boulder",
+     "sx": 1.0,
+     "sy": 0.78,
+     "sz": 0.68,
+     "seed": 106,
+     "exponent": 2.8,
+     "lumps": 0.5,
+     "flats": [
+      {
+       "dir": [
+        0,
+        1,
+        0.2
+       ],
+       "at": 0.8,
+       "keep": 0.15
+      },
+      {
+       "dir": [
+        0,
+        -1,
+        0.1
+       ],
+       "at": 0.82,
+       "keep": 0.15
+      },
+      {
+       "dir": [
+        1,
+        0,
+        0.3
+       ],
+       "at": 0.84,
+       "keep": 0.2
+      },
+      {
+       "dir": [
+        0,
+        0,
+        1
+       ],
+       "at": 0.86,
+       "keep": 0.3
+      }
+     ],
+     "seg": 32,
+     "rings": 20,
+     "mat": "granite_boulder"
+    }
+   ]
+  },
+  "heap_7": {
+   "category": "prop",
+   "collider": "mesh",
+   "parts": [
+    {
+     "kind": "boulder",
+     "sx": 1.0,
+     "sy": 0.92,
+     "sz": 0.72,
+     "seed": 107,
+     "exponent": 2.3,
+     "lumps": 0.6,
+     "flats": [
+      {
+       "dir": [
+        0,
+        1,
+        0.2
+       ],
+       "at": 0.8,
+       "keep": 0.15
+      },
+      {
+       "dir": [
+        0,
+        -1,
+        0.1
+       ],
+       "at": 0.82,
+       "keep": 0.15
+      },
+      {
+       "dir": [
+        1,
+        0,
+        0.3
+       ],
+       "at": 0.84,
+       "keep": 0.2
+      },
+      {
+       "dir": [
+        0,
+        0,
+        1
+       ],
+       "at": 0.86,
+       "keep": 0.3
+      }
+     ],
+     "seg": 32,
+     "rings": 20,
+     "mat": "granite_boulder"
+    }
+   ]
+  },
+  "boxkerb_1": {
+   "category": "prop",
+   "collider": "mesh",
+   "parts": [
+    {
+     "kind": "boulder",
+     "sx": 1.0,
+     "sy": 0.1,
+     "sz": 0.3,
+     "seed": 201,
+     "exponent": 8.0,
+     "lumps": 0.1,
+     "seg": 24,
+     "rings": 14,
+     "mat": "granite_plinth"
+    }
+   ]
+  },
+  "boxkerb_2": {
+   "category": "prop",
+   "collider": "mesh",
+   "parts": [
+    {
+     "kind": "boulder",
+     "sx": 1.0,
+     "sy": 0.1,
+     "sz": 0.3,
+     "seed": 202,
+     "exponent": 8.0,
+     "lumps": 0.1,
+     "seg": 24,
+     "rings": 14,
+     "mat": "granite_plinth"
+    }
+   ]
+  },
+  "boxstone_1": {
+   "category": "prop",
+   "collider": "mesh",
+   "parts": [
+    {
+     "kind": "boulder",
+     "sx": 1.0,
+     "sy": 0.82,
+     "sz": 0.72,
+     "seed": 211,
+     "exponent": 2.6,
+     "lumps": 0.5,
+     "flats": [
+      {
+       "dir": [
+        0,
+        1,
+        0.2
+       ],
+       "at": 0.8,
+       "keep": 0.15
+      },
+      {
+       "dir": [
+        0,
+        -1,
+        0.1
+       ],
+       "at": 0.82,
+       "keep": 0.15
+      },
+      {
+       "dir": [
+        1,
+        0,
+        0.3
+       ],
+       "at": 0.84,
+       "keep": 0.2
+      },
+      {
+       "dir": [
+        0,
+        0,
+        1
+       ],
+       "at": 0.86,
+       "keep": 0.3
+      }
+     ],
+     "seg": 24,
+     "rings": 14,
+     "mat": "granite_rock"
+    }
+   ]
+  },
+  "boxstone_2": {
+   "category": "prop",
+   "collider": "mesh",
+   "parts": [
+    {
+     "kind": "boulder",
+     "sx": 1.0,
+     "sy": 0.74,
+     "sz": 0.6,
+     "seed": 212,
+     "exponent": 2.9,
+     "lumps": 0.45,
+     "flats": [
+      {
+       "dir": [
+        0,
+        1,
+        0.2
+       ],
+       "at": 0.8,
+       "keep": 0.15
+      },
+      {
+       "dir": [
+        0,
+        -1,
+        0.1
+       ],
+       "at": 0.82,
+       "keep": 0.15
+      },
+      {
+       "dir": [
+        1,
+        0,
+        0.3
+       ],
+       "at": 0.84,
+       "keep": 0.2
+      },
+      {
+       "dir": [
+        0,
+        0,
+        1
+       ],
+       "at": 0.86,
+       "keep": 0.3
+      }
+     ],
+     "seg": 24,
+     "rings": 14,
+     "mat": "granite_rock"
+    }
+   ]
+  },
+  "boxstone_3": {
+   "category": "prop",
+   "collider": "mesh",
+   "parts": [
+    {
+     "kind": "boulder",
+     "sx": 1.0,
+     "sy": 0.9,
+     "sz": 0.7,
+     "seed": 213,
+     "exponent": 2.4,
+     "lumps": 0.55,
+     "flats": [
+      {
+       "dir": [
+        0,
+        1,
+        0.2
+       ],
+       "at": 0.8,
+       "keep": 0.15
+      },
+      {
+       "dir": [
+        0,
+        -1,
+        0.1
+       ],
+       "at": 0.82,
+       "keep": 0.15
+      },
+      {
+       "dir": [
+        1,
+        0,
+        0.3
+       ],
+       "at": 0.84,
+       "keep": 0.2
+      },
+      {
+       "dir": [
+        0,
+        0,
+        1
+       ],
+       "at": 0.86,
+       "keep": 0.3
+      }
+     ],
+     "seg": 24,
+     "rings": 14,
+     "mat": "granite_rock"
+    }
+   ]
+  },
+  "boxstone_4": {
+   "category": "prop",
+   "collider": "mesh",
+   "parts": [
+    {
+     "kind": "boulder",
+     "sx": 1.0,
+     "sy": 0.7,
+     "sz": 0.66,
+     "seed": 214,
+     "exponent": 3.0,
+     "lumps": 0.4,
+     "flats": [
+      {
+       "dir": [
+        0,
+        1,
+        0.2
+       ],
+       "at": 0.8,
+       "keep": 0.15
+      },
+      {
+       "dir": [
+        0,
+        -1,
+        0.1
+       ],
+       "at": 0.82,
+       "keep": 0.15
+      },
+      {
+       "dir": [
+        1,
+        0,
+        0.3
+       ],
+       "at": 0.84,
+       "keep": 0.2
+      },
+      {
+       "dir": [
+        0,
+        0,
+        1
+       ],
+       "at": 0.86,
+       "keep": 0.3
+      }
+     ],
+     "seg": 24,
+     "rings": 14,
+     "mat": "granite_rock"
+    }
+   ]
+  },
+  "boxstone_5": {
+   "category": "prop",
+   "collider": "mesh",
+   "parts": [
+    {
+     "kind": "boulder",
+     "sx": 1.0,
+     "sy": 0.86,
+     "sz": 0.78,
+     "seed": 215,
+     "exponent": 2.5,
+     "lumps": 0.5,
+     "flats": [
+      {
+       "dir": [
+        0,
+        1,
+        0.2
+       ],
+       "at": 0.8,
+       "keep": 0.15
+      },
+      {
+       "dir": [
+        0,
+        -1,
+        0.1
+       ],
+       "at": 0.82,
+       "keep": 0.15
+      },
+      {
+       "dir": [
+        1,
+        0,
+        0.3
+       ],
+       "at": 0.84,
+       "keep": 0.2
+      },
+      {
+       "dir": [
+        0,
+        0,
+        1
+       ],
+       "at": 0.86,
+       "keep": 0.3
+      }
+     ],
+     "seg": 24,
+     "rings": 14,
+     "mat": "granite_rock"
+    }
+   ]
+  },
+  "boxstone_6": {
+   "category": "prop",
+   "collider": "mesh",
+   "parts": [
+    {
+     "kind": "boulder",
+     "sx": 1.0,
+     "sy": 0.78,
+     "sz": 0.64,
+     "seed": 216,
+     "exponent": 2.8,
+     "lumps": 0.45,
+     "flats": [
+      {
+       "dir": [
+        0,
+        1,
+        0.2
+       ],
+       "at": 0.8,
+       "keep": 0.15
+      },
+      {
+       "dir": [
+        0,
+        -1,
+        0.1
+       ],
+       "at": 0.82,
+       "keep": 0.15
+      },
+      {
+       "dir": [
+        1,
+        0,
+        0.3
+       ],
+       "at": 0.84,
+       "keep": 0.2
+      },
+      {
+       "dir": [
+        0,
+        0,
+        1
+       ],
+       "at": 0.86,
+       "keep": 0.3
+      }
+     ],
+     "seg": 24,
+     "rings": 14,
+     "mat": "granite_rock"
+    }
+   ]
+  },
+  "boxtall_1": {
+   "category": "prop",
+   "collider": "mesh",
+   "parts": [
+    {
+     "kind": "boulder",
+     "sx": 1.0,
+     "sy": 0.8,
+     "sz": 2.0,
+     "seed": 221,
+     "exponent": 2.6,
+     "lumps": 0.45,
+     "flats": [
+      {
+       "dir": [
+        0,
+        1,
+        0.2
+       ],
+       "at": 0.8,
+       "keep": 0.15
+      },
+      {
+       "dir": [
+        0,
+        -1,
+        0.1
+       ],
+       "at": 0.82,
+       "keep": 0.15
+      },
+      {
+       "dir": [
+        1,
+        0,
+        0.3
+       ],
+       "at": 0.84,
+       "keep": 0.2
+      },
+      {
+       "dir": [
+        0,
+        0,
+        1
+       ],
+       "at": 0.86,
+       "keep": 0.3
+      }
+     ],
+     "seg": 24,
+     "rings": 14,
+     "mat": "granite_rock"
+    }
+   ]
+  },
+  "boxtall_2": {
+   "category": "prop",
+   "collider": "mesh",
+   "parts": [
+    {
+     "kind": "boulder",
+     "sx": 1.0,
+     "sy": 0.7,
+     "sz": 2.3,
+     "seed": 222,
+     "exponent": 2.9,
+     "lumps": 0.4,
+     "flats": [
+      {
+       "dir": [
+        0,
+        1,
+        0.2
+       ],
+       "at": 0.8,
+       "keep": 0.15
+      },
+      {
+       "dir": [
+        0,
+        -1,
+        0.1
+       ],
+       "at": 0.82,
+       "keep": 0.15
+      },
+      {
+       "dir": [
+        1,
+        0,
+        0.3
+       ],
+       "at": 0.84,
+       "keep": 0.2
+      },
+      {
+       "dir": [
+        0,
+        0,
+        1
+       ],
+       "at": 0.86,
+       "keep": 0.3
+      }
+     ],
+     "seg": 24,
+     "rings": 14,
+     "mat": "granite_rock"
+    }
+   ]
+  },
+  "boxtall_3": {
+   "category": "prop",
+   "collider": "mesh",
+   "parts": [
+    {
+     "kind": "boulder",
+     "sx": 1.0,
+     "sy": 0.85,
+     "sz": 1.9,
+     "seed": 223,
+     "exponent": 2.5,
+     "lumps": 0.5,
+     "flats": [
+      {
+       "dir": [
+        0,
+        1,
+        0.2
+       ],
+       "at": 0.8,
+       "keep": 0.15
+      },
+      {
+       "dir": [
+        0,
+        -1,
+        0.1
+       ],
+       "at": 0.82,
+       "keep": 0.15
+      },
+      {
+       "dir": [
+        1,
+        0,
+        0.3
+       ],
+       "at": 0.84,
+       "keep": 0.2
+      },
+      {
+       "dir": [
+        0,
+        0,
+        1
+       ],
+       "at": 0.86,
+       "keep": 0.3
+      }
+     ],
+     "seg": 24,
+     "rings": 14,
+     "mat": "granite_rock"
+    }
+   ]
   }
  },
  "instances": []

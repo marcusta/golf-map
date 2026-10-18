@@ -16,19 +16,21 @@
 //   GSPro course folder   courses.gspro_course_dir (the export panel's
 //                         "GSPro course folder"); its arboristdata.dat is the
 //                         document the packages go into, its .GKD the boundary
-//   species, palette      <courseDocsRoot>/<slug>/arborist-species.json and
-//                         grass-palette.json (docs/gspro/<slug>/). A course
-//                         without the species file is not an Arborist course.
+//   species, palettes     <courseDocsRoot>/<slug>/arborist-species.json,
+//                         grass-palette.json and palette.json (the trees'
+//                         rules; docs/gspro/<slug>/). A course without the
+//                         species file is not an Arborist course.
 //   zones, surface map,   the course's export folder (<slug>-inner-zones.json,
-//   terrains square       <slug>-inner-surfaces.json, the heightmap sidecars:
-//                         the square is the union of the terrains they place)
+//   stems, terrains       <slug>-inner-surfaces.json, <slug>-inner-trees.json,
+//   square                the heightmap sidecars: the square is the union of
+//                         the terrains they place)
 //   library, model sizes, <dataDir>/arborist/ (machine-wide, from a running
 //   planted trees         Arborist; <slug>-planted-trees.json from Unity)
 //   wrapper key           <dataDir>/arborist-wrapper.key, never in the repo
 //                         (GOLFMAP_ARBORIST_KEY overrides)
 import * as path from 'node:path';
 import { readFile, readdir } from 'node:fs/promises';
-import { courseSlug, statOrNull, surfacesExportFileName, zonesExportFileName, type ExportRunner } from './gspro-export.service';
+import { courseSlug, statOrNull, surfacesExportFileName, treesExportFileName, zonesExportFileName, type ExportRunner } from './gspro-export.service';
 import type { UnityEditor } from './unity-bridge';
 
 /** `arborist.py lower` on Vreta takes 10 s, `trees` 5 s plus the dump; a 5 km outer square with the far rule is the slow case. */
@@ -157,6 +159,11 @@ export class ArboristService {
             report.push(`Arborist trees: no ${boundary ? 'surface map (golfmap.surfaces.export in Unity)' : '.GKD with the course boundary in the GSPro course folder'}, `
                 + 'so no far rule or ring: only the outer terrain\'s trees are billboards');
         }
+        // A tree whose Arborist model is another shape than its Unity prefab is sized to its lidar stem by the
+        // palette's rules (SizeFit), not to the prefab's height.
+        const stems = path.join(course.exportDir, treesExportFileName(course.name, 'inner'));
+        const palette = this.docs(course, 'palette.json');
+        if (await statOrNull(stems) && await statOrNull(palette)) args.push('--stems', stems, '--palette', palette);
         // The trees the course's own VSP must stop drawing: arborist.py writes the list beside the planted trees.
         const farFile = path.join(path.dirname(planted), `${slug}-vsp-far.json`);
         const before = await positionsIn(farFile);

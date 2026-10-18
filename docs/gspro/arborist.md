@@ -226,7 +226,13 @@ vegetation); not yet seen in GSPro.
   in Unity is what goes over, hand edits and ground heights included.
 - Species by the same name rule, exceptions under `"trees"` in `arborist-species.json`. Arborist's
   model sizes come from the mod (`arb.catalog` with `sizes`), measured the same way as Unity's.
-- A tree keeps its height: scale x (our model height / Arborist's). Vreta's pines, firs, oaks and
+- A tree of another shape in Arborist than its Unity prefab is sized to its lidar stem by the
+  palette's rules (`SizeFit`: `--stems <slug>-inner-trees.json --palette palette.json`, passed when
+  both exist), as a ratio to Unity's own fit so jitter and hand-set scales carry over. Omberg
+  2026-10-17, 78 solitary trees against their ortho shadows: width error 0.37 -> 0.35 (log), height
+  0.12 -> 0.13; the slim Unity birches drawn as Arborist's broad S7 birch come out about 20 % lower
+  than the lidar, the generic broadleaf's beech and poplar 01's MeadowEnv 02 closer in width.
+- Otherwise (no stem at the position, the same model) a tree keeps its height: scale x (our model height / Arborist's). Vreta's pines, firs, oaks and
   poplars 03-07 are the same models (factor 1); the birches, elms and the generic broadleaf are
   replaced by a different model.
 - One item per Arborist species and look, runtime spawn off, source id 42. The outer catalogue's

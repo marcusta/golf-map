@@ -310,7 +310,8 @@ class Worker:
             {k: rep[k] for k in ("out", "conformed", "failedObjects", "timings")},
             stale=why, terrainSha=rep.get("terrainSha"), conformPath=rep.get("conformPath"),
             conformCache={k: cache.get(k) for k in ("used", "hits", "misses", "skipped",
-                                                    "gridMeshes", "operatorMeshes")})
+                                                    "gridMeshes", "operatorMeshes")},
+            carryOver={k: (rep.get("carryOver") or {}).get(k) for k in ("used", "skipped", "counts", "seams")})
 
     def op_list(self, layers_dir):
         try:

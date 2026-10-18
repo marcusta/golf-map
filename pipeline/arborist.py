@@ -515,6 +515,69 @@ class FarRule:
         return float(self.to_play[r, c])
 
 
+class SizeFit:
+    """A tree whose Arborist model is another shape than its Unity prefab aims at the stem Unity's palette
+    matched it against (GolfMapBiome.Match): the lidar height and crown width (plus openCrownPadM outside
+    woodland, x woodlandCrownMultiplier in it), weighed as there. Keeping the height only would hand the
+    other model's proportions the width (Arborist's birch is twice as wide as Forst's slim one, its beech
+    half as wide as the generic broadleaf). The scale goes on as a ratio to Unity's own fit, so the
+    palette's jitter and hand-set scales carry over. Unity's scale limits are its prefabs', not applied to
+    Arborist's model."""
+
+    def __init__(self, stems: list[dict], rules: dict):
+        self.r = rules
+        self.at = {(round(s["x"] * 100), round(s["z"] * 100)): s for s in stems}
+        self.woodland = self._woodland(stems)
+
+    def _woodland(self, stems: list[dict]) -> set[str]:
+        # GolfMapTreePlanter.WoodlandStems: tree-form stems with enough others of them within the radius.
+        radius, need = float(self.r.get("woodlandRadiusM") or 0), int(self.r.get("woodlandMinNeighbours") or 0)
+        if radius <= 0 or need <= 0:
+            return set()
+        tall = [s for s in stems if s["h"] > self.r.get("shrubMaxHeightM", 0)]
+        grid: dict[tuple[int, int], list[dict]] = {}
+        for s in tall:
+            grid.setdefault((math.floor(s["x"] / radius), math.floor(s["z"] / radius)), []).append(s)
+        out = set()
+        for s in tall:
+            gx, gz = math.floor(s["x"] / radius), math.floor(s["z"] / radius)
+            n = sum(1 for dx in (-1, 0, 1) for dz in (-1, 0, 1) for o in grid.get((gx + dx, gz + dz), [])
+                    if o is not s and (o["x"] - s["x"]) ** 2 + (o["z"] - s["z"]) ** 2 <= radius * radius)
+            if n >= need:
+                out.add(s["id"])
+        return out
+
+    def stem(self, x: float, z: float) -> dict | None:
+        kx, kz = round(x * 100), round(z * 100)
+        return next((self.at[k] for k in ((kx + dx, kz + dz) for dx in (-1, 0, 1) for dz in (-1, 0, 1)) if k in self.at), None)
+
+    def scale(self, stem: dict, height_m: float, width_m: float, limits: bool) -> float:
+        r = self.r
+        form_tree = stem["h"] > r.get("shrubMaxHeightM", 0)
+        mult, wood_weight = r.get("woodlandCrownMultiplier") or 0, r.get("woodlandWidthWeight") or 0
+        canopy = form_tree and stem["id"] in self.woodland and mult >= 1 and wood_weight > 0
+        if canopy:
+            target, weight = 2 * stem["r"] * mult, wood_weight
+        elif form_tree:
+            target, weight = 2 * stem["r"] + (r.get("openCrownPadM") or 0), (r.get("openWidthWeight") or 0) or 1
+        else:
+            target, weight = 2 * stem["r"], 1
+        s = math.exp((2 * math.log(stem["h"] / height_m) + weight * math.log(target / width_m)) / (2 + weight))
+        if limits:
+            s = max(r["minScale"], min(r["maxScale"], s))
+        boost = r.get("woodlandScaleBoost") or 0
+        if canopy and boost > 1:
+            s = min(r["maxScale"], s * boost) if limits else s * boost
+        return s
+
+    def ratio(self, x: float, z: float, unity: dict, arborist: dict) -> float | None:
+        """The factor on the Unity instance's scale for Arborist's model; None without a stem there (moved by hand)."""
+        stem = self.stem(x, z)
+        if stem is None or not (stem["h"] > 0 and stem["r"] > 0):
+            return None
+        return self.scale(stem, arborist["heightM"], arborist["widthM"], False) / self.scale(stem, unity["heightM"], unity["widthM"], True)
+
+
 class ForstRing:
     """The species file's `forstRing`: the course's own full-model trees (the "vsp" prefabs) stand only on the
     playing field and within `playM` metres of it. Further out, and still inside the far rule, the same tree
@@ -566,6 +629,9 @@ def trees(args) -> None:
     overrides = species_file.get("trees", {})
     look = species_file.get("treeSettings", [])
     planted = json.loads(Path(args.planted).read_text(encoding="utf-8"))["items"]
+    fit = SizeFit(json.loads(Path(args.stems).read_text(encoding="utf-8-sig"))["trees"],
+                  json.loads(Path(args.palette).read_text(encoding="utf-8-sig"))["rules"]) if args.stems and args.palette else None
+    fitted, unfitted = 0, 0
     x0, z0, x1, z1 = args.terrains_square
     grid = Grid(x0, z0, x1, z1)
 
@@ -647,20 +713,28 @@ def trees(args) -> None:
         ring_as = variant_of(ring.target(stem), far_too=False) if ring and kept_in_vsp and not outer and ring.target(stem) else None
         ring_m = ring.radius(stem) if ring_as else 0.0
         counts: dict[str, int] = {}
+        scales: dict[str, float] = {}   # per slot, summed: the report shows the mean factor
         for x, y, z, sx, sy, sz, qx, qy, qz, qw in source["instances"]:
             far = can_far and (rule.far(x, z) if rule else outer)
-            slot, scale, share = variant + (FAR_SUFFIX if far else ""), factor, keep
+            slot, scale, share, model = variant + (FAR_SUFFIX if far else ""), factor, keep, label
             if kept_in_vsp and not outer:
                 if not far:
                     if not (ring_as and rule.from_play(x, z) > ring_m):   # a full model near the play: the course's VSP draws it
                         left[source["name"]] = left.get(source["name"], 0) + 1
                         continue
                     # beyond the ring: the same tree as Arborist's full model
-                    slot, share, scale = ring_as[1], ring_as[3], ring_as[4]
+                    slot, share, scale, model = ring_as[1], ring_as[3], ring_as[4], ring_as[0]
                     of = ringed.setdefault(slot, {})
                     of[source["name"]] = of.get(source["name"], 0) + 1
                 trim.append([round(x, 3), round(z, 3)])
             item_id = items[slot]["VegetationItemID"]
+            other = sizes[model]
+            if fit and source["heightM"] > 0 and source.get("widthM", 0) > 0 and other.get("widthM", 0) > 0                     and not (abs(source["heightM"] / other["heightM"] - 1) < 0.02 and abs(source["widthM"] / other["widthM"] - 1) < 0.02):
+                ratio = fit.ratio(x, z, source, other)
+                if ratio is None:
+                    unfitted += 1
+                else:
+                    scale, fitted = ratio, fitted + 1
             if share < 1 and zlib.crc32(f"{x:.2f},{z:.2f}".encode()) / 0xFFFFFFFF >= share:
                 thinned += 1
                 continue
@@ -691,8 +765,9 @@ def trees(args) -> None:
                 "Scale": {"x": round(sx * scale, 4), "y": round(sy * scale, 4), "z": round(sz * scale, 4)},
                 "Rotation": {"x": qx, "y": qy, "z": qz, "w": qw}, "VegetationSourceID": TREE_SOURCE_ID, "DistanceFalloff": 1})
             counts[slot] = counts.get(slot, 0) + 1
+            scales[slot] = scales.get(slot, 0.0) + scale
         for slot, count in counts.items():
-            rows.append((source["catalogue"], source["name"], slot, count, ring_as[4] if ring_as and slot == ring_as[1] and slot != variant else factor))
+            rows.append((source["catalogue"], source["name"], slot, count, scales[slot] / count))
     for cell in cells.values():
         del cell["_by"]
 
@@ -730,6 +805,9 @@ def trees(args) -> None:
         print(f"{outside} tree(s) outside the terrains, left out")
     if thinned:
         print(f"{thinned} tree(s) thinned out (keep=)")
+    if fit:
+        print(f"{fitted} tree(s) of another shape than their Unity prefab sized to their lidar stem (palette rules)"
+              + (f", {unfitted} without a stem at their position kept the height" if unfitted else ""))
     for (limit, share), (there, gone) in zip(outer_keep or [], bands):
         print(f"outside the boundary, {'within ' + str(limit) + ' m' if limit is not None else 'further out'}: {there} billboard trees, keep {share}: {gone} left out, {there - gone} drawn")
     if left:
@@ -918,6 +996,8 @@ def main() -> None:
     p.add_argument("--drop-package", nargs="*", default=["GolfMap trial trees"], help="packages to remove with their instances")
     p.add_argument("--no-far", dest="far", action="store_false", help="every tree a full model, no billboard-only copies")
     p.add_argument("--surfaces", help=f"<course>-inner-surfaces.json of the export: turns on the far rule (FarRule; distances under billboardBeyondM in the species file, default {BILLBOARD_OUTSIDE_OOB_M:g} / {BILLBOARD_FROM_PLAY_M:g} m)")
+    p.add_argument("--stems", help="<course>-inner-trees.json of the export (unity-trees-v1): with --palette, a tree whose Arborist model differs from its Unity prefab is sized to its lidar stem (SizeFit), not to the prefab's height")
+    p.add_argument("--palette", help="the course's tree palette.json (rules as in Unity's GolfMapBiome)")
     p.add_argument("--gkd", help="the course's .GKD for the boundary (default: the one in --course-dir)")
     p.add_argument("--key-file")
     p = sub.add_parser("lower", help="the palettes' prefab items (bushes, woodland floor) spread by the zones export's masks")
