@@ -10,7 +10,7 @@ import { ringWgs84 } from '../geo/wgs84-cache';
 import type { MapService } from '../map/map.service';
 import {
     DRAW_FILL_OPACITY, NICE_FILL_OPACITY, FEATURE_TYPES, typeColorExpression, featureFillColorExpression, SELECTION_COLOR,
-    OUTLINE_ONLY_TYPES, OUTLINE_ONLY_LINE_WIDTH, OUTLINE_ONLY_CASING_WIDTH, OUTLINE_ONLY_CASING_COLOR, RULES_TYPES, VEGETATION_TYPES, isVegetationType,
+    OUTLINE_ONLY_TYPES, OUTLINE_ONLY_LINE_WIDTH, OUTLINE_ONLY_CASING_WIDTH, OUTLINE_ONLY_CASING_COLOR, RULES_TYPES, VEGETATION_TYPES, isVegetationType, isRulesType,
 } from './feature-palette';
 import { CourseDetailService } from '../course-detail/course-detail.service';
 import { ZoneTypesService, zoneTypeKeyOf, zoneVariantKeyOf } from '../zones/zone-types.service';
@@ -1424,8 +1424,9 @@ export class FeaturesService {
      * Data updates: when `geojson` records a diff from the collection last
      * sent (see `geojsonDiffs`) and Draw mode is on, the change goes out as
      * a GeoJSONSource.updateData diff, which re-tiles only the changed
-     * features. Nice mode, the first send, visibility toggles and loads
-     * send the full collection with setData.
+     * features. Nice mode also uses diffs for rules-only edits, reusing the
+     * resolved surfaces. Other nice-mode edits, the first send, visibility
+     * toggles and loads send the full collection with setData.
      *
      * `editor` marks the editor's attach: only then does the editor's view
      * state (`roughsLayerHidden`) apply, so the planner shows every layer.
@@ -1440,6 +1441,7 @@ export class FeaturesService {
         // `geojson` is identity-stable, so an unchanged collection means
         // nothing visible moved.
         let lastDataSent: FeatureCollection | null = null;
+        let lastNiceStack: { source: FeatureCollection; result: FeatureCollection } | null = null;
         this.overlayMap = map;
         // Ids that currently carry the `selected` feature-state on the map.
         let selectionState = new Set<string>();
@@ -1479,7 +1481,12 @@ export class FeaturesService {
             const nice = this.niceRendering.get();
             const rawData = this.geojson.get();
             const resolved = this.resolvedStack.get();
-            const data = nice && resolved?.source === rawData ? resolved.result : rawData;
+            const previousNiceStack = lastNiceStack;
+            const exactResolved = resolved?.source === rawData ? resolved : null;
+            const reusedRules = nice && !exactResolved ? reuseRulesStack(lastNiceStack, rawData) : null;
+            if (nice && (exactResolved || reusedRules)) lastNiceStack = exactResolved ?? reusedRules;
+            const currentNiceStack = nice && lastNiceStack?.source === rawData ? lastNiceStack : null;
+            const data = currentNiceStack ? currentNiceStack.result : rawData;
             // Generated trees overlay the surface stack (no occlusion
             // resolution needed — they are never differenced against it).
             const generated = this.generatedGeojson.get();
@@ -1489,7 +1496,9 @@ export class FeaturesService {
                 lastDataSent = null;
                 return;
             }
-            this.scheduleResolve(rawData, nice);
+            // Rules never clip the surfaces. Editing OOB in Furniture can
+            // keep the resolved course and update just the changed line.
+            if (!currentNiceStack) this.scheduleResolve(rawData, nice);
             if (!added) {
                 // Set the correct paint at layer creation too. On a cold map
                 // load, the tint effect can observe `ready` before this
@@ -1630,11 +1639,13 @@ export class FeaturesService {
                 applySelection(this.selectedIds.peek());
             } else {
                 if (data !== lastDataSent) {
-                    // A diff applies only to the exact collection the map
-                    // holds, and only in Draw mode (nice mode sends the
-                    // resolved surface stack, not `geojson` itself).
-                    const step = !nice ? this.geojsonDiffs.get(rawData) : undefined;
-                    if (step && step.from === lastDataSent) map.updateOverlayData(FEATURES_OVERLAY_ID, data, step.diff);
+                    // Nice mode can use the raw diff only when it changed
+                    // rules alone and the map holds the reused surface stack.
+                    const step = this.geojsonDiffs.get(rawData);
+                    const matchesBase = !nice ? step?.from === lastDataSent
+                        : !!reusedRules && previousNiceStack?.result === lastDataSent
+                            && step?.from === previousNiceStack?.source;
+                    if (step && matchesBase) map.updateOverlayData(FEATURES_OVERLAY_ID, data, step.diff);
                     else map.updateOverlayData(FEATURES_OVERLAY_ID, data);
                     lastDataSent = data;
                 }
@@ -1737,6 +1748,28 @@ export class FeaturesService {
 
 /** Line opacity of a mode's backdrop types (see `FeaturesService.modeBackdropTypes`). */
 const BACKDROP_OUTLINE_OPACITY = 0.7;
+
+/** Reuse the clipped surfaces when only passthrough rules changed. */
+function reuseRulesStack(
+    previous: { source: FeatureCollection; result: FeatureCollection } | null,
+    source: FeatureCollection,
+): { source: FeatureCollection; result: FeatureCollection } | null {
+    if (!previous) return null;
+    if (previous.source === source) return previous;
+    const isRule = (f: Feature) => isRulesType(f.properties?.type as string);
+    const before = previous.source.features.filter(f => !isRule(f));
+    const after = source.features.filter(f => !isRule(f));
+    // Identity includes geometry, type, order, properties and visibility.
+    // A rule retyped to a surface (or vice versa) also fails this check.
+    if (before.length !== after.length || before.some((f, i) => f !== after[i])) return null;
+    return {
+        source,
+        result: {
+            type: 'FeatureCollection',
+            features: [...previous.result.features.filter(f => !isRule(f)), ...source.features.filter(isRule)],
+        },
+    };
+}
 
 /** Paint value: `inBackdrop` for the backdrop types, `own` for every other. */
 function backdropCase(backdrop: ReadonlySet<string>, inBackdrop: number, own: number): unknown {

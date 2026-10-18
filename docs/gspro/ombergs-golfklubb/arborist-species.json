@@ -143,8 +143,10 @@
       "match": [
         "S7_American_Elm"
       ],
-      "tint": "#9fa5a9",
-      "calibrated": true
+      "tint": "#868c90",
+      "barkTint": "#6e6862",
+      "calibrated": false,
+      "note": "2026-10-18 (Marcus, in Arborist Ultra beside the beeches and an oak): darker leaves and a darker, warmer trunk than the calibrated #9fa5a9 / barkCap 0.7, whose trunk looked unnatural. Of four steps he found #868c90/#6e6862 and #73797c/#58534e both good; this one measured as the beech (crown luma 57/42 sunlit/back-lit against beech_05's 54/46), the other darker than every neighbour (49/34)."
     },
     {
       "match": [
@@ -273,10 +275,11 @@
         "S7_American_Elm"
       ],
       "billboardTint": "#f9ffff",
-      "billboardBrightness": 1.362,
+      "billboardBrightness": 1.16,
       "billboardDesat": 0.495,
       "billboardNormal": 0.3,
-      "billboardCalibrated": true
+      "billboardCalibrated": false,
+      "note": "2026-10-18: calibrated at 1.362 for the old leaf tint #9fa5a9; scaled by the new tint's 0.85 until the billboard is measured again (calibrate.py billboards)."
     },
     {
       "match": [
@@ -611,8 +614,10 @@
     "PF Birch D generic": "S7_European_White_Birch@tint=#527e4b,keep=0.8",
     "PF Birch F Sapling": "S7_European_White_Birch@tint=#527e4b,keep=0.8",
     "Broadleaf Balanced": "Forest_Large_beech_tree_04",
-    "Elm4-Tall PREFAB": "Forest_Large_beech_tree_05",
-    "Elm-Split PREFAB": "Forest_Large_beech_tree_03"
+    "Elm4-Tall PREFAB": ["Forest_Large_beech_tree_05", "CE_DA_Forest_Tree_16018", "CE_DA_Forest_Tree_11164"],
+    "Elm-Split PREFAB": ["Forest_Large_beech_tree_03", "Forest_Large_beech_tree_04", "CE_DA_Forest_Tree_18195"],
+    "Elm": ["S7_American_Elm", "CE_Oak_CE_Tall_Fanned_1", "CE_Oak_CE_Tall_Fanned_2", "CE_Oak_CE_Tall_Fanned_3"]
   },
+  "trees_comment": "2026-10-18 (Marcus, Arborist Ultra lineup): Omberg's beech and elm are Arborist-only species. Their Unity stand-ins (the palette's 'beech' = the two CESimgolf elm prefabs, 'elm' = the plain Elm prefab, all hidden in the course's VSP) each share their trees between the Arborist models in the list, by position; the Unity size fit picks the stand-in, then each tree is sized to its lidar stem. Grouped by model height: the tall stand-in (Elm4-Tall, 26.6 m) takes the tall models (21-28 m), the shorter one (Elm-Split, 17 m) the 15-21 m ones. Beech: NatureManufacture's large beeches 03-05 and three DA Forest broadleaves; elm: the S7 American elm (darkened, see treeSettings) and CESimgolf's three vase-shaped Tall Fanned oaks. Arborist has no CESimgolf elm, and own prefabs cannot be added to it.",
   "species_comment": "Prefab_billberry_04 (the tall bilberry) is left out and the ferns are made small: NatureManufacture's grass-shader plants light their back faces as fronts, so from the sun's side a big bilberry bush or fern frond is white (seen in Arborist and GSPro 2026-10-12; the cure, _BackFaceMirrorNormal, is not among the values Arborist stores)."
 }

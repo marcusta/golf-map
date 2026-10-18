@@ -1465,6 +1465,44 @@ async function diffService(n: number) {
 }
 
 describe('overlay updateData diffs (review item 2b)', () => {
+    test('OOB edits in nice mode send only the boundary diff and reuse the resolved surfaces', async () => {
+        const initial = [
+            { ...feature('fw', 'fairway'), geometry: squareGeometry(20) },
+            { ...feature('gr', 'green', 1, { sortOrder: 1 }), geometry: squareGeometry(5) },
+            { ...feature('bounds', 'oob', 1, { sortOrder: 2 }), geometry: squareGeometry(100) },
+        ];
+        const { api } = fakeApi(initial);
+        const svc = new FeaturesService(api, createInlineSurfaceStackClient());
+        await svc.load('c1');
+        const rec = recordingMap();
+        const dispose = svc.attachOverlay(rec.map as never);
+        try {
+            await Bun.sleep(0);
+            const resolved = rec.featureSends().at(-1)!.data as FeatureCollection;
+            const fairway = resolved.features.find(f => f.id === 'fw')!;
+            expect(fairway.geometry.type).toBe('MultiPolygon');
+            const resolves = surfaceStackStats.resolves;
+            for (let i = 1; i <= 3; i++) {
+                const before = rec.featureSends().length;
+                svc.patchLocal('bounds', squareGeometry(100 + i));
+                await Bun.sleep(0);
+                const sends = rec.featureSends().slice(before);
+                expect(sends).toHaveLength(1);
+                expect(sends[0]!.diff).toEqual({ update: [{
+                    id: 'bounds', newGeometry: svc.geojson.peek().features.find(f => f.id === 'bounds')!.geometry,
+                }] });
+                expect((sends[0]!.data as FeatureCollection).features.find(f => f.id === 'fw')).toBe(fairway);
+                expect(surfaceStackStats.resolves).toBe(resolves);
+            }
+            // A real surface edit must still resolve the stack, including after rule edits.
+            svc.patchLocal('gr', squareGeometry(6));
+            await Bun.sleep(0);
+            expect(surfaceStackStats.resolves).toBe(resolves + 1);
+        } finally {
+            dispose();
+        }
+    });
+
     test('both feature sources promote the string id property', async () => {
         const { addOpts, dispose } = await diffService(2);
         expect(addOpts.find(a => a.id === 'features')!.opts).toMatchObject({ promoteId: 'id' });

@@ -2,7 +2,7 @@ import { afterEach, describe, expect, test } from 'bun:test';
 import { ApiError } from '@basics/core/client/api-error';
 import { _reset } from '@basics/core/client/error-report';
 import { di, Signal } from '@basics/core/client/core';
-import type { FeatureCollection, Point as GeoPoint, Polygon } from 'geojson';
+import type { FeatureCollection, Point as GeoPoint, Polygon, MultiLineString } from 'geojson';
 import type { ToolContext } from '../src/editor/tool';
 import type { MapPointerEvent } from '../src/map/map.service';
 import { ConfirmService } from '../src/app/confirm-dialog.component';
@@ -13,7 +13,7 @@ import {
     NOTICE_MS,
     NUDGE_COALESCE_MS,
 } from '../src/draw/draw-tool.service';
-import { FeaturesService } from '../src/draw/features.service';
+import { FeaturesService, geometryToWgs84Rings } from '../src/draw/features.service';
 import { CourseDetailService } from '../src/course-detail/course-detail.service';
 import { translateAnchors, toggleVerticesCorner, vertexKey } from '../src/draw/draw-state';
 import { sweref99tmToWgs84, wgs84ToSweref99tm } from '../src/geo/transform';
@@ -104,7 +104,7 @@ function fakeApi(initial: CourseFeature[]): CourseFeaturesApi {
     return withBatchEndpoints(api, rows);
 }
 
-async function setup(rows: CourseFeature[], opts: { bearing?: number } = {}) {
+async function setup(rows: CourseFeature[], opts: { bearing?: number; rules?: boolean; courseOverlay?: boolean } = {}) {
     const detail = new CourseDetailService();
     detail.holeStore.set([]);
     di.set(CourseDetailService, detail);
@@ -119,12 +119,19 @@ async function setup(rows: CourseFeature[], opts: { bearing?: number } = {}) {
     const clickHandlers: Array<(e: MapPointerEvent) => void> = [];
     const glHandlers = new Map<string, Set<(e: unknown) => void>>();
     let overlay: FeatureCollection | null = null;
+    const pushes = new Map<string, number>();
+    const send = (id: string, data: FeatureCollection) => {
+        pushes.set(id, (pushes.get(id) ?? 0) + 1);
+        if (id === 'draw') overlay = data;
+    };
     const glMap = {
         transform: {
             locationToScreenPoint: (l: { lng: number; lat: number }) => screenOf(wgs84ToSweref99tm(l.lat, l.lng)),
         },
         project: () => { throw new Error('terrain-aware project must not be called'); },
         getBearing: () => opts.bearing ?? 0,
+        getMaxPitch: () => 85,
+        setMaxPitch() {},
         on(type: string, h: (e: unknown) => void) {
             let set = glHandlers.get(type);
             if (!set) glHandlers.set(type, set = new Set());
@@ -134,16 +141,17 @@ async function setup(rows: CourseFeature[], opts: { bearing?: number } = {}) {
         once() {}, getCanvas: () => ({ style: {} }),
         dragPan: { enable() {}, disable() {} }, boxZoom: { enable() {}, disable() {} },
         setPaintProperty() {}, setFilter() {}, getSource: () => ({ type: 'geojson' }),
+        setFeatureState() {}, removeFeatureState() {},
     };
     const map = {
         ready: new Signal(true),
         map: new Signal(glMap),
         zoom: new Signal(ZOOM),
-        interactionMode: new Signal(DRAW_TOOL_ID),
+        interactionMode: new Signal(opts.rules ? 'furniture' : DRAW_TOOL_ID),
         onClick: (h: (e: MapPointerEvent) => void) => { clickHandlers.push(h); return () => {}; },
         onMouseMove: (h: (e: MapPointerEvent) => void) => { moveHandlers.push(h); return () => {}; },
-        addOverlayLayer: (_id: string, data: FeatureCollection) => { overlay = data; },
-        updateOverlayData: (_id: string, data: FeatureCollection) => { overlay = data; },
+        addOverlayLayer: send,
+        updateOverlayData: send,
         removeOverlayLayer: () => {},
     };
     const ctx: ToolContext = {
@@ -156,6 +164,7 @@ async function setup(rows: CourseFeature[], opts: { bearing?: number } = {}) {
         track: (d: () => void) => { cleanups.push(d); },
     };
     const tool = new DrawToolService();
+    if (opts.courseOverlay) cleanups.push(features.attachOverlay(map as never));
     tool.attach(ctx);
     let queued: Array<() => void> = [];
     tool.frameScheduler = cb => { queued.push(cb); };
@@ -166,7 +175,7 @@ async function setup(rows: CourseFeature[], opts: { bearing?: number } = {}) {
         queued = [];
         for (const cb of run) cb();
     };
-    tool.activate(ctx);
+    tool.activate(ctx, opts.rules ? { scope: 'rules', toolId: 'furniture' } : undefined);
 
     const at = (p: Point) => {
         const { lat, lon } = sweref99tmToWgs84(p.x, p.y);
@@ -201,6 +210,7 @@ async function setup(rows: CourseFeature[], opts: { bearing?: number } = {}) {
     return {
         tool, features, confirm, down, move, up, click, key, frame, geometryOf, undoAll,
         overlay: () => overlay,
+        pushes: (id: string) => pushes.get(id) ?? 0,
         advance: (ms: number) => { now += ms; },
     };
 }
@@ -209,6 +219,89 @@ function expectNear(p: Point, q: Point, eps = 1e-6): void {
     expect(Math.abs(p.x - q.x)).toBeLessThan(eps);
     expect(Math.abs(p.y - q.y)).toBeLessThan(eps);
 }
+
+test('Furniture selects an existing OOB by its boundary and saves vertex edits with undo', async () => {
+    const geometry = square(100, 'bspline');
+    const t = await setup([{ ...row('bounds', geometry), type: 'oob' }], { rules: true });
+    t.click(base);
+    expect(t.features.selected.peek()).toBeNull();
+    t.tool.armRules('oob');
+    // Midpoint of the bottom span of this uniform cubic B-spline square.
+    const boundary = { x: base.x, y: base.y - 100 * 11 / 12 };
+    t.down(boundary);
+    t.up(boundary);
+    t.click(boundary);
+    expect(t.features.selected.peek()?.id).toBe('bounds');
+    expect(t.tool.state.isDrawing.peek()).toBe(false);
+    expect(t.tool.state.draft.peek()).toHaveLength(0);
+    const start = geometry.rings[0].points[0];
+    const end = { x: start.x - 10, y: start.y - 5 };
+    t.down(start);
+    t.move(end);
+    t.up(end);
+    expectNear(t.geometryOf('bounds').rings[0].points[0], end, 1e-3);
+    await t.features.flush();
+    expect(t.features.saveError.peek()).toBeNull();
+    await t.tool.history.undo(t.features);
+    expectNear(t.geometryOf('bounds').rings[0].points[0], start);
+});
+
+test('Furniture can start a new OOB inside the boundary and draw across an existing line', async () => {
+    const geometry = square(100, 'bspline');
+    const t = await setup([{ ...row('bounds', geometry), type: 'oob' }], { rules: true });
+    t.tool.armRules('oob');
+    t.click(base);
+    expect(t.tool.state.draft.peek()).toHaveLength(1);
+    t.click({ x: base.x, y: base.y - 100 * 11 / 12 });
+    expect(t.tool.state.isDrawing.peek()).toBe(true);
+    expect(t.tool.state.draft.peek()).toHaveLength(2);
+    expect(t.features.selected.peek()).toBeNull();
+});
+
+test('dragging a course-sized OOB sends only a line preview, with no course source updates', async () => {
+    const geometry: FeatureGeometry = {
+        crs: 'EPSG:3006', curveType: 'bspline',
+        rings: [{ points: Array.from({ length: 218 }, (_, i) => ({
+            x: base.x + 1000 * Math.cos(i / 218 * 2 * Math.PI),
+            y: base.y + 1000 * Math.sin(i / 218 * 2 * Math.PI),
+        })) }],
+    };
+    const neighbours = Array.from({ length: 500 }, (_, i) => {
+        const g = square(3);
+        g.rings[0].points = g.rings[0].points.map(p => ({ x: p.x + 3000 + i * 20, y: p.y }));
+        return { ...row(`f${i}`, g), sortOrder: i + 1 };
+    });
+    const t = await setup([{ ...row('bounds', geometry), type: 'oob' }, ...neighbours], { rules: true, courseOverlay: true });
+    await Bun.sleep(0); // initial surface resolution
+    t.features.select('bounds');
+    const source = t.features.geojson.peek();
+    const mainBefore = t.pushes('features');
+    const generatedBefore = t.pushes('features-generated');
+    const previewBefore = t.pushes('draw');
+    const start = geometry.rings[0].points[0];
+    t.down(start);
+    for (let i = 1; i <= 20; i++) t.move({ x: start.x + i * 2, y: start.y + i });
+    expect(t.features.geojson.peek()).toBe(source);
+    expect(t.pushes('features')).toBe(mainBefore);
+    expect(t.pushes('features-generated')).toBe(generatedBefore);
+    expect(t.pushes('draw') - previewBefore).toBe(20);
+    const ghosts = t.overlay()!.features.filter(f => f.properties?.role === 'ghost');
+    expect(ghosts).toHaveLength(1);
+    expect(ghosts[0]!.geometry.type).toBe('MultiLineString');
+    const live = { ...geometry, rings: [{ points: geometry.rings[0].points.map((p, i) =>
+        i === 0 ? { x: p.x + 40, y: p.y + 20 } : p) }] };
+    const line = (ghosts[0]!.geometry as MultiLineString).coordinates[0];
+    const expected = geometryToWgs84Rings(live)[0];
+    expect(line).toHaveLength(expected.length);
+    expect(line[0]).toEqual(line[line.length - 1]);
+    // Forward/inverse SWEREF round trips differ by sub-millimetres.
+    const error = Math.max(...line.map((p, i) => Math.hypot(p[0] - expected[i][0], p[1] - expected[i][1])));
+    expect(error).toBeLessThan(1e-7);
+    t.up({ x: start.x + 40, y: start.y + 20 });
+    await t.features.flush();
+    await Bun.sleep(0);
+    expect(t.pushes('features') - mainBefore).toBe(1);
+});
 
 /** EPSG:3006 positions of the overlay points with the given role. */
 function overlayPoints(fc: FeatureCollection | null, role: string): Point[] {

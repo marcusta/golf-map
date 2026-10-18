@@ -20,7 +20,7 @@ import {
 } from '../../../shared/features/centerline';
 import { editViewOf, rectFromCorners, vertexKey, type DrawState } from './draw-state';
 import { ACCENT_COLOR, CAT, MARKER_FILL, OVERLAY_TEXT, STATUS_RISK } from '../map/map-palette';
-import { DRAW_FILL_OPACITY, OUTLINE_ONLY_TYPES, SELECTION_COLOR, typeColorExpression } from './feature-palette';
+import { DRAW_FILL_OPACITY, OUTLINE_ONLY_TYPES, SELECTION_COLOR, typeColorExpression, type FeatureType } from './feature-palette';
 import type { GhostFeature, Marquee } from './draw-pointer';
 import type { SnapMarker } from './draw-snap';
 
@@ -178,10 +178,12 @@ export function drawPreviewGeojson(host: DrawRenderHost): FeatureCollection {
                     type: ghost.type,
                     stackKey: host.features?.stackKeyForId(ghost.id) ?? 0,
                 },
-                geometry: {
-                    type: 'Polygon',
-                    coordinates: geometryToWgs84Rings(ghost.geometry),
-                },
+                // OOB is only a boundary. A course-sized polygon makes
+                // the worker clip/tile its entire interior on every frame
+                // even though the fill layer filters it out.
+                geometry: OUTLINE_ONLY_TYPES.has(ghost.type as FeatureType)
+                    ? { type: 'MultiLineString', coordinates: geometryToWgs84Rings(ghost.geometry) }
+                    : { type: 'Polygon', coordinates: geometryToWgs84Rings(ghost.geometry) },
             });
         }
     }

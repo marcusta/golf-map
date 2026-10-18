@@ -301,6 +301,19 @@ function onClick(host: DrawPointerHost, e: MapPointerEvent): void {
     const p = lngLatToSweref99tm(e.lngLat);
 
     if (host.state.isDrawing.peek()) {
+        // The OOB button can mean "edit this boundary". Before the first
+        // draft point, a click on an existing OOB selects it; its interior
+        // stays available for drawing. An in-progress ring always gets points.
+        if (host.scope.peek() === 'rules' && host.drawType.peek() === 'oob'
+            && host.state.draft.peek().length === 0) {
+            const boundary = hitStack(host, p).find(f => f.type === 'oob');
+            if (boundary) {
+                host.state.disarm();
+                host.hoverVertex.set(null);
+                host.features?.select(boundary.id);
+                return;
+            }
+        }
         placeDraftPoint(host, p, e, e.originalEvent.shiftKey);
         return;
     }

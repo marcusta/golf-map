@@ -12,10 +12,9 @@
     "scalePenalty": 0.2,
     "speciesWeights": {
       "poplar": 0.12,
-      "broadleaf": 0.2,
-      "elm": 0.121,
+      "beech": 0.3,
       "birch": 0.06,
-      "oak": 0.5
+      "oak": 0.45
     },
     "speciesFitSlack": 0.8,
     "woodlandRadiusM": 20,
@@ -135,8 +134,8 @@
       "kind": "broadleaf",
       "form": "tree",
       "assetType": "prefab",
-      "enabled": false,
-      "species": "elm",
+      "enabled": true,
+      "species": "beech",
       "catalogueGuid": "7400c9ee8996e1d4e8cf72d515b70ea5",
       "originalPath": "Assets/CESimgolf 3D Assets/TREES - ELM/PREFABS/Elm4-Tall PREFAB.prefab"
     },
@@ -284,7 +283,7 @@
       "form": "tree",
       "species": "broadleaf",
       "assetType": "prefab",
-      "enabled": true,
+      "enabled": false,
       "catalogueGuid": "add40014f8bd6a64cac74ac7089d563a",
       "originalPath": "Assets/Trees/Broadleaf/Broadleaf_Desktop.prefab"
     },
@@ -296,9 +295,9 @@
       "crownWidthM": 15.762081146240234,
       "kind": "broadleaf",
       "form": "tree",
-      "species": "elm",
+      "species": "beech",
       "assetType": "prefab",
-      "enabled": false,
+      "enabled": true,
       "catalogueGuid": "40ebc5be4b8e5724d8e6073138ca596d",
       "originalPath": "Assets/CESimgolf 3D Assets/TREES - ELM/PREFABS/Elm-Split PREFAB.prefab"
     },

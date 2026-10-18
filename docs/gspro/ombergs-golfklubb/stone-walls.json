@@ -2544,231 +2544,491 @@
  "boulders": [
   {
    "id": "h1-trees-ne-boulder-1",
-   "asset": "boulder_4",
+   "asset": "heap_8",
    "e": 477843.7,
    "n": 6457341.0,
    "yawDeg": 40,
-   "lengthM": 1.3,
-   "topM": 0.6,
+   "lengthM": 1.6,
+   "topM": 0.85,
    "note": "On the little slab NE of the tree group: the dark boulder with its shadow in the 2023 ortho."
   },
   {
    "id": "h1-trees-ne-boulder-2",
-   "asset": "boulder_2",
+   "asset": "heap_2",
    "e": 477836.8,
    "n": 6457315.2,
    "yawDeg": 100,
-   "lengthM": 0.9,
-   "topM": 0.45,
+   "lengthM": 1.2,
+   "topM": 0.65,
    "note": "In front of the mound, south of the big slab (photo: the boulder centre-left of the mound)."
   },
   {
    "id": "h1-trees-ne-boulder-3",
-   "asset": "boulder_7",
+   "asset": "heap_5",
    "e": 477845.8,
    "n": 6457313.4,
    "yawDeg": 20,
-   "lengthM": 0.8,
-   "topM": 0.4,
+   "lengthM": 1.1,
+   "topM": 0.6,
    "note": "Beside the trunk of the middle tree (photo)."
   },
   {
    "id": "h1-trees-ne-boulder-4",
-   "asset": "boulder_5",
+   "asset": "heap_4",
    "e": 477833.4,
    "n": 6457316.4,
    "yawDeg": 60,
-   "lengthM": 0.6,
-   "topM": 0.3,
+   "lengthM": 0.85,
+   "topM": 0.45,
    "note": "Small, lower left of the mound (photo)."
   },
   {
    "id": "h1-trees-ne-boulder-5",
-   "asset": "boulder_9",
+   "asset": "heap_6",
    "e": 477830.4,
    "n": 6457318.6,
    "yawDeg": 150,
-   "lengthM": 0.5,
-   "topM": 0.25,
+   "lengthM": 0.75,
+   "topM": 0.4,
    "note": "Small, lower left of the mound (photo)."
   },
   {
-   "id": "h2-tee-stenrose-a",
-   "asset": "heap_1",
-   "e": 477848.3,
-   "n": 6457274.4,
-   "yawDeg": 25,
-   "lengthM": 1.9,
-   "topM": 1.15,
-   "note": "Stenrose NW of hole 2's tee (the heap in the photo from the tee; ortho: pale round stones)."
-  },
-  {
-   "id": "h2-tee-stenrose-b",
-   "asset": "heap_3",
-   "e": 477850.3,
-   "n": 6457274.2,
-   "yawDeg": 100,
-   "lengthM": 1.7,
-   "topM": 1.1,
-   "note": "Stenrose NW of hole 2's tee (the heap in the photo from the tee; ortho: pale round stones)."
-  },
-  {
-   "id": "h2-tee-stenrose-c",
+   "id": "h2-tee-stenrose-01",
    "asset": "heap_2",
-   "e": 477849.2,
-   "n": 6457273.4,
-   "yawDeg": 60,
-   "lengthM": 1.4,
-   "topM": 0.8,
-   "note": "Stenrose NW of hole 2's tee (the heap in the photo from the tee; ortho: pale round stones)."
+   "e": 477847.33,
+   "n": 6457277.64,
+   "yawDeg": 149,
+   "lengthM": 1.59,
+   "topM": 1.24,
+   "note": "Stenrose NW of hole 2's tee (layer 0)."
   },
   {
-   "id": "h2-tee-stenrose-d",
-   "asset": "heap_5",
-   "e": 477847.9,
-   "n": 6457276.4,
-   "yawDeg": 150,
-   "lengthM": 1.8,
+   "id": "h2-tee-stenrose-02",
+   "asset": "heap_9",
+   "e": 477849.35,
+   "n": 6457276.04,
+   "yawDeg": 1,
+   "lengthM": 1.52,
+   "topM": 1.42,
+   "note": "Stenrose NW of hole 2's tee (layer 0)."
+  },
+  {
+   "id": "h2-tee-stenrose-03",
+   "asset": "heap_7",
+   "e": 477851.26,
+   "n": 6457273.12,
+   "yawDeg": 93,
+   "lengthM": 1.81,
+   "topM": 1.2,
+   "note": "Stenrose NW of hole 2's tee (layer 0)."
+  },
+  {
+   "id": "h2-tee-stenrose-04",
+   "asset": "heap_8",
+   "e": 477850.02,
+   "n": 6457272.29,
+   "yawDeg": 104,
+   "lengthM": 1.61,
+   "topM": 1.17,
+   "note": "Stenrose NW of hole 2's tee (layer 0)."
+  },
+  {
+   "id": "h2-tee-stenrose-05",
+   "asset": "heap_9",
+   "e": 477850.55,
+   "n": 6457277.6,
+   "yawDeg": 39,
+   "lengthM": 1.88,
+   "topM": 1.23,
+   "note": "Stenrose NW of hole 2's tee (layer 0)."
+  },
+  {
+   "id": "h2-tee-stenrose-06",
+   "asset": "heap_6",
+   "e": 477849.31,
+   "n": 6457278.19,
+   "yawDeg": 44,
+   "lengthM": 1.57,
+   "topM": 1.16,
+   "note": "Stenrose NW of hole 2's tee (layer 0)."
+  },
+  {
+   "id": "h2-tee-stenrose-07",
+   "asset": "heap_9",
+   "e": 477846.79,
+   "n": 6457274.49,
+   "yawDeg": 54,
+   "lengthM": 2.03,
+   "topM": 1.37,
+   "note": "Stenrose NW of hole 2's tee (layer 0)."
+  },
+  {
+   "id": "h2-tee-stenrose-08",
+   "asset": "heap_7",
+   "e": 477849.39,
+   "n": 6457274.21,
+   "yawDeg": 298,
+   "lengthM": 2.06,
+   "topM": 1.74,
+   "note": "Stenrose NW of hole 2's tee (layer 0)."
+  },
+  {
+   "id": "h2-tee-stenrose-09",
+   "asset": "heap_3",
+   "e": 477847.37,
+   "n": 6457275.26,
+   "yawDeg": 196,
+   "lengthM": 1.78,
+   "topM": 1.37,
+   "note": "Stenrose NW of hole 2's tee (layer 0)."
+  },
+  {
+   "id": "h2-tee-stenrose-10",
+   "asset": "heap_7",
+   "e": 477849.89,
+   "n": 6457276.84,
+   "yawDeg": 60,
+   "lengthM": 2.01,
+   "topM": 1.54,
+   "note": "Stenrose NW of hole 2's tee (layer 0)."
+  },
+  {
+   "id": "h2-tee-stenrose-11",
+   "asset": "heap_1",
+   "e": 477846.4,
+   "n": 6457277.35,
+   "yawDeg": 358,
+   "lengthM": 2.06,
+   "topM": 1.31,
+   "note": "Stenrose NW of hole 2's tee (layer 0)."
+  },
+  {
+   "id": "h2-tee-stenrose-12",
+   "asset": "heap_3",
+   "e": 477849.19,
+   "n": 6457272.04,
+   "yawDeg": 122,
+   "lengthM": 1.78,
    "topM": 1.25,
-   "note": "Stenrose NW of hole 2's tee (the heap in the photo from the tee; ortho: pale round stones)."
+   "note": "Stenrose NW of hole 2's tee (layer 0)."
   },
   {
-   "id": "h2-tee-stenrose-e",
-   "asset": "heap_4",
-   "e": 477850.7,
-   "n": 6457276.0,
-   "yawDeg": 10,
-   "lengthM": 1.5,
-   "topM": 1.1,
-   "note": "Stenrose NW of hole 2's tee (the heap in the photo from the tee; ortho: pale round stones)."
-  },
-  {
-   "id": "h2-tee-stenrose-f",
-   "asset": "heap_6",
-   "e": 477849.3,
-   "n": 6457277.5,
-   "yawDeg": 75,
-   "lengthM": 1.4,
-   "topM": 0.95,
-   "note": "Stenrose NW of hole 2's tee (the heap in the photo from the tee; ortho: pale round stones)."
-  },
-  {
-   "id": "h2-tee-stenrose-g",
+   "id": "h2-tee-stenrose-13",
    "asset": "heap_7",
-   "e": 477849.4,
-   "n": 6457275.0,
-   "yawDeg": 35,
-   "lengthM": 2.0,
-   "topM": 1.9,
-   "note": "Stenrose NW of hole 2's tee (the heap in the photo from the tee; ortho: pale round stones)."
-  },
-  {
-   "id": "h2-tee-stenrose-h",
-   "asset": "heap_2",
-   "e": 477848.7,
-   "n": 6457275.9,
-   "yawDeg": 120,
+   "e": 477849.5,
+   "n": 6457273.19,
+   "yawDeg": 250,
    "lengthM": 1.7,
-   "topM": 1.85,
-   "note": "Stenrose NW of hole 2's tee (the heap in the photo from the tee; ortho: pale round stones)."
+   "topM": 1.39,
+   "note": "Stenrose NW of hole 2's tee (layer 0)."
   },
   {
-   "id": "h2-tee-stenrose-i",
-   "asset": "heap_5",
-   "e": 477849.4,
-   "n": 6457276.0,
-   "yawDeg": 140,
-   "lengthM": 2.4,
-   "topM": 2.7,
-   "note": "Stenrose NW of hole 2's tee (the heap in the photo from the tee; ortho: pale round stones)."
-  },
-  {
-   "id": "h2-tee-stenrose-j",
-   "asset": "heap_3",
-   "e": 477846.9,
-   "n": 6457275.3,
-   "yawDeg": 60,
-   "lengthM": 1.6,
-   "topM": 1.0,
-   "note": "Stenrose NW of hole 2's tee (the heap in the photo from the tee; ortho: pale round stones)."
-  },
-  {
-   "id": "h2-tee-stenrose-k",
-   "asset": "heap_6",
-   "e": 477847.5,
-   "n": 6457277.4,
-   "yawDeg": 20,
-   "lengthM": 1.5,
-   "topM": 1.1,
-   "note": "Stenrose NW of hole 2's tee (the heap in the photo from the tee; ortho: pale round stones)."
-  },
-  {
-   "id": "h2-tee-stenrose-l",
-   "asset": "heap_1",
-   "e": 477851.7,
-   "n": 6457275.0,
-   "yawDeg": 130,
-   "lengthM": 1.3,
-   "topM": 0.85,
-   "note": "Stenrose NW of hole 2's tee (the heap in the photo from the tee; ortho: pale round stones)."
-  },
-  {
-   "id": "h2-tee-stenrose-m",
-   "asset": "heap_4",
-   "e": 477848.5,
-   "n": 6457273.4,
-   "yawDeg": 170,
-   "lengthM": 1.2,
-   "topM": 0.75,
-   "note": "Stenrose NW of hole 2's tee (the heap in the photo from the tee; ortho: pale round stones)."
-  },
-  {
-   "id": "h2-tee-stenrose-n",
+   "id": "h2-tee-stenrose-14",
    "asset": "heap_7",
-   "e": 477850.5,
-   "n": 6457277.4,
-   "yawDeg": 95,
-   "lengthM": 1.3,
+   "e": 477848.23,
+   "n": 6457271.74,
+   "yawDeg": 84,
+   "lengthM": 1.47,
+   "topM": 0.91,
+   "note": "Stenrose NW of hole 2's tee (layer 0)."
+  },
+  {
+   "id": "h2-tee-stenrose-15",
+   "asset": "heap_9",
+   "e": 477847.41,
+   "n": 6457276.46,
+   "yawDeg": 355,
+   "lengthM": 2.1,
+   "topM": 1.66,
+   "note": "Stenrose NW of hole 2's tee (layer 0)."
+  },
+  {
+   "id": "h2-tee-stenrose-16",
+   "asset": "heap_5",
+   "e": 477851.09,
+   "n": 6457275.12,
+   "yawDeg": 145,
+   "lengthM": 1.92,
+   "topM": 1.41,
+   "note": "Stenrose NW of hole 2's tee (layer 0)."
+  },
+  {
+   "id": "h2-tee-stenrose-17",
+   "asset": "heap_7",
+   "e": 477848.37,
+   "n": 6457275.3,
+   "yawDeg": 287,
+   "lengthM": 2.09,
+   "topM": 1.77,
+   "note": "Stenrose NW of hole 2's tee (layer 0)."
+  },
+  {
+   "id": "h2-tee-stenrose-18",
+   "asset": "heap_9",
+   "e": 477848.97,
+   "n": 6457279.24,
+   "yawDeg": 309,
+   "lengthM": 1.57,
+   "topM": 1.06,
+   "note": "Stenrose NW of hole 2's tee (layer 0)."
+  },
+  {
+   "id": "h2-tee-stenrose-19",
+   "asset": "heap_3",
+   "e": 477848.86,
+   "n": 6457277.35,
+   "yawDeg": 138,
+   "lengthM": 1.91,
+   "topM": 1.58,
+   "note": "Stenrose NW of hole 2's tee (layer 0)."
+  },
+  {
+   "id": "h2-tee-stenrose-20",
+   "asset": "heap_2",
+   "e": 477851.57,
+   "n": 6457273.93,
+   "yawDeg": 35,
+   "lengthM": 1.54,
+   "topM": 0.97,
+   "note": "Stenrose NW of hole 2's tee (layer 0)."
+  },
+  {
+   "id": "h2-tee-stenrose-21",
+   "asset": "heap_7",
+   "e": 477847.88,
+   "n": 6457273.57,
+   "yawDeg": 289,
+   "lengthM": 1.79,
+   "topM": 1.38,
+   "note": "Stenrose NW of hole 2's tee (layer 0)."
+  },
+  {
+   "id": "h2-tee-stenrose-22",
+   "asset": "heap_8",
+   "e": 477851.02,
+   "n": 6457276.81,
+   "yawDeg": 348,
+   "lengthM": 1.75,
+   "topM": 1.18,
+   "note": "Stenrose NW of hole 2's tee (layer 0)."
+  },
+  {
+   "id": "h2-tee-stenrose-23",
+   "asset": "heap_2",
+   "e": 477849.84,
+   "n": 6457275.21,
+   "yawDeg": 279,
+   "lengthM": 2.16,
+   "topM": 1.74,
+   "note": "Stenrose NW of hole 2's tee (layer 0)."
+  },
+  {
+   "id": "h2-tee-stenrose-24",
+   "asset": "heap_1",
+   "e": 477847.22,
+   "n": 6457278.87,
+   "yawDeg": 22,
+   "lengthM": 1.65,
+   "topM": 1.06,
+   "note": "Stenrose NW of hole 2's tee (layer 0)."
+  },
+  {
+   "id": "h2-tee-stenrose-25",
+   "asset": "heap_5",
+   "e": 477846.54,
+   "n": 6457275.81,
+   "yawDeg": 48,
+   "lengthM": 1.64,
+   "topM": 1.16,
+   "note": "Stenrose NW of hole 2's tee (layer 0)."
+  },
+  {
+   "id": "h2-tee-stenrose-26",
+   "asset": "heap_7",
+   "e": 477847.99,
+   "n": 6457278.51,
+   "yawDeg": 191,
+   "lengthM": 1.75,
+   "topM": 1.3,
+   "note": "Stenrose NW of hole 2's tee (layer 0)."
+  },
+  {
+   "id": "h2-tee-stenrose-27",
+   "asset": "heap_4",
+   "e": 477846.95,
+   "n": 6457273.12,
+   "yawDeg": 195,
+   "lengthM": 1.42,
    "topM": 0.9,
-   "note": "Stenrose NW of hole 2's tee (the heap in the photo from the tee; ortho: pale round stones)."
+   "note": "Stenrose NW of hole 2's tee (layer 0)."
+  },
+  {
+   "id": "h2-tee-stenrose-28",
+   "asset": "heap_8",
+   "e": 477849.77,
+   "n": 6457271.41,
+   "yawDeg": 121,
+   "lengthM": 1.47,
+   "topM": 0.98,
+   "note": "Stenrose NW of hole 2's tee (layer 0)."
+  },
+  {
+   "id": "h2-tee-stenrose-29",
+   "asset": "heap_6",
+   "e": 477848.39,
+   "n": 6457276.41,
+   "yawDeg": 37,
+   "lengthM": 1.61,
+   "topM": 2.22,
+   "note": "Stenrose NW of hole 2's tee (layer 1)."
+  },
+  {
+   "id": "h2-tee-stenrose-30",
+   "asset": "heap_4",
+   "e": 477850.62,
+   "n": 6457274.41,
+   "yawDeg": 50,
+   "lengthM": 1.52,
+   "topM": 2.07,
+   "note": "Stenrose NW of hole 2's tee (layer 1)."
+  },
+  {
+   "id": "h2-tee-stenrose-31",
+   "asset": "heap_8",
+   "e": 477850.26,
+   "n": 6457273.59,
+   "yawDeg": 14,
+   "lengthM": 1.85,
+   "topM": 2.11,
+   "note": "Stenrose NW of hole 2's tee (layer 1)."
+  },
+  {
+   "id": "h2-tee-stenrose-32",
+   "asset": "heap_6",
+   "e": 477848.58,
+   "n": 6457272.81,
+   "yawDeg": 43,
+   "lengthM": 2.0,
+   "topM": 2.05,
+   "note": "Stenrose NW of hole 2's tee (layer 1)."
+  },
+  {
+   "id": "h2-tee-stenrose-33",
+   "asset": "heap_6",
+   "e": 477850.34,
+   "n": 6457276.03,
+   "yawDeg": 235,
+   "lengthM": 2.08,
+   "topM": 2.14,
+   "note": "Stenrose NW of hole 2's tee (layer 1)."
+  },
+  {
+   "id": "h2-tee-stenrose-34",
+   "asset": "heap_8",
+   "e": 477847.97,
+   "n": 6457277.35,
+   "yawDeg": 176,
+   "lengthM": 1.55,
+   "topM": 2.17,
+   "note": "Stenrose NW of hole 2's tee (layer 1)."
+  },
+  {
+   "id": "h2-tee-stenrose-35",
+   "asset": "heap_2",
+   "e": 477847.75,
+   "n": 6457274.42,
+   "yawDeg": 155,
+   "lengthM": 1.99,
+   "topM": 2.06,
+   "note": "Stenrose NW of hole 2's tee (layer 1)."
+  },
+  {
+   "id": "h2-tee-stenrose-36",
+   "asset": "heap_7",
+   "e": 477848.55,
+   "n": 6457274.0,
+   "yawDeg": 191,
+   "lengthM": 1.72,
+   "topM": 2.16,
+   "note": "Stenrose NW of hole 2's tee (layer 1)."
+  },
+  {
+   "id": "h2-tee-stenrose-37",
+   "asset": "heap_7",
+   "e": 477848.92,
+   "n": 6457274.77,
+   "yawDeg": 128,
+   "lengthM": 1.38,
+   "topM": 2.62,
+   "note": "Stenrose NW of hole 2's tee (layer 2)."
+  },
+  {
+   "id": "h2-tee-stenrose-38",
+   "asset": "heap_6",
+   "e": 477849.09,
+   "n": 6457276.61,
+   "yawDeg": 157,
+   "lengthM": 1.35,
+   "topM": 2.56,
+   "note": "Stenrose NW of hole 2's tee (layer 2)."
+  },
+  {
+   "id": "h2-tee-stenrose-39",
+   "asset": "heap_3",
+   "e": 477849.12,
+   "n": 6457275.43,
+   "yawDeg": 147,
+   "lengthM": 1.38,
+   "topM": 2.59,
+   "note": "Stenrose NW of hole 2's tee (layer 2)."
+  },
+  {
+   "id": "h2-tee-stenrose-40",
+   "asset": "heap_3",
+   "e": 477848.24,
+   "n": 6457277.09,
+   "yawDeg": 120,
+   "lengthM": 2.6,
+   "topM": 2.95,
+   "note": "Stenrose NW of hole 2's tee (layer 3)."
   },
   {
    "id": "h3-box-block-s0",
    "asset": "boxkerb_1",
-   "e": 478241.89999999997,
+   "e": 478241.91,
    "n": 6457621.45,
    "yawDeg": 90,
-   "lengthM": 2.65,
+   "lengthM": 2.6,
    "topM": 0.45,
    "note": "Hole 3, the stone box behind the tees: a block of the frame."
   },
   {
    "id": "h3-box-block-s1",
-   "asset": "boxkerb_2",
-   "e": 478244.49999999994,
+   "asset": "boxkerb_1",
+   "e": 478244.50999999995,
    "n": 6457621.45,
    "yawDeg": 90,
-   "lengthM": 2.65,
+   "lengthM": 2.6,
    "topM": 0.45,
    "note": "Hole 3, the stone box behind the tees: a block of the frame."
   },
   {
    "id": "h3-box-block-s2",
    "asset": "boxkerb_1",
-   "e": 478247.1,
+   "e": 478247.11,
    "n": 6457621.45,
    "yawDeg": 90,
-   "lengthM": 2.65,
+   "lengthM": 2.6,
    "topM": 0.45,
    "note": "Hole 3, the stone box behind the tees: a block of the frame."
   },
   {
    "id": "h3-box-block-s3",
-   "asset": "boxkerb_2",
-   "e": 478249.69999999995,
+   "asset": "boxkerb_1",
+   "e": 478249.70999999996,
    "n": 6457621.45,
    "yawDeg": 90,
-   "lengthM": 2.65,
+   "lengthM": 2.6,
    "topM": 0.45,
    "note": "Hole 3, the stone box behind the tees: a block of the frame."
   },
@@ -2776,19 +3036,19 @@
    "id": "h3-box-block-w0",
    "asset": "boxkerb_1",
    "e": 478240.45,
-   "n": 6457623.05,
+   "n": 6457622.41,
    "yawDeg": 0,
-   "lengthM": 2.15,
+   "lengthM": 2.24,
    "topM": 0.45,
    "note": "Hole 3, the stone box behind the tees: a block of the frame."
   },
   {
    "id": "h3-box-block-w1",
-   "asset": "boxkerb_2",
+   "asset": "boxkerb_1",
    "e": 478240.45,
-   "n": 6457625.149999999,
+   "n": 6457624.65,
    "yawDeg": 0,
-   "lengthM": 2.15,
+   "lengthM": 2.24,
    "topM": 0.45,
    "note": "Hole 3, the stone box behind the tees: a block of the frame."
   },
@@ -2796,19 +3056,19 @@
    "id": "h3-box-block-w2",
    "asset": "boxkerb_1",
    "e": 478240.45,
-   "n": 6457627.25,
+   "n": 6457626.890000001,
    "yawDeg": 0,
-   "lengthM": 2.15,
+   "lengthM": 2.24,
    "topM": 0.45,
    "note": "Hole 3, the stone box behind the tees: a block of the frame."
   },
   {
    "id": "h3-box-block-w3",
-   "asset": "boxkerb_2",
+   "asset": "boxkerb_1",
    "e": 478240.45,
-   "n": 6457629.35,
+   "n": 6457629.13,
    "yawDeg": 0,
-   "lengthM": 2.15,
+   "lengthM": 2.24,
    "topM": 0.45,
    "note": "Hole 3, the stone box behind the tees: a block of the frame."
   },
@@ -2816,812 +3076,1181 @@
    "id": "h3-box-block-w4",
    "asset": "boxkerb_1",
    "e": 478240.45,
-   "n": 6457631.45,
+   "n": 6457631.37,
    "yawDeg": 0,
-   "lengthM": 2.15,
+   "lengthM": 2.24,
    "topM": 0.45,
    "note": "Hole 3, the stone box behind the tees: a block of the frame."
   },
   {
-   "id": "h3-box-stone-in-t1",
-   "asset": "boxtall_3",
-   "e": 478248.15,
-   "n": 6457629.39,
-   "yawDeg": 351,
-   "lengthM": 0.56,
-   "topM": 0.94
-  },
-  {
-   "id": "h3-box-stone-in-t2",
-   "asset": "boxtall_2",
-   "e": 478248.42,
-   "n": 6457628.3,
-   "yawDeg": 2,
-   "lengthM": 0.5,
-   "topM": 1.01
-  },
-  {
-   "id": "h3-box-stone-in-t3",
+   "id": "h3-box-stone-t1",
    "asset": "boxtall_1",
-   "e": 478244.4,
-   "n": 6457623.89,
-   "yawDeg": 359,
-   "lengthM": 0.52,
-   "topM": 0.92
-  },
-  {
-   "id": "h3-box-stone-in-t4",
-   "asset": "boxtall_3",
-   "e": 478243.86,
-   "n": 6457629.89,
-   "yawDeg": 324,
-   "lengthM": 0.5,
-   "topM": 0.84
-  },
-  {
-   "id": "h3-box-stone-in-t5",
-   "asset": "boxtall_2",
-   "e": 478248.55,
-   "n": 6457625.49,
-   "yawDeg": 86,
+   "e": 478244.8,
+   "n": 6457622.03,
+   "yawDeg": 349,
    "lengthM": 0.51,
+   "topM": 0.95
+  },
+  {
+   "id": "h3-box-stone-t2",
+   "asset": "boxtall_1",
+   "e": 478244.14,
+   "n": 6457625.73,
+   "yawDeg": 10,
+   "lengthM": 0.61,
+   "topM": 1.18
+  },
+  {
+   "id": "h3-box-stone-t3",
+   "asset": "boxtall_3",
+   "e": 478247.2,
+   "n": 6457626.51,
+   "yawDeg": 3,
+   "lengthM": 0.67,
+   "topM": 1.24
+  },
+  {
+   "id": "h3-box-stone-t4",
+   "asset": "boxtall_1",
+   "e": 478246.47,
+   "n": 6457629.04,
+   "yawDeg": 97,
+   "lengthM": 0.53,
    "topM": 1.03
   },
   {
-   "id": "h3-box-stone-in-1",
-   "asset": "boxstone_2",
-   "e": 478249.36,
-   "n": 6457629.56,
-   "yawDeg": 192,
-   "lengthM": 1.29,
-   "topM": 0.62
-  },
-  {
-   "id": "h3-box-stone-in-2",
-   "asset": "boxstone_2",
-   "e": 478249.72,
-   "n": 6457627.99,
-   "yawDeg": 320,
-   "lengthM": 0.4,
-   "topM": 0.19
-  },
-  {
-   "id": "h3-box-stone-in-3",
-   "asset": "boxstone_3",
-   "e": 478245.02,
-   "n": 6457622.96,
-   "yawDeg": 98,
-   "lengthM": 0.41,
-   "topM": 0.23
-  },
-  {
-   "id": "h3-box-stone-in-4",
-   "asset": "boxstone_5",
-   "e": 478247.6,
-   "n": 6457622.55,
-   "yawDeg": 352,
-   "lengthM": 0.5,
-   "topM": 0.31
-  },
-  {
-   "id": "h3-box-stone-in-5",
-   "asset": "boxstone_4",
-   "e": 478242.78,
-   "n": 6457627.41,
-   "yawDeg": 76,
-   "lengthM": 0.45,
-   "topM": 0.24
-  },
-  {
-   "id": "h3-box-stone-in-6",
-   "asset": "boxstone_4",
-   "e": 478243.8,
-   "n": 6457625.71,
-   "yawDeg": 258,
-   "lengthM": 0.72,
-   "topM": 0.38
-  },
-  {
-   "id": "h3-box-stone-in-7",
-   "asset": "boxstone_3",
-   "e": 478241.88,
-   "n": 6457628.43,
-   "yawDeg": 138,
-   "lengthM": 0.73,
-   "topM": 0.41
-  },
-  {
-   "id": "h3-box-stone-in-8",
-   "asset": "boxstone_5",
-   "e": 478244.37,
-   "n": 6457629.5,
-   "yawDeg": 131,
-   "lengthM": 0.49,
-   "topM": 0.3
-  },
-  {
-   "id": "h3-box-stone-in-9",
-   "asset": "boxstone_6",
-   "e": 478250.12,
-   "n": 6457624.64,
-   "yawDeg": 164,
-   "lengthM": 0.48,
-   "topM": 0.25
-  },
-  {
-   "id": "h3-box-stone-in-10",
-   "asset": "boxstone_6",
-   "e": 478245.95,
-   "n": 6457629.72,
-   "yawDeg": 329,
-   "lengthM": 0.5,
-   "topM": 0.26
-  },
-  {
-   "id": "h3-box-stone-in-11",
-   "asset": "boxstone_4",
-   "e": 478245.69,
-   "n": 6457625.38,
-   "yawDeg": 174,
-   "lengthM": 0.85,
-   "topM": 0.45
-  },
-  {
-   "id": "h3-box-stone-in-12",
-   "asset": "boxstone_1",
-   "e": 478248.19,
-   "n": 6457630.59,
-   "yawDeg": 120,
-   "lengthM": 0.75,
-   "topM": 0.43
-  },
-  {
-   "id": "h3-box-stone-in-13",
-   "asset": "boxstone_3",
-   "e": 478243.1,
-   "n": 6457629.25,
-   "yawDeg": 155,
-   "lengthM": 0.95,
-   "topM": 0.53
-  },
-  {
-   "id": "h3-box-stone-in-14",
-   "asset": "boxstone_2",
-   "e": 478247.92,
-   "n": 6457626.35,
-   "yawDeg": 339,
-   "lengthM": 0.44,
-   "topM": 0.21
-  },
-  {
-   "id": "h3-box-stone-in-15",
-   "asset": "boxstone_6",
-   "e": 478248.05,
-   "n": 6457626.88,
-   "yawDeg": 51,
-   "lengthM": 0.44,
-   "topM": 0.23
-  },
-  {
-   "id": "h3-box-stone-in-16",
-   "asset": "boxstone_6",
-   "e": 478242.14,
-   "n": 6457623.0,
-   "yawDeg": 214,
-   "lengthM": 0.69,
-   "topM": 0.35
-  },
-  {
-   "id": "h3-box-stone-in-17",
-   "asset": "boxstone_1",
-   "e": 478249.64,
-   "n": 6457623.09,
-   "yawDeg": 207,
-   "lengthM": 0.56,
-   "topM": 0.32
-  },
-  {
-   "id": "h3-box-stone-in-18",
-   "asset": "boxstone_2",
-   "e": 478241.3,
-   "n": 6457630.36,
-   "yawDeg": 58,
-   "lengthM": 0.82,
-   "topM": 0.39
-  },
-  {
-   "id": "h3-box-stone-in-19",
-   "asset": "boxstone_3",
-   "e": 478248.83,
-   "n": 6457626.14,
-   "yawDeg": 96,
-   "lengthM": 1.16,
-   "topM": 0.65
-  },
-  {
-   "id": "h3-box-stone-in-20",
-   "asset": "boxstone_2",
-   "e": 478247.67,
-   "n": 6457625.27,
-   "yawDeg": 263,
-   "lengthM": 0.97,
-   "topM": 0.47
-  },
-  {
-   "id": "h3-box-stone-in-21",
-   "asset": "boxstone_5",
-   "e": 478241.43,
-   "n": 6457625.22,
-   "yawDeg": 273,
-   "lengthM": 0.77,
-   "topM": 0.48
-  },
-  {
-   "id": "h3-box-stone-in-22",
-   "asset": "boxstone_1",
-   "e": 478247.34,
-   "n": 6457623.91,
-   "yawDeg": 216,
-   "lengthM": 0.7,
-   "topM": 0.41
-  },
-  {
-   "id": "h3-box-stone-in-23",
-   "asset": "boxstone_3",
-   "e": 478247.33,
-   "n": 6457626.78,
-   "yawDeg": 104,
-   "lengthM": 0.46,
-   "topM": 0.26
-  },
-  {
-   "id": "h3-box-stone-in-24",
-   "asset": "boxstone_5",
-   "e": 478244.8,
-   "n": 6457623.56,
-   "yawDeg": 38,
-   "lengthM": 0.97,
-   "topM": 0.61
-  },
-  {
-   "id": "h3-box-stone-in-25",
-   "asset": "boxstone_3",
-   "e": 478247.77,
-   "n": 6457627.39,
-   "yawDeg": 337,
-   "lengthM": 0.52,
-   "topM": 0.29
-  },
-  {
-   "id": "h3-box-stone-in-26",
-   "asset": "boxstone_1",
-   "e": 478243.46,
-   "n": 6457630.49,
-   "yawDeg": 286,
-   "lengthM": 0.66,
-   "topM": 0.38
-  },
-  {
-   "id": "h3-box-stone-in-27",
-   "asset": "boxstone_2",
-   "e": 478241.89,
-   "n": 6457623.89,
-   "yawDeg": 197,
-   "lengthM": 0.51,
-   "topM": 0.24
-  },
-  {
-   "id": "h3-box-stone-in-28",
-   "asset": "boxstone_3",
-   "e": 478246.5,
-   "n": 6457629.37,
-   "yawDeg": 109,
-   "lengthM": 0.7,
-   "topM": 0.39
-  },
-  {
-   "id": "h3-box-stone-in-29",
-   "asset": "boxstone_1",
-   "e": 478249.24,
-   "n": 6457628.91,
-   "yawDeg": 201,
-   "lengthM": 0.88,
-   "topM": 0.51
-  },
-  {
-   "id": "h3-box-stone-in-30",
-   "asset": "boxstone_1",
-   "e": 478244.49,
-   "n": 6457626.96,
-   "yawDeg": 181,
-   "lengthM": 0.41,
-   "topM": 0.24
-  },
-  {
-   "id": "h3-box-stone-in-31",
-   "asset": "boxstone_3",
-   "e": 478246.81,
-   "n": 6457626.59,
-   "yawDeg": 264,
-   "lengthM": 1.18,
-   "topM": 0.66
-  },
-  {
-   "id": "h3-box-stone-in-32",
-   "asset": "boxstone_1",
-   "e": 478248.45,
-   "n": 6457624.47,
-   "yawDeg": 228,
-   "lengthM": 1.04,
-   "topM": 0.6
-  },
-  {
-   "id": "h3-box-stone-in-33",
-   "asset": "boxstone_1",
-   "e": 478244.09,
-   "n": 6457631.18,
-   "yawDeg": 334,
-   "lengthM": 1.04,
-   "topM": 0.6
-  },
-  {
-   "id": "h3-box-stone-in-34",
-   "asset": "boxstone_2",
-   "e": 478249.75,
-   "n": 6457626.94,
-   "yawDeg": 232,
-   "lengthM": 0.44,
-   "topM": 0.21
-  },
-  {
-   "id": "h3-box-stone-in-35",
-   "asset": "boxstone_3",
-   "e": 478241.65,
-   "n": 6457621.96,
-   "yawDeg": 280,
-   "lengthM": 0.67,
-   "topM": 0.38
-  },
-  {
-   "id": "h3-box-stone-in-36",
-   "asset": "boxstone_2",
-   "e": 478249.84,
-   "n": 6457629.22,
+   "id": "h3-box-stone-t5",
+   "asset": "boxtall_2",
+   "e": 478245.73,
+   "n": 6457623.25,
    "yawDeg": 136,
-   "lengthM": 0.62,
-   "topM": 0.3
+   "lengthM": 0.52,
+   "topM": 1.14
   },
   {
-   "id": "h3-box-stone-in-37",
-   "asset": "boxstone_5",
-   "e": 478248.18,
-   "n": 6457627.98,
-   "yawDeg": 348,
-   "lengthM": 0.5,
-   "topM": 0.31
+   "id": "h3-box-stone-t6",
+   "asset": "boxtall_3",
+   "e": 478243.63,
+   "n": 6457630.75,
+   "yawDeg": 302,
+   "lengthM": 0.6,
+   "topM": 1.06
   },
   {
-   "id": "h3-box-stone-in-38",
-   "asset": "boxstone_2",
-   "e": 478248.29,
-   "n": 6457622.65,
-   "yawDeg": 125,
-   "lengthM": 0.57,
-   "topM": 0.28
-  },
-  {
-   "id": "h3-box-stone-in-39",
-   "asset": "boxstone_5",
-   "e": 478248.6,
-   "n": 6457631.06,
-   "yawDeg": 189,
-   "lengthM": 0.89,
-   "topM": 0.55
-  },
-  {
-   "id": "h3-box-stone-in-40",
-   "asset": "boxstone_6",
-   "e": 478246.72,
-   "n": 6457623.84,
-   "yawDeg": 188,
-   "lengthM": 1.23,
-   "topM": 0.63
-  },
-  {
-   "id": "h3-box-stone-in-41",
-   "asset": "boxstone_2",
-   "e": 478247.72,
-   "n": 6457628.42,
-   "yawDeg": 289,
-   "lengthM": 0.46,
-   "topM": 0.22
-  },
-  {
-   "id": "h3-box-stone-in-42",
-   "asset": "boxstone_1",
-   "e": 478244.28,
-   "n": 6457626.51,
-   "yawDeg": 13,
-   "lengthM": 1.28,
-   "topM": 0.74
-  },
-  {
-   "id": "h3-box-stone-in-43",
-   "asset": "boxstone_2",
-   "e": 478247.3,
-   "n": 6457624.51,
-   "yawDeg": 216,
-   "lengthM": 0.72,
-   "topM": 0.34
-  },
-  {
-   "id": "h3-box-stone-in-44",
-   "asset": "boxstone_5",
-   "e": 478244.31,
-   "n": 6457622.31,
-   "yawDeg": 122,
-   "lengthM": 1.06,
-   "topM": 0.66
-  },
-  {
-   "id": "h3-box-stone-in-45",
-   "asset": "boxstone_5",
-   "e": 478242.91,
-   "n": 6457630.12,
-   "yawDeg": 297,
-   "lengthM": 1.04,
-   "topM": 0.65
-  },
-  {
-   "id": "h3-box-stone-in-46",
+   "id": "h3-box-stone-s7",
    "asset": "boxstone_4",
-   "e": 478243.03,
-   "n": 6457623.52,
-   "yawDeg": 264,
-   "lengthM": 0.45,
-   "topM": 0.24
-  },
-  {
-   "id": "h3-box-stone-in-47",
-   "asset": "boxstone_2",
-   "e": 478248.16,
-   "n": 6457623.14,
-   "yawDeg": 155,
-   "lengthM": 1.17,
-   "topM": 0.56
-  },
-  {
-   "id": "h3-box-stone-in-48",
-   "asset": "boxstone_3",
-   "e": 478244.27,
-   "n": 6457623.01,
-   "yawDeg": 137,
-   "lengthM": 0.89,
-   "topM": 0.5
-  },
-  {
-   "id": "h3-box-stone-in-49",
-   "asset": "boxstone_6",
-   "e": 478249.26,
-   "n": 6457624.74,
-   "yawDeg": 95,
-   "lengthM": 0.59,
-   "topM": 0.3
-  },
-  {
-   "id": "h3-box-stone-in-50",
-   "asset": "boxstone_2",
-   "e": 478243.88,
-   "n": 6457624.37,
-   "yawDeg": 28,
-   "lengthM": 0.9,
-   "topM": 0.43
-  },
-  {
-   "id": "h3-box-stone-in-51",
-   "asset": "boxstone_1",
-   "e": 478245.42,
-   "n": 6457622.17,
-   "yawDeg": 274,
-   "lengthM": 1.22,
-   "topM": 0.7
-  },
-  {
-   "id": "h3-box-stone-in-52",
-   "asset": "boxstone_4",
-   "e": 478244.71,
-   "n": 6457629.18,
-   "yawDeg": 141,
-   "lengthM": 0.44,
-   "topM": 0.23
-  },
-  {
-   "id": "h3-box-stone-in-53",
-   "asset": "boxstone_3",
-   "e": 478250.05,
-   "n": 6457626.65,
-   "yawDeg": 221,
-   "lengthM": 0.65,
-   "topM": 0.37
-  },
-  {
-   "id": "h3-box-stone-in-54",
-   "asset": "boxstone_3",
-   "e": 478243.37,
-   "n": 6457622.59,
-   "yawDeg": 26,
-   "lengthM": 0.4,
-   "topM": 0.22
-  },
-  {
-   "id": "h3-box-stone-in-55",
-   "asset": "boxstone_3",
-   "e": 478249.14,
-   "n": 6457627.61,
-   "yawDeg": 82,
-   "lengthM": 1.0,
-   "topM": 0.56
-  },
-  {
-   "id": "h3-box-stone-in-56",
-   "asset": "boxstone_4",
-   "e": 478249.89,
-   "n": 6457625.83,
-   "yawDeg": 148,
-   "lengthM": 0.69,
-   "topM": 0.37
-  },
-  {
-   "id": "h3-box-stone-in-57",
-   "asset": "boxstone_5",
-   "e": 478242.8,
-   "n": 6457622.47,
-   "yawDeg": 182,
-   "lengthM": 0.9,
-   "topM": 0.56
-  },
-  {
-   "id": "h3-box-stone-in-58",
-   "asset": "boxstone_1",
-   "e": 478247.59,
-   "n": 6457631.21,
-   "yawDeg": 103,
-   "lengthM": 1.27,
-   "topM": 0.73
-  },
-  {
-   "id": "h3-box-stone-in-59",
-   "asset": "boxstone_5",
-   "e": 478245.1,
-   "n": 6457624.03,
-   "yawDeg": 64,
-   "lengthM": 0.65,
+   "e": 478241.6,
+   "n": 6457622.94,
+   "yawDeg": 219,
+   "lengthM": 0.68,
    "topM": 0.4
   },
   {
-   "id": "h3-box-stone-in-60",
-   "asset": "boxstone_6",
-   "e": 478242.26,
-   "n": 6457623.94,
-   "yawDeg": 18,
-   "lengthM": 0.65,
-   "topM": 0.33
-  },
-  {
-   "id": "h3-box-stone-in-61",
-   "asset": "boxstone_6",
-   "e": 478245.67,
-   "n": 6457622.72,
-   "yawDeg": 192,
-   "lengthM": 0.41,
-   "topM": 0.21
-  },
-  {
-   "id": "h3-box-stone-in-62",
-   "asset": "boxstone_5",
-   "e": 478246.16,
-   "n": 6457623.18,
-   "yawDeg": 309,
-   "lengthM": 0.41,
-   "topM": 0.25
-  },
-  {
-   "id": "h3-box-stone-in-63",
-   "asset": "boxstone_6",
-   "e": 478248.54,
-   "n": 6457628.92,
-   "yawDeg": 12,
-   "lengthM": 0.42,
-   "topM": 0.22
-  },
-  {
-   "id": "h3-box-stone-in-64",
-   "asset": "boxstone_6",
-   "e": 478247.47,
-   "n": 6457623.22,
-   "yawDeg": 2,
-   "lengthM": 0.9,
-   "topM": 0.46
-  },
-  {
-   "id": "h3-box-stone-in-65",
-   "asset": "boxstone_3",
-   "e": 478249.97,
-   "n": 6457628.57,
-   "yawDeg": 322,
-   "lengthM": 0.59,
-   "topM": 0.33
-  },
-  {
-   "id": "h3-box-stone-in-66",
-   "asset": "boxstone_6",
-   "e": 478246.79,
-   "n": 6457622.46,
-   "yawDeg": 285,
-   "lengthM": 1.05,
-   "topM": 0.54
-  },
-  {
-   "id": "h3-box-stone-in-67",
-   "asset": "boxstone_6",
-   "e": 478243.83,
-   "n": 6457629.46,
-   "yawDeg": 238,
-   "lengthM": 0.86,
-   "topM": 0.44
-  },
-  {
-   "id": "h3-box-stone-in-68",
+   "id": "h3-box-stone-s8",
    "asset": "boxstone_1",
-   "e": 478245.9,
-   "n": 6457630.77,
-   "yawDeg": 253,
-   "lengthM": 0.42,
-   "topM": 0.24
+   "e": 478246.1,
+   "n": 6457629.9,
+   "yawDeg": 259,
+   "lengthM": 0.87,
+   "topM": 0.79
   },
   {
-   "id": "h3-box-stone-in-69",
+   "id": "h3-box-stone-s9",
+   "asset": "boxstone_6",
+   "e": 478248.6,
+   "n": 6457624.86,
+   "yawDeg": 267,
+   "lengthM": 0.97,
+   "topM": 0.76
+  },
+  {
+   "id": "h3-box-stone-s10",
    "asset": "boxstone_2",
-   "e": 478241.72,
-   "n": 6457630.19,
-   "yawDeg": 357,
-   "lengthM": 0.77,
-   "topM": 0.37
+   "e": 478247.15,
+   "n": 6457624.41,
+   "yawDeg": 214,
+   "lengthM": 0.73,
+   "topM": 0.66
   },
   {
-   "id": "h3-box-stone-in-70",
+   "id": "h3-box-stone-s11",
    "asset": "boxstone_3",
-   "e": 478246.64,
-   "n": 6457623.05,
-   "yawDeg": 244,
-   "lengthM": 0.86,
-   "topM": 0.48
+   "e": 478243.15,
+   "n": 6457624.38,
+   "yawDeg": 129,
+   "lengthM": 1.09,
+   "topM": 0.89
   },
   {
-   "id": "h3-box-stone-out-1",
-   "asset": "boxstone_5",
-   "e": 478249.05,
-   "n": 6457633.23,
-   "yawDeg": 6,
+   "id": "h3-box-stone-s12",
+   "asset": "boxstone_3",
+   "e": 478242.95,
+   "n": 6457622.52,
+   "yawDeg": 37,
+   "lengthM": 0.82,
+   "topM": 0.58
+  },
+  {
+   "id": "h3-box-stone-s13",
+   "asset": "boxstone_1",
+   "e": 478241.27,
+   "n": 6457631.15,
+   "yawDeg": 52,
    "lengthM": 0.8,
    "topM": 0.5
   },
   {
-   "id": "h3-box-stone-out-2",
+   "id": "h3-box-stone-s14",
    "asset": "boxstone_1",
-   "e": 478248.43,
-   "n": 6457634.78,
-   "yawDeg": 138,
-   "lengthM": 0.36,
-   "topM": 0.21
-  },
-  {
-   "id": "h3-box-stone-out-3",
-   "asset": "boxstone_4",
-   "e": 478242.15,
-   "n": 6457634.89,
-   "yawDeg": 297,
-   "lengthM": 0.79,
-   "topM": 0.42
-  },
-  {
-   "id": "h3-box-stone-out-4",
-   "asset": "boxstone_4",
-   "e": 478247.92,
-   "n": 6457634.21,
-   "yawDeg": 203,
+   "e": 478249.87,
+   "n": 6457629.37,
+   "yawDeg": 339,
    "lengthM": 0.82,
-   "topM": 0.43
+   "topM": 0.6
   },
   {
-   "id": "h3-box-stone-out-5",
-   "asset": "boxstone_5",
-   "e": 478249.0,
-   "n": 6457638.68,
-   "yawDeg": 120,
-   "lengthM": 0.78,
+   "id": "h3-box-stone-s15",
+   "asset": "boxstone_3",
+   "e": 478246.13,
+   "n": 6457627.32,
+   "yawDeg": 333,
+   "lengthM": 0.91,
+   "topM": 0.91
+  },
+  {
+   "id": "h3-box-stone-s16",
+   "asset": "boxstone_2",
+   "e": 478245.4,
+   "n": 6457628.59,
+   "yawDeg": 292,
+   "lengthM": 1.06,
+   "topM": 0.89
+  },
+  {
+   "id": "h3-box-stone-s17",
+   "asset": "boxstone_4",
+   "e": 478246.15,
+   "n": 6457631.17,
+   "yawDeg": 49,
+   "lengthM": 0.63,
    "topM": 0.49
   },
   {
-   "id": "h3-box-stone-out-6",
+   "id": "h3-box-stone-s18",
    "asset": "boxstone_2",
-   "e": 478249.5,
-   "n": 6457635.12,
-   "yawDeg": 197,
-   "lengthM": 0.45,
-   "topM": 0.22
+   "e": 478244.84,
+   "n": 6457631.14,
+   "yawDeg": 83,
+   "lengthM": 0.7,
+   "topM": 0.5
   },
   {
-   "id": "h3-box-stone-out-7",
+   "id": "h3-box-stone-s19",
    "asset": "boxstone_1",
-   "e": 478247.13,
-   "n": 6457636.45,
-   "yawDeg": 93,
-   "lengthM": 0.71,
-   "topM": 0.41
+   "e": 478243.06,
+   "n": 6457629.59,
+   "yawDeg": 46,
+   "lengthM": 0.8,
+   "topM": 0.69
   },
   {
-   "id": "h3-box-stone-out-8",
+   "id": "h3-box-stone-s20",
    "asset": "boxstone_5",
-   "e": 478241.66,
-   "n": 6457635.58,
-   "yawDeg": 168,
-   "lengthM": 0.44,
-   "topM": 0.27
+   "e": 478244.84,
+   "n": 6457629.11,
+   "yawDeg": 220,
+   "lengthM": 0.65,
+   "topM": 0.72
   },
   {
-   "id": "h3-box-stone-out-9",
+   "id": "h3-box-stone-s21",
    "asset": "boxstone_5",
-   "e": 478246.28,
-   "n": 6457635.69,
-   "yawDeg": 164,
-   "lengthM": 0.85,
+   "e": 478245.28,
+   "n": 6457623.27,
+   "yawDeg": 238,
+   "lengthM": 0.98,
+   "topM": 0.89
+  },
+  {
+   "id": "h3-box-stone-s22",
+   "asset": "boxstone_6",
+   "e": 478248.89,
+   "n": 6457624.08,
+   "yawDeg": 247,
+   "lengthM": 1.03,
+   "topM": 0.74
+  },
+  {
+   "id": "h3-box-stone-s23",
+   "asset": "boxstone_1",
+   "e": 478249.31,
+   "n": 6457624.69,
+   "yawDeg": 228,
+   "lengthM": 0.78,
+   "topM": 0.65
+  },
+  {
+   "id": "h3-box-stone-s24",
+   "asset": "boxstone_5",
+   "e": 478245.69,
+   "n": 6457622.52,
+   "yawDeg": 185,
+   "lengthM": 0.75,
+   "topM": 0.67
+  },
+  {
+   "id": "h3-box-stone-s25",
+   "asset": "boxstone_1",
+   "e": 478241.55,
+   "n": 6457627.47,
+   "yawDeg": 358,
+   "lengthM": 0.98,
+   "topM": 0.77
+  },
+  {
+   "id": "h3-box-stone-s26",
+   "asset": "boxstone_5",
+   "e": 478242.87,
+   "n": 6457630.73,
+   "yawDeg": 299,
+   "lengthM": 0.81,
+   "topM": 0.64
+  },
+  {
+   "id": "h3-box-stone-s27",
+   "asset": "boxstone_2",
+   "e": 478249.23,
+   "n": 6457627.47,
+   "yawDeg": 3,
+   "lengthM": 0.6,
    "topM": 0.53
   },
   {
-   "id": "h3-box-stone-out-10",
-   "asset": "boxstone_4",
-   "e": 478246.35,
-   "n": 6457638.38,
-   "yawDeg": 89,
-   "lengthM": 0.39,
-   "topM": 0.21
+   "id": "h3-box-stone-s28",
+   "asset": "boxstone_1",
+   "e": 478246.85,
+   "n": 6457625.17,
+   "yawDeg": 321,
+   "lengthM": 0.69,
+   "topM": 0.75
   },
   {
-   "id": "h3-box-stone-out-11",
+   "id": "h3-box-stone-s29",
+   "asset": "boxstone_6",
+   "e": 478247.73,
+   "n": 6457624.37,
+   "yawDeg": 2,
+   "lengthM": 0.81,
+   "topM": 0.7
+  },
+  {
+   "id": "h3-box-stone-s30",
+   "asset": "boxstone_2",
+   "e": 478247.71,
+   "n": 6457626.33,
+   "yawDeg": 115,
+   "lengthM": 0.97,
+   "topM": 0.83
+  },
+  {
+   "id": "h3-box-stone-s31",
+   "asset": "boxstone_1",
+   "e": 478245.34,
+   "n": 6457627.31,
+   "yawDeg": 134,
+   "lengthM": 1.05,
+   "topM": 1.01
+  },
+  {
+   "id": "h3-box-stone-s32",
+   "asset": "boxstone_6",
+   "e": 478249.86,
+   "n": 6457626.55,
+   "yawDeg": 134,
+   "lengthM": 0.65,
+   "topM": 0.52
+  },
+  {
+   "id": "h3-box-stone-s33",
+   "asset": "boxstone_6",
+   "e": 478245.12,
+   "n": 6457630.75,
+   "yawDeg": 179,
+   "lengthM": 0.63,
+   "topM": 0.52
+  },
+  {
+   "id": "h3-box-stone-s34",
+   "asset": "boxstone_2",
+   "e": 478244.38,
+   "n": 6457622.46,
+   "yawDeg": 228,
+   "lengthM": 0.78,
+   "topM": 0.56
+  },
+  {
+   "id": "h3-box-stone-s35",
    "asset": "boxstone_4",
-   "e": 478246.88,
-   "n": 6457637.83,
+   "e": 478242.84,
+   "n": 6457625.4,
+   "yawDeg": 162,
+   "lengthM": 0.96,
+   "topM": 0.8
+  },
+  {
+   "id": "h3-box-stone-s36",
+   "asset": "boxstone_4",
+   "e": 478247.95,
+   "n": 6457627.55,
+   "yawDeg": 83,
+   "lengthM": 0.66,
+   "topM": 0.66
+  },
+  {
+   "id": "h3-box-stone-s37",
+   "asset": "boxstone_3",
+   "e": 478249.97,
+   "n": 6457627.5,
+   "yawDeg": 45,
+   "lengthM": 0.97,
+   "topM": 0.74
+  },
+  {
+   "id": "h3-box-stone-s38",
+   "asset": "boxstone_3",
+   "e": 478241.98,
+   "n": 6457625.8,
+   "yawDeg": 10,
+   "lengthM": 0.81,
+   "topM": 0.69
+  },
+  {
+   "id": "h3-box-stone-s39",
+   "asset": "boxstone_2",
+   "e": 478242.9,
+   "n": 6457627.71,
+   "yawDeg": 79,
+   "lengthM": 0.65,
+   "topM": 0.61
+  },
+  {
+   "id": "h3-box-stone-s40",
+   "asset": "boxstone_3",
+   "e": 478246.78,
+   "n": 6457623.24,
+   "yawDeg": 125,
+   "lengthM": 0.6,
+   "topM": 0.57
+  },
+  {
+   "id": "h3-box-stone-s41",
+   "asset": "boxstone_4",
+   "e": 478246.9,
+   "n": 6457627.08,
+   "yawDeg": 136,
+   "lengthM": 0.65,
+   "topM": 0.71
+  },
+  {
+   "id": "h3-box-stone-s42",
+   "asset": "boxstone_6",
+   "e": 478248.5,
+   "n": 6457630.15,
+   "yawDeg": 208,
+   "lengthM": 0.89,
+   "topM": 0.63
+  },
+  {
+   "id": "h3-box-stone-s43",
+   "asset": "boxstone_5",
+   "e": 478247.38,
+   "n": 6457625.02,
+   "yawDeg": 106,
+   "lengthM": 1.09,
+   "topM": 1.03
+  },
+  {
+   "id": "h3-box-stone-s44",
+   "asset": "boxstone_5",
+   "e": 478248.59,
+   "n": 6457628.07,
+   "yawDeg": 150,
+   "lengthM": 0.85,
+   "topM": 0.82
+  },
+  {
+   "id": "h3-box-stone-s45",
+   "asset": "boxstone_2",
+   "e": 478244.96,
+   "n": 6457624.6,
+   "yawDeg": 282,
+   "lengthM": 1.02,
+   "topM": 0.85
+  },
+  {
+   "id": "h3-box-stone-s46",
+   "asset": "boxstone_4",
+   "e": 478248.89,
+   "n": 6457623.57,
+   "yawDeg": 53,
+   "lengthM": 0.69,
+   "topM": 0.52
+  },
+  {
+   "id": "h3-box-stone-s47",
+   "asset": "boxstone_5",
+   "e": 478242.06,
+   "n": 6457628.93,
+   "yawDeg": 189,
+   "lengthM": 0.92,
+   "topM": 0.78
+  },
+  {
+   "id": "h3-box-stone-s48",
+   "asset": "boxstone_6",
+   "e": 478247.63,
+   "n": 6457630.2,
+   "yawDeg": 348,
+   "lengthM": 0.94,
+   "topM": 0.7
+  },
+  {
+   "id": "h3-box-stone-s49",
+   "asset": "boxstone_6",
+   "e": 478243.72,
+   "n": 6457624.09,
+   "yawDeg": 6,
+   "lengthM": 0.7,
+   "topM": 0.63
+  },
+  {
+   "id": "h3-box-stone-s50",
+   "asset": "boxstone_6",
+   "e": 478249.35,
+   "n": 6457625.59,
+   "yawDeg": 328,
+   "lengthM": 0.97,
+   "topM": 0.73
+  },
+  {
+   "id": "h3-box-stone-s51",
+   "asset": "boxstone_3",
+   "e": 478241.69,
+   "n": 6457625.05,
+   "yawDeg": 21,
+   "lengthM": 0.62,
+   "topM": 0.52
+  },
+  {
+   "id": "h3-box-stone-s52",
+   "asset": "boxstone_5",
+   "e": 478245.08,
+   "n": 6457627.02,
+   "yawDeg": 39,
+   "lengthM": 0.63,
+   "topM": 0.78
+  },
+  {
+   "id": "h3-box-stone-s53",
+   "asset": "boxstone_5",
+   "e": 478250.1,
+   "n": 6457625.37,
+   "yawDeg": 229,
+   "lengthM": 0.76,
+   "topM": 0.63
+  },
+  {
+   "id": "h3-box-stone-s54",
+   "asset": "boxstone_2",
+   "e": 478242.37,
+   "n": 6457631.19,
+   "yawDeg": 328,
+   "lengthM": 0.79,
+   "topM": 0.43
+  },
+  {
+   "id": "h3-box-stone-s55",
+   "asset": "boxstone_3",
+   "e": 478250.07,
+   "n": 6457628.12,
+   "yawDeg": 234,
+   "lengthM": 0.6,
+   "topM": 0.48
+  },
+  {
+   "id": "h3-box-stone-s56",
+   "asset": "boxstone_2",
+   "e": 478245.57,
+   "n": 6457629.11,
+   "yawDeg": 86,
+   "lengthM": 0.69,
+   "topM": 0.66
+  },
+  {
+   "id": "h3-box-stone-s57",
+   "asset": "boxstone_1",
+   "e": 478248.06,
+   "n": 6457625.6,
+   "yawDeg": 311,
+   "lengthM": 0.6,
+   "topM": 0.65
+  },
+  {
+   "id": "h3-box-stone-s58",
+   "asset": "boxstone_5",
+   "e": 478248.0,
+   "n": 6457630.46,
+   "yawDeg": 29,
+   "lengthM": 0.76,
+   "topM": 0.65
+  },
+  {
+   "id": "h3-box-stone-s59",
+   "asset": "boxstone_3",
+   "e": 478243.5,
+   "n": 6457630.38,
+   "yawDeg": 54,
+   "lengthM": 0.89,
+   "topM": 0.69
+  },
+  {
+   "id": "h3-box-stone-s60",
+   "asset": "boxstone_3",
+   "e": 478243.99,
+   "n": 6457628.14,
+   "yawDeg": 333,
+   "lengthM": 0.91,
+   "topM": 0.85
+  },
+  {
+   "id": "h3-box-stone-s61",
+   "asset": "boxstone_4",
+   "e": 478248.24,
+   "n": 6457625.29,
+   "yawDeg": 101,
+   "lengthM": 0.73,
+   "topM": 0.68
+  },
+  {
+   "id": "h3-box-stone-s62",
+   "asset": "boxstone_1",
+   "e": 478247.31,
+   "n": 6457623.97,
+   "yawDeg": 225,
+   "lengthM": 1.01,
+   "topM": 0.88
+  },
+  {
+   "id": "h3-box-stone-s63",
+   "asset": "boxstone_6",
+   "e": 478242.02,
+   "n": 6457626.66,
+   "yawDeg": 301,
+   "lengthM": 0.81,
+   "topM": 0.66
+  },
+  {
+   "id": "h3-box-stone-s64",
+   "asset": "boxstone_6",
+   "e": 478241.3,
+   "n": 6457626.38,
+   "yawDeg": 287,
+   "lengthM": 0.8,
+   "topM": 0.58
+  },
+  {
+   "id": "h3-box-stone-s65",
+   "asset": "boxstone_4",
+   "e": 478244.97,
+   "n": 6457626.4,
+   "yawDeg": 184,
+   "lengthM": 0.82,
+   "topM": 0.82
+  },
+  {
+   "id": "h3-box-stone-s66",
+   "asset": "boxstone_5",
+   "e": 478246.23,
+   "n": 6457626.57,
+   "yawDeg": 312,
+   "lengthM": 0.73,
+   "topM": 0.85
+  },
+  {
+   "id": "h3-box-stone-s67",
+   "asset": "boxstone_3",
+   "e": 478244.08,
+   "n": 6457623.38,
+   "yawDeg": 346,
+   "lengthM": 0.65,
+   "topM": 0.6
+  },
+  {
+   "id": "h3-box-stone-s68",
+   "asset": "boxstone_6",
+   "e": 478245.89,
+   "n": 6457630.64,
+   "yawDeg": 66,
+   "lengthM": 0.66,
+   "topM": 0.55
+  },
+  {
+   "id": "h3-box-stone-s69",
+   "asset": "boxstone_1",
+   "e": 478249.83,
+   "n": 6457628.7,
+   "yawDeg": 316,
+   "lengthM": 0.85,
+   "topM": 0.65
+  },
+  {
+   "id": "h3-box-stone-s70",
+   "asset": "boxstone_6",
+   "e": 478246.15,
+   "n": 6457624.4,
+   "yawDeg": 317,
+   "lengthM": 0.94,
+   "topM": 0.82
+  },
+  {
+   "id": "h3-box-stone-s71",
+   "asset": "boxstone_3",
+   "e": 478243.88,
+   "n": 6457623.02,
+   "yawDeg": 202,
+   "lengthM": 0.88,
+   "topM": 0.71
+  },
+  {
+   "id": "h3-box-stone-s72",
+   "asset": "boxstone_5",
+   "e": 478247.47,
+   "n": 6457631.08,
+   "yawDeg": 288,
+   "lengthM": 0.83,
+   "topM": 0.67
+  },
+  {
+   "id": "h3-box-stone-s73",
+   "asset": "boxstone_6",
+   "e": 478249.74,
+   "n": 6457625.01,
+   "yawDeg": 359,
+   "lengthM": 0.62,
+   "topM": 0.48
+  },
+  {
+   "id": "h3-box-stone-s74",
+   "asset": "boxstone_5",
+   "e": 478247.49,
+   "n": 6457623.22,
+   "yawDeg": 20,
+   "lengthM": 0.81,
+   "topM": 0.73
+  },
+  {
+   "id": "h3-box-stone-s75",
+   "asset": "boxstone_4",
+   "e": 478247.93,
+   "n": 6457628.07,
+   "yawDeg": 63,
+   "lengthM": 0.66,
+   "topM": 0.66
+  },
+  {
+   "id": "h3-box-stone-s76",
+   "asset": "boxstone_4",
+   "e": 478246.8,
+   "n": 6457624.72,
    "yawDeg": 113,
-   "lengthM": 0.71,
+   "lengthM": 0.95,
+   "topM": 0.84
+  },
+  {
+   "id": "h3-box-stone-s77",
+   "asset": "boxstone_6",
+   "e": 478245.22,
+   "n": 6457630.26,
+   "yawDeg": 18,
+   "lengthM": 0.63,
+   "topM": 0.56
+  },
+  {
+   "id": "h3-box-stone-s78",
+   "asset": "boxstone_5",
+   "e": 478241.26,
+   "n": 6457622.43,
+   "yawDeg": 156,
+   "lengthM": 0.69,
+   "topM": 0.48
+  },
+  {
+   "id": "h3-box-stone-s79",
+   "asset": "boxstone_3",
+   "e": 478245.84,
+   "n": 6457623.74,
+   "yawDeg": 198,
+   "lengthM": 1.03,
+   "topM": 0.89
+  },
+  {
+   "id": "h3-box-stone-s80",
+   "asset": "boxstone_4",
+   "e": 478247.4,
+   "n": 6457630.67,
+   "yawDeg": 111,
+   "lengthM": 0.89,
+   "topM": 0.66
+  },
+  {
+   "id": "h3-box-stone-s81",
+   "asset": "boxstone_1",
+   "e": 478242.34,
+   "n": 6457626.72,
+   "yawDeg": 70,
+   "lengthM": 0.72,
+   "topM": 0.68
+  },
+  {
+   "id": "h3-box-stone-s82",
+   "asset": "boxstone_6",
+   "e": 478245.29,
+   "n": 6457631.02,
+   "yawDeg": 87,
+   "lengthM": 0.68,
+   "topM": 0.52
+  },
+  {
+   "id": "h3-box-stone-s83",
+   "asset": "boxstone_2",
+   "e": 478248.71,
+   "n": 6457622.31,
+   "yawDeg": 118,
+   "lengthM": 0.63,
    "topM": 0.37
   },
   {
-   "id": "h3-box-stone-out-12",
-   "asset": "boxstone_5",
-   "e": 478247.46,
-   "n": 6457634.52,
-   "yawDeg": 89,
-   "lengthM": 0.81,
-   "topM": 0.51
+   "id": "h3-box-stone-s84",
+   "asset": "boxstone_1",
+   "e": 478249.76,
+   "n": 6457622.88,
+   "yawDeg": 145,
+   "lengthM": 0.84,
+   "topM": 0.53
   },
   {
-   "id": "h3-box-stone-out-13",
-   "asset": "boxstone_6",
-   "e": 478248.37,
-   "n": 6457633.82,
-   "yawDeg": 339,
+   "id": "h3-box-stone-s85",
+   "asset": "boxstone_3",
+   "e": 478245.02,
+   "n": 6457630.47,
+   "yawDeg": 156,
+   "lengthM": 0.74,
+   "topM": 0.64
+  },
+  {
+   "id": "h3-box-stone-s86",
+   "asset": "boxstone_4",
+   "e": 478241.19,
+   "n": 6457628.26,
+   "yawDeg": 192,
    "lengthM": 0.78,
-   "topM": 0.4
+   "topM": 0.55
   },
   {
-   "id": "h3-box-stone-out-14",
+   "id": "h3-box-stone-s87",
+   "asset": "boxstone_5",
+   "e": 478248.91,
+   "n": 6457626.48,
+   "yawDeg": 120,
+   "lengthM": 0.83,
+   "topM": 0.8
+  },
+  {
+   "id": "h3-box-stone-s88",
+   "asset": "boxstone_6",
+   "e": 478249.37,
+   "n": 6457628.24,
+   "yawDeg": 221,
+   "lengthM": 0.73,
+   "topM": 0.58
+  },
+  {
+   "id": "h3-box-stone-s89",
+   "asset": "boxstone_6",
+   "e": 478249.82,
+   "n": 6457623.67,
+   "yawDeg": 257,
+   "lengthM": 1.0,
+   "topM": 0.62
+  },
+  {
+   "id": "h3-box-stone-s90",
    "asset": "boxstone_2",
-   "e": 478248.18,
-   "n": 6457635.61,
-   "yawDeg": 287,
-   "lengthM": 0.53,
-   "topM": 0.25
+   "e": 478249.89,
+   "n": 6457629.95,
+   "yawDeg": 173,
+   "lengthM": 0.86,
+   "topM": 0.5
+  },
+  {
+   "id": "h3-box-stone-s91",
+   "asset": "boxstone_4",
+   "e": 478243.37,
+   "n": 6457625.49,
+   "yawDeg": 324,
+   "lengthM": 0.6,
+   "topM": 0.62
+  },
+  {
+   "id": "h3-box-stone-s92",
+   "asset": "boxstone_5",
+   "e": 478248.26,
+   "n": 6457623.18,
+   "yawDeg": 252,
+   "lengthM": 0.79,
+   "topM": 0.68
+  },
+  {
+   "id": "h3-box-stone-s93",
+   "asset": "boxstone_2",
+   "e": 478244.72,
+   "n": 6457626.09,
+   "yawDeg": 342,
+   "lengthM": 0.86,
+   "topM": 0.81
+  },
+  {
+   "id": "h3-box-stone-s94",
+   "asset": "boxstone_5",
+   "e": 478243.86,
+   "n": 6457622.55,
+   "yawDeg": 94,
+   "lengthM": 0.98,
+   "topM": 0.79
+  },
+  {
+   "id": "h3-box-stone-s95",
+   "asset": "boxstone_5",
+   "e": 478248.97,
+   "n": 6457629.71,
+   "yawDeg": 148,
+   "lengthM": 0.88,
+   "topM": 0.73
+  },
+  {
+   "id": "h3-box-stone-s96",
+   "asset": "boxstone_1",
+   "e": 478248.33,
+   "n": 6457630.8,
+   "yawDeg": 192,
+   "lengthM": 0.92,
+   "topM": 0.66
+  },
+  {
+   "id": "h3-box-stone-s97",
+   "asset": "boxstone_2",
+   "e": 478245.83,
+   "n": 6457622.23,
+   "yawDeg": 228,
+   "lengthM": 0.72,
+   "topM": 1.04
+  },
+  {
+   "id": "h3-box-stone-s98",
+   "asset": "boxstone_3",
+   "e": 478245.36,
+   "n": 6457624.81,
+   "yawDeg": 223,
+   "lengthM": 1.03,
+   "topM": 1.43
+  },
+  {
+   "id": "h3-box-stone-s99",
+   "asset": "boxstone_3",
+   "e": 478242.38,
+   "n": 6457629.15,
+   "yawDeg": 149,
+   "lengthM": 0.83,
+   "topM": 1.08
+  },
+  {
+   "id": "h3-box-stone-s100",
+   "asset": "boxstone_4",
+   "e": 478245.9,
+   "n": 6457625.37,
+   "yawDeg": 80,
+   "lengthM": 0.91,
+   "topM": 1.41
+  },
+  {
+   "id": "h3-box-stone-s101",
+   "asset": "boxstone_3",
+   "e": 478244.48,
+   "n": 6457624.73,
+   "yawDeg": 283,
+   "lengthM": 0.71,
+   "topM": 1.37
+  },
+  {
+   "id": "h3-box-stone-s102",
+   "asset": "boxstone_4",
+   "e": 478247.2,
+   "n": 6457626.87,
+   "yawDeg": 121,
+   "lengthM": 0.8,
+   "topM": 1.46
+  },
+  {
+   "id": "h3-box-stone-s103",
+   "asset": "boxstone_2",
+   "e": 478246.06,
+   "n": 6457624.78,
+   "yawDeg": 350,
+   "lengthM": 0.9,
+   "topM": 1.43
+  },
+  {
+   "id": "h3-box-stone-s104",
+   "asset": "boxstone_3",
+   "e": 478244.57,
+   "n": 6457627.73,
+   "yawDeg": 242,
+   "lengthM": 1.22,
+   "topM": 1.41
+  },
+  {
+   "id": "h3-box-stone-s105",
+   "asset": "boxstone_5",
+   "e": 478244.2,
+   "n": 6457628.65,
+   "yawDeg": 91,
+   "lengthM": 0.9,
+   "topM": 1.41
+  },
+  {
+   "id": "h3-box-stone-s106",
+   "asset": "boxstone_1",
+   "e": 478246.64,
+   "n": 6457630.07,
+   "yawDeg": 180,
+   "lengthM": 1.22,
+   "topM": 1.37
+  },
+  {
+   "id": "h3-box-stone-s107",
+   "asset": "boxstone_2",
+   "e": 478243.89,
+   "n": 6457630.19,
+   "yawDeg": 155,
+   "lengthM": 0.75,
+   "topM": 1.21
+  },
+  {
+   "id": "h3-box-stone-s108",
+   "asset": "boxstone_5",
+   "e": 478247.59,
+   "n": 6457629.64,
+   "yawDeg": 207,
+   "lengthM": 0.81,
+   "topM": 1.22
+  },
+  {
+   "id": "h3-box-stone-s109",
+   "asset": "boxstone_2",
+   "e": 478245.23,
+   "n": 6457624.22,
+   "yawDeg": 60,
+   "lengthM": 1.09,
+   "topM": 1.41
+  },
+  {
+   "id": "h3-box-stone-s110",
+   "asset": "boxstone_2",
+   "e": 478247.6,
+   "n": 6457628.4,
+   "yawDeg": 207,
+   "lengthM": 0.77,
+   "topM": 1.37
+  },
+  {
+   "id": "h3-box-stone-s111",
+   "asset": "boxstone_3",
+   "e": 478246.75,
+   "n": 6457627.5,
+   "yawDeg": 66,
+   "lengthM": 1.12,
+   "topM": 1.48
+  },
+  {
+   "id": "h3-box-stone-s112",
+   "asset": "boxstone_6",
+   "e": 478246.91,
+   "n": 6457628.55,
+   "yawDeg": 352,
+   "lengthM": 1.05,
+   "topM": 1.39
+  },
+  {
+   "id": "h3-box-stone-s113",
+   "asset": "boxstone_3",
+   "e": 478247.39,
+   "n": 6457625.66,
+   "yawDeg": 149,
+   "lengthM": 0.79,
+   "topM": 1.34
+  },
+  {
+   "id": "h3-box-stone-s114",
+   "asset": "boxstone_6",
+   "e": 478248.76,
+   "n": 6457627.32,
+   "yawDeg": 233,
+   "lengthM": 0.86,
+   "topM": 1.23
+  },
+  {
+   "id": "h3-box-stone-s115",
+   "asset": "boxstone_4",
+   "e": 478244.23,
+   "n": 6457629.49,
+   "yawDeg": 15,
+   "lengthM": 0.87,
+   "topM": 1.25
+  },
+  {
+   "id": "h3-box-stone-s116",
+   "asset": "boxstone_6",
+   "e": 478244.72,
+   "n": 6457628.3,
+   "yawDeg": 313,
+   "lengthM": 0.8,
+   "topM": 1.39
+  },
+  {
+   "id": "h3-box-stone-s117",
+   "asset": "boxstone_2",
+   "e": 478245.95,
+   "n": 6457622.84,
+   "yawDeg": 285,
+   "lengthM": 0.83,
+   "topM": 1.12
+  },
+  {
+   "id": "h3-box-stone-s118",
+   "asset": "boxstone_6",
+   "e": 478244.43,
+   "n": 6457627.18,
+   "yawDeg": 78,
+   "lengthM": 0.89,
+   "topM": 1.42
+  },
+  {
+   "id": "h3-box-stone-s119",
+   "asset": "boxstone_6",
+   "e": 478242.88,
+   "n": 6457626.73,
+   "yawDeg": 330,
+   "lengthM": 0.89,
+   "topM": 1.37
+  },
+  {
+   "id": "h3-box-stone-s120",
+   "asset": "boxstone_2",
+   "e": 478244.03,
+   "n": 6457630.82,
+   "yawDeg": 297,
+   "lengthM": 1.13,
+   "topM": 1.08
+  },
+  {
+   "id": "h3-box-stone-s121",
+   "asset": "boxstone_1",
+   "e": 478242.47,
+   "n": 6457627.3,
+   "yawDeg": 88,
+   "lengthM": 1.22,
+   "topM": 1.25
+  },
+  {
+   "id": "h3-box-stone-s122",
+   "asset": "boxstone_1",
+   "e": 478243.16,
+   "n": 6457623.64,
+   "yawDeg": 80,
+   "lengthM": 1.25,
+   "topM": 1.26
+  },
+  {
+   "id": "h3-box-stone-s123",
+   "asset": "boxstone_3",
+   "e": 478248.01,
+   "n": 6457626.98,
+   "yawDeg": 24,
+   "lengthM": 1.24,
+   "topM": 1.33
+  },
+  {
+   "id": "h3-box-stone-s124",
+   "asset": "boxstone_4",
+   "e": 478248.57,
+   "n": 6457629.18,
+   "yawDeg": 150,
+   "lengthM": 1.0,
+   "topM": 1.13
+  },
+  {
+   "id": "h3-box-stone-s125",
+   "asset": "boxstone_3",
+   "e": 478244.9,
+   "n": 6457629.75,
+   "yawDeg": 77,
+   "lengthM": 1.15,
+   "topM": 1.24
+  },
+  {
+   "id": "h3-box-stone-s126",
+   "asset": "boxstone_1",
+   "e": 478247.44,
+   "n": 6457627.89,
+   "yawDeg": 121,
+   "lengthM": 0.73,
+   "topM": 1.38
+  },
+  {
+   "id": "h3-box-stone-s127",
+   "asset": "boxstone_6",
+   "e": 478249.34,
+   "n": 6457626.48,
+   "yawDeg": 302,
+   "lengthM": 0.82,
+   "topM": 1.26
+  },
+  {
+   "id": "h3-box-stone-s128",
+   "asset": "boxstone_6",
+   "e": 478244.81,
+   "n": 6457623.19,
+   "yawDeg": 236,
+   "lengthM": 0.7,
+   "topM": 1.17
+  },
+  {
+   "id": "h3-box-stone-s129",
+   "asset": "boxstone_2",
+   "e": 478249.02,
+   "n": 6457625.3,
+   "yawDeg": 252,
+   "lengthM": 0.7,
+   "topM": 1.21
+  },
+  {
+   "id": "h3-box-stone-s130",
+   "asset": "boxstone_5",
+   "e": 478242.86,
+   "n": 6457628.35,
+   "yawDeg": 149,
+   "lengthM": 0.7,
+   "topM": 1.32
   }
  ],
  "placedColors": {}

@@ -183,6 +183,8 @@ async function setup(rows: CourseFeature[]) {
     const glMap = {
         transform: fakeTransform(),
         project: () => { throw new Error('map.project must not be called'); },
+        getMaxPitch: () => 85,
+        setMaxPitch() {},
         on(type: string, h: (e: unknown) => void) {
             let set = glHandlers.get(type);
             if (!set) glHandlers.set(type, set = new Set());

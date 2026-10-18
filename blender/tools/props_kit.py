@@ -381,12 +381,13 @@ class TextureBank:
         a = (on[None, :] | on[:, None]).astype(float) * 0.85
         return np.ones((S, S, 3)) * col, None, 1.0, a
 
-    def tex_granite(self, color="124,121,116", lichen="0.55"):
+    def tex_granite(self, color="124,121,116", lichen="0.55", green="0", orange="0"):
         """Weathered granite bedrock (glacier-polished outcrop, photo 21): a 4 m tile at twice the bank size.
         Grey with a warm feldspar cast, mm crystal grains (dark mica, pale quartz, pinkish feldspar), broad
         tonal mottling, crustose lichen (pale grey rosettes, `lichen` = how far they lighten the stone, and
         dark grey-green crusts) and a few long hairline cracks. No cellular joint pattern: on a dome that reads
-        as cobbles."""
+        as cobbles. `green` (0..1, default 0 = none) adds patchy pale grey-green lichen, `orange` (0..1) sparse
+        yellow-orange spots (Xanthoria), as on the field boulders of a heap."""
         S = self.size * 2
         k = S / 2048.0  # noise scales are written for 2048 px = 4 m (~2 mm/px)
 
@@ -420,6 +421,14 @@ class TextureBank:
         alb = alb + (_rgb([180, 180, 172]) - alb) * (float(lichen) * pale)[:, :, None]
         alb = alb * (1 - 0.3 * rim[:, :, None])
         alb = alb + (_rgb([70, 74, 66]) - alb) * (0.55 * dark)[:, :, None]
+        if float(green) > 0:   # blotches (a hand to half a metre) of pale grey-green crust
+            gl = _fbm((S, S), 150, scales=sc(256, 96, 40, 12))
+            gm = np.clip((gl - 0.56) * 7, 0, 1) * np.clip(0.4 + 1.2 * (big - 0.3), 0, 1)
+            alb = alb + (_rgb([148, 160, 118]) - alb) * (float(green) * 0.75 * gm)[:, :, None]
+        if float(orange) > 0:  # a few small yellow-orange spots, mostly on the high, sunlit tone
+            ol = _fbm((S, S), 151, scales=sc(96, 32, 12, 5))
+            om = np.clip((ol - 0.70) * 12, 0, 1) * np.clip(2 * (big - 0.35), 0, 1)
+            alb = alb + (_rgb([214, 156, 52]) - alb) * (float(orange) * 0.8 * om)[:, :, None]
         # a few long cracks (contours of very low-frequency noise, broken up), dirt-dark with a soft edge
         crack = np.zeros((S, S))
         for seed, scl, w, keep in ((145, 2048, 0.006, 0.4), (146, 1024, 0.004, 0.55)):
@@ -549,6 +558,10 @@ MATERIALS = {
     # field stones of the tee walls (photos c219a56f, 7176f1a2): lighter grey than the bedrock, olive moss on top
     "granite_boulder": ("granite:68,69,70:0.2", (4.0, 4.0), None, 0.12, 0.0),
     "granite_moss": ("granite:62,72,40:0.2", (4.0, 4.0), None, 0.05, 0.0),
+    # the heap stones at hole 2's tee (photo, 2026-10-18): mid grey granite, patchy pale grey-green lichen, a few yellow-orange spots
+    "granite_lichen": ("granite:112,110,106:0.5:0.9:0.7", (4.0, 4.0), None, 0.15, 0.0),
+    # the stone box at hole 3's tees (video frame): pale grey-beige granite
+    "granite_beige": ("granite:134,128,116:0.45:0.25:0.15", (4.0, 4.0), None, 0.15, 0.0),
     # ivy over the big boulders by hole 13's tees (photo cddccbea, late September: yellowing)
     "ivy": ("foliage:92,104,40", (1.5, 1.5), None, 0.1, 0.0),
     "concrete": ("plaster:138,136,130", (2.0, 2.0), None, 0.15, 0.0),

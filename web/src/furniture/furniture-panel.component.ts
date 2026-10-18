@@ -623,6 +623,9 @@ export class FurniturePanelComponent extends Component {
     private ruleHint(): string {
         const type = this.tool.drawingRule.get();
         if (!type) return '';
+        if (type === 'oob' && this.tool.rules.state.draft.get().length === 0) {
+            return 'Click an existing OOB line to edit it, or click empty ground to start a new boundary. Esc to cancel.';
+        }
         return `Drawing ${FEATURE_STYLES[type].label} on ${this.holeLabel(this.tool.rules.drawHoleId.get())} — click to add points, `
             + 'click the first point or Enter to close, press-drag to trace, Esc to cancel.';
     }

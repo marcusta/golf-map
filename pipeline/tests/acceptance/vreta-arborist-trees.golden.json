@@ -1,0 +1,224 @@
+{
+ "recorded": "2026-10-18, code before the model library (461e428 + working tree)",
+ "items": {
+  "CE_Oak_CE_Large_Full (far)": {
+   "settings": "f9a2acdbd179b5eefe5bd5637355e358b6b7101d7adba77af5c48fc565a5f749",
+   "count": 2381,
+   "instances": "43230bbee077b65d876c59d1d22a445c8e61b72cfc8c8a5c6d52230f21c914c0"
+  },
+  "Forest_Large_beech_tree_03 (far)": {
+   "settings": "5f2c481951b491a11530781859ba2e0ac5514b116360f60b19a59f788a639497",
+   "count": 745,
+   "instances": "4b3badd68fb92f4e988d2c6ca819ef75c66214995eaafe816150e98f0edb5231"
+  },
+  "Forest_Large_beech_tree_04": {
+   "settings": "5aa696eeac902ad6fa4c82d6e11188c37ccd074c7d00f934912c32087e172efb",
+   "count": 312,
+   "instances": "8f17398abac3d8d15cbeac6ab7059b93b9bf9f8a48a358b5536c82292a13140e"
+  },
+  "Forest_Large_beech_tree_04 (far)": {
+   "settings": "b18e54ad7ce5cd635ac88924c055f6acacc4df92e4dc120c895266269868d321",
+   "count": 934,
+   "instances": "2b7aeacc3f08c0148df4eaf2c80cd6a64ecf2a147c1084fe068843e869940191"
+  },
+  "Forest_Large_beech_tree_05 (far)": {
+   "settings": "4a2c0404b54af399bd56787d813232d8cc86b45fdbe0ba4cc97ff51713b779c0",
+   "count": 355,
+   "instances": "3b4e51508ef1dcffab326559716bbca84dddecb43924f163388170bb5726b450"
+  },
+  "MeadowEnv_02_Poplar": {
+   "settings": "fc5fef474dc474f1e96eba7274d5a06a5f1c2ed18d15de7f71d85daacbda7196",
+   "count": 274,
+   "instances": "50720282e5ee84959b895c9689b07a73dd9f220fbb31499d4afcf3c8ba102906"
+  },
+  "MeadowEnv_02_Poplar (far)": {
+   "settings": "2942185a5245c672946d0c6442be4e5eee7d40df13f2917c91b202c4fffb12d8",
+   "count": 534,
+   "instances": "3d01104604e28e4bfb72a2892e93be20c6d6f28d60ed3fe36a2f56b4c20ff386"
+  },
+  "MeadowEnv_03_Poplar": {
+   "settings": "6f104051ed75515c8f55439ede94ad1ae8fc4df18d835515571109d5a86b653d",
+   "count": 202,
+   "instances": "31b43810776a69e1394d8628ee274cd08332f11172776f54357ee138b98c8d98"
+  },
+  "MeadowEnv_03_Poplar (far)": {
+   "settings": "364c2ee802c306d2cebb8696add7dd8ed6209332c2c7caddc83679143a2422bb",
+   "count": 1027,
+   "instances": "985a69ec0984908147d0bdb914349f365f64acd95eeb94bddc3ec42519163c41"
+  },
+  "MeadowEnv_05_Poplar": {
+   "settings": "951bb852ac3dafe1bea185f6a11d490642d5c74b6f98da1a0cd4b0cff31075ae",
+   "count": 72,
+   "instances": "08f9102e507d05907062e49f72a162ffe7f09025bdea9675511f4471d155c629"
+  },
+  "MeadowEnv_05_Poplar (far)": {
+   "settings": "756ccdf53afbe0882c77cd1710ada104d209a3fd5e51916963c1390f3fc36596",
+   "count": 779,
+   "instances": "a34b513c3c55b644246b795600a5cfaaf74b850a34ba9e0f67cb36570f543d09"
+  },
+  "MeadowEnv_06_Poplar": {
+   "settings": "157cf15fac640c4997789062dbe9360dc1d52935da5c76cdecb098a0df4b09b9",
+   "count": 96,
+   "instances": "5306639cc17deda76dbc7ac2cf8f69b44f2de5e4252cac75ae5ef9ec51df8b68"
+  },
+  "MeadowEnv_06_Poplar (far)": {
+   "settings": "89024ae42eb7374208c8125cd0244fd14744dbea0333e9efdfe4ca36e5ec1859",
+   "count": 645,
+   "instances": "b60a75a50096c408b29acfddb7a7f305eda50339a4f38213f22332a328ba0023"
+  },
+  "MeadowEnv_07_Poplar": {
+   "settings": "ac3b83ef2eda96482064306bda40a9296be173d2a6a2aa41e7f2ff4e04eb3137",
+   "count": 24,
+   "instances": "71d28bef8ea80f0f454181eec8fecb040854f36aef675abc673dec1835d173d8"
+  },
+  "MeadowEnv_07_Poplar (far)": {
+   "settings": "b253df6b8455d08e62204a265d9ffc0022fa9ce05b6e7020a6c584494d80c852",
+   "count": 493,
+   "instances": "27361cc582d8487fbcf04e7bdf798a7e180e476050045858ec933bb57d1c4235"
+  },
+  "ModdedOak2_Moline (far)": {
+   "settings": "e8a34de0b2bebb80435f3d8d7911b06c1f695e7b417bad20b7c2a484252544ff",
+   "count": 1805,
+   "instances": "812127021d2ded964cea39845ee2fc4ed80fc7ef5d9c75d6a49dc5041e52dd3d"
+  },
+  "ModdedOak_Moline (far)": {
+   "settings": "950b7f358df4415452c3c8c60a2f40726d498af97c2822853b22df8ad35af64f",
+   "count": 3385,
+   "instances": "957099cef77bbf61d5feae4f99109951006fc0cd519e1c8339caad38e1d21061"
+  },
+  "MountainEnv_Forest_pine_01": {
+   "settings": "22efc12cc91978aaf45af2bfc0c8a391b9e9bc0829fe53285a3c960f73d79ea6",
+   "count": 25,
+   "instances": "30fddfa247f72097fb5085433858589fc6c76abf24a22b9c55bcab6005bd3ab2"
+  },
+  "MountainEnv_Forest_pine_01 (far)": {
+   "settings": "f96928ed9dbc1de5c3605954f9bdd7ba5f09e9e1ca6dbb38d428350eb4355961",
+   "count": 354,
+   "instances": "b493432d9b758ea2142726a99193bfc366ec2c989f529cd5c613eebeb9a7ebbd"
+  },
+  "MountainEnv_Forest_pine_03": {
+   "settings": "b59f74e73cb6e99b5f4dcf00885b9ebb3cb3d4bfb4aca05b104d4731c95f0fa8",
+   "count": 132,
+   "instances": "863d5c67b2396a5d07b73aa79ec2a9407e0b44f577f1c2a8d730ac531260ff98"
+  },
+  "MountainEnv_Forest_pine_03 (far)": {
+   "settings": "83620a4558f7e764f83e7b4e2862c83746797a58a4c27414685a3078948a1a66",
+   "count": 1627,
+   "instances": "8d277d6f5d7cebcd37c8efc2292500ad367c3af5d2daac86318c3dcf7e87a63c"
+  },
+  "MountainEnv_Forest_pine_04": {
+   "settings": "6d231ab837b53fb4159a476807c7d98a6f1f54c4ceae17f2b75b3925d40d0678",
+   "count": 15,
+   "instances": "56f78b58bb78bad632b582470389f955d665d3d95240d93a1c786053dd6fc7eb"
+  },
+  "MountainEnv_Forest_pine_04 (far)": {
+   "settings": "85683e0139f73a3a012a1274370c9523ba81fafc32457f7987632a3123e2ab7e",
+   "count": 334,
+   "instances": "9260fd63e85a6d5be0120dcc3d856201a72add98e6ef91b2b0a8e43875604e0a"
+  },
+  "MountainEnv_Forest_pine_05": {
+   "settings": "efd0fa4426989fd097989ca583d8ece885c444a1d55acc39abde332c40f897c3",
+   "count": 220,
+   "instances": "e271eff9210b90c255a6f9814022f57165f04bd136def3ff2c885a7a303a5dd4"
+  },
+  "MountainEnv_Forest_pine_05 (far)": {
+   "settings": "511bf44c5e28e9c99cd4c901d4a8e81a117e38ee3be155b4970ec05ac2ca9483",
+   "count": 4195,
+   "instances": "f775e5a477ef352790237ce2e3fbd4446eae4a4da9a877cb97ec8af7fc420969"
+  },
+  "MountainEnv_Forest_pine_06": {
+   "settings": "0df01c6a075a313b2fba6ef1ff269f3b3117824817992f34ef25ff8366e5ce4f",
+   "count": 22,
+   "instances": "f98d855b170cfc8a83dd92fb5f7711c457f1851d1d0a88e702f84f7e7dbd534a"
+  },
+  "MountainEnv_Forest_pine_06 (far)": {
+   "settings": "9232f80360f93d24d5136e40a9c294bf2ea1f2b5618e9e700ee72dfb8b5d0e0c",
+   "count": 333,
+   "instances": "508dad731d143285c8b6cb06b1142243f7f66e8db76fa2a9b5f4690902f6cfb7"
+  },
+  "MountainEnv_Forest_pine_tree_00_B": {
+   "settings": "8b72dafac7e13ebfc19823d4ebe272763eabe3daa2bbad706aedede9d1f2e8e1",
+   "count": 12,
+   "instances": "3f0b4338f2623779ad40c0ad6c8c635cb385e6d949c2196f646b76fe41d70cb8"
+  },
+  "MountainEnv_Forest_pine_tree_00_B (far)": {
+   "settings": "896803e576b064afc9875e35137dc55c287a7d998d343e9b203b7e4e31df5a66",
+   "count": 160,
+   "instances": "1546ba358b9a6c7ec20f3d6ca15c3c5805be63f579c3db12486a27c19c5d23d6"
+  },
+  "MountainEnv_Forest_pine_tree_00_C": {
+   "settings": "bfb6bfaeb48b993afdc034d7baa7668494182d76c73dca0de7b532b7ff07ec74",
+   "count": 20,
+   "instances": "1f71757e2beef8b7ce8a7a898911637caf203fc0b4be1abda4255f767a82bbae"
+  },
+  "MountainEnv_Forest_pine_tree_00_C (far)": {
+   "settings": "e076d987db492a4ca732acc3ff4cf2b62f6171065003aca6fb1c544f4e710b94",
+   "count": 266,
+   "instances": "4b1c89b406aecd812427ef9f04c8bbdb9e0b1d65b618766a3cda6cb2fe647e6d"
+  },
+  "MountainEnv_bush_dwarf_pine_big_04": {
+   "settings": "b55980bef4b3112ed4828c95ff330bef2a2b2d6f183ed1c2306888d176aba146",
+   "count": 7636,
+   "instances": "fda9f8a679f24d36827ac43e1ae2f72110f4fb3a718560291d3c4742df27583f"
+  },
+  "MountainEnv_bush_dwarf_pine_medium_04": {
+   "settings": "1cb1e96dcb61e9b09f7acd7ea65167f3fd68e53045771af725d02b9d37d85209",
+   "count": 17478,
+   "instances": "d9d74e28a0d8bbb36759897ca0ea70343988190f90a10a65be99e1ff4da78cae"
+  },
+  "NM_Fir_02_Small": {
+   "settings": "24ec201ef84213575cdb0924888a42d328c6112d78905fe23e5f66da0ab267bd",
+   "count": 254,
+   "instances": "9a6524335a1e18278fe57f2cb724f2b2c742178a9b8af054733cb06ea340c486"
+  },
+  "NM_Fir_02_Small (far)": {
+   "settings": "c120a42f039171be2ff0785580d4686eb5f0e9d7f57922694239b05f2921cbd9",
+   "count": 10018,
+   "instances": "7a35a9dec0a25da7b4eb0aea714f54051c6c949123d45fab55f2417cb46c89db"
+  },
+  "NM_Fir_03_Medium": {
+   "settings": "5cc1cdbbe98e67cd658dbe25667ab83b8a8f8f76645bd0f44cc0e13c192e5445",
+   "count": 20,
+   "instances": "27490f058475c2d9611f4883ef1abca1b21657c1d0346c9d971a98d1cb414ef1"
+  },
+  "NM_Fir_03_Medium (far)": {
+   "settings": "026002b9725e2d3dd4040d0f5ab60f4e5139ea6c1e2356ef4d0218919ebbb19b",
+   "count": 345,
+   "instances": "83eb1a868c5612cf3c43c50347321191bd9467cf2f140a5141db47c475b702f0"
+  },
+  "NM_Fir_05_Standalone": {
+   "settings": "7d575dd4c9a11df19e20310675d8c91dbc5dd9f41e74bc05d89902bb321b70cb",
+   "count": 71,
+   "instances": "caa554b9e4dfa9bb847810569dbd846ccb25589c7ecf3632ea42793cce9248fc"
+  },
+  "NM_Fir_05_Standalone (far)": {
+   "settings": "8ab5ef3001667bd5725b6d583a769dbc2497dd971171cbb77e0a3c6e19d3f3e9",
+   "count": 784,
+   "instances": "34e32c86c74b3951d9c1409cd34cf87d5e4513e962188fd915718adf121cb673"
+  },
+  "NM_Fir_07_Forest": {
+   "settings": "839f54d2151b0d91132b7f1696d814062b7eb09b5d939224fcaac52a0431dc68",
+   "count": 50,
+   "instances": "823bf61f5fb2acaebd08bdafdaae99d6f59659d0e43cbcbced2031ddc6d54345"
+  },
+  "NM_Fir_07_Forest (far)": {
+   "settings": "2ba602f05f03bb8dfeff9f662d8c6acead5d9db1a6c52981e2789b2a45d7ba7f",
+   "count": 869,
+   "instances": "00b254bd19bc4f4eb69163075e71b6292308e0a1f1a15835dbef6ce3bc5256f4"
+  },
+  "S7_European_White_Birch [tint=#527e4b] (far)": {
+   "settings": "01e0213d87d5556c0d657fcdb32fcb3d515dba1030965261669084a8a6fca647",
+   "count": 3573,
+   "instances": "18741708e03b8498999bbce8734e543fedb0d875dcae8f84d0481d7713b64aa9"
+  },
+  "S7_White_Oak (far)": {
+   "settings": "17bb71bf6395c364e2bad9c4a757642bf3ec70aba97335e85b3672ee82df9f4b",
+   "count": 1978,
+   "instances": "817800b2699790ce2f5a3e1c779d167045acf40745febea50d3ecea3ef8c198d"
+  }
+ },
+ "vspFar": {
+  "count": 5838,
+  "sha256": "3f2fd3551b2d90266ae9e6348ff361c45aa88ccfd9d9bcf43f90cf4524974720"
+ }
+}

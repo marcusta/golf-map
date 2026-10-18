@@ -222,7 +222,7 @@ def mask_rule(group_id: str, selector: int, min_density: float) -> dict:
             "TextureMaskPropertiesList": [prop("RgbaSelector", "ChannelSelector", "Select channel", selector), prop("Boolean", "Inverse", "Inverse")]}
 
 
-def species_for(prefab: str, labels: list[str], overrides: dict) -> str | None:
+def species_for(prefab: str, labels: list[str], overrides: dict) -> str | list[str] | None:
     """The Arborist label a palette prefab becomes: the species file's entry, else the one catalogue
     label that ends with the prefab's name without its 'prefab_' (the OPCD copies of the same
     NatureManufacture models are named <pack>_<model>)."""
@@ -705,16 +705,21 @@ def trees(args) -> None:
                 items[slot] = far_copy(item) if far else item
             return label, variant, can_far, keep, (source["heightM"] / sizes[label]["heightM"] if source["heightM"] > 0 else 1.0)
 
-        main = variant_of(species_for(source["prefab"], list(library), overrides))
-        if main is None:
+        # A list under "trees" shares the prefab's trees between several Arborist species (variants of
+        # one look, e.g. three elm models): each tree takes one by its position, so a rerun picks the same.
+        target = species_for(source["prefab"], list(library), overrides)
+        mains = [m for m in (variant_of(t) for t in (target if isinstance(target, list) else [target])) if m]
+        if not mains:
             continue
-        label, variant, can_far, keep, factor = main
+        label, variant, can_far, keep, factor = mains[0]
         stem = Path(source["prefab"]).stem
         ring_as = variant_of(ring.target(stem), far_too=False) if ring and kept_in_vsp and not outer and ring.target(stem) else None
         ring_m = ring.radius(stem) if ring_as else 0.0
         counts: dict[str, int] = {}
         scales: dict[str, float] = {}   # per slot, summed: the report shows the mean factor
         for x, y, z, sx, sy, sz, qx, qy, qz, qw in source["instances"]:
+            if len(mains) > 1:
+                label, variant, can_far, keep, factor = mains[zlib.crc32(f"v{x:.2f},{z:.2f}".encode()) % len(mains)]
             far = can_far and (rule.far(x, z) if rule else outer)
             slot, scale, share, model = variant + (FAR_SUFFIX if far else ""), factor, keep, label
             if kept_in_vsp and not outer:

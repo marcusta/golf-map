@@ -27,6 +27,7 @@ import argparse
 import json
 import math
 import os
+import random
 import sqlite3
 
 HERE = os.path.dirname(os.path.abspath(__file__))
@@ -104,115 +105,165 @@ WALLS = [
 ]
 
 
-# Loose rounded boulders in the grass among the rock slabs under the trees NE of hole 1's green (Marcus's photo,
-# 2026-10-18: a few dark rounded boulders, 0.5-1.2 m, sitting in the grass; one beside the middle tree's trunk, one in
-# front of the mound). Only the one on the NE slab is seen in the 2023 ortho (dark, with its shadow); the others are
-# placed from the photo. e/n = centre (EPSG:3006), yawDeg = bearing of the long side, lengthM, topM = top over the
-# highest ground under it (about half the length: sunk in, the round underside never floats).
-H1_BOULDERS = [
-    {"id": "h1-trees-ne-boulder-1", "asset": "boulder_4", "e": 477843.7, "n": 6457341.0, "yawDeg": 40, "lengthM": 1.3, "topM": 0.6,
-     "note": "On the little slab NE of the tree group: the dark boulder with its shadow in the 2023 ortho."},
-    {"id": "h1-trees-ne-boulder-2", "asset": "boulder_2", "e": 477836.8, "n": 6457315.2, "yawDeg": 100, "lengthM": 0.9, "topM": 0.45,
-     "note": "In front of the mound, south of the big slab (photo: the boulder centre-left of the mound)."},
-    {"id": "h1-trees-ne-boulder-3", "asset": "boulder_7", "e": 477845.8, "n": 6457313.4, "yawDeg": 20, "lengthM": 0.8, "topM": 0.4,
-     "note": "Beside the trunk of the middle tree (photo)."},
-    {"id": "h1-trees-ne-boulder-4", "asset": "boulder_5", "e": 477833.4, "n": 6457316.4, "yawDeg": 60, "lengthM": 0.6, "topM": 0.3,
-     "note": "Small, lower left of the mound (photo)."},
-    {"id": "h1-trees-ne-boulder-5", "asset": "boulder_9", "e": 477830.4, "n": 6457318.6, "yawDeg": 150, "lengthM": 0.5, "topM": 0.25,
-     "note": "Small, lower left of the mound (photo)."},
-]
+# Angular boulders for the heap, the box and hole 1's loose stones (Marcus's photos, 2026-10-18).
+def angular_flats(seed, n=9):
+    """n flat faces at random directions, cut deep (at 0.7-0.8) and nearly sawn (keep 0.04-0.12): a blocky, broken stone."""
+    rnd = random.Random(seed)
+    out = []
+    for _ in range(n):
+        z, a = rnd.uniform(-0.25, 0.9), rnd.uniform(0, 2 * math.pi)
+        r = math.sqrt(1 - z * z)
+        out.append({"dir": [round(r * math.cos(a), 3), round(r * math.sin(a), 3), round(z, 3)],
+                    "at": round(rnd.uniform(0.7, 0.8), 2), "keep": round(rnd.uniform(0.04, 0.12), 2)})
+    return out
 
 
-# The stenröse at hole 2's tee (Marcus's photo from the tee, 2026-10-18): a heap of big grey lichen granite boulders on
-# the edge of the deep rough NW of the tee box, about 5 x 4 m and 2.7 m high. The 2023 and 2025 orthos show eight pale
-# round stones 1-1.5 m across at E 477847.7-477851, N 6457273.5-6457277.5 (with a dark gap in the middle of the heap),
-# a bedrock slab north of it. Each stone is placed whole on the lidar ground (no plateau); the stones are closed
-# Blender boulders, rounder-angular than the wall stones (superellipsoid 2.4-3, flat faces), 1.2-2.4 m once scaled.
-# (sy, sz, exponent, lumps) of the heap stones: depth and height as a fraction of the length.
+# (sy, sz, exponent, lumps) as a fraction of the length: grey granite, patchy pale grey-green lichen, a few
+# yellow-orange spots (props_kit material granite_lichen).
 HEAP_STONES = [
-    (0.82, 0.70, 2.6, 0.55), (0.76, 0.66, 2.9, 0.5), (0.9, 0.74, 2.4, 0.6), (0.7, 0.62, 3.0, 0.45),
-    (0.86, 0.8, 2.5, 0.55), (0.78, 0.68, 2.8, 0.5), (0.92, 0.72, 2.3, 0.6),
+    (0.82, 0.70, 3.0, 0.35), (0.76, 0.66, 3.3, 0.30), (0.90, 0.74, 2.8, 0.40), (0.70, 0.62, 3.4, 0.30),
+    (0.86, 0.80, 3.0, 0.35), (0.78, 0.68, 3.2, 0.32), (0.92, 0.72, 2.8, 0.40), (0.74, 0.76, 3.1, 0.35),
+    (0.88, 0.64, 3.3, 0.30),
 ]
-HEAP_FLATS = [
-    {"dir": [0, 1, 0.2], "at": 0.8, "keep": 0.15}, {"dir": [0, -1, 0.1], "at": 0.82, "keep": 0.15},
-    {"dir": [1, 0, 0.3], "at": 0.84, "keep": 0.2}, {"dir": [0, 0, 1], "at": 0.86, "keep": 0.3},
+# Stones of the box at hole 3: pale grey-beige (granite_beige), blocky, lying and standing on end (taller than long).
+BOX_FLAT = [(0.82, 0.72, 3.0, 0.3), (0.74, 0.62, 3.3, 0.3), (0.90, 0.70, 2.8, 0.35), (0.70, 0.66, 3.4, 0.28),
+            (0.86, 0.78, 3.0, 0.3), (0.78, 0.64, 3.2, 0.3)]
+BOX_TALL = [(0.8, 2.0, 3.0, 0.3), (0.7, 2.3, 3.3, 0.28), (0.85, 1.9, 3.0, 0.3)]
+
+
+def _poly_from_db(feature_no):
+    """A feature's outer ring as a shapely polygon (EPSG:3006), or None without the database or shapely."""
+    try:
+        from shapely.geometry import Polygon
+        db = sqlite3.connect(DB)
+        row = db.execute("select geometry_json from course_features where course_id = ? and feature_no = ?",
+                         (COURSE_ID, feature_no)).fetchone()
+        pts = [(p["x"], p["y"]) for p in json.loads(row[0])["rings"][0]["points"]]
+        return Polygon(pts)
+    except Exception:
+        return None
+
+
+# Loose boulders in the grass among the rock slabs under the trees NE of hole 1's green (Marcus's photo,
+# 2026-10-18: a few dark rounded boulders, 0.5-1.2 m, sitting in the grass; one beside the middle tree's trunk, one in
+# front of the mound; round 2: bigger and rougher, the heap stones' angular lichen granite). Only the one on the NE
+# slab is seen in the 2023 ortho (dark, with its shadow); the others are placed from the photo. e/n = centre
+# (EPSG:3006), yawDeg = bearing of the long side, lengthM, topM = top over the highest ground under it.
+H1_BOULDERS = [
+    {"id": "h1-trees-ne-boulder-1", "asset": "heap_8", "e": 477843.7, "n": 6457341.0, "yawDeg": 40, "lengthM": 1.6, "topM": 0.85,
+     "note": "On the little slab NE of the tree group: the dark boulder with its shadow in the 2023 ortho."},
+    {"id": "h1-trees-ne-boulder-2", "asset": "heap_2", "e": 477836.8, "n": 6457315.2, "yawDeg": 100, "lengthM": 1.2, "topM": 0.65,
+     "note": "In front of the mound, south of the big slab (photo: the boulder centre-left of the mound)."},
+    {"id": "h1-trees-ne-boulder-3", "asset": "heap_5", "e": 477845.8, "n": 6457313.4, "yawDeg": 20, "lengthM": 1.1, "topM": 0.6,
+     "note": "Beside the trunk of the middle tree (photo)."},
+    {"id": "h1-trees-ne-boulder-4", "asset": "heap_4", "e": 477833.4, "n": 6457316.4, "yawDeg": 60, "lengthM": 0.85, "topM": 0.45,
+     "note": "Small, lower left of the mound (photo)."},
+    {"id": "h1-trees-ne-boulder-5", "asset": "heap_6", "e": 477830.4, "n": 6457318.6, "yawDeg": 150, "lengthM": 0.75, "topM": 0.4,
+     "note": "Small, lower left of the mound (photo)."},
 ]
-# e/n = centre (EPSG:3006), yawDeg, lengthM, topM = top over the highest ground under it (ring stones sit in the
-# ground; the middle tier and the top stone rest on them, so their tops are higher than their own height).
-H2_HEAP = [
-    # ground ring
-    ("a", "heap_1", 477848.3, 6457274.4, 25, 1.9, 1.15), ("b", "heap_3", 477850.3, 6457274.2, 100, 1.7, 1.1),
-    ("c", "heap_2", 477849.2, 6457273.4, 60, 1.4, 0.8), ("d", "heap_5", 477847.9, 6457276.4, 150, 1.8, 1.25),
-    ("e", "heap_4", 477850.7, 6457276.0, 10, 1.5, 1.1), ("f", "heap_6", 477849.3, 6457277.5, 75, 1.4, 0.95),
-    # middle tier and the top stone
-    ("g", "heap_7", 477849.4, 6457275.0, 35, 2.0, 1.9), ("h", "heap_2", 477848.7, 6457275.9, 120, 1.7, 1.85),
-    ("i", "heap_5", 477849.4, 6457276.0, 140, 2.4, 2.7),
-    # the rest of the foot: a wider heap (the photo: 6-8 stones in a row about 5 m long)
-    ("j", "heap_3", 477846.9, 6457275.3, 60, 1.6, 1.0), ("k", "heap_6", 477847.5, 6457277.4, 20, 1.5, 1.1),
-    ("l", "heap_1", 477851.7, 6457275.0, 130, 1.3, 0.85), ("m", "heap_4", 477848.5, 6457273.4, 170, 1.2, 0.75),
-    ("n", "heap_7", 477850.5, 6457277.4, 95, 1.3, 0.9),
-]
-H2_BOULDERS = [{"id": "h2-tee-stenrose-" + k, "asset": a, "e": e, "n": n, "yawDeg": y, "lengthM": L, "topM": t,
-                "note": "Stenrose NW of hole 2's tee (the heap in the photo from the tee; ortho: pale round stones)."}
-               for k, a, e, n, y, L, t in H2_HEAP]
+
+
+def h2_heap():
+    """The stenrose at hole 2's tee (photo from the tee, 2026-10-18; round 2: 7-8 m long, 4-5 m deep, 3 m high, one dominant
+    top stone of 2.5 m at the right = the north end). The 2023 and 2025 orthos show eight pale stones 1-1.5 m across at
+    E 477847.7-477851, N 6457273.5-6457277.5 on the edge of the deep rough, 3 m from the tee's semi rough. Angular
+    blocks (heap_N) in three layers on the lidar ground, no plateau: a ground ring whose tops run 0.8-1.5 m, a middle tier
+    1.7-2.3 m, a crown 2.2-2.6 m and the dominant stone on top (topM = its top over the highest ground under it)."""
+    rnd = random.Random(77)
+    ce, cn = 477848.9, 6457275.4
+    ang = math.radians(345)          # the long axis, bearing (NNW-SSE), so the heap stands across the line of sight from the tee
+    ux, uy = math.sin(ang), math.cos(ang)
+    A, B = 4.3, 2.7
+    semi = _poly_from_db(91)
+    placed, out = [], []
+
+    def at(a, b):
+        return ce + a * ux + b * uy, cn + a * uy - b * ux
+
+    def stone(layer, count, scale, lo, hi, top_fn, factor):
+        made, tries = 0, 0
+        while made < count and tries < 3000:
+            tries += 1
+            a, b = rnd.uniform(-A, A) * scale, rnd.uniform(-B, B) * scale
+            if (a / (A * scale)) ** 2 + (b / (B * scale)) ** 2 > 1.0:
+                continue
+            L = lo + (hi - lo) * rnd.random()
+            e, n = at(a, b)
+            if any(math.hypot(e - pe, n - pn) < factor * (L + pl) / 2 for pe, pn, pl in placed):
+                continue
+            if semi is not None:
+                from shapely.geometry import Point
+                if semi.distance(Point(e, n)) < 0.6 + 0.4 * L:
+                    continue
+            p = max(0.0, 1.0 - (a / A) ** 2 - (b / B) ** 2)
+            placed.append((e, n, L))
+            made += 1
+            out.append((layer, "heap_%d" % (1 + rnd.randrange(len(HEAP_STONES))), e, n, rnd.randrange(360), round(L, 2),
+                        round(top_fn(L, p, rnd), 2)))
+    stone(0, 28, 1.0, 1.4, 2.2, lambda L, p, r: max(0.8, 0.6 * L) + 0.45 * p + 0.1 * r.random(), 0.5)
+    stone(1, 14, 0.68, 1.5, 2.1, lambda L, p, r: 1.7 + 0.5 * p + 0.15 * r.random(), 0.45)
+    stone(2, 6, 0.4, 1.3, 1.8, lambda L, p, r: 2.2 + 0.35 * p + 0.1 * r.random(), 0.42)
+    e, n = at(0.42 * A, -0.2)
+    out.append((3, "heap_3", e, n, 120, 2.6, 2.95))   # the dominant stone, about 2.5 m, on the right (north) side
+    return out
+
+
+H2_BOULDERS = [{"id": "h2-tee-stenrose-%02d" % (i + 1), "asset": a, "e": round(e, 2), "n": round(n, 2), "yawDeg": y,
+                "lengthM": L, "topM": t, "note": "Stenrose NW of hole 2's tee (layer %d)." % layer}
+               for i, (layer, a, e, n, y, L, t) in enumerate(h2_heap())]
 
 
 # The stone box behind hole 3's tees (Marcus's video frame, 2026-10-18; the 2025 and 2023 orthos show it at
 # E 478240.3-478250.6, N 6457621.0-6457640: a frame of grey blocks, the south wall 10.4 m and the west wall 10.5 m
-# visible, the east side open, filled with a loose pile of pale granite stones 0.4-1.3 m that spills north of the
-# frame as rubble to N 6457639). The frame is a low wall of long thin blocks (0.25 x 0.42 m, sunk to the ground; the
-# ground inside stays at lawn level); the stones are single boulders, a few standing on end.
+# visible, the east side open, filled with a loose pile of pale granite stones 0.4-1.3 m. Round 2: all the stones
+# inside the frame, packed so they touch, higher towards the middle (1.0-1.4 m, a few on end to 1.5 m); the frame
+# straight square-ended blocks 0.32 m thick whose flat top stands 0.45 m over the ground.
 BOX_E0, BOX_N0 = 478240.0, 6457621.0   # the frame's SW outer corner
-BOX_BLOCKS = [  # (id, e, n, bearing of the long side, length m): the south wall 4 x 2.65 m, the west wall 5 x 2.1 m
-    ("s%d" % i, BOX_E0 + 0.6 + 1.3 + 2.6 * i, BOX_N0 + 0.45, 90, 2.65) for i in range(4)
-] + [("w%d" % i, BOX_E0 + 0.45, BOX_N0 + 1.5 + 0.55 + 2.1 * i, 0, 2.15) for i in range(5)]
-BOX_STONE_MAT = "granite_rock"   # paler than the wall stones (the ortho: pale grey-beige)
-BOX_FLAT = [(0.82, 0.72, 2.6, 0.5), (0.74, 0.6, 2.9, 0.45), (0.9, 0.7, 2.4, 0.55), (0.7, 0.66, 3.0, 0.4),
-            (0.86, 0.78, 2.5, 0.5), (0.78, 0.64, 2.8, 0.45)]
-BOX_TALL = [(0.8, 2.0, 2.6, 0.45), (0.7, 2.3, 2.9, 0.4), (0.85, 1.9, 2.5, 0.5)]   # stand on end: taller than long
+BOX_BLOCKS = [("s%d" % i, BOX_E0 + 0.61 + 1.3 + 2.6 * i, BOX_N0 + 0.45, 90, 2.6) for i in range(4)] + \
+             [("w%d" % i, BOX_E0 + 0.45, BOX_N0 + 0.29 + 1.12 + 2.24 * i, 0, 2.24) for i in range(5)]
 
 
 def box_stones():
-    """The pile: seeded, dart-thrown, denser along the south and east of the frame, a few standing on end."""
-    import random
-    rnd = random.Random(303)
-    placed = []   # (e, n, length)
-    out = []
+    """The pile: seeded dart-throwing, tight (a stone may not come nearer than 0.42 of the two lengths: they overlap a
+    little, so none stands alone), higher towards the middle."""
+    rnd = random.Random(404)
+    e_lo, e_hi, n_lo, n_hi = BOX_E0 + 0.85, BOX_E0 + 10.5, BOX_N0 + 0.8, BOX_N0 + 10.6
+    ce, cn, R = (e_lo + e_hi) / 2, (n_lo + n_hi) / 2, 5.6
+    placed, out = [], []
 
-    def throw(count, e0, e1, n0, n1, tall, lo, hi, dense, tag):
-        tries = 0
-        made = 0
-        while made < count and tries < 4000:
+    def profile(e, n):
+        return max(0.0, 1.0 - (math.hypot(e - ce, n - cn) / R) ** 2)
+
+    def throw(layer, count, pmin, lo, hi, tall, top_fn, factor):
+        made, tries = 0, 0
+        while made < count and tries < 8000:
             tries += 1
-            L = lo + (hi - lo) * rnd.random() ** 1.6
-            e, n = rnd.uniform(e0, e1), rnd.uniform(n0, n1)
-            near_s = max(0.0, 1 - (n - n0) / 3.5)
-            near_e = max(0.0, 1 - (e1 - e) / 3.5)
-            if rnd.random() > 0.3 + 0.7 * max(near_s, near_e) * dense + (1 - dense) * 0.7:
+            L = lo + (hi - lo) * rnd.random() ** 1.2
+            half = L * 0.5
+            e, n = rnd.uniform(e_lo + half * 0.8, e_hi - half * 0.8), rnd.uniform(n_lo + half * 0.8, n_hi - half * 0.8)
+            p = profile(e, n)
+            if p < pmin:
                 continue
-            if any(math.hypot(e - pe, n - pn) < 0.5 * (L + pl) / 2 + 0.05 for pe, pn, pl in placed):
+            if any(math.hypot(e - pe, n - pn) < factor * (L + pl) / 2 for pe, pn, pl in placed):
                 continue
             placed.append((e, n, L))
             made += 1
-            if tall:
-                k = rnd.randrange(len(BOX_TALL))
-                out.append(("%s-t%d" % (tag, made), "boxtall_%d" % (k + 1), e, n, rnd.randrange(360), round(L, 2), round(L * BOX_TALL[k][1] * 0.88, 2)))
-            else:
-                k = rnd.randrange(len(BOX_FLAT))
-                out.append(("%s-%d" % (tag, made), "boxstone_%d" % (k + 1), e, n, rnd.randrange(360), round(L, 2), round(L * BOX_FLAT[k][1] * 0.8, 2)))
-    # the tall ones first (they claim their places), then the pile inside the frame (bounds are the walls' inner faces
-    # less half a stone), then the rubble north of it
-    throw(5, BOX_E0 + 1.6, BOX_E0 + 9.9, BOX_N0 + 1.6, BOX_N0 + 9.8, True, 0.5, 0.75, 1.0, "in")
-    throw(70, BOX_E0 + 1.1, BOX_E0 + 10.2, BOX_N0 + 0.95, BOX_N0 + 10.4, False, 0.4, 1.3, 1.0, "in")
-    throw(14, BOX_E0 + 1.2, BOX_E0 + 10.0, BOX_N0 + 11.0, BOX_N0 + 18.0, False, 0.35, 0.9, 0.0, "out")
+            k = rnd.randrange(len(BOX_TALL) if tall else len(BOX_FLAT))
+            out.append(("%s%d" % ("t" if tall else "s", len(out) + 1), ("boxtall_%d" if tall else "boxstone_%d") % (k + 1), e, n,
+                        rnd.randrange(360), round(L, 2), round(top_fn(L, p, k, rnd), 2)))
+    # standing stones first (they claim their places), then the ground layer, then the middle
+    throw(2, 6, 0.1, 0.5, 0.7, True, lambda L, p, k, r: BOX_TALL[k][1] * L * 0.9 + 0.1 * p, 0.8)
+    throw(0, 90, 0.0, 0.6, 1.1, False, lambda L, p, k, r: BOX_FLAT[k][1] * L * 0.88 + 0.35 * p, 0.42)
+    throw(1, 34, 0.35, 0.7, 1.3, False, lambda L, p, k, r: 0.8 + 0.6 * p + BOX_FLAT[k][1] * L * 0.25 * r.random(), 0.42)
     return out
 
 
-BOX_BOULDERS = [{"id": "h3-box-block-" + k, "asset": "boxkerb_%d" % (1 + i % 2), "e": e, "n": n, "yawDeg": y, "lengthM": L, "topM": 0.45,
+BOX_BOULDERS = [{"id": "h3-box-block-" + k, "asset": "boxkerb_1", "e": e, "n": n, "yawDeg": y, "lengthM": L, "topM": 0.45,
                  "note": "Hole 3, the stone box behind the tees: a block of the frame."}
-                for i, (k, e, n, y, L) in enumerate(BOX_BLOCKS)]
+                for k, e, n, y, L in BOX_BLOCKS]
 BOX_BOULDERS += [{"id": "h3-box-stone-" + k, "asset": a, "e": round(e, 2), "n": round(n, 2), "yawDeg": y, "lengthM": L, "topM": t}
                  for k, a, e, n, y, L, t in box_stones()]
+
 
 
 def dug_ring(feature_id):
@@ -278,19 +329,19 @@ def stones_spec():
     for i, (sy, sz, ex, lumps) in enumerate(HEAP_STONES, 1):
         assets["heap_%d" % i] = {"category": "prop", "collider": "mesh", "parts": [
             {"kind": "boulder", "sx": 1.0, "sy": sy, "sz": sz, "seed": 100 + i, "exponent": ex, "lumps": lumps,
-             "flats": HEAP_FLATS, "seg": 32, "rings": 20, "mat": "granite_boulder"}]}
-    for i in (1, 2):   # the frame's blocks: 0.25 x 0.42 m once 2.65 m long, sunk 0.35 m more (topM 0.4)
-        assets["boxkerb_%d" % i] = {"category": "prop", "collider": "mesh", "parts": [
-            {"kind": "boulder", "sx": 1.0, "sy": 0.12, "sz": 0.3, "seed": 200 + i, "exponent": 8.0, "lumps": 0.1,
-             "seg": 24, "rings": 14, "mat": "granite_plinth"}]}
+             "flats": angular_flats(300 + i), "seg": 32, "rings": 22, "mat": "granite_lichen"}]}
+    # the frame's blocks: straight, square-ended boxes 1 m x 0.12 x 0.30 (scaled to their length: 0.32 thick, 0.8 high, the
+    # top 0.45 over the ground, the rest sunk)
+    assets["boxkerb_1"] = {"category": "prop", "collider": "mesh", "parts": [
+        {"kind": "box", "c": (0, 0, 0), "s": (1.0, 0.12, 0.30), "mat": "granite_plinth"}]}
     for i, (sy, sz, ex, lumps) in enumerate(BOX_FLAT, 1):
         assets["boxstone_%d" % i] = {"category": "prop", "collider": "mesh", "parts": [
             {"kind": "boulder", "sx": 1.0, "sy": sy, "sz": sz, "seed": 210 + i, "exponent": ex, "lumps": lumps,
-             "flats": HEAP_FLATS, "seg": 24, "rings": 14, "mat": BOX_STONE_MAT}]}
+             "flats": angular_flats(400 + i), "seg": 28, "rings": 18, "mat": "granite_beige"}]}
     for i, (sy, sz, ex, lumps) in enumerate(BOX_TALL, 1):
         assets["boxtall_%d" % i] = {"category": "prop", "collider": "mesh", "parts": [
             {"kind": "boulder", "sx": 1.0, "sy": sy, "sz": sz, "seed": 220 + i, "exponent": ex, "lumps": lumps,
-             "flats": HEAP_FLATS, "seg": 24, "rings": 14, "mat": BOX_STONE_MAT}]}
+             "flats": angular_flats(500 + i), "seg": 28, "rings": 18, "mat": "granite_beige"}]}
     return {"format": "golfmap-props-spec-v1", "source": "docs/gspro/ombergs-golfklubb/stone-walls.gen.py", "origin": [0, 0],
             "assets": assets, "instances": []}
 

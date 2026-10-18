@@ -105,6 +105,17 @@ vegetation zones, in `FeaturesService.modeHiddenTypes`: off the map, out of
 hit tests, the type picker and the stack panel. `resolveSurfaceStack` passes them through like
 OOB, so a higher shape never trims them away.
 
+With OOB armed and no draft points yet, clicking an existing OOB boundary
+selects it for vertex editing instead of starting another line. Clicking
+empty ground starts a new boundary; once a draft has points, clicks keep
+adding to that draft, including where it crosses an existing boundary.
+
+Rules-only edits in nice rendering reuse the already resolved surfaces and
+send a per-feature diff when safe, rather than sending the whole course to
+the surface worker and map source twice per commit. During OOB drags, only
+the preview source changes: its ghost is a closed `MultiLineString`, so the
+map worker processes the boundary instead of a course-sized polygon interior.
+
 ## Editor-only visibility for holes and Roughs
 
 In Draw, select a hole (or drawing group) under **Scope** in Feature stack,
