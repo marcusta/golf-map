@@ -973,3 +973,20 @@ def test_creeks_under_a_metre_wide_stay_out(tmp_path, capsys):
     ids = [p.get("id") for p in ET.parse(out).getroot().iter(f"{SVG_NS}path")]
     assert ids == ["others_2", "hole_1_3"]
     assert "1 creek(s) under 1 m wide left out" in capsys.readouterr().out
+
+
+def test_a_pond_is_cut_out_of_the_creek_under_it(tmp_path, capsys):
+    """Omberg's hole-7 creek with 3 m2 of hole 9's pond over it failed the
+    whole OPCD build and built with that bit cut away: the creek is written
+    flattened without the pond's part, the pond keeps its curves."""
+    ring = _edge_ring(0.5, 0.5, 20)
+    cx, cy = ring["points"][0]["x"], ring["points"][0]["y"]
+    feats = [("water_creek", 1, 0, [_band(cx, cy, 40, 3)], "bezier"),
+             ("water", 2, 0, [_band(cx + 30, cy - 5, 20, 20)], "bezier")]
+    out = _export(tmp_path, feats)
+    paths = {p.get("id"): p.get("d") for p in ET.parse(out).getroot().iter(f"{SVG_NS}path")}
+    assert set(paths) == {"hole_1_1", "hole_2_2"}
+    xs = [float(x.split(",")[0]) for x in re.findall(r"-?[\d.]+,-?[\d.]+", paths["hole_1_1"])]
+    pond_left = min(float(x.split(",")[0]) for x in re.findall(r"-?[\d.]+,-?[\d.]+", paths["hole_2_2"]))
+    assert max(xs) <= pond_left - 0.01          # the creek stops short of the pond
+    assert "1 creek(s) cut where a lake or pond lies over them" in capsys.readouterr().out

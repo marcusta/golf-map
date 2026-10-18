@@ -1705,6 +1705,42 @@ CREEK_TYPE = "water_creek"
 CREEK_MIN_WIDTH_M = 1.0
 
 
+# A creek's part under a lake/pond (`water`) is cut out of the creek: two water
+# surfaces on one spot add nothing, and Omberg's hole-7 creek with 3 m2 of
+# hole 9's pond over it failed the whole OPCD build, built with that bit cut
+# away (2026-10-18). The pond keeps its shape; a creek piece left under
+# MIN_SHAPE_AREA_M2 by the cut is dropped. The gap keeps a hair of overlap
+# off the pond's edge.
+CREEK_WATER_GAP_M = 0.02
+
+
+def _cut_creeks_by_water(rows: list, tol: float, grown: dict) -> list[tuple[str, float]]:
+    """Cut every lake/pond out of the creeks under it, in place in `grown`
+    (feature id -> the shape to write, flattened): [(creek id, m2 cut)]."""
+    from shapely import STRtree, unary_union
+    from shapely.geometry import MultiPolygon
+
+    water = [s for s in (_row_shape(r, tol) for r in rows if r["type"] == "water") if s is not None and not s.is_empty]
+    if not water:
+        return []
+    tree = STRtree(water)
+    cuts = []
+    for r in rows:
+        if r["type"] != CREEK_TYPE:
+            continue
+        shape = grown.get(r["id"]) or _row_shape(r, tol)
+        if shape is None or shape.is_empty:
+            continue
+        over = [water[int(i)] for i in tree.query(shape) if water[int(i)].intersection(shape).area > 0.01]
+        if not over:
+            continue
+        cut = shape.difference(unary_union(over).buffer(CREEK_WATER_GAP_M))
+        kept = [p for p in _polygons(cut) if p.area >= MIN_SHAPE_AREA_M2]
+        grown[r["id"]] = kept[0] if len(kept) == 1 else MultiPolygon(kept)
+        cuts.append((r["id"], shape.area - sum(p.area for p in kept)))
+    return cuts
+
+
 def _is_narrow_creek(row, tol: float) -> bool:
     """A creek that is nowhere CREEK_MIN_WIDTH_M wide (or has no shape)."""
     if row["type"] != CREEK_TYPE:
@@ -3443,6 +3479,7 @@ def cmd_svg(bbox, out: Path, db_path: Path, course_ident: str,
     rows = [r for r in rows if r["id"] not in tiny_ids]
     roads, road_notes = _merged_roads(rows, fills, tol)
     grown, grown_gaps = _road_edge_fills(rows, fills, roads, tol)
+    creek_cuts = _cut_creeks_by_water(rows, tol, grown)
 
     # One Inkscape layer per hole (Hole1…, the unpadded spelling every OPCD
     # course file here uses) plus 'Others' for features not tied to a hole
@@ -3629,6 +3666,11 @@ def cmd_svg(bbox, out: Path, db_path: Path, course_ident: str,
     if grown_gaps:
         print(f"  {grown_gaps} sliver(s) between a road and the surface beside it filled with that surface "
               f"({len(grown)} feature(s), written flattened)")
+    if creek_cuts:
+        by_id = {r["id"]: r for r in rows}
+        listed = ", ".join(("others" if by_id[fid]["hole_number"] is None else f"hole_{by_id[fid]['hole_number']}")
+                           + f"_{shape_ids[fid]} ({m2:.1f} m2)" for fid, m2 in creek_cuts)
+        print(f"  {len(creek_cuts)} creek(s) cut where a lake or pond lies over them (written flattened): {listed}")
     if decks:
         print(f"  bridge decks left out (props in Unity, not ground): {sum(decks.values())} feature(s)")
     if tiny:
