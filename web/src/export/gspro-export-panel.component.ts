@@ -202,7 +202,7 @@ const TABS = [
     { id: 'terrain', label: 'Terrain', targets: ['terrain'] },
     { id: 'photo', label: 'Photo', targets: ['photo'] },
     { id: 'course', label: 'Course', targets: ['shapes', 'meshes'] },
-    { id: 'nature', label: 'Nature', targets: ['vegetation', 'trees', 'creeks'] },
+    { id: 'nature', label: 'Nature', targets: ['vegetation', 'trees', 'creeks', 'waterfalls'] },
     { id: 'buildings', label: 'Buildings', targets: ['buildings', 'props'] },
     { id: 'greenkeeper', label: 'GreenKeeper', targets: ['course-file'] },
     { id: 'details', label: 'Course details', targets: [] },

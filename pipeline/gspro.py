@@ -6829,6 +6829,227 @@ def cmd_creeks(bbox, db_path: Path, course_ident: str, dem_path: Path, sidecar_p
         print(f"  skipped {line}")
 
 
+# --- waterfalls: the falls' lips for golfmap.waterfalls.build ------------------
+# A `waterfall` feature (shared/features/waterfall.ts) is a centerline along a
+# fall's lip between two waters. The export gives Unity each lip in the frame
+# unity-creeks-v1 uses (plot metres of the inner square, y above the sidecar's
+# minM) with the water levels above and below and the way the water falls.
+# What the feature does not say is read from the RAW lidar DEM beside the lip:
+# the ground in a strip WATERFALL_SIDE_NEAR_M..WATERFALL_SIDE_FAR_M out from
+# the line on each side (and at most WATERFALL_SIDE_END_MARGIN_M past its
+# ends), its flat cells (water is flat in the lidar; the slope down to the fall
+# is not) at a low percentile. The higher side is upstream.
+
+UNITY_WATERFALLS_FORMAT = "unity-waterfalls-v1"
+WATERFALL_STYLES = ("sill", "outlet")
+WATERFALL_DEFAULT_STYLE = "sill"
+WATERFALL_DEFAULT_SILL_M = 1.0
+WATERFALL_SIDE_NEAR_M = 1.5
+WATERFALL_SIDE_FAR_M = 4.0
+WATERFALL_SIDE_END_MARGIN_M = 0.5
+WATERFALL_FLAT_SLOPE = 0.1          # rise over run under which a lidar cell counts as water
+WATERFALL_MIN_FLAT_CELLS = 3        # fewer flat cells than this: every cell in the strip counts
+WATERFALL_LEVEL_PERCENTILE = 25
+WATERFALL_MIN_DROP_M = 0.2          # a fall whose two sides differ by less gets a warning
+WATERFALL_MIN_LIP_M = 0.2
+
+
+def _waterfall_side_levels(band: _DemBand, line) -> tuple["float | None", "float | None"]:
+    """The water level on the left and on the right of `line` (left = the
+    side to the left walking from its first point to its last), read from the
+    DEM beside it as the comment above says; None for a side with no DEM."""
+    t = band.transform
+    a, e = float(t.a), float(t.e)
+    pad = WATERFALL_SIDE_FAR_M + WATERFALL_SIDE_END_MARGIN_M + 2 * abs(a)
+    x0, y0, x1, y1 = line.bounds
+    c0 = max(0, int(math.floor((x0 - pad - t.c) / a)))
+    c1 = min(band.values.shape[1], int(math.ceil((x1 + pad - t.c) / a)))
+    r0 = max(0, int(math.floor((y1 + pad - t.f) / e)))
+    r1 = min(band.values.shape[0], int(math.ceil((y0 - pad - t.f) / e)))
+    if c1 - c0 < 2 or r1 - r0 < 2:
+        return None, None
+    z = np.where(band.valid[r0:r1, c0:c1], band.values[r0:r1, c0:c1], np.nan)
+    gy, gx = np.gradient(z, abs(e), a)
+    slope = np.hypot(gx, gy)
+    rows, cols = np.mgrid[r0:r1, c0:c1]
+    xs = (t.c + (cols + 0.5) * a).ravel()
+    ys = (t.f + (rows + 0.5) * e).ravel()
+    z, slope = z.ravel(), slope.ravel()
+
+    pts = shapely.points(xs, ys)
+    length = line.length
+    s = shapely.line_locate_point(line, pts)
+    near = shapely.get_coordinates(shapely.line_interpolate_point(line, s))
+    ahead = shapely.get_coordinates(shapely.line_interpolate_point(line, np.minimum(s + 0.05, length)))
+    behind = shapely.get_coordinates(shapely.line_interpolate_point(line, np.maximum(s - 0.05, 0.0)))
+    tan = ahead - behind
+    tan /= np.maximum(np.hypot(tan[:, 0], tan[:, 1]), 1e-12)[:, None]
+    off = np.column_stack([xs, ys]) - near
+    across = tan[:, 0] * off[:, 1] - tan[:, 1] * off[:, 0]
+    along = tan[:, 0] * off[:, 0] + tan[:, 1] * off[:, 1]
+    beyond = np.where(s <= 1e-9, -along, np.where(s >= length - 1e-9, along, 0.0))
+    keep = (np.isfinite(z) & (beyond <= WATERFALL_SIDE_END_MARGIN_M)
+            & (np.abs(across) >= WATERFALL_SIDE_NEAR_M) & (np.abs(across) <= WATERFALL_SIDE_FAR_M))
+
+    def level(mask) -> "float | None":
+        v = z[mask]
+        if v.size == 0:
+            return None
+        flat = v[slope[mask] < WATERFALL_FLAT_SLOPE]
+        use = flat if flat.size >= WATERFALL_MIN_FLAT_CELLS else v
+        return float(np.percentile(use, WATERFALL_LEVEL_PERCENTILE))
+
+    return level(keep & (across > 0)), level(keep & (across < 0))
+
+
+def _waterfall_number(attrs: dict, key: str) -> "float | None":
+    v = attrs.get(key)
+    return float(v) if isinstance(v, (int, float)) and not isinstance(v, bool) and math.isfinite(v) else None
+
+
+def cmd_waterfalls(bbox, db_path: Path, course_ident: str, dem_path: Path, sidecar_path: Path, out: Path,
+                   extent: Extent | None = None) -> None:
+    """Write a unity-waterfalls-v1 file for the INNER terrain: one entry per
+    `waterfall` feature with its lip (the drawn centerline, flattened as
+    shared/features/centerline.ts does) as plot-local [x, z] — x east and z
+    north from the square's south-west corner, the frame of unity-creeks-v1 —
+    the water above and below (`topM`/`bottomM` above sea level, `topY`/
+    `bottomY` above the heightmap's zero, the sidecar's minM), the way the
+    water falls as a unit [dx, dz] and its compass bearing, the lip's length
+    (`widthM`) and, for a sill, the crest's width upstream of the lip. Levels
+    and the bearing the feature does not set come from `dem_path`, the raw
+    lidar DEM (see above); `fromLidar` lists which. Named like the SVG names
+    its shapes (hole_<n>_<feature number in hex>, others_<..> off a hole)."""
+    from shapely.geometry import LineString, box
+
+    if not sidecar_path.is_file():
+        raise SystemExit(f"error: no such heightmap sidecar: {sidecar_path} (export the inner heightmap first)")
+    if not dem_path.is_file():
+        raise SystemExit(f"error: no such DEM: {dem_path}")
+    extent = extent or _square_3006_extent(bbox)
+    e0, n0, e1, n1 = extent
+    sidecar = _read_sidecar_json(sidecar_path)
+    sq = sidecar.get("square3006")
+    if sq and any(abs(a - b) > 0.01 for a, b in zip(sq, extent)):
+        raise SystemExit(f"error: the sidecar {sidecar_path.name} is for square {sq}, not {list(extent)}")
+    min_m = float(sidecar["minM"])
+    band = _read_dem_band(dem_path)
+    if band.crs is None or band.crs.to_epsg() != 3006:
+        raise SystemExit(f"error: {dem_path} is not in EPSG:3006")
+
+    course, rows = _load_course_features(db_path, course_ident, "app")
+    oldest = lambda r: (r["created_at"] or "", r["id"])
+    falls_rows = sorted((r for r in rows if r["type"] == WATERFALL_FEATURE_TYPE), key=oldest)
+    # The SVG's shapes first (with the server's trees), so an unnumbered fall never takes a name the SVG uses.
+    svg_types = set(GSPRO_FILLS) | {"trees"}
+    shape_ids = _shape_ids(sorted((r for r in rows if r["type"] in svg_types), key=oldest) + falls_rows)
+
+    square = box(e0, n0, e1, n1)
+    falls, skipped, warnings = [], [], []
+    for r in falls_rows:
+        stem = "others" if r["hole_number"] is None else f"hole_{r['hole_number']}"
+        name = f"{stem}_{shape_ids[r['id']]}"
+        try:
+            attrs = json.loads(r["attributes_json"]) if r["attributes_json"] else {}
+        except ValueError:
+            attrs = {}
+        if not isinstance(attrs, dict):
+            attrs = {}
+        centerline = json.loads(r["geometry_json"]).get("centerline") or {}
+        flat = _transition_centerline(centerline)
+        if len(flat) < 2:
+            skipped.append(f"{name}: no centerline of two or more points")
+            continue
+        lip = LineString(flat).intersection(square)
+        if lip.geom_type == "MultiLineString":
+            lip = max(lip.geoms, key=lambda g: g.length)
+        if lip.is_empty or lip.geom_type != "LineString" or lip.length < WATERFALL_MIN_LIP_M:
+            skipped.append(f"{name}: outside the inner square")
+            continue
+        style = attrs.get("style") if attrs.get("style") in WATERFALL_STYLES else WATERFALL_DEFAULT_STYLE
+        top, bottom = _waterfall_number(attrs, "topM"), _waterfall_number(attrs, "bottomM")
+        bearing = _waterfall_number(attrs, "flowBearingDeg")
+        sill = _waterfall_number(attrs, "sillM")
+        from_lidar: list[str] = []
+
+        (ax, ay), (bx, by) = lip.coords[0][:2], lip.coords[-1][:2]
+        chord = math.hypot(bx - ax, by - ay)
+        if chord < 1e-6:
+            skipped.append(f"{name}: its lip closes on itself")
+            continue
+        tx, ty = (bx - ax) / chord, (by - ay) / chord
+        left_normal = (-ty, tx)
+        if top is None or bottom is None or bearing is None:
+            left, right = _waterfall_side_levels(band, lip)
+            if bearing is None:
+                if left is None or right is None:
+                    skipped.append(f"{name}: no lidar on both sides of the lip to tell which way it falls (set flowBearingDeg)")
+                    continue
+                down_left = left < right
+                fx, fy = left_normal if down_left else (-left_normal[0], -left_normal[1])
+                bearing = math.degrees(math.atan2(fx, fy)) % 360.0
+                from_lidar.append("flowBearingDeg")
+            else:
+                fx, fy = math.sin(math.radians(bearing)), math.cos(math.radians(bearing))
+                down_left = fx * left_normal[0] + fy * left_normal[1] > 0
+            up_level, down_level = (right, left) if down_left else (left, right)
+            if top is None:
+                if up_level is None:
+                    skipped.append(f"{name}: no lidar upstream of the lip (set topM)")
+                    continue
+                top = up_level
+                from_lidar.append("topM")
+            if bottom is None:
+                if down_level is None:
+                    skipped.append(f"{name}: no lidar downstream of the lip (set bottomM)")
+                    continue
+                bottom = down_level
+                from_lidar.append("bottomM")
+        else:
+            fx, fy = math.sin(math.radians(bearing)), math.cos(math.radians(bearing))
+        drop = top - bottom
+        if drop < WATERFALL_MIN_DROP_M:
+            warnings.append(f"{name}: the water above and below differ by {drop:.2f} m "
+                            f"(under {WATERFALL_MIN_DROP_M:g} m){' on the lidar' if from_lidar else ''}"
+                            + (" - is the flow the right way round?" if drop < 0 else ""))
+        if sill is None:
+            sill = WATERFALL_DEFAULT_SILL_M if style == "sill" else 0.0
+        falls.append({
+            "id": name,
+            "featureId": str(r["id"]),
+            "style": style,
+            "lip": [[round(float(x - e0), 3), round(float(y - n0), 3)] for x, y, *_ in lip.coords],
+            "topY": round(top - min_m, 3),
+            "bottomY": round(bottom - min_m, 3),
+            "topM": round(top, 3),
+            "bottomM": round(bottom, 3),
+            "flow": [round(fx, 4), round(fy, 4)],
+            "flowBearingDeg": round(bearing, 1),
+            "widthM": round(lip.length, 2),
+            "sillM": round(sill, 2),
+            "fromLidar": from_lidar,
+        })
+    doc = {
+        "format": UNITY_WATERFALLS_FORMAT,
+        "plot": {
+            "crs": "EPSG:3006", "terrain": "inner", "originX": e0, "originY": n0, "sizeM": e1 - e0,
+            "minM": min_m, "maxM": float(sidecar["maxM"]),
+        },
+        "waterfalls": falls,
+    }
+    out.parent.mkdir(parents=True, exist_ok=True)
+    out.write_text(json.dumps(doc, indent=1), encoding="utf-8")
+    print(f"  wrote {out}  ({len(falls)} waterfall(s) for {course['name']}, levels not set read from {dem_path.name})")
+    for f in falls:
+        lidar = f" ({', '.join(f['fromLidar'])} from the lidar)" if f["fromLidar"] else ""
+        print(f"  {f['id']} {f['style']}: {f['topM']:.2f} -> {f['bottomM']:.2f} m (drop {f['topM'] - f['bottomM']:.2f} m), "
+              f"lip {f['widthM']:g} m, falls towards {f['flowBearingDeg']:.0f} deg{lidar}")
+    for line in warnings:
+        print(f"  warning: {line}")
+    for line in skipped:
+        print(f"  skipped {line}")
+
+
 # --- Command: batch ---------------------------------------------------------
 # One export is five or six of the commands above over the same course and the
 # same square. As five processes they each pay the interpreter plus
@@ -7218,6 +7439,14 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--surface-offset", dest="surface_offset", type=float, default=0.0,
                    help="metres to raise (or lower, negative) every spline above the sampled water surface (default 0)")
 
+    p = sub.add_parser("waterfalls", help="write a course's waterfalls (lips, water levels above and below, flow) as unity-waterfalls-v1 for the inner terrain")
+    _add_area(p)
+    p.add_argument("--db", default=str(DEFAULT_DB), help=f"app database (default {DEFAULT_DB})")
+    p.add_argument("--course", required=True, help="course id, or a name substring (e.g. Vreta)")
+    p.add_argument("--dem", required=True, help="the RAW lidar DEM (sources/<site>/dem.tif): the levels a fall does not set are read beside its lip")
+    p.add_argument("--sidecar", required=True, help="the inner terrain's heightmap sidecar (<dem>.tif.json) - the square and the terrain's zero")
+    p.add_argument("--out", required=True, help="output unity-waterfalls-v1 JSON path")
+
     p = sub.add_parser("gkd", help="write the GreenKeeper .GKD (tees, pins, green centres, aim points, hazards, OOB) for a course")
     _add_area(p)
     p.add_argument("--db", default=str(DEFAULT_DB), help=f"app database (default {DEFAULT_DB})")
@@ -7381,6 +7610,8 @@ def main(argv: list[str] | None = None) -> int:
     elif args.command == "creeks":
         cmd_creeks(bbox, Path(args.db), args.course, Path(args.dem), Path(args.sidecar), Path(args.out),
                    extent=extent, surface_offset_m=args.surface_offset)
+    elif args.command == "waterfalls":
+        cmd_waterfalls(bbox, Path(args.db), args.course, Path(args.dem), Path(args.sidecar), Path(args.out), extent=extent)
     elif args.command == "gkd":
         cmd_gkd(bbox, Path(args.db), args.course, Path(args.sidecar), Path(args.out),
                 Path(args.dem) if args.dem else None,

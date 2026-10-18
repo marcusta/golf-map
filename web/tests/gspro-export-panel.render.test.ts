@@ -206,6 +206,7 @@ const BOARD = (): GsproTargetStatus[] => [
     row({ id: 'buildings' }),
     row({ id: 'props', note: '3 hand-placed props are kept on update' }),
     row({ id: 'creeks' }),
+    row({ id: 'waterfalls' }),
     row({ id: 'course-file' }),
 ];
 
@@ -368,10 +369,10 @@ test('the dialog is tabs of rows: a row per target in tab order, with its time a
     const dialog = host.querySelector('[data-testid=gspro-dialog]') as HTMLElement;
     expect(dialog.querySelector('h3')!.textContent).toBe('GSPro');
     const rows = [...host.querySelectorAll('[data-testid^=gspro-row-]')];
-    // Every target once, grouped by tab: Nature takes the creeks in with vegetation and trees.
+    // Every target once, grouped by tab: Nature takes the creeks and the waterfalls in with vegetation and trees.
     expect(rows.map(r => r.getAttribute('data-testid')).sort()).toEqual(GSPRO_TARGETS.map(t => `gspro-row-${t.id}`).sort());
     expect(rows.map(r => r.querySelector('.gspro-export__blabel')!.textContent!.trim().split(' ')[0]))
-        .toEqual(['Terrain', 'Photo', 'Course', 'Meshes', 'Vegetation', 'Trees', 'Creeks', 'Buildings', 'Props', 'Course']);
+        .toEqual(['Terrain', 'Photo', 'Course', 'Meshes', 'Vegetation', 'Trees', 'Creeks', 'Waterfalls', 'Buildings', 'Props', 'Course']);
 
     const status = (id: string) => host.querySelector(`[data-testid=gspro-status-${id}]`)!.textContent;
     expect(status('terrain')).toBe('2 h ago · up to date');
@@ -525,7 +526,7 @@ test('each tab shows its own rows, files and settings, and a tab with a stale ro
     expect(pane('course').querySelector('[data-testid=gspro-row-meshes]')).not.toBeNull();
     expect(pane('course').querySelector('[data-testid=gspro-run-svg]')).not.toBeNull();
     expect(pane('course').textContent).toContain('docs/gspro/Vreta/shaping');
-    for (const id of ['vegetation', 'trees', 'creeks']) expect(pane('nature').querySelector(`[data-testid=gspro-row-${id}]`)).not.toBeNull();
+    for (const id of ['vegetation', 'trees', 'creeks', 'waterfalls']) expect(pane('nature').querySelector(`[data-testid=gspro-row-${id}]`)).not.toBeNull();
     expect(pane('nature').querySelector('.gspro-export__run-inner-zones')).not.toBeNull();
     expect(pane('nature').querySelector('.gspro-export__run-inner-trees')).not.toBeNull();
     expect(pane('nature').querySelector('.gspro-export__run-creeks')).not.toBeNull();

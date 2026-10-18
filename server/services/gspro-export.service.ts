@@ -157,7 +157,7 @@ export interface GsproExportResult {
 }
 
 /** What an export job produces. */
-export type GsproExportKind = 'svg' | 'ortho' | 'outer-ortho' | 'dem' | 'unity-terrain' | 'unity-sculpt' | 'unity-ortho' | 'hillshade' | 'trees' | 'buildings' | 'zones' | 'vegetation' | 'vegetation-update' | 'arborist' | 'creeks' | 'gkd';
+export type GsproExportKind = 'svg' | 'ortho' | 'outer-ortho' | 'dem' | 'unity-terrain' | 'unity-sculpt' | 'unity-ortho' | 'hillshade' | 'trees' | 'buildings' | 'zones' | 'vegetation' | 'vegetation-update' | 'arborist' | 'creeks' | 'waterfalls' | 'gkd';
 
 /** A request to start one export; which fields matter depends on `kind`. */
 export interface GsproExportRequest {
@@ -198,7 +198,7 @@ export interface GsproExportRequest {
     /**
      * Render even when the output's inputs are unchanged
      * (export-fingerprint.ts): `dem`, `ortho`, `outer-ortho`, `unity-terrain`,
-     * `unity-ortho`, `trees`, `buildings`, `zones`, `creeks`, `vegetation`.
+     * `unity-ortho`, `trees`, `buildings`, `zones`, `creeks`, `waterfalls`, `vegetation`.
      */
     force?: boolean;
 }
@@ -566,6 +566,11 @@ export const ZONES_LAYOUT_CHANGED_EXIT = 3;
 /** `Vreta` -> `vreta-inner-creeks.json` (unity-creeks-v1, R.A.M. splines; inner terrain only). */
 export function creeksExportFileName(courseName: string): string {
     return `${courseSlug(courseName)}-inner-creeks.json`;
+}
+
+/** `Vreta` -> `vreta-inner-waterfalls.json` (unity-waterfalls-v1, the falls' lips and levels; inner terrain only). */
+export function waterfallsExportFileName(courseName: string): string {
+    return `${courseSlug(courseName)}-inner-waterfalls.json`;
 }
 
 /** The request's forest-floor fields as `renderOrtho` options; undefined when not asked for. */
@@ -2114,6 +2119,41 @@ export class GsproExportService {
     }
 
     /**
+     * The course's waterfalls for the inner terrain
+     * (`<dir>/<course>-inner-waterfalls.json`, unity-waterfalls-v1, what
+     * `golfmap.waterfalls.build` builds the falling water from): each
+     * `waterfall` feature's lip in the creeks' frame, the water above and
+     * below and the way it falls, written by `gspro.py waterfalls`. Levels
+     * and the bearing a fall does not set are read beside its lip on the RAW
+     * lidar DEM (the edited one has the ponds dug). Reads the inner heightmap
+     * sidecar for the terrain's zero, exporting the inner heightmap first when
+     * there is none.
+     */
+    async exportWaterfalls(courseId: string, opts: { force?: boolean } = {}): Promise<GsproExportResult> {
+        const course = await this.courses.get(courseId);
+        if (!course.siteId) throw new ConflictError('This course has no built map on this machine — build its map first');
+        const terrain = await this.resolveTerrain(courseId, 'export the GSPro waterfalls for');
+        const dir = await this.exportDir(courseId);
+        const dem = path.join(this.sourcesDir(course.siteId), 'dem.tif');
+        if (!await statOrNull(dem)) throw new ConflictError(`No raw DEM for this course's site (${dem}) — build its map first`);
+        const sidecar = path.join(dir, demSidecarName(demExportFileName(course.name, 'inner', terrain.inner.sideM)));
+        const prepared = await this.ensureDemSidecar(courseId, 'inner', sidecar);
+        const out = path.join(dir, waterfallsExportFileName(course.name));
+        const rendered = await this.runIfChanged('GSPro waterfalls', [
+            path.join(this.pipelineDir, 'gspro.py'), 'waterfalls',
+            '--square-3006', terrainArg(terrain.inner),
+            '--course', courseId,
+            '--dem', dem,
+            '--sidecar', sidecar,
+            '--out', out,
+        ], out, {
+            files: [dem, sidecar],
+            values: { features: await this.history.latestStamp(courseId) },
+        }, opts.force);
+        return { path: rendered.path, report: [...prepared, ...rendered.report] };
+    }
+
+    /**
      * GreenKeeper's course file for GSPro: tee boxes, pins, green centres,
      * aim points, water hazards and the OOB ring as Unity positions on the
      * INNER terrain, written by `gspro.py gkd` into the course's GSPro folder
@@ -2226,6 +2266,7 @@ export class GsproExportService {
             case 'vegetation-update': return this.updateZones(courseId, r.zoneIds!, { plantIfNeeded: r.plantIfNeeded === true });
             case 'arborist': return this.exportArborist(courseId);
             case 'creeks': return this.exportCreeks(courseId, force);
+            case 'waterfalls': return this.exportWaterfalls(courseId, force);
             case 'gkd': return this.exportGkd(courseId);
         }
     }
@@ -2696,6 +2737,7 @@ export function describeRequest(r: GsproExportRequest): string {
         case 'vegetation-update': need(r.zoneIds?.length, 'the zones to update'); return `${r.zoneIds!.length} vegetation zone(s) updated for GSPro`;
         case 'arborist': return 'Arborist file (lower vegetation and trees)';
         case 'creeks': return 'creeks (R.A.M. splines)';
+        case 'waterfalls': return 'waterfalls (lips and water levels)';
         case 'gkd': return 'GreenKeeper course file';
         default: throw new ConflictError(`Unknown export kind '${String((r as { kind: unknown }).kind)}'`);
     }

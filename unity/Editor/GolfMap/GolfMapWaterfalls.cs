@@ -7,8 +7,8 @@
 // sidecar's minM):
 //
 //   { "format": "unity-waterfalls-v1", "plot": {...},
-//     "falls": [ { "id": "hole_3_241", "style": "sill"|"outlet", "lip": [[x, z], ...],
-//                  "topY", "bottomY", "flow": [dx, dz], "widthM", "sillM" } ] }
+//     "waterfalls": [ { "id": "hole_3_241", "style": "sill"|"outlet", "lip": [[x, z], ...],
+//                       "topY", "bottomY", "flow": [dx, dz], "widthM", "sillM" } ] }
 //
 // Each fall becomes one object "Waterfall <id>" under "GolfMap Waterfalls":
 // - the water: a NatureManufacture R.A.M. spline running down the fall's
@@ -359,7 +359,9 @@ namespace GolfMap.Editor
             var root = GolfMapJsonDoc.ParseObject(File.ReadAllText(file));
             if (root.String("format") != Format) throw new InvalidOperationException(file + ": format must be " + Format + ".");
             var list = new List<Fall>();
-            foreach (var o in (root.Array("falls") ?? new List<object>()).OfType<GolfMapJsonObject>())
+            var plot = root.Object("plot");
+            if (plot == null || plot.String("terrain") != "inner") throw new InvalidOperationException(file + ": waterfalls are for the inner terrain.");
+            foreach (var o in (root.Array("waterfalls") ?? new List<object>()).OfType<GolfMapJsonObject>())
             {
                 var f = new Fall
                 {

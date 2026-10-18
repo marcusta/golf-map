@@ -46,7 +46,7 @@ const StartInput = Type.Object({
     kind: Type.Union([
         Type.Literal('svg'), Type.Literal('ortho'), Type.Literal('outer-ortho'),
         Type.Literal('dem'), Type.Literal('unity-terrain'), Type.Literal('unity-sculpt'), Type.Literal('unity-ortho'), Type.Literal('hillshade'), Type.Literal('trees'), Type.Literal('buildings'),
-        Type.Literal('zones'), Type.Literal('vegetation'), Type.Literal('vegetation-update'), Type.Literal('arborist'), Type.Literal('creeks'), Type.Literal('gkd'),
+        Type.Literal('zones'), Type.Literal('vegetation'), Type.Literal('vegetation-update'), Type.Literal('arborist'), Type.Literal('creeks'), Type.Literal('waterfalls'), Type.Literal('gkd'),
     ]),
     /** `ortho`: a `source` file name from `orthoSources`. */
     source: Type.Optional(Type.String()),
@@ -80,7 +80,7 @@ const StartInput = Type.Object({
      * and the panel asks before spending the minutes.
      */
     plantIfNeeded: Type.Optional(Type.Boolean()),
-    /** Render even when the output's input fingerprint says nothing it reads has changed (`dem`, `ortho`, `outer-ortho`, `unity-terrain`, `unity-ortho`, `trees`, `buildings`, `zones`, `creeks`, `vegetation`). */
+    /** Render even when the output's input fingerprint says nothing it reads has changed (`dem`, `ortho`, `outer-ortho`, `unity-terrain`, `unity-ortho`, `trees`, `buildings`, `zones`, `creeks`, `waterfalls`, `vegetation`). */
     force: Type.Optional(Type.Boolean()),
 });
 

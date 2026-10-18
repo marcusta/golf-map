@@ -11,7 +11,7 @@
 // `changedSince`; the server owns the terrain-edit side).
 
 export const GSPRO_TARGET_IDS = [
-    'terrain', 'photo', 'shapes', 'meshes', 'vegetation', 'trees', 'buildings', 'props', 'creeks', 'course-file',
+    'terrain', 'photo', 'shapes', 'meshes', 'vegetation', 'trees', 'buildings', 'props', 'creeks', 'waterfalls', 'course-file',
 ] as const;
 
 export type GsproTargetId = (typeof GSPRO_TARGET_IDS)[number];
@@ -116,6 +116,14 @@ export const GSPRO_TARGETS: readonly GsproTarget[] = [
         description: 'The creeks as R.A.M. splines at the water surface, imported in Unity.',
         manual: null,
         featureTypes: ['water_creek'],
+    },
+    {
+        id: 'waterfalls',
+        label: 'Waterfalls',
+        description: 'The falls between the ponds (lip, water above and below, flow) built in Unity on the water planes.',
+        manual: null,
+        // The falls snap to the ponds' and creeks' water in Unity, so an edit to the water makes them stale too.
+        featureTypes: ['waterfall', 'water', 'water_creek'],
     },
     {
         id: 'course-file',

@@ -12,7 +12,7 @@ import {
     outerOrthoExportFileName, demExportFileName, demSidecarName, hillshadeExportFileName, outerOrthoSourceName,
     terrainTextureFileName, TERRAIN_TEXTURE_DARKEN, meshTextureFileName, TERRAIN_TINT_OPACITY, MESH_TEXTURE_SOFTEN_M, MESH_TEXTURE_SIZE, OUTER_TERRAIN_GRADE, treesExportFileName, OUTER_TREES_DIR, OUTER_TREES_RESOLUTION_M,
     ORTHO_EXPORT_SIZE, ORTHO_EXPORT_QUALITY, DEM_EXPORT_RESOLUTION_M, OUTER_DEM_SOURCE, OUTER_LIDAR_DIR, type ExportRunner,
-    buildingsExportFileName, BUILDINGS_SURVEY_SOURCE, OUTER_DEM_EDITED_SOURCE, describeRequest, zonesExportFileName, creeksExportFileName,
+    buildingsExportFileName, BUILDINGS_SURVEY_SOURCE, OUTER_DEM_EDITED_SOURCE, describeRequest, zonesExportFileName, creeksExportFileName, waterfallsExportFileName,
     ZONES_LAYOUT_CHANGED_EXIT, OUTER_VEGETATION_IS_ARBORIST, diffZoneContents,
 } from './gspro-export.service';
 import { TerrainEditsService } from './terrain-edits.service';
@@ -1342,6 +1342,41 @@ test('the creeks export reads the raw DEM (not the dug one) and the inner sideca
     expect(flag(args, '--dem')).toBe(path.join(sourcesDir, 'dem.tif'));
     expect(flag(args, '--sidecar')).toBe(sidecar);
     expect(creeksExportFileName('Vreta Kloster')).toBe('vreta-kloster-inner-creeks.json');
+});
+
+test('the waterfalls export reads the raw DEM and the inner sidecar, and is skipped until a feature changes', async () => {
+    const w = writingRunner();
+    const t = await setup(w.runner);
+    const sourcesDir = await buildSite(t, ['dem.tif', 'dem-edited.tif']);
+    const dir = await mkdtemp(path.join(os.tmpdir(), 'gspro-out-'));
+    await t.svc.setDir(TEST_COURSE_ID, dir);
+
+    // No inner heightmap sidecar in the folder: it is exported first instead of refused.
+    const job = await t.svc.start(TEST_COURSE_ID, { kind: 'waterfalls' });
+    expect(job.label).toBe('waterfalls (lips and water levels)');
+    await t.svc.whenIdle(TEST_COURSE_ID);
+    const res = t.svc.job(job.id).result!;
+    expect(res.path).toBe(path.join(dir, 'linkan-inner-waterfalls.json'));
+    expect(res.report[0]).toMatch(/^exported the inner heightmap first, for linkan-inner-dem-2050m\.tif\.json/);
+    expect(w.commands()).toEqual(['dem', 'waterfalls']);
+    const args = w.calls[1]!;
+    expect(flag(args, '--square-3006')).toBe(squareArg(GEOREF_INNER));
+    expect(flag(args, '--course')).toBe(TEST_COURSE_ID);
+    expect(flag(args, '--dem')).toBe(path.join(sourcesDir, 'dem.tif'));
+    expect(flag(args, '--sidecar')).toBe(path.join(dir, 'linkan-inner-dem-2050m.tif.json'));
+    expect(waterfallsExportFileName('Vreta Kloster')).toBe('vreta-kloster-inner-waterfalls.json');
+
+    // Nothing it reads has changed: skipped. A drawn fall renders it again.
+    w.calls.length = 0;
+    expect((await t.svc.exportWaterfalls(TEST_COURSE_ID)).report[0]).toMatch(/^unchanged: /);
+    const features = new CourseFeaturesService(t.db);
+    await features.create({
+        courseId: TEST_COURSE_ID, holeId: null, type: 'waterfall',
+        geometry: { crs: 'EPSG:3006', rings: [], centerline: { points: [{ x: 529400, y: 6487400 }, { x: 529402, y: 6487400 }], widthM: 2 } },
+        attributes: { style: 'outlet' },
+    });
+    await t.svc.exportWaterfalls(TEST_COURSE_ID);
+    expect(w.commands()).toEqual(['waterfalls']);
 });
 
 

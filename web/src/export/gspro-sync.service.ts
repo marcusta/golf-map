@@ -1,8 +1,8 @@
 // The GSPro status board, client side: one row per TARGET (the thing you
 // changed in the editor — terrain, photo, shapes, meshes, vegetation, trees,
-// buildings, creeks, course file) with "last updated / what changed since /
-// Update", the open Unity editor, the shaping worker and the update job in
-// flight.
+// buildings, props, creeks, waterfalls, course file) with "last updated / what
+// changed since / Update", the open Unity editor, the shaping worker and the
+// update job in flight.
 //
 // The server owns the knowledge (`server/services/gspro-sync.service.ts`,
 // docs/gspro/export.md "The GSPro status board"): what is stale, what blocks
@@ -353,7 +353,7 @@ const FEATURE_KINDS: Record<string, string> = {
     semi_rough: 'semi rough', rough: 'rough', deep_rough: 'deep rough',
     water: 'water', water_creek: 'creeks', path: 'paths', trees: 'trees',
     rock_slab: 'rock slabs', vegetation_zone: 'vegetation zones',
-    tree_area: 'tree areas', power_line: 'power lines',
+    tree_area: 'tree areas', power_line: 'power lines', waterfall: 'waterfalls',
 };
 
 export function kindLabel(kind: string): string {

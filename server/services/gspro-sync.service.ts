@@ -66,7 +66,7 @@ import { DIG_WATER_LEVELS_SOURCE, type MapBuildService } from './map-build.servi
 import {
     buildingsExportFileName, courseSlug, creeksExportFileName, demExportFileName, demSidecarName, ensureDir,
     failure, meshTextureFileName, reportLines, savedLine, statOrNull, treesExportFileName, venvPython,
-    zonesExportFileName,
+    waterfallsExportFileName, zonesExportFileName,
     type GsproExportService, type GsproOrthoSource, type TerrainKind,
 } from './gspro-export.service';
 import { BUILDINGS_SURVEY } from './terrain-generators.service';
@@ -415,6 +415,8 @@ export class GsproSyncService {
             }
             case 'creeks':
                 return mtimeIso(ctx.file(creeksExportFileName(ctx.courseName)));
+            case 'waterfalls':
+                return mtimeIso(ctx.file(waterfallsExportFileName(ctx.courseName)));
             case 'course-file':
                 return ctx.courseDir && ctx.gkdFile ? mtimeIso(path.join(ctx.courseDir, ctx.gkdFile)) : null;
         }
@@ -596,6 +598,8 @@ export class GsproSyncService {
                     ? `No props spec in ${await this.docsDirLabel(ctx)}`
                     : null;
             case 'creeks':
+                return ctx.siteId ? null : noMap;
+            case 'waterfalls':
                 return ctx.siteId ? null : noMap;
             case 'course-file':
                 if (!ctx.courseDir) return 'Set the GSPro course folder first';
@@ -807,6 +811,7 @@ export class GsproSyncService {
             case 'buildings': return this.updateBuildings(rec, ctx, unity, id);
             case 'props': return this.updateProps(rec, ctx, unity, id);
             case 'creeks': return this.updateCreeks(rec, ctx, unity, id);
+            case 'waterfalls': return this.updateWaterfalls(rec, ctx, unity, id);
             case 'course-file': return this.updateCourseFile(rec, ctx, id);
         }
     }
@@ -899,6 +904,9 @@ export class GsproSyncService {
         }
         if (await has(creeksExportFileName(ctx.courseName))) {
             out.push({ what: 'creeks', run: () => this.exports.exportCreeks(ctx.courseId, force) });
+        }
+        if (await has(waterfallsExportFileName(ctx.courseName))) {
+            out.push({ what: 'waterfalls', run: () => this.exports.exportWaterfalls(ctx.courseId, force) });
         }
         if (ctx.courseDir && ctx.gkdFile && await statOrNull(path.join(ctx.courseDir, ctx.gkdFile))) {
             out.push({ what: 'GreenKeeper course file', run: () => this.exports.exportGkd(ctx.courseId) });
@@ -1245,6 +1253,21 @@ export class GsproSyncService {
         return report;
     }
 
+    /**
+     * Waterfalls: the lips-and-levels file, then the falling water built in
+     * Unity (`golfmap.waterfalls.build`; an editor without that command fails
+     * the phase with the bridge's own message).
+     */
+    private async updateWaterfalls(rec: JobRecord, ctx: SyncContext, unity: UnityTarget, id: (s: string) => string): Promise<string[]> {
+        rec.phases.begin(id('file'), 'gspro.py waterfalls');
+        const exported = await this.exports.exportWaterfalls(ctx.courseId, { force: ctx.force });
+        rec.phases.end(id('file'), 'done', path.basename(exported.path));
+        const report = [...exported.report];
+        await this.intoUnity(rec, unity, id('unity'), 'Waterfalls',
+            [{ what: 'waterfalls', command: 'golfmap.waterfalls.build', args: {} }], report);
+        return report;
+    }
+
     /** Course file: GreenKeeper's `.GKD` in the course's GSPro folder. */
     private async updateCourseFile(rec: JobRecord, ctx: SyncContext, id: (s: string) => string): Promise<string[]> {
         rec.phases.begin(id('gkd'), 'gspro.py gkd');
@@ -1468,6 +1491,7 @@ export function targetPhases(target: GsproTargetId): ReadonlyArray<readonly [str
         case 'buildings': return [['files', 'Building files'], ['unity', 'Buildings into Unity']];
         case 'props': return [['spec', 'Props spec'], ['models', 'Prop models (Blender)'], ['unity', 'Props into Unity']];
         case 'creeks': return [['file', 'Creeks file'], ['unity', 'Creeks into Unity']];
+        case 'waterfalls': return [['file', 'Waterfalls file'], ['unity', 'Waterfalls into Unity']];
         case 'course-file': return [['gkd', 'GreenKeeper course file']];
     }
 }

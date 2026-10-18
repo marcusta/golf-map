@@ -411,6 +411,7 @@ test('relative times, change counts and the "about" time read as the board says 
     expect(changedLabel({ count: 0, kinds: [] })).toBe('up to date');
     expect(changedLabel({ count: 14, kinds: ['path', 'bunker', 'tee'] })).toBe('14 features changed (paths, bunkers, tees)');
     expect(changedLabel({ count: 1, kinds: ['water_creek'] })).toBe('1 feature changed (creeks)');
+    expect(changedLabel({ count: 2, kinds: ['waterfall', 'water'] })).toBe('2 features changed (waterfalls, water)');
     // Non-feature kinds keep their own words.
     expect(changedLabel({ count: 3, kinds: ['terrain edits', 'unapplied edits'] })).toBe('3 changes (terrain edits, unapplied edits)');
     expect(changedLabel({ count: 1, kinds: ['cleaned photo'] })).toBe('1 change (cleaned photo)');

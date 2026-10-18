@@ -440,6 +440,7 @@ test('with no record, "last updated" comes from the files each target writes', a
     const trees = await write('linkan-inner-trees.json');
     const buildings = await write('linkan-inner-buildings.json');
     const creeks = await write('linkan-inner-creeks.json');
+    const waterfalls = await write('linkan-inner-waterfalls.json');
     const layers = path.join(await t.shaping.layersDir(TEST_COURSE_ID), '00-global.gen.json');
     await mkdir(path.dirname(layers), { recursive: true });
     await writeFile(layers, '{}');
@@ -463,6 +464,7 @@ test('with no record, "last updated" comes from the files each target writes', a
     expect(row(s, 'trees').lastRun).toBe(await mtimeIso(trees));
     expect(row(s, 'buildings').lastRun).toBe(await mtimeIso(buildings));
     expect(row(s, 'creeks').lastRun).toBe(await mtimeIso(creeks));
+    expect(row(s, 'waterfalls').lastRun).toBe(await mtimeIso(waterfalls));
     expect(row(s, 'course-file').lastRun).toBe(await mtimeIso(gkd));
     // The props manifest is in the Unity project, so without an editor there is nothing to read —
     // and this course has no props spec either, which is what blocks the row.
@@ -641,6 +643,25 @@ test('the creeks chain writes the file and imports it in Unity', async () => {
     expect(job.phases.map(p => [p.id, p.status])).toEqual([['creeks:file', 'done'], ['creeks:unity', 'done']]);
 });
 
+test('the waterfalls chain writes the file and builds the falls in Unity', async () => {
+    const t = await setup({ unity: true });
+    const sources = await buildSite(t);
+
+    const started = await t.svc.update(TEST_COURSE_ID, 'waterfalls');
+    await t.svc.whenIdle(TEST_COURSE_ID);
+    const job = t.svc.job(started.id);
+    expect(job.error).toBeNull();
+    // The heightmap sidecar the levels are measured from is exported first; the levels come from the raw DEM.
+    expect(t.pipeline.commands()).toEqual(['dem', 'waterfalls']);
+    const args = t.pipeline.calls.find(a => a[1] === 'waterfalls')!;
+    expect(flag(args, '--dem')).toBe(path.join(sources, 'dem.tif'));
+    expect(flag(args, '--out')).toBe(path.join(t.exportDir, 'linkan-inner-waterfalls.json'));
+    expect(t.editor!.calls.map(c => [c.command, c.args.save])).toEqual([['golfmap.course', undefined], ['golfmap.waterfalls.build', true]]);
+    expect(job.results[0]!.report).toContain('Unity (linkan_v4): golfmap.waterfalls.build — golfmap.waterfalls.build ok');
+    expect(job.phases.map(p => [p.id, p.status])).toEqual([['waterfalls:file', 'done'], ['waterfalls:unity', 'done']]);
+    expect(row(await t.svc.status(TEST_COURSE_ID), 'waterfalls').lastRun).toBe(job.startedAt!);
+});
+
 test('the buildings chain exports both terrains and names the Unity menu, which no bridge command replaces', async () => {
     const t = await setup({ unity: true });
     const sources = await buildSite(t, ['dem.tif', 'outer-dem.tif']);
@@ -699,26 +720,28 @@ test("'stale' takes every stale target that is not blocked, in board order", asy
     await features.create({ courseId: TEST_COURSE_ID, holeId: null, type: 'water_creek', geometry: { crs: 'EPSG:3006', rings: [ring] } });
 
     const before = await t.svc.status(TEST_COURSE_ID);
-    // The creek is in the SVG, the meshes and the creeks — but the meshes have no .blend to shape.
-    expect(before.targets.filter(r => r.stale).map(r => r.id)).toEqual(['shapes', 'meshes', 'creeks']);
+    // The creek is in the SVG, the meshes, the creeks and the water the falls snap to — but the meshes have no .blend to shape.
+    expect(before.targets.filter(r => r.stale).map(r => r.id)).toEqual(['shapes', 'meshes', 'creeks', 'waterfalls']);
     expect(row(before, 'meshes').blocked).toMatch(/^No \.blend in /);
 
     t.pipeline.calls.length = 0;
     const stale = await t.svc.update(TEST_COURSE_ID, 'stale');
-    expect(stale.targets).toEqual(['shapes', 'creeks']);
+    expect(stale.targets).toEqual(['shapes', 'creeks', 'waterfalls']);
     expect(stale.phases.map(p => p.label)).toEqual([
         'Course shapes: Course SVG', 'Creeks: Creeks file', 'Creeks: Creeks into Unity',
+        'Waterfalls: Waterfalls file', 'Waterfalls: Waterfalls into Unity',
     ]);
     await t.svc.whenIdle(TEST_COURSE_ID);
     const job = t.svc.job(stale.id);
     expect(job.error).toBeNull();
-    expect(job.results.map(r => r.target)).toEqual(['shapes', 'creeks']);
-    expect(t.pipeline.commands()).toEqual(['svg', 'dem', 'creeks']);
+    expect(job.results.map(r => r.target)).toEqual(['shapes', 'creeks', 'waterfalls']);
+    expect(t.pipeline.commands()).toEqual(['svg', 'dem', 'creeks', 'waterfalls']);
 
     // Both rows are recorded, and nothing is stale any more.
     const record = JSON.parse(await readFile(path.join(t.exportDir, SYNC_RECORD_FILE), 'utf8')) as GsproSyncRecord;
     expect(record.targets.shapes!.lastRun).toBe(job.startedAt!);
     expect(record.targets.creeks!.lastRun).toBe(job.startedAt!);
+    expect(record.targets.waterfalls!.lastRun).toBe(job.startedAt!);
     const after = await t.svc.status(TEST_COURSE_ID);
     expect(after.targets.filter(r => r.stale && r.blocked === null).map(r => r.id)).toEqual([]);
 });
@@ -757,7 +780,7 @@ test('every Unity push a chain makes runs with save: true, and the report names 
     await writeFile(path.join(t.exportDir, 'linkan-inner-surfaces.json'), '{}');
 
     const reports: string[] = [];
-    for (const target of ['terrain', 'photo', 'trees', 'creeks', 'vegetation'] as const) {
+    for (const target of ['terrain', 'photo', 'trees', 'creeks', 'waterfalls', 'vegetation'] as const) {
         const started = await t.svc.update(TEST_COURSE_ID, target);
         await t.svc.whenIdle(TEST_COURSE_ID);
         const job = t.svc.job(started.id);
@@ -767,7 +790,7 @@ test('every Unity push a chain makes runs with save: true, and the report names 
     const pushes = t.editor!.calls.filter(c => c.command !== 'golfmap.course');
     expect(pushes.map(c => c.command)).toEqual([
         'golfmap.terrain.update', 'golfmap.terrain.update', 'golfmap.orthos.apply',
-        'golfmap.trees.plant', 'golfmap.trees.plant', 'golfmap.creeks.import',
+        'golfmap.trees.plant', 'golfmap.trees.plant', 'golfmap.creeks.import', 'golfmap.waterfalls.build',
         'golfmap.zones.import', 'golfmap.grass.apply',
     ]);
     expect(pushes.every(c => c.args.save === true)).toBe(true);

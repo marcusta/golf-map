@@ -28,7 +28,7 @@ export interface GsproOrthoSource {
 export interface GsproExportJob {
     id: string;
     courseId: string;
-    kind: 'svg' | 'ortho' | 'outer-ortho' | 'dem' | 'unity-terrain' | 'unity-sculpt' | 'unity-ortho' | 'hillshade' | 'trees' | 'buildings' | 'zones' | 'vegetation' | 'vegetation-update' | 'arborist' | 'creeks' | 'gkd';
+    kind: 'svg' | 'ortho' | 'outer-ortho' | 'dem' | 'unity-terrain' | 'unity-sculpt' | 'unity-ortho' | 'hillshade' | 'trees' | 'buildings' | 'zones' | 'vegetation' | 'vegetation-update' | 'arborist' | 'creeks' | 'waterfalls' | 'gkd';
     label: string;
     status: 'running' | 'succeeded' | 'failed';
     startedAt: string;
@@ -75,7 +75,7 @@ export interface GsproExportApi {
     readGkdRatings(input: { courseId: string }): Promise<GsproExportSettings>;
     terrain(input: { courseId: string }): Promise<CourseTerrain>;
     orthoSources(input: { courseId: string }): Promise<GsproOrthoSource[]>;
-    start(input: { force?: boolean; source?: string; collection?: string; terrain?: 'inner' | 'outer'; darken?: number; tint?: boolean; tintOpacity?: number; forestFloor?: boolean; floorColor?: string; floorMix?: number; removeBuildings?: boolean; excludeFeatureIds?: string[]; variant?: string; zoneIds?: string[]; plantIfNeeded?: boolean; courseId: string; kind: 'svg' | 'ortho' | 'outer-ortho' | 'dem' | 'unity-terrain' | 'unity-sculpt' | 'unity-ortho' | 'hillshade' | 'trees' | 'buildings' | 'zones' | 'vegetation' | 'vegetation-update' | 'arborist' | 'creeks' | 'gkd' }): Promise<GsproExportJob>;
+    start(input: { force?: boolean; source?: string; collection?: string; terrain?: 'inner' | 'outer'; darken?: number; tint?: boolean; tintOpacity?: number; forestFloor?: boolean; floorColor?: string; floorMix?: number; removeBuildings?: boolean; excludeFeatureIds?: string[]; variant?: string; zoneIds?: string[]; plantIfNeeded?: boolean; courseId: string; kind: 'svg' | 'ortho' | 'outer-ortho' | 'dem' | 'unity-terrain' | 'unity-sculpt' | 'unity-ortho' | 'hillshade' | 'trees' | 'buildings' | 'zones' | 'vegetation' | 'vegetation-update' | 'arborist' | 'creeks' | 'waterfalls' | 'gkd' }): Promise<GsproExportJob>;
     job(input: { jobId: string }): Promise<GsproExportJob>;
     current(input: { courseId: string }): Promise<null | GsproExportJob>;
 }
