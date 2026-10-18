@@ -1,4 +1,6 @@
 import type { PondEdgeApi, PondEdgeProposal } from '../../shared/api/pond-edge.gen';
+import type { WaterStepsApi, WaterStepsProposal } from '../../shared/api/water-steps.gen';
+import { EditHistory } from '../src/draw/history';
 import { afterEach, describe, expect, test } from 'bun:test';
 import { di, Signal, Computed } from '@basics/core/client/core';
 import type { ToolContext } from '../src/editor/tool';
@@ -9,7 +11,7 @@ import type { TerrainGeneratorsApi, TerrainGenerateResult } from '../../shared/a
 import type { Course } from '../../shared/api/courses.gen';
 import { deriveTileVersion, type TileManifest } from '../src/map/tileset.service';
 import type { FeatureCollection } from 'geojson';
-import { lngLatToSweref99tm } from '../src/geo/transform';
+import { lngLatToSweref99tm, sweref99tmToWgs84 } from '../src/geo/transform';
 import {
     TerrainEditToolService,
     TERRAIN_EDIT_TOOL_ID,
@@ -217,8 +219,15 @@ interface FakeFeatures {
     effectiveHiddenTypes: Signal<ReadonlySet<string>>;
     effectiveHiddenIds: Signal<ReadonlySet<string>>;
     hiddenSources: Signal<ReadonlySet<string>>;
-    updates: Array<{ id: string; patch: { attributes?: Record<string, string | number | boolean> | null; geometry?: unknown } }>;
+    updates: Array<{ id: string; patch: { attributes?: Record<string, string | number | boolean> | null; geometry?: unknown; type?: string } }>;
     update(id: string, patch: { attributes?: Record<string, string | number | boolean> | null; geometry?: unknown }): Promise<unknown>;
+    /** The batch funnels Find falls and its undo use: each call recorded as it came. */
+    creates: Array<Array<Record<string, unknown>>>;
+    removes: string[][];
+    updateMany(items: Array<{ id: string; patch: Record<string, unknown> }>, opts?: { local?: boolean }): Promise<unknown[] | undefined>;
+    createMany(inputs: Array<Record<string, unknown>>, opts?: { select?: boolean }): Promise<unknown[] | undefined>;
+    removeMany(ids: string[]): Promise<boolean>;
+    stackFor(): FakeFeature[];
 }
 
 function fakeFeatures(items: FakeFeature[] = []): FakeFeatures {
@@ -241,6 +250,30 @@ function fakeFeatures(items: FakeFeature[] = []): FakeFeatures {
             f.store.items.set(next);
             return next.find(x => x.id === id);
         },
+        creates: [],
+        removes: [],
+        async updateMany(items) {
+            const out: unknown[] = [];
+            for (const { id, patch } of items) {
+                f.updates.push({ id, patch: patch as FakeFeatures['updates'][number]['patch'] });
+                const next = f.store.items.peek().map(x => (x.id !== id ? x : { ...x, ...patch, version: (x.version ?? 1) + 1 } as FakeFeature));
+                f.store.items.set(next);
+                out.push(next.find(x => x.id === id));
+            }
+            return out;
+        },
+        async createMany(inputs) {
+            f.creates.push(inputs);
+            const made = inputs.map((input, i) => ({ id: `new-${f.creates.length}-${i}`, version: 1, holeId: null, ...input }) as unknown as FakeFeature);
+            f.store.items.set([...f.store.items.peek(), ...made]);
+            return made;
+        },
+        async removeMany(ids) {
+            f.removes.push(ids);
+            f.store.items.set(f.store.items.peek().filter(x => !ids.includes(x.id)));
+            return true;
+        },
+        stackFor: () => [],
     };
     return f;
 }
@@ -296,6 +329,9 @@ async function harness(opts: {
     renderer?: TerrainEditRenderer;
     /** "Fit edge to water" stand-in (PondEdgeService). */
     pondEdge?: PondEdgeApi;
+    /** "Find falls" stand-in (WaterStepsService) and the undo history it joins. */
+    waterSteps?: WaterStepsApi;
+    history?: EditHistory;
 } = {}): Promise<Harness> {
     const api = fakeApi(opts.listResult ?? []);
     const mapBuild = fakeMapBuild();
@@ -312,7 +348,9 @@ async function harness(opts: {
         },
     };
     const svc = new TerrainEditToolService(api, mapBuild, 0 /* pollMs: no real waits */, generators, new ShapingService(shaping, 0), coursesApi,
-        opts.pondEdge ?? { propose: async () => { throw new Error('unused'); }, proposeAll: async () => { throw new Error('unused'); } });
+        opts.pondEdge ?? { propose: async () => { throw new Error('unused'); }, proposeAll: async () => { throw new Error('unused'); } },
+        opts.waterSteps ?? { propose: async () => { throw new Error('unused'); } },
+        () => opts.history ?? new EditHistory());
 
     const ready = new Signal(true);
     const interactionMode = new Signal<string>(TERRAIN_EDIT_TOOL_ID);
@@ -1493,5 +1531,122 @@ describe('fit edge to water', () => {
         expect(h.svc.pondOf(pondDig)).toBe('p1');
         await h.svc.saveDigSettings('d1', { preset: 'deep_water', bankAboveDeg: 40 });
         expect(h.features.updates[0]).toEqual({ id: 'p1', patch: { attributes: { digPreset: 'deep_water', digBankAboveDeg: 40 } } });
+    });
+});
+
+// ─── Find falls ─────────────────────────────────────────────────────────────
+
+describe('Find falls', () => {
+    // A creek 60 m long running east, and a pond past its end; clicks are WGS84 like the map's.
+    const o = lngLatToSweref99tm(P1);
+    const at = (dx: number, dy = 0) => ({ x: o.x + dx, y: o.y + dy });
+    const lngLat = (dx: number, dy = 0) => { const w = sweref99tmToWgs84(o.x + dx, o.y + dy); return { lng: w.lon, lat: w.lat }; };
+    const box = (x0: number, x1: number, half: number) => [at(x0, -half), at(x1, -half), at(x1, half), at(x0, half)];
+    const water = () => fakeFeatures([
+        { id: 'c1', type: 'water_creek', holeId: 'h3', attributes: { bankVegPalette: 'reeds' }, geometry: { crs: 'EPSG:3006', rings: [{ points: box(0, 60, 3) }] }, version: 3 },
+        { id: 'p1', type: 'water', holeId: null, attributes: null, geometry: { crs: 'EPSG:3006', rings: [{ points: box(70, 90, 8) }] }, version: 1 },
+        { id: 'b1', type: 'bunker', attributes: null, geometry: { crs: 'EPSG:3006', rings: [{ points: box(-30, -20, 3) }] }, version: 1 },
+    ]);
+    const answer = (): WaterStepsProposal => ({
+        courseId: 'course-1',
+        bodies: [
+            { featureId: 'c1', shape: 'hole_3_23e', type: 'water_creek', version: 3, line: [at(0), at(60)], profile: null, steps: 1 },
+            { featureId: 'p1', shape: 'others_23c', type: 'water', version: 1, line: null, profile: null, steps: 0 },
+        ],
+        pieces: [
+            { bodyId: 'c1', shape: 'hole_3_23e', index: 0, kind: 'pond', ring: box(0, 29.5, 3), levelM: 109.61, topM: 109.61, bottomM: 109.61, areaM2: 177, digLevelOffsetM: -0.02 },
+            { bodyId: 'c1', shape: 'hole_3_23e', index: 1, kind: 'pond', ring: box(30.5, 60, 3), levelM: 109.12, topM: 109.12, bottomM: 109.12, areaM2: 180, digLevelOffsetM: -0.07 },
+            { bodyId: 'p1', shape: 'others_23c', index: 0, kind: 'pond', ring: box(70, 90, 8), levelM: 107.5, topM: 107.5, bottomM: 107.5, areaM2: 320, digLevelOffsetM: 0 },
+        ],
+        falls: [
+            { style: 'sill', fromBodyId: 'c1', toBodyId: 'c1', fromPiece: 0, toPiece: 1, line: [at(30.5, -3), at(30.5, 3)], at: at(30.5), flow: { x: 1, y: 0 }, topM: 109.61, bottomM: 109.12, dropM: 0.49, widthM: 6, sillM: 1, forced: false, gapM: null },
+            { style: 'outlet', fromBodyId: 'c1', toBodyId: 'p1', fromPiece: 1, toPiece: 0, line: [at(70, -0.75), at(70, 0.75)], at: at(70), flow: { x: 1, y: 0 }, topM: 109.12, bottomM: 107.5, dropM: 1.62, widthM: 1.5, sillM: null, forced: false, gapM: 10 },
+        ],
+        cuts: [], skips: [], image: null,
+    });
+
+    test('ponds and creeks select together; Find shows the pieces and falls; a click on the water cuts, on a sill skips', async () => {
+        const calls: Array<Parameters<WaterStepsApi['propose']>[0]> = [];
+        const waterSteps: WaterStepsApi = { propose: async (input) => { calls.push(input); return answer(); } };
+        const h = await harness({ features: water(), waterSteps });
+        h.svc.selectFeature('c1');
+        h.svc.toggleFeature('p1');
+        expect(h.svc.selectedFeatureIds.get()).toEqual(['c1', 'p1']);
+        expect(h.svc.selectionMixed.get()).toBe(true);
+        expect(h.svc.waterSelection.get().map(f => f.id)).toEqual(['c1', 'p1']);
+        h.svc.toggleFeature('b1');                                       // a bunker starts a selection of its own
+        expect(h.svc.waterSelection.get()).toEqual([]);
+        h.svc.selectFeature('c1');
+        h.svc.toggleFeature('p1');
+
+        expect(await h.svc.proposeSteps()).toBe(true);
+        expect(calls).toEqual([{ courseId: 'course-1', featureIds: ['c1', 'p1'] }]);
+        const mark = h.svc.view.get().waterSteps!;
+        expect(mark.pieces.map(p => [p.kind, p.label])).toEqual([['pond', '109.61'], ['pond', '109.12'], ['pond', '107.50']]);
+        expect(mark.falls.map(f => f.label)).toEqual(['0.49 m', '1.62 m outlet']);
+        expect(h.features.updates).toEqual([]);                          // nothing stored yet
+
+        click(h, lngLat(12).lng, lngLat(12).lat);                        // on the water: a cut there
+        await tick();
+        expect(calls).toHaveLength(2);
+        expect(calls[1]!.cuts!).toHaveLength(1);
+        expect(Math.hypot(calls[1]!.cuts![0]!.x - at(12).x, calls[1]!.cuts![0]!.y - at(12).y)).toBeLessThan(0.05);
+        expect(h.svc.selectedFeatureIds.get()).toEqual(['c1', 'p1']);   // the click did not select
+
+        click(h, lngLat(31, 1).lng, lngLat(31, 1).lat);                  // on the sill: skipped, the cut kept
+        await tick();
+        expect(calls).toHaveLength(3);
+        expect(calls[2]!.cuts!).toHaveLength(1);
+        expect(calls[2]!.skips).toEqual([at(30.5)]);
+
+        click(h, lngLat(70.5).lng, lngLat(70.5).lat);                    // on the outlet: left out here, no new proposal
+        await tick();
+        expect(calls).toHaveLength(3);
+        expect(h.svc.view.get().waterSteps!.falls.map(f => f.label)).toEqual(['0.49 m']);
+
+        h.svc.discardSteps();
+        expect(h.svc.view.get().waterSteps).toBeNull();
+    });
+
+    test('Accept stores the plan as one undo step; Undo takes it back', async () => {
+        const waterSteps: WaterStepsApi = { propose: async () => answer() };
+        const history = new EditHistory();
+        const h = await harness({ features: water(), waterSteps, history });
+        h.svc.selectFeature('c1');
+        h.svc.toggleFeature('p1');
+        await h.svc.proposeSteps();
+        expect(await h.svc.acceptSteps()).toBe(true);
+
+        // hole_3_23e's bigger piece keeps c1; p1 (one piece) keeps its outline and becomes a dug pond.
+        expect(h.features.updates.map(u => [u.id, u.patch.type])).toEqual([['c1', 'water'], ['p1', 'water']]);
+        expect(h.features.updates[0]!.patch.attributes).toEqual({ bankVegPalette: 'reeds', digPreset: 'natural_pond', digBankAboveDeg: 45, digLevelOffsetM: -0.07 });
+        expect((h.features.updates[0]!.patch.geometry as { curveType: string }).curveType).toBe('bspline');
+        const created = h.features.creates[0]!;
+        expect(created.map(c => c.type)).toEqual(['water', 'waterfall', 'waterfall']);
+        expect(created[0]!.holeId).toBe('h3');
+        expect(created[1]!.attributes).toEqual({ style: 'sill', flowBearingDeg: 90, topM: 109.61, bottomM: 109.12, sillM: 1 });
+        expect(history.lastEntry()!.map(d => [d.featureId, d.before === null])).toEqual([
+            ['c1', false], ['p1', false], ['new-1-0', true], ['new-1-1', true], ['new-1-2', true],
+        ]);
+        expect(h.svc.waterSteps.get()).toBeNull();
+        expect(h.svc.stepsUndo.get()!.summary).toBe('3 pieces, 2 falls');
+        expect(h.svc.notice.get()).toContain('Dig ponds and creeks');
+
+        expect(await h.svc.undoSteps()).toBe(true);
+        expect(h.features.removes).toEqual([['new-1-2', 'new-1-1', 'new-1-0']]);
+        const back = h.features.store.items.get().find(f => f.id === 'c1')!;
+        expect(back.type).toBe('water_creek');
+        expect(back.attributes).toEqual({ bankVegPalette: 'reeds' });
+        expect(h.svc.stepsUndo.get()).toBeNull();
+    });
+
+    test('a feature changed since the proposal is not stored', async () => {
+        const h = await harness({ features: water(), waterSteps: { propose: async () => answer() } });
+        h.svc.selectFeature('c1');
+        await h.svc.proposeSteps();
+        await h.features.update('c1', { attributes: { bankVegPalette: 'sedge' } });   // version 3 -> 4
+        expect(await h.svc.acceptSteps()).toBe(false);
+        expect(h.svc.notice.get()).toContain('changed since the proposal');
+        expect(h.features.creates).toEqual([]);
     });
 });

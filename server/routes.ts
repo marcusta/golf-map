@@ -30,6 +30,7 @@ import { createTerrainEditsApi } from './api/terrain-edits.api';
 import { createTerrainGeneratorsApi } from './api/terrain-generators.api';
 import { createVegetationRulesApi } from './api/vegetation-rules.api';
 import { createPondEdgeApi } from './api/pond-edge.api';
+import { createWaterStepsApi } from './api/water-steps.api';
 import { createGsproExportApi } from './api/gspro-export.api';
 import { createShapingApi } from './api/shaping.api';
 import { createGsproSyncApi } from './api/gspro-sync.api';
@@ -133,6 +134,7 @@ export function mountApiRoutes(app: Hono, services: Services, opts: { mode: Serv
         mount(app, '/api', createTerrainEditsApi(terrainEditsService));
         mount(app, '/api', createTerrainGeneratorsApi(terrainGeneratorsService));
         mount(app, '/api', createPondEdgeApi(services.pondEdgeService));
+        mount(app, '/api', createWaterStepsApi(services.waterStepsService));
         mount(app, '/api', createGsproExportApi(gsproExportService));
         mount(app, '/api', createVegetationRulesApi(services.vegetationRulesService));
         mount(app, '/api', createShapingApi(shapingService));

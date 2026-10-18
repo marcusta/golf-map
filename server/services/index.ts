@@ -32,6 +32,7 @@ import { VegetationRulesService } from './vegetation-rules.service';
 import { ZoneTypesService } from './zone-types.service';
 import { TerrainGeneratorsService } from './terrain-generators.service';
 import { PondEdgeService } from './pond-edge.service';
+import { WaterStepsService } from './water-steps.service';
 import { PublishService } from './publish.service';
 import { TapscoreBridgeService } from './tapscore-bridge.service';
 import { HttpTapscoreClient } from './tapscore-client';
@@ -106,6 +107,8 @@ export function createServices(db: Kysely<Database>, config: ServicesConfig = {}
     });
     // Pond edges from the lidar and the orthophoto (the terrain editor's "Fit edge to water", `bun run water:edge`).
     const pondEdgeService = new PondEdgeService({ db, courses: coursesService, courseFeatures: courseFeaturesService, dataDir });
+    // Steps in a run of water on the lidar: ponds at their levels and the falls between them (the terrain editor's "Find falls", `bun run water:steps`).
+    const waterStepsService = new WaterStepsService({ db, courses: coursesService, courseFeatures: courseFeaturesService, dataDir });
     const publishService = new PublishService({ db, dataDir });
     // Serve-mode ingest endpoint (§8); the service is cheap to construct in
     // either mode — only its API is mounted (serve only) by main.ts.
@@ -143,6 +146,7 @@ export function createServices(db: Kysely<Database>, config: ServicesConfig = {}
         terrainEditsService,
         terrainGeneratorsService,
         pondEdgeService,
+        waterStepsService,
         gsproExportService,
         vegetationRulesService,
         shapingService,

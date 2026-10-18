@@ -328,3 +328,29 @@ test('a pond edge proposal draws as two lines on the live overlay: the proposed 
     expect(proposed.coordinates[0]).toEqual(proposed.coordinates[proposed.coordinates.length - 1]);   // closed
     expect(terrainEditLiveGeojson({ ...v, pondEdge: null }, null).features).toEqual([]);
 });
+
+test('a Find falls proposal draws its pieces and falls on the live overlay, with a pill per level and drop', () => {
+    const box = (x0: number, x1: number) => [{ x: X0 + x0, y: Y0 - 3 }, { x: X0 + x1, y: Y0 - 3 }, { x: X0 + x1, y: Y0 + 3 }, { x: X0 + x0, y: Y0 + 3 }];
+    const waterSteps = {
+        pieces: [
+            { ring: box(0, 29.5), kind: 'pond' as const, label: '109.61', at: { x: X0 + 15, y: Y0 } },
+            { ring: box(30.5, 60), kind: 'creek' as const, label: '109.12›108.60', at: { x: X0 + 45, y: Y0 } },
+        ],
+        falls: [{ line: [{ x: X0 + 30.5, y: Y0 - 3 }, { x: X0 + 30.5, y: Y0 + 3 }], label: '0.49 m', at: { x: X0 + 30.5, y: Y0 } }],
+    };
+    const v = { ...view([], []), waterSteps };
+    expect(terrainEditLiveGeojson(v, null).features.map(f => [f.properties?.role, f.geometry.type])).toEqual([
+        ['steps-pond', 'LineString'], ['steps-creek', 'LineString'], ['steps-fall', 'LineString'],
+    ]);
+
+    const log: MarkerLog = { created: 0, moved: 0, removed: 0 };
+    const m = fakeMap();
+    const r = new TerrainEditOverlayRenderer(markerFactory(log));
+    r.render(m.svc, v);
+    expect(log.created).toBe(3);
+    r.render(m.svc, v);                                   // the same proposal: the pills stay
+    expect(log.created).toBe(3);
+    r.render(m.svc, { ...v, waterSteps: null });          // discarded: they go
+    expect(log.removed).toBe(3);
+    expect(lastDraftData(m)!.features).toEqual([]);
+});

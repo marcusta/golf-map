@@ -186,3 +186,18 @@ A low slab of bedrock lying in the slope, with grass growing in over its edges. 
 A slab drawn before this workflow existed may sit in a hand layer (`docs/gspro/<course>/shaping/20-rocks.json`, Vreta's two); the same slab drawn in the app as well would be cut twice: remove it from one.
 
 Not built yet: added geometry (a slab keeps the meshes' ~1.2 m triangles and heights), and none of it has been checked in the GSPro runtime.
+
+## 8. Stepped ponds and waterfalls
+
+> "The ponds on hole 3 lie at different levels, with small falls between them"
+
+A creek or a chain of ponds drawn as one or two features, really a run of flat ponds with weirs (a stone sill, a narrow earth dam) or a pipe under a crossing between them. Find falls splits the water at each step, so every pond is dug to its own level, and puts a `waterfall` feature on each lip for Unity to build the falling water.
+
+1. **Find the falls.** Terrain edit: select the ponds and creeks (Cmd/Ctrl+click), **Find falls** › **Find**. Green pieces are ponds labelled with their level, cyan ones creeks, red lines the falls with their drop. Click the water where a sill is but no fall shows (the lidar smears a sill under water plants), click a fall that is none. Same from the command line: `bun run water:steps -- <course> --feature <shape> [--feature <shape>] [--cut e,n|lat,lon] [--skip ...] --dry-run --image check.png`. Done when every pond and fall you see on the photo is on the map, at a sensible level.
+2. **Accept** (or the same command without `--dry-run`). The largest piece keeps each feature and its shape name; the other pieces and the waterfalls are new features in the same hole. Ponds get a 45° bank above the water and the level offset their dig needs. One undo step. Done when the panel says what was stored.
+3. **Dig.** Terrain edit › Generate › **Dig ponds (DEM)** and **Dig creeks (DEM)** (`bun run terrain:generate -- <course> water-digs`, then `creek-digs`), then **Apply to terrain**. Done when each pond's dig row shows its level.
+4. **Terrain.** GSPro board › **Update terrain** (`bun run gspro:update -- <course> terrain`): the digs baked into the heightmaps, each pond's water level written for Unity's water planes. Done when the row is not stale.
+5. **Shapes and meshes.** **Update shapes** (the SVG), the OPCD build (stage 4, the manual gate, or `bun run opcd:build`), then **Update meshes**. The pieces are new lake and creek meshes. Done when the meshes row is not stale.
+6. **Waterfalls.** **Update waterfalls** (`bun run gspro:update -- <course> waterfalls`): `golfmap.waterfalls.build` puts the falling water along each lip, from the water above down to the water below. Done when every fall shows in a `unity_screenshot` from beside it.
+
+A fall the lidar does not show (drop 0 on a forced cut) keeps no levels on its feature: the export reads them from the ponds on either side.

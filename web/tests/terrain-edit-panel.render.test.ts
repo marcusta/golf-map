@@ -8,6 +8,7 @@ import { TerrainEditToolService, type TerrainEditRenderer } from '../src/terrain
 import { ShapingService } from '../src/terrain-edit/shaping.service';
 import { ConfirmService } from '../src/app/confirm-dialog.component';
 import type { ShapingJob } from '../../shared/api/shaping.gen';
+import type { WaterStepsApi } from '../../shared/api/water-steps.gen';
 import { doneJob, fakeShapingApi, phases, shapingJob, type LibraryEntry } from './shaping-fakes';
 
 // Render smoke for the Terrain editor's "Shape in Blender" section and the
@@ -46,7 +47,7 @@ function recipeEdit(params: Record<string, unknown>): TerrainEdit {
 
 const B1 = { id: 'b1', type: 'bunker', holeId: 'h3', no: 28, attributes: null, geometry: { crs: 'EPSG:3006', rings: [] } };
 
-function mount(opts: { edits?: TerrainEdit[]; jobs?: ShapingJob[]; features?: Array<typeof B1> } = {}) {
+function mount(opts: { edits?: TerrainEdit[]; jobs?: ShapingJob[]; features?: Array<typeof B1>; waterSteps?: WaterStepsApi } = {}) {
     const created: unknown[] = [];
     const updated: unknown[] = [];
     const edits: TerrainEditsApi = {
@@ -67,7 +68,8 @@ function mount(opts: { edits?: TerrainEdit[]; jobs?: ShapingJob[]; features?: Ar
     const shapingApi = fakeShapingApi(library);
     shapingApi.polls = opts.jobs ?? [];
     const applies = shapingApi.calls.apply;
-    const tool = new TerrainEditToolService(edits, {} as never, 0, {} as never, new ShapingService(shapingApi, 0));
+    const tool = new TerrainEditToolService(edits, {} as never, 0, {} as never, new ShapingService(shapingApi, 0), {} as never, {} as never,
+        opts.waterSteps ?? { propose: async () => { throw new Error('unused'); } });
     di.set(TerrainEditToolService, tool);
 
     const items = new Signal(opts.features ?? [B1]);
@@ -439,4 +441,40 @@ test('several bunkers share one recipe form: mixed recipes ask for a pick, Save 
         { id: 'r2', version: 1, params: { recipe: 'conway', overrides: { depth: 0.6 } } },
     ]);
     expect(created).toEqual([{ siteId: 'site-1', op: 'recipe', params: { recipe: 'conway', overrides: { depth: 0.6 } }, featureId: 'b3' }]);
+});
+
+test('Find falls: one line for the selected ponds and creeks, Find shows the count, Accept and Discard replace Find', async () => {
+    const pond = { ...B1, id: 'w1', type: 'water', no: 0x23e };
+    const creek = { ...B1, id: 'w2', type: 'water_creek', no: 0x23c };
+    const pt = { x: 0, y: 0 };
+    const waterSteps: WaterStepsApi = {
+        propose: async () => ({
+            courseId: 'course-1', cuts: [], skips: [], image: null,
+            bodies: [{ featureId: 'w1', shape: 'hole_3_23e', type: 'water', version: 1, line: null, profile: null, steps: 1 }],
+            pieces: [0, 1].map(index => ({ bodyId: 'w1', shape: 'hole_3_23e', index, kind: 'pond' as const, ring: [pt, pt, pt], levelM: 109 - index, topM: 109, bottomM: 109, areaM2: 10, digLevelOffsetM: 0 })),
+            falls: [{ style: 'sill' as const, fromBodyId: 'w1', toBodyId: 'w1', fromPiece: 0, toPiece: 1, line: [pt, pt], at: pt, flow: { x: 1, y: 0 }, topM: 109, bottomM: 108, dropM: 1, widthM: 4, sillM: 1, forced: false, gapM: null }],
+        }),
+    };
+    const { tool, q } = mount({ features: [B1, pond, creek], waterSteps });
+    await tick();
+    expect(q('terrain-edit-steps').className).toContain('hidden');
+    tool.selectFeature('b1');
+    expect(q('terrain-edit-steps').className).toContain('hidden');       // a bunker: no falls to find
+
+    tool.selectFeature('w1');
+    tool.toggleFeature('w2');
+    expect(q('terrain-edit-steps').className).not.toContain('hidden');
+    expect(q('terrain-shape-section').className).toContain('hidden');    // ponds with creeks: no one recipe list
+    expect(q('terrain-edit-steps-summary').textContent).toBe('2 ponds and creeks selected');
+    expect(q('terrain-edit-steps-accept').className).toContain('hidden');
+
+    q<HTMLButtonElement>('terrain-edit-steps-propose').click();
+    await tick();
+    expect(q('terrain-edit-steps-summary').textContent).toBe('2 pieces, 1 fall');
+    expect(q('terrain-edit-steps-summary').title).toContain('hole_3_23e·1 pond 108.00 m');
+    expect(q('terrain-edit-steps-propose').className).toContain('hidden');
+    expect(q('terrain-edit-steps-accept').className).not.toContain('hidden');
+
+    q<HTMLButtonElement>('terrain-edit-steps-discard').click();
+    expect(q('terrain-edit-steps-summary').textContent).toBe('2 ponds and creeks selected');
 });

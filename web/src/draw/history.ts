@@ -92,6 +92,12 @@ export class EditHistory {
     /** One-line panel notice (set when the history is dropped on conflict). */
     readonly notice = new Signal<string | null>(null);
 
+    /** The entry the next undo takes back (a tool that pushed one can tell whether it is still on top). */
+    lastEntry(): HistoryEntry | undefined {
+        const stack = this.undoStack.peek();
+        return stack[stack.length - 1];
+    }
+
     /** Record a committed edit. Clears the redo stack (linear history). */
     push(entry: HistoryEntry): void {
         if (entry.length === 0) return;

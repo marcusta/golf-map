@@ -11,6 +11,10 @@
 // Violet sits outside the course-feature palette (greens, sands, blues) so an
 // edit is never mistaken for a feature; disabled edits render dimmed.
 //
+// The live overlay also carries the reviews: "Fit edge to water" (the proposed
+// edge and the lidar's water) and "Find falls" (the pieces, ponds green and
+// creeks cyan, and the falls red, each with a level or drop pill).
+//
 // A recipe edit has no ring of its own: it is drawn on its feature (the
 // view's `recipes`), filled and outlined solid in its recipe's colour with
 // the recipe name in the pill, so the bunkers, ponds and creeks that have a
@@ -59,6 +63,10 @@ const DRAFT_COLOR = '#e879f9';
 /** "Fit edge to water": the proposed edge, and the lidar's open water inside the drawn line. */
 const POND_EDGE_COLOR = '#ef4444';
 const POND_LIDAR_COLOR = '#facc15';
+/** "Find falls": pond pieces, creek pieces and the falls (the pipeline's check-picture colours). */
+const STEPS_POND_COLOR = '#3ce65a';
+const STEPS_CREEK_COLOR = '#00e6e6';
+const STEPS_FALL_COLOR = '#ff2828';
 const GLYPH_BG = 'rgba(38, 16, 46, 0.82)';
 
 /** Outline simplification for display, metres: invisible at any editor zoom, ~20x fewer vertices. */
@@ -158,6 +166,16 @@ function terrainEditMarkGeojson(view: TerrainEditView): Feature[] {
         for (const [role, ring] of [['pond-lidar', view.pondEdge.lidar], ['pond-proposed', view.pondEdge.proposed]] as const) {
             if (ring.length < 3) continue;
             features.push({ type: 'Feature', properties: { role }, geometry: { type: 'LineString', coordinates: ringLngLat(ring) } });
+        }
+    }
+    if (view.waterSteps) {
+        for (const piece of view.waterSteps.pieces) {
+            if (piece.ring.length < 3) continue;
+            features.push({ type: 'Feature', properties: { role: `steps-${piece.kind}` }, geometry: { type: 'LineString', coordinates: ringLngLat(piece.ring) } });
+        }
+        for (const fall of view.waterSteps.falls) {
+            if (fall.line.length < 2) continue;
+            features.push({ type: 'Feature', properties: { role: 'steps-fall' }, geometry: { type: 'LineString', coordinates: fall.line.map(project) } });
         }
     }
     return features;
@@ -295,6 +313,25 @@ function draftLayers(): OverlayLayerSpec[] {
             paint: { 'line-color': POND_EDGE_COLOR, 'line-width': 3, 'line-opacity': 0.95 },
         },
         {
+            // "Find falls": the pieces, ponds green and creeks cyan, and the falls red over them.
+            id: 'terrain-edit-steps-pond',
+            type: 'line',
+            filter: role('steps-pond'),
+            paint: { 'line-color': STEPS_POND_COLOR, 'line-width': 2.5, 'line-opacity': 0.95 },
+        },
+        {
+            id: 'terrain-edit-steps-creek',
+            type: 'line',
+            filter: role('steps-creek'),
+            paint: { 'line-color': STEPS_CREEK_COLOR, 'line-width': 2.5, 'line-opacity': 0.95 },
+        },
+        {
+            id: 'terrain-edit-steps-fall',
+            type: 'line',
+            filter: role('steps-fall'),
+            paint: { 'line-color': STEPS_FALL_COLOR, 'line-width': 5, 'line-opacity': 0.95 },
+        },
+        {
             // The features selected for "Shape in Blender" (draw mode's selection yellow).
             id: 'terrain-edit-draft-selection',
             type: 'line',
@@ -401,6 +438,9 @@ export class TerrainEditOverlayRenderer implements TerrainEditRenderer {
     private lastLabels: TerrainEditView['labels'] | null = null;
     private lastSelection: TerrainEditView['selection'] | null = null;
     private lastPondEdge: TerrainEditView['pondEdge'] = null;
+    private lastWaterSteps: TerrainEditView['waterSteps'] = null;
+    /** Find falls' level and drop pills (few: always shown while the proposal is). */
+    private stepLabels: GlyphMarker[] = [];
     private lastRecipes: TerrainEditView['recipes'] | null = null;
     private glyphs = new Map<string, GlyphEntry>();
     /** The last view drawn, for the glyph refresh after a camera move. */
@@ -455,6 +495,7 @@ export class TerrainEditOverlayRenderer implements TerrainEditRenderer {
         } else if (view.draft !== this.lastDraft || cursor !== this.lastCursor
             || view.highlightId !== this.lastHighlightId || view.selection !== this.lastSelection
             || (view.pondEdge ?? null) !== this.lastPondEdge
+            || (view.waterSteps ?? null) !== this.lastWaterSteps
             || (view.highlightId !== null && (view.edits !== this.lastEdits || view.recipes !== this.lastRecipes))) {
             map.updateOverlayData(TERRAIN_EDIT_DRAFT_OVERLAY_ID, terrainEditLiveGeojson(view, cursor));
         }
@@ -464,8 +505,28 @@ export class TerrainEditOverlayRenderer implements TerrainEditRenderer {
         this.lastHighlightId = view.highlightId;
         this.lastLabels = view.labels;
         this.lastSelection = view.selection;
+        if ((view.waterSteps ?? null) !== this.lastWaterSteps) this.syncStepLabels(map, view.waterSteps ?? null);
         this.lastPondEdge = view.pondEdge ?? null;
+        this.lastWaterSteps = view.waterSteps ?? null;
         this.lastRecipes = view.recipes;
+    }
+
+    /** Find falls' pills: each piece's level (creeks top›bottom) and each fall's drop. */
+    private syncStepLabels(map: MapService, mark: TerrainEditView['waterSteps']): void {
+        for (const m of this.stepLabels) m.remove();
+        this.stepLabels = [];
+        if (!mark) return;
+        const pills = [
+            ...mark.pieces.map(p => ({ at: p.at, text: p.label, color: p.kind === 'pond' ? STEPS_POND_COLOR : STEPS_CREEK_COLOR })),
+            ...mark.falls.map(f => ({ at: f.at, text: f.label, color: STEPS_FALL_COLOR })),
+        ];
+        for (const pill of pills) {
+            const el = document.createElement('div');
+            el.textContent = pill.text;
+            el.style.cssText = `background: ${GLYPH_BG}; color: ${pill.color}; font: 600 10px/1.5 system-ui, sans-serif;`
+                + `padding: 0 5px; border: 1px solid ${pill.color}; border-radius: 4px; pointer-events: none; white-space: nowrap;`;
+            this.stepLabels.push(this.createMarker(el, anchorLngLat(pill.at), map));
+        }
     }
 
     reset(): void {
@@ -492,6 +553,7 @@ export class TerrainEditOverlayRenderer implements TerrainEditRenderer {
         this.lastLabels = null;
         this.lastSelection = null;
         this.lastPondEdge = null;
+        this.lastWaterSteps = null;
         this.lastRecipes = null;
         this.lastView = null;
         this.watching?.stop();
@@ -501,6 +563,8 @@ export class TerrainEditOverlayRenderer implements TerrainEditRenderer {
     private dropGlyphs(): void {
         for (const g of this.glyphs.values()) g.marker.remove();
         this.glyphs.clear();
+        for (const m of this.stepLabels) m.remove();
+        this.stepLabels = [];
     }
 
     /**

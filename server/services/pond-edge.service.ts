@@ -73,6 +73,15 @@ export function pondEdgeOrthos(files: string[]): string[] {
     return files.filter((f) => /^ortho-.*\.tif$/i.test(f) && !/\.cleaned\./i.test(f)).sort().reverse();
 }
 
+/** A feature's GSPro shape name (`hole_14_53`, `others_12`), as Blender and Unity name its meshes; an unnumbered one its id prefix. */
+export async function featureShapeName(db: Kysely<Database>, courseId: string, f: Pick<CourseFeature, 'id' | 'no' | 'holeId'>): Promise<string> {
+    if (f.no === null) return f.id.slice(0, 8);
+    const hole = f.holeId
+        ? await db.selectFrom('holes').select('number').where('id', '=', f.holeId).where('course_id', '=', courseId).executeTakeFirst()
+        : undefined;
+    return `${hole ? `hole_${hole.number}` : 'others'}_${f.no.toString(16)}`;
+}
+
 export class PondEdgeService {
     private readonly db: Kysely<Database>;
     private readonly courses: CoursesService;
@@ -131,12 +140,8 @@ export class PondEdgeService {
         return { siteId: course.siteId, sources, orthos };
     }
 
-    private async shapeOf(courseId: string, f: CourseFeature): Promise<string> {
-        if (f.no === null) return f.id.slice(0, 8);
-        const hole = f.holeId
-            ? await this.db.selectFrom('holes').select('number').where('id', '=', f.holeId).where('course_id', '=', courseId).executeTakeFirst()
-            : undefined;
-        return `${hole ? `hole_${hole.number}` : 'others'}_${f.no.toString(16)}`;
+    private shapeOf(courseId: string, f: CourseFeature): Promise<string> {
+        return featureShapeName(this.db, courseId, f);
     }
 
     private async run(f: CourseFeature, shape: string, sources: string, orthos: string[], opts: PondEdgeOptions): Promise<PondEdgeProposal> {

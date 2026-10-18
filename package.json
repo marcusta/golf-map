@@ -27,6 +27,7 @@
         "terrain:generate": "bun scripts/terrain-generate.ts",
         "features:union": "bun scripts/features-union.ts",
         "water:edge": "bun scripts/water-edge.ts",
+        "water:steps": "bun scripts/water-steps.ts",
         "water:import": "bun scripts/water-import.ts",
         "shaping": "bun scripts/shaping-apply.ts",
         "arborist": "bun scripts/arborist.ts",

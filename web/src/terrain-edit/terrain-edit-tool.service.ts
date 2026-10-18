@@ -29,6 +29,9 @@ import type { MapBuildApi, MapBuildJob } from '../../../shared/api/map-build.gen
 import type { TerrainGeneratorsApi } from '../../../shared/api/terrain-generators.gen';
 import type { PondEdgeApi, PondEdgeProposal } from '../../../shared/api/pond-edge.gen';
 import { fitPondEdge } from './pond-edge-fit';
+import type { WaterStepsApi, WaterStepsProposal } from '../../../shared/api/water-steps.gen';
+import { planWaterSteps, type WaterStepsFeatureInput } from './water-steps-apply';
+import type { EditHistory, HistoryEntry } from '../draw/history';
 
 /** The terrain generators the panel offers (server origins of the edits they write). */
 export type TerrainGeneratorKind = 'building-pads' | 'road-grades' | 'water-digs' | 'bunker-digs' | 'creek-digs';
@@ -48,8 +51,8 @@ import { buildEditorStyle, HILLSHADE_SOURCE_ID, TERRAIN_SOURCE_ID } from '../map
 import type { AnchorPoint, Point } from '../geo/bezier';
 import { DrawState, MIN_RING_POINTS } from '../draw/draw-state';
 import { lngLatToSweref99tm, sweref99tmToWgs84 } from '../geo/transform';
-import { flattenRing } from '../geo/bezier';
-import { containingTopDown } from '../draw/draw-tool.service';
+import { flattenRing, pointInGeometry } from '../geo/bezier';
+import { containingTopDown, DrawToolService } from '../draw/draw-tool.service';
 import { FEATURE_STYLES, type FeatureType } from '../draw/feature-palette';
 import { shapeName } from '../export/svg-exclusions';
 import { NO_RECIPE, SEED, ShapingService, surfaceOf } from './shaping.service';
@@ -251,6 +254,34 @@ export interface PondEdgeMark {
     lidar: { x: number; y: number }[];
 }
 
+/** The feature types "Find falls" reads. */
+export const WATER_STEPS_FEATURE_TYPES: readonly string[] = ['water', 'water_creek'];
+
+/**
+ * "Find falls": the proposal on the map (WaterStepsService), what it was made
+ * from (the features, the cuts and skips clicked on the water) and the outlet
+ * falls taken out of it here (an outlet joins two bodies: no re-proposal).
+ */
+export interface WaterStepsReview {
+    proposal: WaterStepsProposal;
+    featureIds: string[];
+    cuts: { x: number; y: number }[];
+    skips: { x: number; y: number }[];
+    /** Outlet falls left out, keyed `from>to` (body ids). */
+    droppedOutlets: string[];
+}
+
+/** What the map draws for a Find falls proposal: the pieces (labelled with their level) and the falls (with their drop). */
+export interface WaterStepsMark {
+    pieces: { ring: { x: number; y: number }[]; kind: 'pond' | 'creek'; label: string; at: { x: number; y: number } }[];
+    falls: { line: { x: number; y: number }[]; label: string; at: { x: number; y: number } }[];
+}
+
+/** A click this close (m) to a fall's lip takes the fall out. */
+const FALL_PICK_M = 3;
+/** A forced fall takes out the cut this near it (m) instead of adding a skip. */
+const CUT_PICK_M = 6;
+
 /** A hand-drawn edit's form values (radiusM is smooth's, flat is plane's). */
 export interface HandEditParams {
     op: 'plane' | 'smooth';
@@ -281,6 +312,8 @@ export interface TerrainEditView {
     cursor: Point | null;
     /** "Fit edge to water": the proposal under review, null when none. */
     pondEdge?: PondEdgeMark | null;
+    /** "Find falls": the proposal on the map, null when none. */
+    waterSteps?: WaterStepsMark | null;
 }
 
 /**
@@ -350,6 +383,8 @@ export class TerrainEditToolService {
     });
     /** The first selected feature, while it is loaded on this course. */
     readonly selectedFeature = new Computed<CourseFeature | null>(() => this.selectedFeatures.get()[0] ?? null);
+    /** The selection mixes ponds and creeks (Find falls): no one recipe list fits them. */
+    readonly selectionMixed = new Computed<boolean>(() => new Set(this.selectedFeatures.get().map(f => surfaceOf(f.type))).size > 1);
     /** The shaping job scope of the selection (ShapingService.jobScope): its ids, null when none. */
     readonly selectionScope = new Computed<string | null>(() => {
         const ids = this.selectedFeatureIds.get();
@@ -414,6 +449,18 @@ export class TerrainEditToolService {
     /** The outline the last Accept replaced: Undo puts it back. */
     readonly edgeUndo = new Signal<{ featureId: string; shape: string; geometry: CourseFeature['geometry']; attributes: Attributes | null } | null>(null);
 
+    /** "Find falls": the proposal on the map, null when none (declared before `view`, which reads it). */
+    readonly waterSteps = new Signal<WaterStepsReview | null>(null);
+    /** True while the server reads the lidar for Find falls. */
+    readonly proposingSteps = new Signal(false);
+    /** The last accepted Find falls (its undo step), while the panel offers to take it back. */
+    readonly stepsUndo = new Signal<{ entry: HistoryEntry; summary: string } | null>(null);
+    /** What the map draws for the Find falls proposal. */
+    private readonly waterStepsMark = new Computed<WaterStepsMark | null>(() => {
+        const review = this.waterSteps.get();
+        return review ? waterStepsMarkOf(review) : null;
+    });
+
     /** Pointer position for the rubber band (see TerrainEditView.cursor). */
     readonly cursor = new Signal<Point | null>(null);
 
@@ -428,6 +475,7 @@ export class TerrainEditToolService {
             recipes: this.recipeMarks.get(),
             selection: this.selectedFeatures.get().map(featureRings),
             pondEdge: this.pondEdgeMark(),
+            waterSteps: this.waterStepsMark.get(),
         };
     });
 
@@ -468,6 +516,10 @@ export class TerrainEditToolService {
         private coursesApi: Pick<CoursesApi, 'get'> = api.courses,
         /** "Fit edge to water" (PondEdgeService). */
         private pondEdgeApi: PondEdgeApi = api.pondEdge,
+        /** "Find falls" (WaterStepsService). */
+        private waterStepsApi: WaterStepsApi = api.waterSteps,
+        /** The undo history Find falls joins: Draw mode's, so ⌘Z there takes it back like any edit. */
+        private stepsHistory: () => EditHistory = () => di.get(DrawToolService).history,
     ) {}
 
     // ─────────────────────────────────────────────────────────────────────────
@@ -707,6 +759,178 @@ export class TerrainEditToolService {
         else this.pondEdge.set(null);
     }
 
+    // ─────────────────────────────────────────────────────────────────────────
+    // "Find falls" (WaterStepsService, also `bun run water:steps`): where the
+    // selected ponds and creeks drop from one level to the next, read on the
+    // raw lidar. The pieces and falls show on the map; a click on the water
+    // adds a cut there, a click on a fall takes it out (both re-propose; an
+    // outlet between two bodies is just left out). Accept stores the plan
+    // (water-steps-apply.ts) as one undo step in Draw mode's history; Discard
+    // drops it. Nothing changes until Accept.
+    // ─────────────────────────────────────────────────────────────────────────
+
+    /** The selected features Find falls would read (every selected one must be a pond or creek), empty otherwise. */
+    readonly waterSelection = new Computed<CourseFeature[]>(() => {
+        const selected = this.selectedFeatures.get();
+        return selected.length > 0 && selected.every(f => WATER_STEPS_FEATURE_TYPES.includes(f.type)) ? selected : [];
+    });
+
+    /** Proposes the falls of the selected ponds and creeks (a fresh start: no cuts or skips). */
+    proposeSteps(): Promise<boolean> {
+        const ids = this.waterSelection.peek().map(f => f.id);
+        if (ids.length === 0) {
+            this.notice.set('Select one or more ponds or creeks first (Cmd/Ctrl+click adds one).');
+            return Promise.resolve(false);
+        }
+        return this.runSteps({ featureIds: ids, cuts: [], skips: [], droppedOutlets: [] });
+    }
+
+    /** Asks the server again for `next`'s features, cuts and skips; the review shows the answer. */
+    private async runSteps(next: Omit<WaterStepsReview, 'proposal'>): Promise<boolean> {
+        const ctx = this.ctx;
+        if (!ctx || this.proposingSteps.peek()) return false;
+        this.proposingSteps.set(true);
+        this.notice.set(null);
+        try {
+            const proposal = await this.waterStepsApi.propose({
+                courseId: ctx.courseId, featureIds: next.featureIds,
+                ...(next.cuts.length ? { cuts: next.cuts } : {}),
+                ...(next.skips.length ? { skips: next.skips } : {}),
+            });
+            this.waterSteps.set({ ...next, proposal });
+            return true;
+        } catch (e) {
+            this.notice.set(`Find falls failed: ${message(e)}`);
+            return false;
+        } finally {
+            this.proposingSteps.set(false);
+        }
+    }
+
+    /**
+     * A click while the falls are on the map: on a fall's lip it takes the
+     * fall out (a cut asked there is dropped, a found step skipped, an outlet
+     * left out), on the water it asks for a cut there. True when it was one of
+     * those (the click is then used up).
+     */
+    stepsClick(p: { x: number; y: number }): boolean {
+        const review = this.waterSteps.peek();
+        if (!review || this.proposingSteps.peek()) return false;
+        const fall = review.proposal.falls
+            .filter(f => !review.droppedOutlets.includes(outletKey(f)))
+            .map(f => ({ f, d: distToLine(p, f.line) }))
+            .filter(x => x.d <= FALL_PICK_M)
+            .sort((a, b) => a.d - b.d)[0]?.f;
+        if (fall) {
+            if (fall.style === 'outlet') {
+                this.waterSteps.set({ ...review, droppedOutlets: [...review.droppedOutlets, outletKey(fall)] });
+                return true;
+            }
+            const near = review.cuts.findIndex(c => Math.hypot(c.x - fall.at.x, c.y - fall.at.y) <= CUT_PICK_M);
+            void this.runSteps(near >= 0
+                ? { ...review, cuts: review.cuts.filter((_, i) => i !== near) }
+                : { ...review, skips: [...review.skips, { x: fall.at.x, y: fall.at.y }] });
+            return true;
+        }
+        const features = this.ctx?.features.store.items.peek() ?? [];
+        const onWater = review.featureIds.some(id => {
+            const f = features.find(x => x.id === id);
+            return f ? pointInGeometry(p, f.geometry as Parameters<typeof pointInGeometry>[1]) : false;
+        });
+        if (!onWater) return false;
+        void this.runSteps({ ...review, cuts: [...review.cuts, { x: p.x, y: p.y }] });
+        return true;
+    }
+
+    /** Stores the proposal: the pieces and waterfalls as feature edits, one undo step. */
+    async acceptSteps(): Promise<boolean> {
+        const review = this.waterSteps.peek();
+        const features = this.ctx?.features;
+        if (!review || !features) return false;
+        const store = new Map(features.store.items.peek().map(f => [f.id, f]));
+        const inputs: WaterStepsFeatureInput[] = [];
+        for (const body of review.proposal.bodies) {
+            const f = store.get(body.featureId);
+            if (!f) { this.notice.set(`${body.shape} is not loaded on this course.`); return false; }
+            if (f.version !== body.version) { this.notice.set(`${body.shape} changed since the proposal: find the falls again.`); return false; }
+            inputs.push({ id: f.id, type: f.type, holeId: f.holeId, layer: f.layer ?? null, version: f.version,
+                geometry: f.geometry as WaterStepsFeatureInput['geometry'], attributes: f.attributes as Record<string, unknown> | null });
+        }
+        const proposal = { ...review.proposal, falls: review.proposal.falls.filter(f => !review.droppedOutlets.includes(outletKey(f))) };
+        let plan: ReturnType<typeof planWaterSteps>;
+        try {
+            plan = planWaterSteps(proposal, inputs);
+        } catch (e) {
+            this.notice.set(`Find falls: ${message(e)}`);
+            return false;
+        }
+        this.saving.set(true);
+        try {
+            const before = new Map(inputs.map(f => [f.id, f]));
+            const updated = await features.updateMany(plan.updates.map(u => ({
+                id: u.featureId, patch: { type: u.patch.type, geometry: u.patch.geometry as CourseFeature['geometry'], attributes: u.patch.attributes },
+            })), { local: true });
+            if (updated === undefined) { this.notice.set('Saving the pieces failed.'); return false; }
+            const created = plan.creates.length === 0 ? [] : await features.createMany(plan.creates.map(c => ({
+                type: c.type, holeId: c.holeId, layer: c.layer, geometry: c.geometry as CourseFeature['geometry'], attributes: c.attributes,
+            })), { select: false });
+            if (created === undefined) {
+                // Put the kept features back: the plan is all or nothing.
+                await features.updateMany(plan.updates.map(u => {
+                    const f = before.get(u.featureId)!;
+                    return { id: f.id, patch: { type: f.type, geometry: f.geometry as CourseFeature['geometry'], attributes: f.attributes as Attributes | null } };
+                }), { local: true });
+                this.notice.set('Saving the new pieces and waterfalls failed; nothing was changed.');
+                return false;
+            }
+            const entry: HistoryEntry = [
+                ...plan.updates.map(u => {
+                    const f = before.get(u.featureId)!;
+                    return {
+                        featureId: f.id,
+                        before: { geometry: f.geometry as CourseFeature['geometry'], type: f.type, holeId: f.holeId, layer: f.layer ?? null, attributes: f.attributes as Attributes | null },
+                        after: { geometry: u.patch.geometry as CourseFeature['geometry'], type: u.patch.type, holeId: f.holeId, layer: f.layer ?? null, attributes: u.patch.attributes },
+                        beforeVersion: f.version,
+                    };
+                }),
+                ...created.map(c => ({
+                    featureId: c.id, before: null, beforeVersion: null,
+                    after: { geometry: c.geometry, type: c.type, holeId: c.holeId, layer: c.layer ?? null, attributes: c.attributes as Attributes | null },
+                })),
+            ];
+            this.stepsHistory().push(entry);
+            const summary = stepsSummary(proposal);
+            this.stepsUndo.set({ entry, summary });
+            this.notice.set(`${summary} stored. Dig ponds and creeks (DEM), then Apply to terrain; the GSPro board does the rest.`);
+            this.waterSteps.set(null);
+            return true;
+        } finally {
+            this.saving.set(false);
+        }
+    }
+
+    /** Drops the proposal. */
+    discardSteps(): void {
+        this.waterSteps.set(null);
+    }
+
+    /** Takes the last Accept back, while it is still the newest step in Draw mode's history. */
+    async undoSteps(): Promise<boolean> {
+        const undo = this.stepsUndo.peek();
+        const features = this.ctx?.features;
+        if (!undo || !features) return false;
+        const history = this.stepsHistory();
+        if (history.lastEntry() !== undo.entry) {
+            this.stepsUndo.set(null);
+            this.notice.set('Other edits came after it: undo them in Draw mode (⌘Z) first.');
+            return false;
+        }
+        const ok = await history.undo(features);
+        this.stepsUndo.set(null);
+        this.notice.set(ok ? 'Find falls taken back: the ponds and creeks are as they were.' : 'Taking Find falls back failed.');
+        return ok;
+    }
+
     /** Saves a hand-drawn edit's op and params in place. */
     async saveParams(id: string, form: HandEditParams): Promise<boolean> {
         const edit = this.edits.peek().find(e => e.id === id);
@@ -803,9 +1027,11 @@ export class TerrainEditToolService {
             return;
         }
         const items = this.ctx?.features.store.items.peek() ?? [];
-        const surface = surfaceOf(items.find(f => f.id === featureId)?.type ?? '');
+        const type = items.find(f => f.id === featureId)?.type ?? '';
         const current = this.selectedFeature.peek();
-        const same = current !== null && surfaceOf(current.type) === surface;
+        // Ponds and creeks go together too (Find falls reads a chain of both; a recipe is then picked per kind).
+        const water = (t: string) => WATER_STEPS_FEATURE_TYPES.includes(t);
+        const same = current !== null && (surfaceOf(current.type) === surfaceOf(type) || (water(current.type) && water(type)));
         this.selectedFeatureIds.set(same ? [...ids, featureId] : [featureId]);
     }
 
@@ -987,6 +1213,7 @@ export class TerrainEditToolService {
         this.saving.set(false);
         this.hoveredId.set(null);
         this.selectedFeatureIds.set([]);
+        this.waterSteps.set(null);
         this.ctx = null;
         this.ctxSignal.set(null);
         this.renderer = null;
@@ -1371,6 +1598,8 @@ export class TerrainEditToolService {
             return;
         }
         const p = lngLatToSweref99tm(e.lngLat);
+        // Find falls on the map: a click on the water cuts, on a fall takes it out (a modifier click selects as ever).
+        if (draft.length === 0 && !e.originalEvent?.metaKey && !e.originalEvent?.ctrlKey && !e.originalEvent?.shiftKey && this.stepsClick(p)) return;
         if (draft.length === 0) {
             // Not outlining: a click on a bunker/pond/creek/path selects it for
             // "Shape in Blender" (Shift+click starts an outline there anyway,
@@ -1474,6 +1703,49 @@ function featureRings(feature: CourseFeature | null): Array<Array<{ x: number; y
     if (!feature) return [];
     return feature.geometry.rings.map(ring =>
         flattenRing(ring, 0.25, feature.geometry.curveType).map(([x, y]) => ({ x, y })));
+}
+
+/** An outlet fall's key in WaterStepsReview.droppedOutlets. */
+function outletKey(f: { style: string; fromBodyId: string; toBodyId: string }): string {
+    return f.style === 'outlet' ? `${f.fromBodyId}>${f.toBodyId}` : '';
+}
+
+/** Distance (m) from p to an open polyline. */
+function distToLine(p: { x: number; y: number }, line: ReadonlyArray<{ x: number; y: number }>): number {
+    if (line.length === 1) return Math.hypot(p.x - line[0].x, p.y - line[0].y);
+    let best = Infinity;
+    for (let i = 0; i + 1 < line.length; i++) {
+        const a = line[i], b = line[i + 1];
+        const dx = b.x - a.x, dy = b.y - a.y;
+        const len2 = dx * dx + dy * dy;
+        const t = len2 > 0 ? Math.max(0, Math.min(1, ((p.x - a.x) * dx + (p.y - a.y) * dy) / len2)) : 0;
+        best = Math.min(best, Math.hypot(p.x - a.x - t * dx, p.y - a.y - t * dy));
+    }
+    return best;
+}
+
+/** "6 pieces, 5 falls". */
+export function stepsSummary(proposal: Pick<WaterStepsProposal, 'pieces' | 'falls'>): string {
+    const n = (k: number, one: string, many: string) => `${k} ${k === 1 ? one : many}`;
+    return `${n(proposal.pieces.length, 'piece', 'pieces')}, ${n(proposal.falls.length, 'fall', 'falls')}`;
+}
+
+/** The map's pieces (labelled with their level: `109.61`, a creek `104.50›103.48`) and falls (their drop). */
+function waterStepsMarkOf(review: WaterStepsReview): WaterStepsMark {
+    const centre = (ring: ReadonlyArray<{ x: number; y: number }>) => ({
+        x: ring.reduce((s, p) => s + p.x, 0) / Math.max(ring.length, 1),
+        y: ring.reduce((s, p) => s + p.y, 0) / Math.max(ring.length, 1),
+    });
+    const m = (v: number | null) => (v === null ? '?' : v.toFixed(2));
+    return {
+        pieces: review.proposal.pieces.map(p => ({
+            ring: p.ring, kind: p.kind, at: centre(p.ring),
+            label: p.kind === 'pond' ? m(p.levelM) : `${m(p.topM)}›${m(p.bottomM)}`,
+        })),
+        falls: review.proposal.falls.filter(f => !review.droppedOutlets.includes(outletKey(f))).map(f => ({
+            line: f.line, at: f.at, label: `${f.dropM.toFixed(2)} m${f.style === 'outlet' ? ' outlet' : ''}`,
+        })),
+    };
 }
 
 function capitalize(text: string): string {

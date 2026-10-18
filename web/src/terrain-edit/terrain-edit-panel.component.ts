@@ -18,6 +18,8 @@ import {
     recipeParams,
     type DigSettings,
     type PondEdgeReview,
+    type WaterStepsReview,
+    stepsSummary,
     type PondProgress,
     type EditGroup,
     type TerrainEditOp,
@@ -65,6 +67,15 @@ const tpl = template(`
                 <button bind="pondEdgeAcceptBtn" type="button" data-testid="terrain-edit-pond-edge-accept">Accept</button>
             </div>
         </div>
+        <div bind="stepsSection" class="section hidden" data-testid="terrain-edit-steps">
+            <h4 class="section-title" title="Where the selected ponds and creeks step down from one level to the next, read on the lidar. Each run becomes a pond at its level (green) or a creek (cyan); each step a waterfall (red). Cmd/Ctrl+click adds ponds and creeks to the selection. Same as bun run water:steps">Find falls</h4>
+            <div bind="stepsSummary" class="hint" data-testid="terrain-edit-steps-summary"></div>
+            <div class="edit-form__actions">
+                <button bind="stepsProposeBtn" type="button" data-testid="terrain-edit-steps-propose">Find</button>
+                <button bind="stepsDiscardBtn" type="button" data-testid="terrain-edit-steps-discard">Discard</button>
+                <button bind="stepsAcceptBtn" type="button" data-testid="terrain-edit-steps-accept">Accept</button>
+            </div>
+        </div>
         <div class="section">
             <h4 class="section-title">New edit</h4>
             <select bind="opSelect" class="input" data-testid="terrain-edit-op" aria-label="Operation">
@@ -97,6 +108,7 @@ const tpl = template(`
         <div bind="savingLine" class="busy-line">Saving…</div>
         <div bind="notice" class="notice" data-testid="terrain-edit-notice"></div>
         <button bind="pondEdgeUndoBtn" type="button" class="gen-btn hidden" data-testid="terrain-edit-pond-edge-undo"></button>
+        <button bind="stepsUndoBtn" type="button" class="gen-btn hidden" data-testid="terrain-edit-steps-undo"></button>
         <div class="section">
             <h4 class="section-title">Edits on this site</h4>
             <div bind="list" class="edit-list" data-testid="terrain-edit-list"></div>
@@ -177,7 +189,7 @@ export class TerrainEditPanelComponent extends Component {
             /* Flat dock body (feature-dock.component.ts hosting contract). */
             ${dockBody()}
 
-            & .section { display: flex; flex-direction: column; gap: ${s('xs')}; }
+            & .section { display: flex; flex-direction: column; gap: ${s('xs')}; &.hidden { display: none; } }
             ${sectionTitle()}
 
             & .input { ${panelInput()} }
@@ -267,6 +279,7 @@ export class TerrainEditPanelComponent extends Component {
                 color: ${t('color-text-primary')};
                 cursor: pointer;
                 &:disabled { opacity: 0.45; cursor: not-allowed; }
+                &.hidden { display: none; }
             }
 
             & .hint {
@@ -283,6 +296,7 @@ export class TerrainEditPanelComponent extends Component {
                 color: ${t('color-text-primary')};
                 cursor: pointer;
                 &:disabled { opacity: 0.45; cursor: not-allowed; }
+                &.hidden { display: none; }
             }
 
             & .shape {
@@ -579,7 +593,50 @@ export class TerrainEditPanelComponent extends Component {
                 className: () => this.tool.applying.get() ? 'busy-line show' : 'busy-line',
             },
             shapeSection: {
-                className: () => this.tool.selectedFeature.get() ? 'section shape' : 'section shape hidden',
+                // Ponds and creeks selected together are for Find falls: a recipe is picked per kind.
+                className: () => this.tool.selectedFeature.get() && !this.tool.selectionMixed.get() ? 'section shape' : 'section shape hidden',
+            },
+            stepsSection: {
+                className: () => this.tool.waterSelection.get().length > 0 || this.tool.waterSteps.get() || this.tool.proposingSteps.get()
+                    ? 'section steps' : 'section steps hidden',
+            },
+            stepsSummary: {
+                textContent: () => {
+                    if (this.tool.proposingSteps.get()) return 'Reading the lidar…';
+                    const review = this.tool.waterSteps.get();
+                    if (review) return stepsSummary({ pieces: review.proposal.pieces, falls: review.proposal.falls.filter(f => f.style !== 'outlet' || !review.droppedOutlets.includes(`${f.fromBodyId}>${f.toBodyId}`)) });
+                    const n = this.tool.waterSelection.get().length;
+                    return `${n} ${n === 1 ? 'pond or creek' : 'ponds and creeks'} selected`;
+                },
+                title: () => {
+                    const review = this.tool.waterSteps.get();
+                    return review ? stepsDetails(review) : 'Find reads the selected ponds and creeks on the raw lidar; nothing changes until Accept.';
+                },
+            },
+            stepsProposeBtn: {
+                className: () => this.tool.waterSteps.get() ? 'hidden' : '',
+                disabled: () => this.tool.proposingSteps.get() || this.tool.waterSelection.get().length === 0,
+                title: 'Find the steps in the selected water on the lidar and show the pieces and falls on the map',
+                onclick: () => void this.tool.proposeSteps(),
+            },
+            stepsDiscardBtn: {
+                className: () => this.tool.waterSteps.get() ? '' : 'hidden',
+                disabled: () => this.tool.proposingSteps.get(),
+                onclick: () => this.tool.discardSteps(),
+            },
+            stepsAcceptBtn: {
+                className: () => this.tool.waterSteps.get() ? '' : 'hidden',
+                disabled: () => this.tool.proposingSteps.get() || this.tool.saving.get(),
+                title: 'Store it: the largest piece keeps each feature, the other pieces and the waterfalls are new features; ponds get dig settings that hold their level. One undo step (⌘Z in Draw mode). Then dig ponds and creeks and apply to terrain',
+                onclick: () => void this.tool.acceptSteps(),
+            },
+            stepsUndoBtn: {
+                className: () => this.tool.stepsUndo.get() ? 'gen-btn' : 'gen-btn hidden',
+                textContent: () => {
+                    const u = this.tool.stepsUndo.get();
+                    return u ? `Undo Find falls (${u.summary})` : '';
+                },
+                onclick: () => void this.tool.undoSteps(),
             },
             shapeCloseBtn: { onclick: () => this.tool.selectFeature(null) },
             recipeHint: {
@@ -1175,6 +1232,16 @@ export class TerrainEditPanelComponent extends Component {
         row.append(cancel, ok);
         return row;
     }
+}
+
+/** The Find falls summary's tooltip: each piece and fall on a line, then how to change it on the map. */
+function stepsDetails(review: WaterStepsReview): string {
+    const m = (v: number | null) => (v === null ? '?' : `${v.toFixed(2)} m`);
+    const pieces = review.proposal.pieces.map(p => `${p.shape}·${p.index} ${p.kind} ${p.kind === 'pond' ? m(p.levelM) : `${m(p.topM)} → ${m(p.bottomM)}`}`);
+    const falls = review.proposal.falls
+        .filter(f => f.style !== 'outlet' || !review.droppedOutlets.includes(`${f.fromBodyId}>${f.toBodyId}`))
+        .map(f => `${f.style} ${f.dropM.toFixed(2)} m${f.forced ? ' (cut)' : ''}`);
+    return [...pieces, ...falls, 'Click the water: a cut there. Click a fall: take it out.'].join('\n');
 }
 
 /** What a pond edge proposal changes, in a line or two. */

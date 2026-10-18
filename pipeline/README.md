@@ -507,6 +507,20 @@ puts those planes at; a hand-set `<course folder>/water-levels.json` still wins.
 at most 4 cm, every bunker ends at least 0.45 m below its surroundings, and
 11 of 21 ponds are too narrow for Natural Pond's 11° banks to reach 1 m.
 
+**Water steps** (`golfpipe/water_steps.py`, server `WaterStepsService`): a chain of
+ponds at different levels reads on the lidar as flat runs with short steep steps
+between them. Each drawn creek or pond is read along its line (a low percentile
+of the water cells per metre, forced to fall downstream); a step falls at least
+`minDropM` (0.3) within 6 m. Each run is a pond (flat, at its median level) or a
+creek, cut apart with a `sillM` (1 m) strip left out as the weir's crest; two
+bodies drawn within `gapM` (12 m) at different levels get an `outlet` fall.
+`cuts` and `skips` (points on the water) force or drop a step. A pond piece
+carries the `digLevelOffsetM` its `water-digs` edit needs to hold that level. In
+the web: Terrain edit > **Find falls**; from the command line, on the same
+service and Accept planner:
+
+    bun run water:steps -- "Ombergs Golfklubb" --feature hole_3_23e --feature hole_3_23c --cut 478141,6457677 --dry-run --image check.png
+
 ### `clean-ortho` — inpaint canopy + shadows out of the playable corridor
 
 ```sh
