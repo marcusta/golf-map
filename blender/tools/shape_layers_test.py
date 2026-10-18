@@ -238,6 +238,16 @@ class LayerTest(unittest.TestCase):
                      "surface must be one capitalised word", "takes no select", "missing 'name'"):
             self.assertIn(part, msg)
 
+    def test_cut_out_creek_bed_surface(self):
+        # the creek bed is the one cut-out whose surface may carry a golf word (Unity classes it Water)
+        ring = [[477667.0, 6457205.0], [477669.0, 6457205.0], [477668.0, 6457225.0]]
+        ok = layer([{"id": "brook", "op": "golfmap.cut_out", "name": "brook_h17", "outline3006": ring,
+                     "surface": "WaterBrook", "rise": {"mode": "dem", "apronM": 1.0, "maxEdgeM": 0.2, "sharpen": 0.0}}])
+        self.assertEqual(sl.validate_layer(ok), [])
+        bad = layer([{"id": "x", "op": "golfmap.cut_out", "name": "water_brook", "outline3006": ring, "surface": "WaterBrook"},
+                     {"id": "y", "op": "golfmap.cut_out", "name": "brook", "outline3006": ring, "surface": "WaterFall"}])
+        self.assertEqual(len([e for e in sl.validate_layer(bad) if "golf surface word" in e]), 2)
+
     def test_split_surfaces_validation(self):
         ok = layer([{"id": "paths-surfaces", "op": "golfmap.split_surfaces", "select": {"shape": ["roads_124"]},
                      "fadeM": 0.5, "minPartM2": 1, "junctionTie": 0.15, "slitM": 0.8, "sliverM": 0.05, "weld": True,

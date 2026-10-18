@@ -96,6 +96,100 @@ namespace GolfMap.Editor
             public Vector2 offset, offset2;  // seeded noise offsets
         }
 
+        // kind 'object': paint named objects (a creek bed cut out of the ground) from their own border in. `match` is a
+        // substring of the object's name; the paint goes to `channel` with `strength` where the vertex is `fadeM` or more
+        // inside the mesh's boundary and fades to nothing at the boundary, so the bed blends into the ground around it.
+        // `material` (optional) gives the object a copy of the nearest rough's OPCD MAHS material whose `channel` draws
+        // the albedo + normal: black paint on a creek bed is the pebbles, and black is no 3D grass.
+        sealed class ObjectRule
+        {
+            public string id, match, channel;
+            public Color target;
+            public float strength, fadeM;
+            public string albedo, normal;     // material: asset paths, null = keep the material
+            public float tileM = 1f;
+            public Color tint = Color.white;
+        }
+
+        static float Num(object o) { var n = o as GolfMapJsonNumber; return n == null ? 0f : (float)n.Value; }
+
+        static List<ObjectRule> LoadObjectRules(string text, string path)
+        {
+            var root = GolfMapJsonDoc.ParseObject(text);
+            var rules = new List<ObjectRule>();
+            var list = root.Array("rules") ?? new List<object>();
+            for (int i = 0; i < list.Count; i++)
+            {
+                var o = list[i] as GolfMapJsonObject;
+                if (o == null || o.String("kind") != "object") continue;
+                if (o["enabled"] is bool && !(bool)o["enabled"]) continue;
+                string where = path + " rules[" + i + "]";
+                var r = new ObjectRule
+                {
+                    id = o.String("id") ?? ("rule" + i),
+                    match = o.String("match"),
+                    channel = (o.String("channel") ?? "black").ToLowerInvariant(),
+                    strength = Mathf.Clamp01((float)o.Number("strength", 1)),
+                    fadeM = (float)o.Number("fadeM", 0.5),
+                };
+                if (string.IsNullOrEmpty(r.match)) throw new InvalidOperationException(where + ": an object rule needs match (a name substring).");
+                if (r.fadeM <= 0) throw new InvalidOperationException(where + ": fadeM must be > 0.");
+                r.target = ChannelColor(r.channel, where);
+                var m = o["material"] as GolfMapJsonObject;
+                if (m != null)
+                {
+                    r.albedo = m.String("albedo");
+                    r.normal = m.String("normal");
+                    if (string.IsNullOrEmpty(r.albedo) || string.IsNullOrEmpty(r.normal)) throw new InvalidOperationException(where + ": material needs albedo and normal (asset paths).");
+                    r.tileM = (float)m.Number("tileM", 1);
+                    var tint = m.Array("tint");
+                    if (tint != null && tint.Count >= 3) r.tint = new Color(Num(tint[0]), Num(tint[1]), Num(tint[2]), 1f);
+                }
+                rules.Add(r);
+            }
+            return rules;
+        }
+
+        // A copy of the nearest rough's material (<course>/Creeks/<rough> (creek bed).mat) whose rule channel draws the
+        // pebbles; rebuilt from the rough on every run so the rule wins. The copy keeps every other channel, so the
+        // bed's red fringe still draws the grass ground around it.
+        static Material CreekBedMaterial(string courseFolder, ObjectRule rule, Material rough)
+        {
+            if (rough == null || string.IsNullOrEmpty(rule.albedo)) return null;
+            var dir = courseFolder + "Creeks";
+            if (!AssetDatabase.IsValidFolder(dir)) AssetDatabase.CreateFolder(courseFolder.TrimEnd('/'), "Creeks");
+            var path = dir + "/" + rough.name + " (creek bed).mat";
+            var m = AssetDatabase.LoadAssetAtPath<Material>(path);
+            if (m == null) { m = new Material(rough) { name = rough.name + " (creek bed)" }; AssetDatabase.CreateAsset(m, path); }
+            else { m.shader = rough.shader; m.CopyPropertiesFromMaterial(rough); }
+            GolfMapWallGround.ApplyChannelTexture(m, rule.channel, rule.albedo, rule.normal, rule.tileM, rule.tint, dir);
+            // the photo under the base would tint the pebbles
+            string p = "_" + char.ToUpperInvariant(rule.channel[0]) + rule.channel.Substring(1);
+            if (m.HasProperty(p + "UseSatelliteForBase")) m.SetFloat(p + "UseSatelliteForBase", 0);
+            m.DisableKeyword((p + "UseSatelliteForBase").ToUpperInvariant() + "_ON");
+            EditorUtility.SetDirty(m);
+            return m;
+        }
+
+        // The material of the rough mesh nearest to `bed` (by bounds centre) that is a plain OPCD one: no walls stone
+        // copy, no creek bed copy.
+        static Material NearestRoughMaterial(List<MeshFilter> all, Vector3 centre)
+        {
+            Material best = null;
+            float bestD = float.MaxValue;
+            foreach (var f in all)
+            {
+                if (GolfMapSurfaces.Classify(f.name) != GolfMapSurfaces.Surface.Rough) continue;
+                var r = f.GetComponent<Renderer>();
+                if (r == null || r.sharedMaterial == null) continue;
+                var assetPath = AssetDatabase.GetAssetPath(r.sharedMaterial);
+                if (assetPath.IndexOf("/Walls/", StringComparison.OrdinalIgnoreCase) >= 0 || assetPath.IndexOf("/Creeks/", StringComparison.OrdinalIgnoreCase) >= 0) continue;
+                var dc = r.bounds.center - centre; float d = dc.x * dc.x + dc.z * dc.z;
+                if (d < bestD) { bestD = d; best = r.sharedMaterial; }
+            }
+            return best;
+        }
+
         static List<EdgeRule> LoadRules(string text, string path)
         {
             var root = GolfMapJsonDoc.ParseObject(text);
@@ -107,7 +201,8 @@ namespace GolfMap.Editor
                 var o = list[i] as GolfMapJsonObject;
                 string where = path + " rules[" + i + "]";
                 if (o == null) throw new InvalidOperationException(where + ": not an object.");
-                if (o.String("kind") != "edge") throw new InvalidOperationException(where + ": kind must be 'edge'.");
+                if (o.String("kind") == "object") continue;  // LoadObjectRules
+                if (o.String("kind") != "edge") throw new InvalidOperationException(where + ": kind must be 'edge' or 'object'.");
                 if (o["enabled"] is bool && !(bool)o["enabled"]) continue;  // kept in the file, not painted
                 var r = new EdgeRule
                 {
@@ -214,6 +309,22 @@ namespace GolfMap.Editor
             args = "dryRun=false (report what would be painted, change nothing)")]
         static object ApplyCommand(BridgeArgs a) { return Apply(a.Bool("dryRun", false)); }
 
+        [BridgeCommand("golfmap.paint.bedmaterial", "Build the creek bed material of paint.json's object rule (a copy of the nearest rough's OPCD material with the rule's pebbles on its channel, <course>/Creeks/) and return its path; touches no scene object. Apply does the same for every matching mesh.",
+            args = "x, z (plot metres: the rough nearest to this point is copied; default 0, 0)")]
+        static object BedMaterialCommand(BridgeArgs a)
+        {
+            var course = GolfMapCourses.Require();
+            var folder = GolfMapCourses.Folder(course);
+            var recipePath = folder + PaintFile;
+            var rule = (File.Exists(recipePath) ? LoadObjectRules(File.ReadAllText(recipePath), recipePath) : new List<ObjectRule>()).FirstOrDefault(r => !string.IsNullOrEmpty(r.albedo));
+            if (rule == null) throw new BridgeError(recipePath + ": no object rule with a material.");
+            var centre = new Vector3((float)a.Number("x", 0), 0, (float)a.Number("z", 0));
+            var rough = NearestRoughMaterial(CourseMeshes(EditorSceneManager.GetActiveScene()), centre);
+            var bed = CreekBedMaterial(folder, rule, rough);
+            AssetDatabase.SaveAssets();
+            return new Dictionary<string, object> { { "rule", rule.id }, { "rough", rough != null ? AssetDatabase.GetAssetPath(rough) : null }, { "material", bed != null ? AssetDatabase.GetAssetPath(bed) : null } };
+        }
+
         [BridgeCommand("golfmap.paint.restore", "Put every painted course mesh back to its original FBX mesh and reset its Stix grass cache. The painted copies stay in <course>/PaintedMeshes/.")]
         static object RestoreCommand(BridgeArgs a) { return Restore(); }
 
@@ -233,7 +344,9 @@ namespace GolfMap.Editor
                 created = exists = true;
             }
             // A dry run before the first apply previews the defaults.
-            var rules = LoadRules(exists ? File.ReadAllText(recipePath) : DefaultRecipe, recipePath);
+            var recipeText = exists ? File.ReadAllText(recipePath) : DefaultRecipe;
+            var rules = LoadRules(recipeText, recipePath);
+            var objectRules = LoadObjectRules(recipeText, recipePath);
             var meshFolder = folder + MeshFolder + "/";
             var records = LoadRecords(meshFolder + RestoreFile);
 
@@ -291,7 +404,8 @@ namespace GolfMap.Editor
                 string path = PathOf(f.transform);
                 bool isPainted = IsPaintedCopy(f.sharedMesh, meshFolder);
                 bool reshape = ground != null && ground.Touches(f);
-                if (!targets.Contains(surface) && !isPainted && !reshape) continue;
+                var mine = objectRules.Where(r => f.name.IndexOf(r.match, StringComparison.Ordinal) >= 0).ToList();
+                if (!targets.Contains(surface) && !isPainted && !reshape && mine.Count == 0) continue;
 
                 var source = isPainted ? LoadOriginal(records, path) : f.sharedMesh;
                 if (source == null) { errors.Add(path + ": has a painted mesh but its original is not in " + RestoreFile + "; restore it by hand (reassign the FBX mesh)."); continue; }
@@ -305,10 +419,23 @@ namespace GolfMap.Editor
                 if (colors == null || colors.Length != local.Length) colors = Enumerable.Repeat(new Color(1, 0, 0, 1), local.Length).ToArray();
                 int count = 0;
                 var outColors = new Color[local.Length];
+                PointGrid ownEdge = null;
+                if (mine.Count > 0)
+                {
+                    ownEdge = new PointGrid(mine.Max(r => r.fadeM));
+                    foreach (var q in BoundaryPoints(f)) ownEdge.Add(q);
+                }
                 for (int i = 0; i < local.Length; i++)
                 {
                     var c = colors[i];
                     var p = f.transform.TransformPoint(local[i]);
+                    foreach (var r in mine)
+                    {
+                        float d = ownEdge.NearestXZ(p, r.fadeM);
+                        float w = r.strength * (d == float.MaxValue ? 1f : Smooth(0, r.fadeM, d));
+                        if (w <= 0.001f) continue;
+                        var t = r.target; t.a = c.a; c = Color.Lerp(c, t, w);
+                    }
                     foreach (var r in rules)
                     {
                         if (!r.surfaces.Contains(surface)) continue;
@@ -362,6 +489,20 @@ namespace GolfMap.Editor
                     }
                     else if (stone != null && known == null) errors.Add(path + ": renders a walls stone material but its original is not in " + RestoreFile + ".");
                 }
+                // a creek bed draws its pebbles from a copy of the nearest rough's material (the original is remembered)
+                var bedRule = mine.FirstOrDefault(r => !string.IsNullOrEmpty(r.albedo));
+                if (bedRule != null && mr != null)
+                {
+                    var known = RecordMaterial(records, path);
+                    var original = known ?? mr.sharedMaterial;
+                    var bed = CreekBedMaterial(folder, bedRule, NearestRoughMaterial(allFilters, mr.bounds.center));
+                    if (bed != null)
+                    {
+                        if (mr.sharedMaterial != bed) { Undo.RecordObject(mr, "Vertex paint"); mr.sharedMaterial = bed; }
+                        material = original != null && original != bed ? AssetDatabase.GetAssetPath(original) : null;
+                    }
+                    else warnings.Add(path + ": no rough mesh with a plain material to copy the creek bed material from.");
+                }
                 if (material == null) PutBackMaterial(f, records, path);
                 records[path] = material == null ? new[] { AssetDatabase.GetAssetPath(source), source.name } : new[] { AssetDatabase.GetAssetPath(source), source.name, material };
             }
@@ -389,6 +530,7 @@ namespace GolfMap.Editor
                 { "recipeCreated", created },
                 { "dryRun", dryRun },
                 { "rules", rules.Select(r => r.id).ToList() },
+                { "objectRules", objectRules.Select(r => r.id).ToList() },
                 { "bunkerEdgePoints", bunkerEdge.Count },
                 { "paintedMeshes", painted.Count },
                 { "paintedVertices", totalPainted },

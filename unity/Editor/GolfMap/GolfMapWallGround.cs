@@ -359,28 +359,35 @@ namespace GolfMap.Editor
         // The rock gets a new albedo/MAHS pair and corresponding packed normal, on the stock shader.
         static void ApplyRockTexture(Material m, GolfMapWalls.Settings s, string channel, string dir)
         {
-            var albedo = AssetDatabase.LoadAssetAtPath<Texture2D>(s.stoneAlbedo);
-            var normal = AssetDatabase.LoadAssetAtPath<Texture2D>(s.stoneNormal);
+            ApplyChannelTexture(m, channel, s.stoneAlbedo, s.stoneNormal, s.stoneTileM, s.stoneColor ?? Color.white, dir);
+        }
+
+        // Any ground texture as a channel of an OPCD MAHS material copy: albedo + normal appended to its detail and
+        // normal arrays (the stone walls' rock, the creek beds' pebbles). `channel` is red, green, blue or black.
+        internal static void ApplyChannelTexture(Material m, string channel, string albedoPath, string normalPath, float tileM, Color overall, string dir)
+        {
+            var albedo = AssetDatabase.LoadAssetAtPath<Texture2D>(albedoPath);
+            var normal = AssetDatabase.LoadAssetAtPath<Texture2D>(normalPath);
             var detail = m.GetTexture("_DetailArray") as Texture2DArray;
             var normals = m.GetTexture("_NormalArray") as Texture2DArray;
             if (albedo == null || normal == null || detail == null || normals == null)
                 throw new InvalidOperationException("Rock paint needs albedo, an imported normal map, and OPCD detail/normal arrays.");
-            if (detail.depth != normals.depth * 2 || s.stoneTileM <= 0)
+            if (detail.depth != normals.depth * 2 || tileM <= 0)
                 throw new InvalidOperationException("Rock paint needs paired OPCD detail slices and positive stoneTileM.");
-            var importer = AssetImporter.GetAtPath(s.stoneNormal) as TextureImporter;
+            var importer = AssetImporter.GetAtPath(normalPath) as TextureImporter;
             if (importer == null || importer.textureType != TextureImporterType.NormalMap)
-                throw new InvalidOperationException(s.stoneNormal + " must be imported as a normal map.");
+                throw new InvalidOperationException(normalPath + " must be imported as a normal map.");
             int index = detail.depth;
             m.SetTexture("_DetailArray", AppendRockSlices(detail, albedo, false, dir));
             m.SetTexture("_NormalArray", AppendRockSlices(normals, normal, true, dir));
-            string p = "_" + channel;
+            string p = "_" + char.ToUpperInvariant(channel[0]) + channel.Substring(1);
             m.SetFloat(p + "DetailIndex", index);
             m.SetFloat(p + "BaseBlend", 0); // no distant grass/base texture under exposed rock
             m.DisableKeyword((p + "BaseBlend").ToUpperInvariant() + "_ON");
             m.SetTexture(p + "HeightTexture", Texture2D.whiteTexture); // full vertex paint = full stone
             m.SetFloat(p + "BlendStrength", 1);
-            m.SetFloat(p + "DetailTiling", s.stoneTileM);
-            m.SetFloat(p + "FarNRMTiling", s.stoneTileM);
+            m.SetFloat(p + "DetailTiling", tileM);
+            m.SetFloat(p + "FarNRMTiling", tileM);
             m.SetFloat(p + "NearNRMStrength", 0.7f);
             m.SetFloat(p + "FarNRMStrength", 0.7f);
             m.SetFloat(p + "AOBrightness", 1);
@@ -389,7 +396,7 @@ namespace GolfMap.Editor
             m.SetFloat(p + "SurfaceOpacity", 0);
             m.SetFloat(p + "Smoothness", 0.1f);
             m.SetColor(p + "DetailColorTint", Color.white);
-            m.SetColor(p + "OverallColor", s.stoneColor ?? Color.white);
+            m.SetColor(p + "OverallColor", overall);
         }
 
         // The rock as a new slice (GolfMapTextureArrays): albedo + a flat MAHS slice in the detail array, the normal in

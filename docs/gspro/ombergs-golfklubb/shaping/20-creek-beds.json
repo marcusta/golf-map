@@ -1,0 +1,176 @@
+{
+  "format": "golfmap-shaping-layer-v1",
+  "id": "creek-beds",
+  "note": "Hand layer: creek beds. A creek 0.7 m wide and 0.7 m deep cannot live in the course meshes (1.2 m triangles) or the 0.74 m terrain.obj grid, so its corridor is cut out into its own mesh Spline_<name>_WaterBrook_-_Mesh and refined to 0.2 m triangles that follow the dug DEM (rise mode dem, no granite shaping). Unity classes it Water (no grass), paints its middle black (paint.json rule kind object) and gives that channel a pebble bed (golfmap.creekbeds). The outline stops 1.5 m short of the ponds (their meshes are protected).",
+  "ops": [
+    {
+      "id": "brook-h17",
+      "op": "golfmap.cut_out",
+      "name": "brook_h17",
+      "surface": "WaterBrook",
+      "outline3006": [
+        [
+          477669.0,
+          6457230.77
+        ],
+        [
+          477669.01,
+          6457229.1
+        ],
+        [
+          477669.11,
+          6457228.31
+        ],
+        [
+          477669.44,
+          6457227.36
+        ],
+        [
+          477670.56,
+          6457225.87
+        ],
+        [
+          477671.92,
+          6457223.84
+        ],
+        [
+          477672.97,
+          6457221.98
+        ],
+        [
+          477674.02,
+          6457219.51
+        ],
+        [
+          477674.8,
+          6457215.76
+        ],
+        [
+          477675.19,
+          6457213.13
+        ],
+        [
+          477675.77,
+          6457210.56
+        ],
+        [
+          477676.99,
+          6457208.07
+        ],
+        [
+          477677.75,
+          6457206.3
+        ],
+        [
+          477678.36,
+          6457204.53
+        ],
+        [
+          477678.61,
+          6457203.36
+        ],
+        [
+          477678.86,
+          6457202.66
+        ],
+        [
+          477678.25,
+          6457202.44
+        ],
+        [
+          477677.86,
+          6457202.18
+        ],
+        [
+          477677.06,
+          6457200.92
+        ],
+        [
+          477676.74,
+          6457201.46
+        ],
+        [
+          477676.32,
+          6457202.64
+        ],
+        [
+          477676.03,
+          6457203.95
+        ],
+        [
+          477675.53,
+          6457205.39
+        ],
+        [
+          477674.82,
+          6457207.04
+        ],
+        [
+          477673.49,
+          6457209.76
+        ],
+        [
+          477672.84,
+          6457212.65
+        ],
+        [
+          477672.43,
+          6457215.37
+        ],
+        [
+          477671.9,
+          6457217.68
+        ],
+        [
+          477671.74,
+          6457218.75
+        ],
+        [
+          477670.8,
+          6457220.95
+        ],
+        [
+          477669.86,
+          6457222.62
+        ],
+        [
+          477668.6,
+          6457224.49
+        ],
+        [
+          477667.34,
+          6457226.17
+        ],
+        [
+          477666.77,
+          6457227.76
+        ],
+        [
+          477666.61,
+          6457229.01
+        ],
+        [
+          477666.61,
+          6457231.15
+        ],
+        [
+          477667.54,
+          6457230.81
+        ]
+      ],
+      "uvM": 2.0,
+      "rise": {
+        "mode": "dem",
+        "apronM": 1.0,
+        "noiseM": 0.0,
+        "maxEdgeM": 0.2,
+        "sharpen": 0.0,
+        "facets": 0.0,
+        "terrace": 0.0,
+        "reliefM": 0.0,
+        "hardEdgeDeg": 0.0
+      },
+      "note": "Hole 17: the creek hole_17_233 between the two ponds (feature 84b2b23f), corridor = its centerline +-1.2 m minus the ponds + 1.5 m."
+    }
+  ]
+}

@@ -1032,6 +1032,17 @@ far each spot reaches (35-100 % of `widthM`). The weight falls off smoothly from
 (red, green or blue; not black) raises that channel and keeps the others, so red - the Stix blade chance - is
 untouched: a colour-only band under full grass. A rough reshaped by the stone-wall ground draws stone on blue,
 so blue rules skip those meshes.
+**Rule kind `object`** (paint.json, `golfmap-paint-v1`): paints named meshes from their own border in, for a mesh Blender cut out of
+the ground that has to read differently from it - Omberg's creek beds (`Spline_<name>_WaterBrook_-_Mesh`, `golfmap.cut_out`
+surface `WaterBrook`, class Water, so no vegetation grows in it). `match` = a substring of the object's name, `channel`
+painted with `strength` where the vertex is `fadeM` or more inside the mesh, fading to nothing at its border (the bed meets the
+red ground around it). `material` (optional: `albedo`, `normal` asset paths, `tileM`, `tint`) gives every matching mesh a copy of
+the nearest rough's material under `<course>/Creeks/<rough> (creek bed).mat` whose `channel` draws that texture (the stone walls'
+`GolfMapWallGround.ApplyChannelTexture`: albedo + normal appended to the OPCD arrays; the photo is taken off that channel's
+base). Black paint is also no 3D grass (the Stix blade chance is red), and the usual bake into `PaintedMeshes/` applies, so a
+re-import of the FBX gives the same result. `golfmap.paint.bedmaterial x z` builds just that material (assets only, no scene
+object touched) to check it. Omberg: rule `creek-bed` = NatureManufacture River Auto Material pebbles, `docs/gspro/ombergs-golfklubb/creek-beds.md`.
+
 Vreta's recipe (`bunker-surround`: rough, blue, overlay, 2.2 m, strength 0.9, coverage 0.55, 3.5 m; snapshot in `docs/gspro/vreta/paint.json`) is
 **`enabled: false`** since 2026-09-29 (a rule with `enabled: false` is kept but not painted): the rough's blue channel is the same dirt base
 with roots and twigs as its black, so the band still read as root streaks (Bunker Materials, table). Enabled it painted

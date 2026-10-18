@@ -113,6 +113,9 @@ def _rise_errors(rise):
 CUT_OUT_SURFACE = re.compile(r"^[A-Z][A-Za-z]*$")
 # A cut-out's name or surface may not read as a golf surface: Unity classes course meshes by these words in the name.
 SURFACE_WORDS = ("water", "creek", "lake", "deep", "semi", "rough", "fairway", "green", "tee", "bunker")
+# The one surface that may: a creek bed cut out of the ground (Spline_<name>_WaterBrook_-_Mesh). Unity classes it Water
+# (vegetation keeps off) and the creek-bed rule of paint.json paints it; the name itself still holds no golf word.
+CUT_OUT_WATER_SURFACE = "WaterBrook"
 # Provenance keys a generator may add (gspro.py shaping-global: the feature or terrain edit behind an op).
 OP_KEYS = {"id", "op", "select", "params", "seed", "note", "enabled", "featureId", "origin", "originRef", "maxDzWarnM"}
 # golfmap.flatten_footprint never moves these types (and their blends); see footprint_moves.
@@ -256,6 +259,8 @@ def validate_op(op):
             errors.append("name must be lower-case words joined by _ (it names the object Spline_<name>_<surface>_-_Mesh)")
         if not (isinstance(op.get("surface", "Rock"), str) and CUT_OUT_SURFACE.match(op.get("surface", "Rock"))):
             errors.append("surface must be one capitalised word (default Rock)")
+        if op.get("surface") == CUT_OUT_WATER_SURFACE:
+            label = str(op.get("name"))
         if any(w in label.lower() for w in SURFACE_WORDS) or "_b_" in label.lower():
             errors.append(f"name and surface may not contain a golf surface word ({', '.join(SURFACE_WORDS)}) or _b_")
         if "sliverM" in op and not (_is_type(op["sliverM"], float) and op["sliverM"] >= 0):
