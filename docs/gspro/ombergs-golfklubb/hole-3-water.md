@@ -32,6 +32,22 @@ x≈477814), E 100.9 -> 99.3 (bridge at hole 9's green), F 99.3 -> 98.0,
 G 98.0 -> 96.8. The water features there (573, 576, 569, 575) are separate
 polygons already.
 
+## The feel to aim for (Marcus's photos)
+
+- [views/hole-3-green-to-creek.webp](views/hole-3-green-to-creek.webp): across
+  the green towards the creek. A row of big old broadleaf trees (wide, dense
+  crowns, trunks leaning) stands along the creek right behind the green; the
+  water is sunk out of sight below a mown bank that runs from the green's
+  apron down to it; tall yellow-green rough beyond the creek, open course
+  further back. The creek reads as a cool, shaded line under the trees, not
+  as open water.
+- From the white tee (shown in chat 2026-10-18): the long pond 108.62 runs
+  away towards the green, a few boulders at its edge, a low stone-edged bank
+  to the left, trees closing the view at the green end.
+- From the fairway towards the padel courts: the crossing at A reads as a
+  grass strip level with the upper pond; the lower pond and the stone arch
+  bridge sit 1.1 m down, hidden until you are near.
+
 ## The chain (tools added for it)
 
 1. **Find falls** (terrain editor; `bun run water:steps`): propose the split
