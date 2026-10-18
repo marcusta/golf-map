@@ -1540,7 +1540,13 @@ async function main(): Promise<void> {
             const jobs = await readJobs(page);
             if (!jobs.length) throw new PageChanged('attach', 'the job table is empty: nothing to attach to');
             const file = parsed.svg ? path.basename(parsed.svg) : null;
-            const at = file ? jobs.findIndex((j) => splitJobName(j.name).svg === file) : 0;
+            // An export snapshot's SVG (export-history/<stamp>/…) picks the job whose description
+            // names that snapshot, so a later export of the same file does not stand in for it.
+            const snapshot = parsed.svg ? await snapshotOfSvg(svg, course.exportDir) : null;
+            const ofFile = (j: SvgJob) => splitJobName(j.name).svg === file;
+            const ofSnapshot = (j: SvgJob) => ofFile(j) && (splitJobName(j.name).description ?? '').includes(`export ${snapshot}`);
+            let at = !file ? 0 : snapshot ? jobs.findIndex(ofSnapshot) : -1;
+            if (file && at < 0) at = jobs.findIndex(ofFile);
             if (at < 0) throw new PageChanged('attach', `no job of ${file} in the table`);
             const job = jobs[at]!;
             console.log(`attached to ${job.created}  ${job.status}  ${job.name}`);
