@@ -48,6 +48,25 @@ polygons already.
   grass strip level with the upper pond; the lower pond and the stone arch
   bridge sit 1.1 m down, hidden until you are near.
 
+## Hole 7, later: the creek on below 9 (`hole_7_23f`, feature 575)
+
+[views/hole-7-creek-stone-bridge.webp](views/hole-7-creek-stone-bridge.webp),
+100-130 m short of the green: the creek is a narrow sunk ditch across the
+fairway, full of tall vegetation (reeds, tall herbs) standing above the banks,
+mown banks down to it, and an old fieldstone arch bridge over it (dark
+red-grey stones, a low round arch). The ortho shows two crossings on 575, at
+about 477521, 6457811 and 477447, 6457786 (the western one, by the green with
+the single bunker, is most likely the photo's).
+
+Find falls on 569 + 575 (2026-10-18, read only): fall G 1.20 m (pond 569 at
+97.93-98.0 into the creek), the creek runs 96.76 -> 95.09 over ~250 m, then a
+0.72 m sill at 477383, 6457759 into a small pool at 94.37. The finder cut
+slivers of 9 and 15 m² at the creek's two ends: a step at a body's very end
+should become a fall into the next body rather than a piece of its own (to
+do when hole 7 is built). The tall growth is the creek's `bankVeg` (its
+`_wet` mix: reeds); the stone arch bridges (here and the one over hole 3's
+107.50 pond) want one reusable bridge prop.
+
 ## The chain (tools added for it)
 
 1. **Find falls** (terrain editor; `bun run water:steps`): propose the split
