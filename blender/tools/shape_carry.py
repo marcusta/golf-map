@@ -67,6 +67,7 @@ TOPOLOGY_ATTRS = (".corner_vert", ".corner_edge", ".edge_verts")
 POSITION_KEY = "a|position|POINT|FLOAT_VECTOR"
 ENV_OFF = "GOLFMAP_PREPARE_NO_CARRY_OVER"
 SEAMS_ENV = "GOLFMAP_CARRY_SEAMS"   # weld (default) | strict
+PATCH_ENV = "GOLFMAP_CARRY_PATCH"   # 0: no snap, no patch (a kept mesh stays as OPCD made it, the weld apart)
 
 REASONS = {
     "swapped": "the previous build's mesh put back",
@@ -404,7 +405,7 @@ def _compact(d):
     out = {"code": d["code"]}
     if d.get("moveM"):
         out["moveMm"] = round(d["moveM"] * 1e3, 3)
-    for k in ("blockedBy", "array", "meta", "counts", "border", "why", "welded", "retriangulated"):
+    for k in ("blockedBy", "array", "meta", "counts", "border", "why", "welded", "retriangulated", "snapped", "patched"):
         if d.get(k) is not None:
             out[k] = d[k]
     if d["code"] in ("shapeChanged", "noShape") and d.get("shapes"):
@@ -676,6 +677,11 @@ def carry_over(source, staging_dir, enabled=True):
                     decisions[n]["code"] = "seamCheck"
                 decisions.get(n, {}).pop("welded", None)
             swapped, welded, touched = [], [], []
+        else:
+            snapped = snap_kept_borders(by_name, decisions, prev, old_state, pairs, names, boundary, report)
+            touched += sorted(set(snapped) - set(touched))
+            touched += [n for n in patch_kept(by_name, decisions, prev, old_state, pairs, names, vmaps, report)
+                        if n not in touched]
         for n in touched:
             posted[n] = sa.capture_state(by_name[n])
         report["swapS"] = round(time.time() - t0, 1)
@@ -719,6 +725,192 @@ def carry_over(source, staging_dir, enabled=True):
     return report, finish
 
 
+def snap_kept_borders(by_name, decisions, prev, old_state, pairs, names, boundary, report, tol=MAX_MOVE_M):
+    """Seams between two kept meshes (neither swapped nor identical) keep OPCD's new ~1 mm jitter, which the weld
+    (it follows swapped meshes only) leaves alone - and a border vertex a hair off the old one makes every old face
+    at it miss the patch. So every group of coincident border vertices with only kept members (or a lone kept
+    border vertex) goes to the previous build's border vertex within `tol` (5 mm, as the swap allows), all members
+    together, when exactly one old vertex is that close and no other group takes it. Returns the moved names."""
+    import shape_apply as sa
+    from mathutils.kdtree import KDTree
+    t0 = time.time()
+    kept = {n for n, d in decisions.items() if d["code"] not in ("swapped", "identical") and n in by_name}
+    rep = {"meshes": 0, "vertices": 0, "maxMm": 0.0}
+    report["snap"] = rep
+    if os.environ.get(PATCH_ENV, "1") == "0":
+        rep["off"] = True
+        return []
+    if not kept:
+        return []
+    old_pts = []
+    for on in sorted(prev["meshes"]):
+        st = old_state(on)
+        if st is None:
+            continue
+        bv, _ = border_of(st[1])
+        if len(bv):
+            old_pts.append(st[1][POSITION_KEY].reshape(-1, 3)[bv].astype(np.float64))
+    if not old_pts:
+        return []
+    old = np.unique(np.concatenate(old_pts), axis=0)
+    kd = KDTree(len(old))
+    for i, (x, y, _) in enumerate(old.tolist()):
+        kd.insert((x, y, 0.0), i)
+    kd.balance()
+    idx = {n: i for i, n in enumerate(names)}
+    parent = {}
+
+    def find(k):
+        while parent.get(k, k) != k:
+            parent[k] = parent.get(parent[k], parent[k])
+            k = parent[k]
+        return k
+
+    for a, va, b, vb in pairs.tolist():
+        ra, rb = find((a, va)), find((b, vb))
+        if ra != rb:
+            parent[max(ra, rb)] = min(ra, rb)
+    groups = {}
+    for n in sorted(kept):
+        if n not in idx:
+            continue
+        for v in boundary[n][0].tolist():
+            groups.setdefault(find((idx[n], v)), set()).add((idx[n], v))
+    for a, va, b, vb in pairs.tolist():
+        for k in ((a, va), (b, vb)):
+            r = find(k)
+            if r in groups:
+                groups[r].add(k)
+    moves, claims = {}, {}
+    for r, members in groups.items():
+        if any(names[o] not in kept for o, _ in members):
+            continue   # a swapped or identical member: the weld or OPCD already put it where the old build has it
+        o, v = min(members)
+        p = sa.positions(by_name[names[o]])[v]
+        near = kd.find_range((float(p[0]), float(p[1]), 0.0), tol)
+        if len(near) != 1:
+            continue
+        j, dist = near[0][1], near[0][2]
+        if np.array_equal(old[j].astype(np.float32), p):
+            continue   # already the old vertex
+        claims[j] = claims.get(j, 0) + 1
+        moves[r] = (members, j, dist)
+    moves = {r: m for r, m in moves.items() if claims[m[1]] == 1}
+    # a move must not flip a face (a sliver at the seam): such groups stay where OPCD put them
+    for _ in range(4):
+        by_mesh = {}
+        for r, (members, j, dist) in moves.items():
+            for o, v in members:
+                by_mesh.setdefault(names[o], []).append((v, j, r))
+        bad = set()
+        for n, items in by_mesh.items():
+            st = sa.capture_state(by_name[n])
+            tri = st[1][_key(st[1], ".corner_vert")]
+            ps = st[1]["poly_start"]
+            if len(tri) != 3 * len(ps):
+                continue   # not all triangles: no flip check (quads of a blend move as the weld moves them)
+            tri = tri.reshape(-1, 3)
+            co = st[1][POSITION_KEY].reshape(-1, 3)[:, :2].astype(np.float64)
+            new = co.copy()
+            for v, j, r in items:
+                new[v] = old[j, :2]
+            def area2(c):
+                p, q, w = c[tri[:, 0]], c[tri[:, 1]], c[tri[:, 2]]
+                return (q[:, 0] - p[:, 0]) * (w[:, 1] - p[:, 1]) - (q[:, 1] - p[:, 1]) * (w[:, 0] - p[:, 0])
+            a0, a1 = area2(co), area2(new)
+            flip = np.nonzero((np.sign(a0) != np.sign(a1)) | (np.abs(a1) < 1e-12))[0]
+            if len(flip):
+                verts = set(tri[flip].ravel().tolist())
+                bad |= {r for v, j, r in items if v in verts}
+        if not bad:
+            break
+        for r in bad:
+            moves.pop(r, None)
+    out = set()
+    by_mesh = {}
+    for r, (members, j, dist) in moves.items():
+        for o, v in members:
+            by_mesh.setdefault(names[o], []).append((v, old[j]))
+        rep["vertices"] += len(members)
+        rep["maxMm"] = max(rep["maxMm"], round(dist * 1e3, 3))
+    for n, items in sorted(by_mesh.items()):
+        obj = by_name[n]
+        co = sa.positions(obj).copy()
+        for v, q in items:
+            co[v] = q
+        obj.data.vertices.foreach_set("co", co.ravel())
+        obj.data.update()
+        decisions[n]["snapped"] = len(items)
+        out.add(n)
+    rep["meshes"] = len(out)
+    rep["seconds"] = round(time.time() - t0, 1)
+    return sorted(out)
+
+
+def patch_kept(by_name, decisions, prev, old_state, pairs, names, vmaps, report):
+    """The patch (shape_patch): every mesh kept as OPCD made it gets the previous build's faces back where they still
+    fit inside its border. Returns the patched names; `vmaps` gains their border vertex maps (the seam checks go by
+    them), `decisions[n]["patched"]` the counts, `report["patch"]` the summary."""
+    import shape_apply as sa
+    import shape_patch
+    t0 = time.time()
+    rep = {"meshes": 0, "keptFaces": 0, "gapFaces": 0, "faces": 0, "facesBefore": 0, "skipped": {}}
+    report["patch"] = rep
+    if os.environ.get(PATCH_ENV, "1") == "0":
+        rep["off"] = True
+        return []
+    donors, boxes = [], []
+    for on in sorted(prev["meshes"]):
+        if is_blend(on, (prev["meshes"][on] or {}).get("kind")):
+            continue
+        st = old_state(on)
+        if st is None or shape_patch.constants(*st) is None:
+            continue
+        co = st[1][POSITION_KEY].reshape(-1, 3)
+        donors.append((on, st))
+        boxes.append((float(co[:, 0].min()), float(co[:, 1].min()), float(co[:, 0].max()), float(co[:, 1].max())))
+    out, before = [], {}
+    for n in sorted(decisions):
+        if decisions[n]["code"] in ("swapped", "identical") or n not in by_name:
+            continue
+        st = sa.capture_state(by_name[n])
+        if shape_patch.constants(*st) is None:
+            rep["skipped"]["not plain"] = rep["skipped"].get("not plain", 0) + 1
+            continue
+        co = st[1][POSITION_KEY].reshape(-1, 3)
+        box = (float(co[:, 0].min()), float(co[:, 1].min()), float(co[:, 0].max()), float(co[:, 1].max()))
+        near = [d for d, b in zip(donors, boxes) if sl.bbox_distance(box, b) <= 0]
+        t1 = time.time()
+        got, info = shape_patch.patch(st, near)
+        if time.time() - t1 > 5:
+            print("[shape_carry] patch %s: %.1f s (%s)" % (n, time.time() - t1, "ok" if got else info))
+        if got is None:
+            rep["skipped"][info] = rep["skipped"].get(info, 0) + 1
+            continue
+        before[n] = st
+        by_name[n] = sa.apply_state(n, *got)
+        vmaps[n] = info.pop("vmap")
+        decisions[n]["patched"] = {k: info[k] for k in ("kept", "gap", "faces", "faces0")}
+        out.append(n)
+        rep["meshes"] += 1
+        rep["keptFaces"] += info["kept"]
+        rep["gapFaces"] += info["gap"]
+        rep["faces"] += info["faces"]
+        rep["facesBefore"] += info["faces0"]
+    if out:
+        opened = seam_check(by_name, pairs, names, out, vmaps=vmaps)
+        if opened:   # never expected (the border is the new build's): every patched mesh back as OPCD made it
+            rep["seamCheck"] = sum(opened.values()) // 2
+            for n in out:
+                by_name[n] = sa.apply_state(n, *before[n])
+                vmaps.pop(n, None)
+                decisions[n].pop("patched", None)
+            rep["meshes"] = 0
+            out = []
+    rep["seconds"] = round(time.time() - t0, 1)
+    return out
+
+
 def summary_lines(rep):
     if not rep:
         return []
@@ -743,6 +935,16 @@ def summary_lines(rep):
     if s.get("openedBySwap"):
         lines.append("  !! the swap opened %d seam vertex pairs: every swap and weld put back to OPCD's (%d pairs "
                      "still open)" % (s["openedBySwap"], s.get("openAfter", 0)))
+    sn = rep.get("snap") or {}
+    if sn.get("meshes"):
+        lines.append("  {vertices} border vertices of {meshes} kept meshes (seams between kept meshes) back on the previous "
+                     "build's, up to {maxMm} mm".format(**sn))
+    p = rep.get("patch") or {}
+    if p.get("meshes"):
+        lines.append("  patched {meshes} kept meshes with the previous build's faces: {keptFaces} of {faces} faces kept "
+                     "({gapFaces} triangulated anew where the outline changed; OPCD's had {facesBefore}), {seconds} s".format(**p))
+    if p.get("skipped"):
+        lines.append("  not patched: " + ", ".join("%s %d" % kv for kv in sorted(p["skipped"].items())))
     if rep.get("conformedSeams"):
         cs = rep["conformedSeams"]
         lines.append("  after the conform, swapped meshes and their neighbours: {points} shared border points, "

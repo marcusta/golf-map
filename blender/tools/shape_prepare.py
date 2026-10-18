@@ -780,7 +780,7 @@ def run(terrain_path, out_path, conform_op="afrod", limit=None, seed=0, cache=Tr
         if np.allclose(z, before):
             unchanged.append(o.name)
 
-    swapped = [n for n, d in (carry_report.get("meshes") or {}).items() if d["code"] == "swapped"]
+    swapped = [n for n, d in (carry_report.get("meshes") or {}).items() if d["code"] == "swapped" or d.get("patched")]
     if swapped:
         # the seams of the carried-over meshes once conformed: they and every mesh they share a border with
         near = set(swapped)

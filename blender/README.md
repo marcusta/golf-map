@@ -291,6 +291,40 @@ strict rule, the seams closed and a 1 mm gap seen, a third build carried from th
 & 'C:/Program Files/Blender Foundation/Blender 4.5/blender.exe' -b --factory-startup --python-exit-code 1 --python blender/tools/shape_carry_test.py
 ```
 
+#### The patch: the old interior back into a refilled mesh (2026-10-18)
+
+The swap above carries a mesh whose border OPCD kept. A mesh whose border changed - every `Outer_Deep_Sat` fill
+piece next to an edited shape, the edited shape, a piece whose split line moved - stayed as OPCD made it, and OPCD
+fills with **random interior points**: a refilled piece shares no interior vertex with the old one (Omberg svg_108
+-> svg_110: 0 %, median 0.44 m apart). So no rock slab or tee on such a piece could hit the op cache, however far
+from the edit (the region entries below need the faces around the unit to be the old ones). Two more steps, after
+the weld, before the conform:
+
+- **Seams between kept meshes** (`snap_kept_borders`): the weld follows swapped meshes only, so a seam between two
+  kept meshes keeps OPCD's new ~1 mm jitter. Every group of coincident border vertices with only kept members (or a
+  lone kept border vertex) goes to the previous build's border vertex within 5 mm, all members together, when
+  exactly one old vertex is that close, no other group takes it and the move flips no face.
+- **The patch** (`tools/shape_patch.py`): every kept mesh that is plain (triangles, no vertex groups, every
+  attribute but position one value - OPCD's filled meshes) gets the previous build's faces back wherever they fit
+  inside its new border: donors are the previous build's plain meshes with the same materials and values; a donor
+  face fits when each vertex is one of the new border vertices (bit for bit) or lies inside the outline at least
+  0.3 m from where it changed (the new border segments the donor has no edge for). The gaps are triangulated by
+  Blender's constrained Delaunay (`mathutils.geometry.delaunay_2d_cdt`) over the new border, the kept faces' edges
+  and the new build's own interior points that lie in a gap; a kept face the triangulation would cut becomes gap.
+  Kept elements keep the donors' order (so a part from one old mesh has its relative order), the border vertices
+  and edges are the new build's (no seam moves; the seam check covers patched meshes). Checks: no vertex added, the
+  same area, the same border edges, one winding; any failure leaves the mesh as OPCD made it.
+  `GOLFMAP_CARRY_PATCH=0` turns it off. Report `carryOver.snap` / `carryOver.patch` (meshes, kept / gap faces,
+  `skipped` by reason) and per mesh `snapped` / `patched`.
+
+Measured on Omberg (2026-10-18), svg_108 recorded, svg_110 prepared from it (same terrain.obj): 53 133 border
+vertices of 231 kept meshes snapped back (<= 5 mm, no face flipped); 154 kept meshes patched, 2 566 564 of their
+2 640 848 faces the previous build's (74 284 triangulated anew), 118 s; not patched: 101 not plain (blends,
+painted roads), 10 with no donor face that fits; after the conform 0 open seams. The faces round each of the 144
+rock slabs (outline box + apron + 3 m, every Spline mesh) were the same as svg_108's for **0** slabs as OPCD
+built svg_110, for **85** after the snap and the patch.
+
+
 ### The grid conform path
 
 The cache only helps the meshes that did not change. A cold conform — a first export, a new terrain, half a
@@ -606,6 +640,56 @@ per op: paint for recipes, grey at 5x relief for the rest), `--no-cache`, `--cac
   stable sort by vertex plus `np.add.reduceat` would sum in the same order for the same result.
 - Pure-Python parts (layer validation, SVG parsing, selectors, seeds, footprint maths) are in
   `tools/shape_layers.py`; tests: `python blender/tools/shape_layers_test.py`.
+
+### Region entries: units keyed on the part of the course they read (2026-10-18)
+
+The op cache's key holds the whole state of every mesh a unit reads. A rock-slab cut-out or a tee flatten reads
+the big `Outer_Deep_Sat` fill pieces and the deep rough around it, which change whenever any shape on their border
+is edited, so across OPCD builds those units missed even with the carry-over (Omberg: 47 of 316 units, the bunker
+recipes). A unit whose planner declares a `region` (`Unit.region`: the XY box outside which it changes nothing;
+`golfmap.cut_out`: the outline's box + 1 m + `apronM` (+ 12 m with `waterM`, the lake join) + 0.5 m;
+`afrod.flattentees`: the tee's box + its proportional reach) is also cached by **region entry**
+(`tools/shape_region.py`, pure numpy on the captured states):
+
+- **K** = the faces with a vertex inside region + 3 m (`REGION_KEY_M`), their corners, edges and vertices.
+- **Key**: the exact key's env, code, op, unit, frame, plus per read mesh with a face in K, in name order (the op
+  visits meshes by name), its class (the index's type and kind, materials, vertex groups, matrix, visibility,
+  collections, the props that are no ids) and its K part in relative order - every attribute, refs as K-relative
+  ids, each K edge's face count in the whole mesh. No names: a renumbered OPCD piece still hits.
+- **Stored** next to the exact entry when a unit computes and its change is **local**: every element outside
+  region + 1 m is in the result unchanged and in order. Two whole-mesh effects are recorded instead: custom normals
+  rewritten everywhere (the cut's `_drop_cut_attrs` and each `_rise_set_z` re-encode every corner: `renormal` with
+  the number of re-encodings, found by reproducing them on the input and checked to the bit) or cleared (the lake a
+  water slab joins), and an attribute set to one value everywhere. Selection flags outside K are not compared (Edit
+  Mode leaves a pattern on every mesh it entered; selection reaches neither the FBX nor GSPro); a replay keeps the
+  mesh's own. The value is per mesh the K part as the op left it (self-contained, plus which piece elements are the
+  unchanged K-edge elements the rest of the mesh refers to), created objects in full, names as ordinals. Before it
+  is stored, the piece put back into the input must rebuild the computed result (order-free, `canonical_hash`).
+  A unit that is not local stores no region entry; the report's `cache.regionNotLocal` counts why.
+- **Hit** (exact key missed, region key found): each mesh's K part is replaced by the piece (piece elements take the
+  K elements' slots in order, the rest are appended), custom normals re-derived outside K as the op derives them,
+  created objects rebuilt, `slab_seam_check` over all of them (an open seam puts the inputs back and computes). The
+  result is stored under the exact key too, so a rerun of the build replays bit for bit.
+- **What a hit guarantees**: the result a compute gives on that input, up to the order of the K part relative to the
+  rest of the mesh, and selection flags outside K. Checked: the synthetic test below (replay = cold compute
+  order-free, custom normals included) and Omberg (below).
+- Report `cache`: `regionHits`, `regionMisses`, `regionStored`, `regionInvalid`, `regionNotLocal` {reason: count},
+  `regionKeySeconds`, `regionReplaySeconds`, `regionStoreSeconds`.
+
+Test (two synthetic OPCD builds; the fill piece refilled with new random points around a far edited shape and
+renamed; the carry-over's patch; the cut-out hits by region and equals a cold compute order-free; a slab next to
+the edit misses):
+
+```powershell
+& 'C:/Program Files/Blender Foundation/Blender 4.5/blender.exe' -b --factory-startup --python-exit-code 1 --python blender/tools/shape_region_test.py
+```
+
+Vreta (`vreta_svg_1991.conformed.blend`, all three layers, cold, 2026-10-18): 103 of the 105 region units stored
+(tees and slabs; 2 slabs not local: their weld closed OPCD's T-junctions far along a border), 23 s of storing + 10 s
+of region keys on a 1062 s run; the all-mesh position and colour hashes and every touched mesh's position hash
+equal the code before (the FBX hash differs in custom normals only, as two runs of the code before also do); a
+warm rerun: 219 of 219 exact hits, bit-equal to the cold run.
+
 
 ## Shaping: surfaces of a merged road
 

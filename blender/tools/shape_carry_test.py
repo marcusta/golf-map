@@ -204,7 +204,9 @@ with tempfile.TemporaryDirectory(prefix="golfmap_carry_") as folder:
                                               "shapeChanged": 2, "swapped": 7, "topology": 1})
     check("strict: nothing welded", rep_s["weld"]["meshes"], 0)
 
-    # The default, the weld: every unchanged mesh swapped, a kept neighbour's seam vertices follow it.
+    # The weld: every unchanged mesh swapped, a kept neighbour's seam vertices follow it (the snap of seams between
+    # kept meshes and the patch off here; they are checked after build C).
+    os.environ[sc.PATCH_ENV] = "0"
     build("B", 1)
     src_b = save(folder, "course_svg_2.blend", t + 300)
     pos_b = {n: positions(n) for n in (A1, A2, C1, C2, F1)}
@@ -212,6 +214,7 @@ with tempfile.TemporaryDirectory(prefix="golfmap_carry_") as folder:
                for k, v in {"A": (A1, A2), "C": (C1, C2), "E": (E1, EB, F1), "G": (G1, H1), "O": (OUTER, P1),
                             "R": (R1, R2)}.items()}
     rep_b, fin_b = sc.carry_over(src_b, staging)
+    del os.environ[sc.PATCH_ENV]
     codes = {n: d["code"] for n, d in rep_b["meshes"].items()}
     check("B: used, from build A", (rep_b["used"], os.path.basename(rep_b["previous"]["source"])), (True, "course_svg_1.blend"))
     check("B: built from the SVG next to it", rep_b["svgRel"], "course.svg")
@@ -274,6 +277,14 @@ with tempfile.TemporaryDirectory(prefix="golfmap_carry_") as folder:
     check("C: the pair swapped again, to build A's mesh", (codes_c[A1], codes_c[A2],
           all(np.array_equal(positions(n), pos_a[n]) for n in (A1, A2))), ("swapped", "swapped", True))
     check("C: the shape edited in B is unchanged since B", codes_c[F1] != "shapeChanged", True)
+    # the snap of seams between kept meshes and the patch run by default (shape_region_test.py checks the patch's
+    # geometry): within 5 mm, no seam opened
+    sn = rep_c.get("snap") or {}
+    check("C: the snap ran, within 5 mm", ("vertices" in sn and sn.get("maxMm", 0.0) <= 5.0, "patch" in rep_c), (True, True))
+    open_c = {k: sa.slab_seam_check([bpy.data.objects[n] for n in v])["open"]
+              for k, v in {"A": (A1, A2), "C": (C1, C2), "E": (E1, EB, F1), "G": (G1, H1), "O": (OUTER, P1),
+                           "R": (R1, R2)}.items()}
+    check("C: no seam open after the snap and the patch", open_c, {k: 0 for k in open_c})
     fin_c()
 
     # Off: nothing touched.
