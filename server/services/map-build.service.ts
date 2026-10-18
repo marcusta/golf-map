@@ -1057,6 +1057,13 @@ export function terrainEditsGeojson(edits: TerrainEdit[], opts: { sculptDir?: st
                         return [lon, lat];
                     }),
                 } : {}),
+                // dig (stream): the waterfalls' lips go out in WGS84 too.
+                ...(edit.params.steps ? {
+                    steps: edit.params.steps.map(st => ({
+                        line: st.line.map(p => { const { lat, lon } = sweref99tmToWgs84(p.x, p.y); return [lon, lat]; }),
+                        sillM: st.sillM,
+                    })),
+                } : {}),
                 ...(edit.params.smoothM !== undefined ? { smoothM: edit.params.smoothM } : {}),
                 ...(edit.params.widthM !== undefined ? { widthM: edit.params.widthM } : {}),
                 // dig: its profile params, verbatim.

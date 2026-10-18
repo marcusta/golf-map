@@ -748,3 +748,33 @@ def test_load_edits_reads_a_creek_dig_line_and_width(tmp_path: Path):
     path = write_edits(tmp_path, [wgs84_feature("dig", ring, featherM=0, depthM=0.3, reference="stream", centerline=line, widthM=2.5)])
     [e] = load_edits(path)
     assert (e.reference, e.width_m, len(e.centerline)) == ("stream", 2.5, 2)
+
+
+def test_dig_stream_steps_keep_each_pond_flat_the_fall_sharp_and_the_sill_undug():
+    # Two ponds in a channel 8 m wide: 10.0 m to the west, 9.0 m to the east, a 2 m stone sill at the upper
+    # water just upstream of the lip (x = 40 m), banks at 11.
+    dem = np.full((SIZE, SIZE), 11.0, dtype=np.float32)
+    dem[36:44, 4:38] = 10.0
+    dem[36:44, 38:40] = 10.05
+    dem[36:44, 40:76] = 9.0
+    ring = rect_3006(4, 76, 36, 44)
+    lip = [[ORIGIN_X + 40.0, ORIGIN_Y - 35.0], [ORIGIN_X + 40.0, ORIGIN_Y - 45.0]]
+    common = dict(feather_m=0.0, depth_m=0.5, bank_slope_deg=60.0, reference="stream", rim_m=1.0)
+    stepped = apply_edits(dem, TRANSFORM, NODATA, [edit_3006("dig", ring, **common, steps=[{"line": lip, "sillM": 2.0}])],
+                          log=lambda *_: None).astype(float)
+    smeared = apply_edits(dem, TRANSFORM, NODATA, [edit_3006("dig", ring, **common)], log=lambda *_: None).astype(float)
+    assert np.allclose(stepped[39:41, 10:36], 9.5, atol=0.02)      # the upper pond: flat, 0.5 m under 10.0
+    assert np.allclose(stepped[39:41, 42:70], 8.5, atol=0.02)     # the lower pond: flat, 0.5 m under 9.0
+    assert np.array_equal(stepped[36:44, 38:40], dem[36:44, 38:40].astype(float))   # the sill stands
+    # Without the step the 10 m smoothing ramps the upper pond's bed down towards the fall.
+    assert smeared[40, 37] < stepped[40, 37] - 0.1
+
+
+def test_load_edits_reads_a_creek_digs_steps(tmp_path: Path):
+    ring = rect_3006(4, 76, 36, 44)
+    lip = ring_to_wgs84([[ORIGIN_X + 40, ORIGIN_Y - 35], [ORIGIN_X + 40, ORIGIN_Y - 45]])
+    path = write_edits(tmp_path, [wgs84_feature("dig", ring, featherM=0, depthM=0.5, reference="stream",
+                                                steps=[{"line": lip, "sillM": 1.5}])])
+    [e] = dem_edit.reproject_edits(load_edits(path), "EPSG:3006")
+    assert e.steps[0]["sillM"] == 1.5
+    assert e.steps[0]["line"][0] == [pytest.approx(ORIGIN_X + 40, abs=0.01), pytest.approx(ORIGIN_Y - 35, abs=0.01)]

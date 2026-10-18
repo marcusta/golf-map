@@ -46,6 +46,7 @@ import {
 } from './gspro-export.service';
 import { DEFAULT_PIPELINE_DIR } from './pipeline-dir';
 import { flattenCenterline } from '../../shared/features/centerline';
+import { DEFAULT_WATERFALL_SILL_M, WATERFALL_SILL_ATTRIBUTE, WATERFALL_STYLE_ATTRIBUTE, WATERFALL_TYPE } from '../../shared/features/waterfall';
 import {
     BUNKER_DIG, CREEK_DIG_PRESETS, DEFAULT_CREEK_DIG_PRESET, DEFAULT_WATER_DIG_PRESET, WATER_DIG_PRESETS,
     type CreekDigPreset, type WaterDigPreset,
@@ -356,7 +357,18 @@ export class TerrainGeneratorsService {
     private async generateCreekDigs(courseId: string, opts: TerrainGenerateOptions): Promise<TerrainGenerateResult> {
         const course = await this.courses.get(courseId);
         const siteId = this.builtSiteId(course);
-        const creeks = (await this.courseFeatures.listByCourse(courseId)).filter(f => f.type === 'water_creek');
+        const all = await this.courseFeatures.listByCourse(courseId);
+        const creeks = all.filter(f => f.type === 'water_creek');
+        // The waterfalls (shared/features/waterfall.ts): a creek is cut at each lip that lies on it.
+        const falls = all.filter(f => f.type === WATERFALL_TYPE && f.geometry.centerline && f.geometry.centerline.points.length >= 2)
+            .map(f => {
+                const attrs = (f.attributes ?? {}) as Record<string, unknown>;
+                const style = attrs[WATERFALL_STYLE_ATTRIBUTE] === 'outlet' ? 'outlet' : 'sill';
+                const sill = typeof attrs[WATERFALL_SILL_ATTRIBUTE] === 'number' ? attrs[WATERFALL_SILL_ATTRIBUTE] as number
+                    : style === 'sill' ? DEFAULT_WATERFALL_SILL_M : 0;
+                return { line: flattenCenterline(f.geometry.centerline!.points, 0.25).map(q => ({ x: q.x, y: q.y })), sillM: sill };
+            });
+        let stepped = 0;
         const inputs: TerrainEditInput[] = [];
         let optedOut = 0, lines = 0;
         const presets = new Map<string, number>();
@@ -380,12 +392,16 @@ export class TerrainGeneratorsService {
                 params.widthM = f.geometry.centerline.widthM;
                 lines++;
             }
+            const outline = rings[0];
+            const steps = falls.filter(fall => fall.line.some(p => pointInRing(p, outline) || distanceToRing(p, outline) <= FALL_ON_CREEK_M));
+            if (steps.length) { params.steps = steps; stepped += steps.length; }
             inputs.push({ op: 'dig', params, rings, originRef: FEATURE_ORIGIN_REF + f.id });
         }
         const count = opts.dryRun ? inputs.length : (await this.terrainEdits.replaceByOrigin(siteId, 'creek-digs', inputs, { courseId })).length;
         const report = [`${count} creek bed(s) ${opts.dryRun ? 'to dig' : 'dug'} below their falling water surface`
             + (presets.size ? ` (${[...presets].map(([l, n]) => `${l} ${n}`).join(', ')})` : '')
             + (count ? `; ${lines} along a drawn centerline, ${count - lines} along the line found down their polygon` : '')];
+        if (stepped) report.push(`${stepped} waterfall(s) cut into them: each stretch between falls keeps its own level, the sills stay`);
         if (optedOut) report.push(`${optedOut} creek(s) marked dig: false left alone`);
         if (opts.dryRun) return { kind: 'creek-digs', imported: 0, skipped: [], report: ['dry run, nothing written', ...report], planned: inputs };
         return { kind: 'creek-digs', imported: count, skipped: [], report };
@@ -609,4 +625,28 @@ function compactness(ring: Array<[number, number]>): number {
         perimeter += Math.hypot(x2 - x1, y2 - y1);
     }
     return perimeter > 0 ? (4 * Math.PI * Math.abs(area / 2)) / (perimeter * perimeter) : 0;
+}
+
+/** A waterfall's lip within this of a creek's outline is on that creek (m). */
+const FALL_ON_CREEK_M = 2;
+
+function pointInRing(p: { x: number; y: number }, ring: { x: number; y: number }[]): boolean {
+    let inside = false;
+    for (let i = 0, j = ring.length - 1; i < ring.length; j = i++) {
+        const a = ring[i], b = ring[j];
+        if ((a.y > p.y) !== (b.y > p.y) && p.x < (b.x - a.x) * (p.y - a.y) / (b.y - a.y) + a.x) inside = !inside;
+    }
+    return inside;
+}
+
+function distanceToRing(p: { x: number; y: number }, ring: { x: number; y: number }[]): number {
+    let best = Infinity;
+    for (let i = 0, j = ring.length - 1; i < ring.length; j = i++) {
+        const a = ring[j], b = ring[i];
+        const dx = b.x - a.x, dy = b.y - a.y;
+        const len2 = dx * dx + dy * dy;
+        const t = len2 > 0 ? Math.max(0, Math.min(1, ((p.x - a.x) * dx + (p.y - a.y) * dy) / len2)) : 0;
+        best = Math.min(best, Math.hypot(p.x - (a.x + t * dx), p.y - (a.y + t * dy)));
+    }
+    return best;
 }

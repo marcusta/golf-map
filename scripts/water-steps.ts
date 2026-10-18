@@ -9,6 +9,9 @@
 //        --min-drop m          the least drop that is a fall (default 0.3)
 //        --sill m              a sill's crest width left out between two waters (default 1)
 //        --image <png>         a check picture: the photo, the drawn water, the pieces and the falls
+//        --split               also cut the bodies into their ponds and creek runs (new SVG shapes: an OPCD build);
+//                              without it only the waterfalls are added and the creek digs / R.A.M. water are cut
+//                              at them, the shapes stay
 //        --dry-run             propose only: the pieces and falls, nothing stored
 //
 // The largest piece of each feature keeps it (its shape name and number stay); the others and the falls are new
@@ -30,7 +33,7 @@ const ROOT = path.resolve(import.meta.dir, '..');
 function usage(message?: string): never {
     if (message) console.error(`error: ${message}\n`);
     console.error('usage: bun run water:steps -- <course> --feature <shape|number|id> [--feature ...] [--cut e,n|lat,lon]... [--skip e,n|lat,lon]...\n'
-        + '         [--min-drop 0.3] [--sill 1] [--image <png>] [--dry-run]');
+        + '         [--min-drop 0.3] [--sill 1] [--image <png>] [--split] [--dry-run]');
     process.exit(2);
 }
 
@@ -41,7 +44,7 @@ for (let i = 2; i < process.argv.length; i++) {
     const a = process.argv[i];
     if (!a.startsWith('--')) { positional.push(a); continue; }
     const name = a.slice(2);
-    if (name === 'dry-run') { flags[name] = true; continue; }
+    if (name === 'dry-run' || name === 'split') { flags[name] = true; continue; }
     const v = process.argv[++i];
     if (v === undefined) usage(`--${name} needs a value`);
     if (name === 'feature' || name === 'cut' || name === 'skip') multi[name].push(v);
@@ -120,7 +123,7 @@ try {
     const plan = planWaterSteps(p, picked.map((f): WaterStepsFeatureInput => ({
         id: f.id, type: f.type, holeId: f.holeId, layer: f.layer, version: f.version,
         geometry: f.geometry as WaterStepsFeatureInput['geometry'], attributes: f.attributes as Record<string, unknown> | null,
-    })));
+    })), { split: flags['split'] === true });
     console.log(`plan: ${plan.updates.length} feature(s) kept and changed, ${plan.creates.filter((c) => c.type !== 'waterfall').length} new piece(s), `
         + `${plan.creates.filter((c) => c.type === 'waterfall').length} waterfall(s); B-spline max deviation ${plan.maxDeviationM.toFixed(2)} m`);
     for (const w of plan.warnings) console.log(`  note: ${w}`);

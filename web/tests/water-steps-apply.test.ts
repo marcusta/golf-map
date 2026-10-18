@@ -52,7 +52,7 @@ function proposal(): WaterStepsProposalInput {
 
 describe('planWaterSteps', () => {
     test('the largest piece keeps the feature; the others are new features in its hole; a lone piece keeps its outline', () => {
-        const plan = planWaterSteps(proposal(), [creek, pond]);
+        const plan = planWaterSteps(proposal(), [creek, pond], { split: true });
         expect(plan.updates.map((u) => [u.featureId, u.version, u.patch.type])).toEqual([['c1', 4, 'water_creek'], ['p1', 2, 'water']]);
         // The creek run (237.1 m2) is the biggest of hole_3_23e's pieces.
         expect(plan.updates[0]!.patch.geometry.curveType).toBe('bspline');
@@ -64,7 +64,7 @@ describe('planWaterSteps', () => {
     });
 
     test('a pond piece gets the dig settings that hold its level; a creek piece keeps the creek and drops pond keys', () => {
-        const plan = planWaterSteps(proposal(), [creek, pond]);
+        const plan = planWaterSteps(proposal(), [creek, pond], { split: true });
         const [first, second] = plan.creates;
         // From a creek: its bed profile goes, the pond preset is the default one.
         expect(first!.attributes).toEqual({ bankVegPalette: 'reeds', digPreset: 'natural_pond', digBankAboveDeg: 45, digLevelOffsetM: 0.04 });
@@ -79,12 +79,12 @@ describe('planWaterSteps', () => {
         p.bodies = [p.bodies[1]!];
         p.pieces = [{ ...p.pieces[3]!, kind: 'creek', levelM: null, digLevelOffsetM: null }];
         p.falls = [];
-        const plan = planWaterSteps(p, [pond]);
+        const plan = planWaterSteps(p, [pond], { split: true });
         expect(plan.updates[0]!.patch).toMatchObject({ type: 'water_creek', attributes: {} });
     });
 
     test('each fall is a waterfall along its lip: style, levels, flow bearing, the sill only on sills', () => {
-        const plan = planWaterSteps(proposal(), [creek, pond]);
+        const plan = planWaterSteps(proposal(), [creek, pond], { split: true });
         const falls = plan.creates.filter((c) => c.type === 'waterfall');
         expect(falls.map((f) => f.label)).toEqual(['fall hole_3_23e·0→1', 'fall hole_3_23e·1→2', 'fall hole_3_23e·2→others_23c·0']);
         expect(falls[0]!.attributes).toEqual({ style: 'sill', flowBearingDeg: 90, topM: 10, bottomM: 9, sillM: 1 });
@@ -100,7 +100,7 @@ describe('planWaterSteps', () => {
     });
 
     test('a body that is not given is an error', () => {
-        expect(() => planWaterSteps(proposal(), [creek])).toThrow(/others_23c is not loaded/);
+        expect(() => planWaterSteps(proposal(), [creek], { split: true })).toThrow(/others_23c is not loaded/);
     });
 });
 

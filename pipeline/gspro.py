@@ -6735,6 +6735,11 @@ CREEK_SIMPLIFY_M = 0.5
 CREEK_MIN_LENGTH_M = 2.0
 
 
+# A waterfall's lip within this of a creek is on it (m); a stretch below a fall starts this far past the lip.
+CREEK_FALL_NEAR_M = 2.0
+CREEK_BELOW_FALL_M = 0.5
+
+
 def _load_creeks(db_path: Path, course_ident: str) -> tuple[sqlite3.Row, list[sqlite3.Row]]:
     conn = _open_course_db(db_path)
     course = _resolve_course(conn, course_ident)
@@ -6793,6 +6798,23 @@ def cmd_creeks(bbox, db_path: Path, course_ident: str, dem_path: Path, sidecar_p
 
     course, rows = _load_creeks(db_path, course_ident)
     square = box(e0, n0, e1, n1)
+    # The waterfalls (shared/features/waterfall.ts): a creek is cut at every lip on it into one spline per
+    # stretch, each at its own water; golfmap.waterfalls.build puts the falling water between them.
+    from shapely.geometry import Point as _Pt
+    falls = []
+    conn = _open_course_db(db_path)
+    fall_rows = conn.execute("SELECT geometry_json, attributes_json FROM course_features WHERE course_id = ? AND type = ?",
+                             (_resolve_course(conn, course_ident)["id"], WATERFALL_FEATURE_TYPE)).fetchall()
+    conn.close()
+    for r in fall_rows:
+        cl = json.loads(r["geometry_json"]).get("centerline")
+        lip = _transition_centerline(cl) if cl else []
+        if len(lip) >= 2:
+            a = json.loads(r["attributes_json"]) if r["attributes_json"] else {}
+            a = a if isinstance(a, dict) else {}
+            style = "outlet" if a.get("style") == "outlet" else "sill"
+            sill = float(a["sillM"]) if isinstance(a.get("sillM"), (int, float)) else (1.0 if style == "sill" else 0.0)
+            falls.append((LineString(lip), sill))
     creeks = []
     skipped: list[str] = []
     for r in rows:
@@ -6826,7 +6848,10 @@ def cmd_creeks(bbox, db_path: Path, course_ident: str, dem_path: Path, sidecar_p
             continue
         width = width or 2.0
         pts = np.asarray(clipped.coords)[:, :2]
-        prof = surface_profile(dem, transform, pts, width, valid=valid)
+        outline = shape.buffer(CREEK_FALL_NEAR_M) if source == "polygon" else clipped.buffer(width / 2 + CREEK_FALL_NEAR_M)
+        on_it = [(lip, sill) for lip, sill in falls if lip.intersects(outline)]
+        prof = surface_profile(dem, transform, pts, width, valid=valid,
+                               breaks=[list(lip.interpolate(0.5, normalized=True).coords[0]) for lip, _ in on_it])
         if prof is None:
             skipped.append(f"{label}: no DEM under it")
             continue
@@ -6835,16 +6860,32 @@ def cmd_creeks(bbox, db_path: Path, course_ident: str, dem_path: Path, sidecar_p
         control = _densify(pts, CREEK_MAX_POINT_SPACING_M)
         _, station = cKDTree(np.column_stack([prof.x, prof.y])).query(control)
         z = np.minimum.accumulate(prof.z[station])
-        creeks.append({
-            "id": f"feature:{r['id']}",
-            "profile": str(attrs.get("ramProfile") or DEFAULT_RAM_PROFILE),
-            "widthM": round(width, 2),
-            "lengthM": round(float(prof.s[-1]), 1),
-            "fallM": round(float(z[0] - z[-1]), 2),
-            "source": source,
-            "points": [[round(float(x - e0), 3), round(float(h - min_m + surface_offset_m), 3), round(float(y - n0), 3), round(width, 2)]
-                       for (x, y), h in zip(control, z)],
-        })
+        s_ctrl = prof.s[station]
+        # One stretch per run between falls: the upper one ends where its sill starts, the lower starts just below
+        # the lip (the fall's own water spans the gap).
+        sills = {}
+        for lip, sill in on_it:
+            mid = lip.interpolate(0.5, normalized=True)
+            sills[float(prof.s[int(np.argmin(np.hypot(prof.x - mid.x, prof.y - mid.y)))])] = sill
+        bounds = [-np.inf] + list(prof.break_s) + [np.inf]
+        for k in range(len(bounds) - 1):
+            lo = bounds[k] + (CREEK_BELOW_FALL_M if k > 0 else 0.0)
+            hi = bounds[k + 1] - (sills.get(bounds[k + 1], 0.0) if k + 1 < len(bounds) - 1 else 0.0)
+            keep = (s_ctrl >= lo) & (s_ctrl <= hi)
+            if keep.sum() < 2:
+                continue
+            c_pts, c_z = control[keep], z[keep]
+            creeks.append({
+                "id": f"feature:{r['id']}" + (f"#{k + 1}" if k > 0 else ""),
+                "profile": str(attrs.get("ramProfile") or DEFAULT_RAM_PROFILE),
+                "widthM": round(width, 2),
+                "lengthM": round(float(s_ctrl[keep][-1] - s_ctrl[keep][0]), 1),
+                "fallM": round(float(c_z[0] - c_z[-1]), 2),
+                "source": source,
+                **({"stretch": k + 1, "stretches": len(bounds) - 1} if len(bounds) > 2 else {}),
+                "points": [[round(float(x - e0), 3), round(float(h - min_m + surface_offset_m), 3), round(float(y - n0), 3), round(width, 2)]
+                           for (x, y), h in zip(c_pts, c_z)],
+            })
     doc = {
         "format": UNITY_CREEKS_FORMAT,
         "plot": {

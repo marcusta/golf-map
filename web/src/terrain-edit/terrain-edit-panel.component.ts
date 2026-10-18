@@ -75,6 +75,10 @@ const tpl = template(`
                 <button bind="stepsDiscardBtn" type="button" data-testid="terrain-edit-steps-discard">Discard</button>
                 <button bind="stepsAcceptBtn" type="button" data-testid="terrain-edit-steps-accept">Accept</button>
             </div>
+            <label class="field field--check" title="Off: only the waterfalls are added; the creeks keep their shapes (no OPCD build) and their digs and R.A.M. water are cut at the falls. On: each pond and creek run becomes a feature of its own (new SVG shapes for the next OPCD build).">
+                <input bind="stepsSplitInput" type="checkbox" data-testid="terrain-edit-steps-split" />
+                <span>Split into ponds</span>
+            </label>
         </div>
         <div class="section">
             <h4 class="section-title">New edit</h4>
@@ -627,7 +631,7 @@ export class TerrainEditPanelComponent extends Component {
             stepsAcceptBtn: {
                 className: () => this.tool.waterSteps.get() ? '' : 'hidden',
                 disabled: () => this.tool.proposingSteps.get() || this.tool.saving.get(),
-                title: 'Store it: the largest piece keeps each feature, the other pieces and the waterfalls are new features; ponds get dig settings that hold their level. One undo step (⌘Z in Draw mode). Then dig ponds and creeks and apply to terrain',
+                title: 'Store it: the waterfalls are new features (and with Split into ponds, the largest piece keeps each feature, the others are new, ponds get dig settings that hold their level). One undo step (⌘Z in Draw mode). Then dig ponds and creeks and apply to terrain',
                 onclick: () => void this.tool.acceptSteps(),
             },
             stepsUndoBtn: {
@@ -736,6 +740,9 @@ export class TerrainEditPanelComponent extends Component {
         });
         this.track(effect(() => { radiusInput.value = String(this.tool.radiusM.get()); }));
 
+        const stepsSplitInput = this.ref(frag, 'stepsSplitInput') as HTMLInputElement;
+        stepsSplitInput.addEventListener('change', () => this.tool.stepsSplit.set(stepsSplitInput.checked));
+        this.track(effect(() => { stepsSplitInput.checked = this.tool.stepsSplit.get(); }));
         const flatInput = this.ref(frag, 'flatInput') as HTMLInputElement;
         flatInput.addEventListener('change', () => this.tool.flat.set(flatInput.checked));
         this.track(effect(() => { flatInput.checked = this.tool.flat.get(); }));

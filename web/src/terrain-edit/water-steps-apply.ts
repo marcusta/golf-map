@@ -12,6 +12,10 @@
 //   within a few decimetres.
 //
 // A body cut into one piece keeps its drawn outline: only its type and dig settings follow the piece.
+//
+// `split: false` (the default) keeps every body as it is drawn and only adds the waterfalls: a creek stays one OPCD
+// shape (no new SVG, no OPCD build), and its dig and its R.A.M. water are cut at the falls instead (golfpipe.creeks
+// surface_profile's breaks), so each stretch keeps its own level. Split when the shapes go to OPCD anyway.
 import { fitClosedBspline } from '../geo/spline-fit';
 import { centerlineGeometry, type FeatureCenterline } from '../../../shared/features/centerline';
 import {
@@ -125,14 +129,14 @@ export function flowBearingDeg(flow: Pt): number {
 }
 
 /** The feature edits that store a proposal (see the header). Throws when a body's feature is not given. */
-export function planWaterSteps(proposal: WaterStepsProposalInput, features: readonly WaterStepsFeatureInput[]): WaterStepsPlan {
+export function planWaterSteps(proposal: WaterStepsProposalInput, features: readonly WaterStepsFeatureInput[], opts: { split?: boolean } = {}): WaterStepsPlan {
     const byId = new Map(features.map((f) => [f.id, f]));
     const updates: WaterStepsUpdate[] = [];
     const creates: WaterStepsCreate[] = [];
     const warnings: string[] = [];
     let maxDeviationM = 0;
 
-    for (const body of proposal.bodies) {
+    for (const body of opts.split ? proposal.bodies : []) {
         const f = byId.get(body.featureId);
         if (!f) throw new Error(`${body.shape} is not loaded on this course`);
         const pieces = proposal.pieces.filter((p) => p.bodyId === body.featureId).sort((a, b) => a.index - b.index);

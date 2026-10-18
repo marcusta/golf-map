@@ -21,7 +21,10 @@
 // heightmap or the Blender meshes changed puts the water back in its bed:
 // - height: aboveBedM over the lowest ground across the creek, the highest
 //   such bed along the stretch each control point stands for. Not forced to
-//   fall: held up behind a bump, the water would stand above its banks;
+//   fall: held up behind a bump, the water would stand above its banks.
+//   A creek cut at its waterfalls (gspro.py creeks: one spline per stretch
+//   between falls, `stretches`) is a chain of dug ponds: each keeps the
+//   export's water and only rises where the bed stands above it;
 // - crossings: a path over a culvert or an undug hump (see BumpM) is bridged
 //   at the bed level either side, so the water runs hidden under it;
 // - width: across each station (every metre) the water runs out to where the
@@ -76,6 +79,8 @@ namespace GolfMap.Editor
         {
             public string id, profile, source;
             public float widthM, lengthM, fallM;
+            // A stretch of a creek cut at its waterfalls (the export's `stretches`): a dug pond holds its water.
+            public bool held;
             public List<Vector4> points = new List<Vector4>();
         }
 
@@ -250,6 +255,7 @@ namespace GolfMap.Editor
                 {
                     id = o.String("id"), profile = o.String("profile") ?? "Small Stream Profile", source = o.String("source") ?? "",
                     widthM = (float)o.Number("widthM", 2), lengthM = (float)o.Number("lengthM"), fallM = (float)o.Number("fallM"),
+                    held = o.Number("stretches", 0) > 1,
                 };
                 foreach (var p in (o.Array("points") ?? new List<object>()).OfType<List<object>>())
                 {
@@ -500,7 +506,8 @@ namespace GolfMap.Editor
                 float highest = float.NegativeInfinity;
                 for (int k = 0; k < ns; k++)
                     if (stations[k].owner == i && !float.IsNaN(bed[k])) highest = Mathf.Max(highest, bed[k]);
-                y[i] = float.IsNegativeInfinity(highest) ? pts[i].y : highest + o.aboveBedM;
+                y[i] = float.IsNegativeInfinity(highest) ? pts[i].y
+                    : c.held ? Mathf.Max(pts[i].y, highest + o.aboveBedM) : highest + o.aboveBedM;
             }
             // Not forced to fall: held up to the next bump downstream, the water
             // would stand above its banks behind it. Climbs are reported.

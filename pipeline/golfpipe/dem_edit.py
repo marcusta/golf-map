@@ -209,6 +209,10 @@ class DemEdit:
     centerline: list[list[float]] | None = None
     smooth_m: float = DEFAULT_CORRIDOR_SMOOTH_M
     width_m: float | None = None
+    # dig with reference stream: the waterfalls on the creek, [{"line": [[x, y], …], "sillM": m}] (WGS84 as
+    # loaded, the DEM's CRS once reprojected). The water surface is cut at each lip (each stretch between falls
+    # falls on its own: a pond stays flat, the step stays sharp) and the sill, sillM upstream of the lip, is not dug.
+    steps: list[dict] | None = None
     # dig only (see the module docstring).
     depth_m: float = 0.0
     bank_slope_deg: float = DEFAULT_DIG_BANK_SLOPE_DEG
@@ -330,6 +334,17 @@ def load_edits(path: Path, log=print) -> list[DemEdit]:
             except (TypeError, ValueError):
                 log(f"warning: {label}: widthM is not a number — skipped")
                 continue
+        steps = None
+        if op == "dig" and props.get("steps") is not None:
+            raw = props.get("steps")
+            try:
+                steps = [{"line": [[float(q[0]), float(q[1])] for q in st["line"]], "sillM": float(st.get("sillM", 0.0))}
+                         for st in raw]
+                if any(len(st["line"]) < 2 or not st["sillM"] >= 0 for st in steps):
+                    raise ValueError
+            except (TypeError, ValueError, KeyError, IndexError):
+                log(f"warning: {label}: steps must be [{{line: [[x, y], …], sillM}}] — skipped")
+                continue
         raster = None
         if op == "delta":
             raster = props.get("raster")
@@ -363,6 +378,7 @@ def load_edits(path: Path, log=print) -> list[DemEdit]:
             centerline=centerline,
             smooth_m=smooth_m,
             width_m=width_m,
+            steps=steps,
             raster=raster,
             **dig,
             **shore,
@@ -484,7 +500,15 @@ def reproject_edits(edits: list[DemEdit], dem_crs) -> list[DemEdit]:
         if centerline:
             xs, ys = warp_transform("EPSG:4326", dem_crs, [p[0] for p in centerline], [p[1] for p in centerline])
             centerline = [[float(x), float(y)] for x, y in zip(xs, ys)]
-        out.append(replace(edit, geometry=transform_geom("EPSG:4326", dem_crs, edit.geometry), centerline=centerline))
+        steps = edit.steps
+        if steps:
+            moved = []
+            for st in steps:
+                xs, ys = warp_transform("EPSG:4326", dem_crs, [p[0] for p in st["line"]], [p[1] for p in st["line"]])
+                moved.append({**st, "line": [[float(x), float(y)] for x, y in zip(xs, ys)]})
+            steps = moved
+        out.append(replace(edit, geometry=transform_geom("EPSG:4326", dem_crs, edit.geometry), centerline=centerline,
+                           steps=steps))
     return out
 
 
@@ -979,12 +1003,28 @@ def _stream_target(
     if line is None:
         return None
     win_transform = transform * rasterio.Affine.translation(c0, r0)
-    profile = surface_profile(cur_win, win_transform, np.asarray(line), width, valid=valid_win)
+    steps = edit.steps or []
+    lips = [np.asarray(st["line"], dtype=np.float64) for st in steps]
+    profile = surface_profile(cur_win, win_transform, np.asarray(line), width, valid=valid_win,
+                              breaks=[lip.mean(axis=0) for lip in lips])
     if profile is None:
         log(f"warning: {label}: the creek line crosses no valid cells — skipped")
         return None
     stations = cKDTree(np.column_stack([profile.x, profile.y]))
     target = cur_win.copy()
+    # A fall's sill: sillM upstream of its lip, not dug (the weir's crest stands at the upper water).
+    sill_bands = []
+    for st, lip in zip(steps, lips):
+        if st["sillM"] <= 0:
+            continue
+        i = int(np.argmin(np.hypot(profile.x - lip[:, 0].mean(), profile.y - lip[:, 1].mean())))
+        sill_bands.append((float(profile.s[i]) - st["sillM"], float(profile.s[i])))
+
+    def on_sill(px, py):
+        if not sill_bands:
+            return np.zeros(len(px), dtype=bool)
+        sc = profile.s[stations.query(np.column_stack([px, py]))[1]]
+        return np.any([(sc >= a) & (sc <= b) for a, b in sill_bands], axis=0)
 
     # Inside: the local half-width is the way in from the outline plus the
     # way on to the line; a bank aimed at STREAM_THALWEG_REACH × the depth by
@@ -996,7 +1036,8 @@ def _stream_target(
     tan = np.maximum(np.tan(np.radians(slope)), STREAM_THALWEG_REACH * edit.depth_m / half)
     tan = np.minimum(tan, np.tan(np.radians(STREAM_MAX_BANK_DEG)))
     drop = dig_drop(din, edit.depth_m, np.degrees(np.arctan(tan)), shelf, edit.shelf_depth_m)
-    target[rows, cols] = np.minimum(cur_win[rows, cols], level - drop)
+    dug = np.minimum(cur_win[rows, cols], level - drop)
+    target[rows, cols] = np.where(on_sill(xs, ys), cur_win[rows, cols], dug)
 
     # Outside: the bank down to the water's edge.
     cell_y, cell_x = abs(transform.e), abs(transform.a)
@@ -1009,7 +1050,8 @@ def _stream_target(
         t = np.clip(dout[brows, bcols] / edit.rim_m, 0.0, 1.0)
         rise = t * t * (3 - 2 * t)
         ground = cur_win[brows, bcols]
-        target[brows, bcols] = np.where(ground > blevel, blevel + (ground - blevel) * rise, ground)
+        banked = np.where(ground > blevel, blevel + (ground - blevel) * rise, ground)
+        target[brows, bcols] = np.where(on_sill(np.asarray(bx), np.asarray(by)), ground, banked)
     return target
 
 

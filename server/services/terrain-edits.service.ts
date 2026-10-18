@@ -89,6 +89,12 @@ export interface TerrainEditParams {
     bankAboveDeg?: number;
     /** dig, reference level: metres added to the water level the lidar gives (negative: lower water). */
     levelOffsetM?: number;
+    /**
+     * dig, reference stream: the waterfalls on the creek (EPSG:3006 lips, shared/features/waterfall.ts). The water
+     * surface is cut at each lip, so every stretch between falls stays at its own level, and the sill (`sillM`
+     * upstream of the lip) is left undug.
+     */
+    steps?: { line: TerrainEditRing; sillM: number }[];
     variation?: number;
     seed?: number;
     /**
@@ -304,6 +310,13 @@ export function parseEditsGeojson(doc: unknown): { edits: TerrainEditInput[]; sk
             params.centerline = props.centerline.map((p: unknown) =>
                 Array.isArray(p) && p.length >= 2 ? wgs84ToSweref99tm(Number(p[1]), Number(p[0])) : { x: NaN, y: NaN });
         }
+        if (Array.isArray(props.steps)) {
+            params.steps = props.steps.map((st: { line?: unknown; sillM?: unknown }) => ({
+                line: Array.isArray(st?.line) ? st.line.map((p: unknown) =>
+                    Array.isArray(p) && p.length >= 2 ? wgs84ToSweref99tm(Number(p[1]), Number(p[0])) : { x: NaN, y: NaN }) : [],
+                sillM: Number(st?.sillM ?? 0),
+            }));
+        }
         const rings: TerrainEditRing[] = geometry.coordinates.map((ring: [number, number][]) => {
             const pts = ring.map(([lon, lat]) => wgs84ToSweref99tm(lat, lon));
             const first = pts[0], last = pts[pts.length - 1];
@@ -372,6 +385,12 @@ function assertValidParams(params: TerrainEditParamsInput): asserts params is Te
         if (!Array.isArray(params.centerline) || params.centerline.length < 2
             || params.centerline.some(p => !p || !Number.isFinite(p.x) || !Number.isFinite(p.y))) {
             throw new InvalidTerrainEditError('centerline must have at least 2 points with finite x/y');
+        }
+    }
+    if (params.steps !== undefined) {
+        if (!Array.isArray(params.steps) || params.steps.some(st => !st || !Array.isArray(st.line) || st.line.length < 2
+            || st.line.some(p => !p || !Number.isFinite(p.x) || !Number.isFinite(p.y)) || !(st.sillM >= 0 && st.sillM <= 5))) {
+            throw new InvalidTerrainEditError('steps must be lips of at least 2 points with finite x/y and sillM 0..5');
         }
     }
 }

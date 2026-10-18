@@ -453,6 +453,8 @@ export class TerrainEditToolService {
     readonly waterSteps = new Signal<WaterStepsReview | null>(null);
     /** True while the server reads the lidar for Find falls. */
     readonly proposingSteps = new Signal(false);
+    /** Find falls Accept: cut the bodies into their ponds and creek runs too (else only the waterfalls are added). */
+    readonly stepsSplit = new Signal(false);
     /** The last accepted Find falls (its undo step), while the panel offers to take it back. */
     readonly stepsUndo = new Signal<{ entry: HistoryEntry; summary: string } | null>(null);
     /** What the map draws for the Find falls proposal. */
@@ -859,7 +861,7 @@ export class TerrainEditToolService {
         const proposal = { ...review.proposal, falls: review.proposal.falls.filter(f => !review.droppedOutlets.includes(outletKey(f))) };
         let plan: ReturnType<typeof planWaterSteps>;
         try {
-            plan = planWaterSteps(proposal, inputs);
+            plan = planWaterSteps(proposal, inputs, { split: this.stepsSplit.peek() });
         } catch (e) {
             this.notice.set(`Find falls: ${message(e)}`);
             return false;

@@ -1608,12 +1608,25 @@ describe('Find falls', () => {
         expect(h.svc.view.get().waterSteps).toBeNull();
     });
 
+    test('Accept without Split into ponds adds only the waterfalls; the creeks keep their shapes', async () => {
+        const waterSteps: WaterStepsApi = { propose: async () => answer() };
+        const h = await harness({ features: water(), waterSteps, history: new EditHistory() });
+        h.svc.selectFeature('c1');
+        h.svc.toggleFeature('p1');
+        await h.svc.proposeSteps();
+        expect(await h.svc.acceptSteps()).toBe(true);
+        expect(h.features.updates).toEqual([]);
+        expect(h.features.creates.length).toBeGreaterThan(0);
+        expect(h.features.creates.flat().every(c => c.type === 'waterfall')).toBe(true);
+    });
+
     test('Accept stores the plan as one undo step; Undo takes it back', async () => {
         const waterSteps: WaterStepsApi = { propose: async () => answer() };
         const history = new EditHistory();
         const h = await harness({ features: water(), waterSteps, history });
         h.svc.selectFeature('c1');
         h.svc.toggleFeature('p1');
+        h.svc.stepsSplit.set(true);
         await h.svc.proposeSteps();
         expect(await h.svc.acceptSteps()).toBe(true);
 

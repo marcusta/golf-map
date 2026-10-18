@@ -493,6 +493,23 @@ test('creek digs: a centerline creek sends its line and width, a polygon creek l
     expect(poly.params.centerline).toBeUndefined();
 });
 
+test('creek digs: a waterfall on a creek is sent as a step with its sill, one elsewhere is not', async () => {
+    const t = await setup(recordingRunner().runner);
+    await buildSite(t);
+    const X = 530000, Y = 6487000;
+    const creek = await t.courseFeatures.create({ courseId: TEST_COURSE_ID, type: 'water_creek', geometry: rectRing(X, Y, 80, 4) });
+    const lip = (x: number, y: number) => ({ crs: 'EPSG:3006' as const, rings: [], centerline: { points: [{ x, y: y - 2 }, { x, y: y + 2 }], widthM: 2 } });
+    await t.courseFeatures.create({ courseId: TEST_COURSE_ID, type: 'waterfall', geometry: lip(X + 40, Y + 2), attributes: { style: 'sill', sillM: 1.5 } });
+    await t.courseFeatures.create({ courseId: TEST_COURSE_ID, type: 'waterfall', geometry: lip(X + 40, Y + 60), attributes: { style: 'outlet' } });
+
+    const result = await t.svc.generate(TEST_COURSE_ID, 'creek-digs');
+    expect(result.report).toContain('1 waterfall(s) cut into them: each stretch between falls keeps its own level, the sills stay');
+    const [edit] = (await t.terrainEdits.listBySite(SITE_ID)).filter(e => e.originRef === `feature:${creek.id}`);
+    expect(edit!.params.steps).toHaveLength(1);
+    expect(edit!.params.steps![0]!.sillM).toBe(1.5);
+    expect(edit!.params.steps![0]!.line[0]!.x).toBeCloseTo(X + 40, 3);
+});
+
 // --- Several courses on one site ---
 
 test('courses sharing a site: generating digs on one course leaves the other course\'s digs alone', async () => {

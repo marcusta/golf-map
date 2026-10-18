@@ -36,6 +36,8 @@ DEFAULT_STATION_M = 1.0
 # Running mean over the monotone profile: long enough to take out steps the
 # running minimum leaves, short enough to keep a weir or a culvert drop.
 DEFAULT_SURFACE_SMOOTH_M = 10.0
+# Below a fall (surface_profile's `breaks`) the first stations still see the sill and its face.
+BREAK_CLEAR_M = 1.5
 
 
 def ribbon_centerline(polygon: Polygon, spacing_m: float = 0.5) -> tuple[LineString, float] | None:
@@ -130,6 +132,8 @@ class SurfaceProfile:
     s: np.ndarray
     z: np.ndarray
     reversed: bool
+    # The chainages of the falls the profile was cut at (see surface_profile's `breaks`), in order downstream.
+    break_s: tuple = ()
 
 
 def surface_profile(
@@ -140,10 +144,16 @@ def surface_profile(
     valid: np.ndarray | None = None,
     station_m: float = DEFAULT_STATION_M,
     smooth_m: float = DEFAULT_SURFACE_SMOOTH_M,
+    breaks: list | None = None,
 ) -> SurfaceProfile | None:
     """The monotone water surface along `line` ([[x, y], …] in the DEM's
     CRS) over `dem` (with `transform`; `valid` masks nodata). None when the
-    line is shorter than two stations or crosses no valid cells."""
+    line is shorter than two stations or crosses no valid cells.
+
+    `breaks` ([[x, y], …], a waterfall's lip on the creek: shared/features/
+    waterfall.ts) cut the profile: each stretch between them is made to fall
+    and smoothed on its own, so a chain of ponds keeps each pond flat at its
+    level and the step between them sharp, instead of a 10 m ramp."""
     line = np.asarray(line, dtype=np.float64)
     seg = np.hypot(*np.diff(line, axis=0).T)
     cum = np.concatenate([[0.0], np.cumsum(seg)])
@@ -185,10 +195,28 @@ def surface_profile(
     rev = bool(np.polyfit(s, lows, 1)[0] > 0)
     if rev:
         x, y, lows = x[::-1], y[::-1], lows[::-1]
-    z = np.minimum.accumulate(lows)
+    # The falls' chainages along the (downstream) line: the nearest station to each.
+    # A lip at the very end of the line (an outlet into the creek from another water) cuts nothing.
+    clear = max(int(round(BREAK_CLEAR_M / station_m)), 1)
+    cuts: list[int] = []
+    for p in breaks or []:
+        i = int(np.argmin((x - float(p[0])) ** 2 + (y - float(p[1])) ** 2))
+        if clear <= i <= n - 1 - clear and i not in cuts:
+            cuts.append(i)
+    cuts.sort()
+    z = np.empty(n)
     k = max(int(round(smooth_m / station_m)), 1)
-    if k > 1 and n > 2:
-        pad = np.concatenate([np.full(k, z[0]), z, np.full(k, z[-1])])
-        z = np.convolve(pad, np.ones(k) / k, mode="same")[k:-k]
-        z = np.minimum.accumulate(z)
-    return SurfaceProfile(x=x, y=y, s=s, z=z, reversed=rev)
+    for a, b in zip([0] + cuts, cuts + [n]):
+        raw = lows[a:b].copy()
+        # Just below a fall the cross-section still takes in the sill and the face: start from the water past it.
+        if a > 0 and len(raw) > clear:
+            raw[:clear] = raw[clear]
+        seg = np.minimum.accumulate(raw)
+        m = len(seg)
+        if k > 1 and m > 2:
+            pad = np.concatenate([np.full(k, seg[0]), seg, np.full(k, seg[-1])])
+            seg = np.minimum.accumulate(np.convolve(pad, np.ones(k) / k, mode="same")[k:-k])
+        z[a:b] = seg
+    # Never climbing downstream across a fall either.
+    z = np.minimum.accumulate(z)
+    return SurfaceProfile(x=x, y=y, s=s, z=z, reversed=rev, break_s=tuple(float(s[i]) for i in cuts))

@@ -94,3 +94,40 @@ def test_creeks_export_splines_at_the_surface_running_downstream(tmp_path, capsy
         assert np.max(np.abs(pts[:, 1] - expect)) < 0.15
     assert drawn["fallM"] == pytest.approx(3.0 * 180 / SIDE, abs=0.2)
     assert "skipped creek k3: ram: false" in capsys.readouterr().out
+
+
+def test_a_waterfall_cuts_the_creek_into_stretches_each_at_its_own_water(tmp_path):
+    # The polygon creek along y = N0 + 40 with a 1 m step at x = 100: a pond at 19.0 above, 18.0 below.
+    n = int(SIDE / RES)
+    rows, cols = np.mgrid[0:n, 0:n]
+    x = (cols + 0.5) * RES
+    y = SIDE - (rows + 0.5) * RES
+    dem = np.where(x < 100, 20.0, 19.0) - (np.abs(y - 40.0) <= 1.5) * 1.0
+    path = tmp_path / "dem.tif"
+    with rasterio.open(path, "w", driver="GTiff", width=n, height=n, count=1, dtype="float32",
+                       crs=CRS.from_epsg(3006), transform=from_origin(E0, N0 + SIDE, RES, RES)) as dst:
+        dst.write(dem.astype(np.float32), 1)
+    db = _db(tmp_path / "app.sqlite")
+    conn = sqlite3.connect(db)
+    lip = {"crs": "EPSG:3006", "rings": [], "centerline": {
+        "points": [{"x": E0 + 100, "y": N0 + 37.5}, {"x": E0 + 100, "y": N0 + 42.5}], "widthM": 2}}
+    conn.execute("INSERT INTO course_features VALUES ('w1', 'c1', NULL, 'waterfall', ?, 3, ?)",
+                 (json.dumps(lip), json.dumps({"style": "sill", "sillM": 1})))
+    conn.commit()
+    conn.close()
+    sidecar = tmp_path / "inner.tif.json"
+    sidecar.write_text(json.dumps({"terrain": "inner", "square3006": list(EXTENT), "minM": MIN_M, "maxM": 30.0}))
+    out = tmp_path / "creeks.json"
+
+    gspro.cmd_creeks(None, db, "c1", path, sidecar, out, extent=EXTENT)
+
+    by_id = {c["id"]: c for c in json.loads(out.read_text())["creeks"]}
+    upper, lower = by_id["feature:k2"], by_id["feature:k2#2"]
+    assert (upper["stretch"], lower["stretch"], upper["stretches"]) == (1, 2, 2)
+    up_y = [p[1] + MIN_M for p in upper["points"]]
+    low_y = [p[1] + MIN_M for p in lower["points"]]
+    assert all(v == pytest.approx(19.0, abs=0.02) for v in up_y)      # flat to the sill, no ramp
+    assert all(v == pytest.approx(18.0, abs=0.02) for v in low_y)
+    assert max(p[0] for p in upper["points"]) <= 99.0 + 0.01            # ends where the 1 m sill starts
+    assert min(p[0] for p in lower["points"]) >= 100.0                  # starts below the lip
+    assert by_id["feature:k1"].get("stretch") is None                   # the other creek has no fall
