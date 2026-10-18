@@ -511,6 +511,22 @@
       "crownWidthM": 14.0411053,
       "kind": "broadleaf",
       "form": "tree"
+    },
+    {
+      "id": "arborist:S7_AmurCork_Winter",
+      "species": "deadoak",
+      "renderer": "arborist",
+      "heightM": 20.1497688,
+      "crownWidthM": 25.7761459,
+      "kind": "broadleaf",
+      "form": "tree",
+      "look": {
+        "barkTint": "#bdb7ad",
+        "tint": "#bdb7ad",
+        "saturation": 0.15,
+        "brightness": 0.03
+      },
+      "note": "Hole 18's big dead oak (Marcus 2026-10-18): Arborist's leafless Amur cork tree in the weathered grey of dead oak with a little brown in it. Tried in Arborist Ultra: bleached white (#ece9e2, brightness 0.15) read too white close up, brown-grey #c2b6a4 / saturation 0.25 too brown; this is his 'more grey than brown, a slight brown tone in the grey'. Placed only by tree edit: disabled in the palette, species without a weight."
     }
   ]
 }

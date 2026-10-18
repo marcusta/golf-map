@@ -44,6 +44,8 @@
       "title": "Crown radius",
       "rules": [
         { "key": "crown-radius-per-height", "value": 0.35, "unit": "x height", "text": "A crown's radius is its equal-area circle, capped at this times its height." },
+        { "key": "free-crown-radius-per-height", "value": 0.6, "unit": "x height", "text": "A free-standing compact crown keeps its equal-area radius up to this times its height instead (lone open-grown oaks are as wide as they are tall) ..." },
+        { "key": "free-crown-max-contact", "value": 0.25, "unit": "share", "text": "... free-standing: no more than this share of its edge cells border another crown (the rest is open ground)." },
         { "key": "low-crown-radius", "value": 1.5, "unit": "m", "text": "The height cap never goes under this (bushes are wider than tall)." },
         { "key": "crown-max-radius", "value": 10.0, "unit": "m", "text": "No crown radius over this from the cap." },
         { "key": "flat-crown-top-fraction", "value": 0.85, "unit": "x height", "text": "A crown is flat when 75 % of its cells reach this share of its height ..." },
@@ -79,6 +81,7 @@
     {
       "title": "Trees export (gspro.py trees)",
       "rules": [
+        { "key": "size-factor", "value": 1.0, "unit": "x", "flag": true, "text": "Every lidar stem's height and crown radius times this (a course sets it as trees.lidarSizeFactor in its vegetation-rules.json): an old or leaf-off flight measures the trees smaller than they stand now." },
         { "key": "bush-radius-fraction", "value": 0.35, "unit": "x height", "text": "A crown wider than this times its height is flagged a bush for the planter." },
         { "key": "path-clearance", "value": 0.8, "unit": "m", "text": "A stem on a drawn path or this close to its edge is moved to this far outside it." },
         { "key": "power-line-clearance", "value": 3.0, "unit": "m", "text": "Stems within a power line's drawn corridor plus this on each side are dropped, whatever their height." },

@@ -22,7 +22,10 @@ def test_two_crowns_keep_heights_ground_and_segmentation_radius():
     trees = stems_from_ndsm(h, ground, transform)
     assert len(trees) == 2
     assert sorted(t.height_m for t in trees) == [15, 20]
-    assert all(t.ground_m == 75 and 3 < t.crown_radius_m <= 7 for t in trees)  # 0.35 * 20 m cap
+    # 15-17 % of each edge meets the other crown: both count as free-standing and keep their
+    # equal-area radius (7.4 and 6.8 m) instead of the 0.35 x height cap (7.0 and 5.25 m)
+    assert all(t.ground_m == 75 for t in trees)
+    assert sorted(round(t.crown_radius_m, 1) for t in trees) == [6.8, 7.4]
     assert {(t.x, t.y) for t in trees} == {(540020.5, 6469969.5), (540033.5, 6469969.5)}
     assert compact_asset(trees) == compact_asset(stems_from_ndsm(h, ground, transform))
     assert feature_collection(trees, "fixture.las")["features"][0]["properties"]["license"] == "CC0-1.0"
@@ -90,7 +93,8 @@ def test_plateau_has_one_marker():
     # A flat 900 m² plateau is a flat compact crown: equal-area 16.9 m, held at the 10 m ceiling.
     assert trees[0].crown_radius_m == 10.0
     assert stems_from_ndsm(h * 0 + np.where(h > 0, 12 - 0.6 * np.abs(np.indices(h.shape)[1] - 25), 0),
-                           np.full(h.shape, 10), from_origin(0, 50, 1, 1))[0].crown_radius_m <= 4.2   # sloping: capped
+                           np.full(h.shape, 10), from_origin(0, 50, 1, 1))[0].crown_radius_m == pytest.approx(0.6 * 12)
+    # sloping and alone: a free-standing crown's 0.6 x height cap, not the stand-share 0.35 (4.2 m)
 
 
 def test_taller_crowns_use_wider_peak_window():
@@ -280,9 +284,27 @@ def test_flat_compact_crown_keeps_equal_area_radius_but_hedge_and_sloping_crown_
     assert set(stems) == {9.5, 3.5, 16.0}
     assert stems[9.5].crown_radius_m == pytest.approx(7.0, abs=.15)          # flat and compact: equal-area wins
     assert stems[3.5].crown_radius_m == pytest.approx(1.5, abs=.01)          # hedge: low-crown floor, not 5.4 m
-    assert stems[16.0].crown_radius_m == pytest.approx(0.35 * 16, abs=.01)   # sloping: 0.35 * height cap
+    assert stems[16.0].crown_radius_m == pytest.approx(7.0, abs=.4)          # sloping but free-standing: its own crown
     assert not trees_stems.is_flat_crown(10, 8.0, 7.0, 10.0)                  # p75 below 85% of top
     assert not trees_stems.is_flat_crown(10, 9.5, 5.4, 15.0)                  # strip: 5.4 / 15 under 0.55
+
+
+def test_free_standing_crown_keeps_its_width_but_a_crown_in_a_row_keeps_the_cap():
+    """Omberg's lone oaks: leaf-off returns over a crown much wider than 0.35 x height. A crown with
+    most of its edge on open ground keeps its equal-area radius; the middle of a close row is capped."""
+    yy, xx = np.mgrid[:80, :110]; ground = np.full(yy.shape, 60.0); transform = from_origin(0, 80, 1, 1)
+    cone = lambda cx, cy, top, r: np.where((xx - cx)**2 + (yy - cy)**2 <= r**2, top - (top - 2) * np.sqrt((xx - cx)**2 + (yy - cy)**2) / r, 0)
+    h = cone(20, 20, 18, 9)                                                      # lone 18 m oak, crown r 9
+    h = np.maximum(h, np.maximum(np.maximum(cone(60, 50, 17, 9), cone(72, 50, 18, 9)), cone(84, 50, 17, 9)))   # a close row
+    stems = sorted(stems_from_ndsm(h, ground, transform), key=lambda s: (s.x, s.y))
+    lone = next(s for s in stems if s.x < 40)
+    middle = next(s for s in stems if 66 < s.x < 78)
+    assert lone.crown_radius_m == pytest.approx(9.0, abs=.5)                    # not 0.35 * 18 = 6.3
+    assert middle.crown_radius_m == pytest.approx(0.35 * middle.height_m, abs=.01)
+    contact = trees_stems.crown_contact(np.array([[1, 1, 0, 2], [1, 1, 0, 2]]), 3)
+    assert contact.tolist() == [0.0, 0.0, 0.0]                                  # gap between them: alone
+    contact = trees_stems.crown_contact(np.array([[1, 1, 2, 2], [1, 1, 2, 2]]), 3)
+    assert contact[1] == pytest.approx(0.5) and contact[2] == pytest.approx(0.5)   # half of each edge meets the other
 
 
 def test_low_lobe_splits_off_a_tall_segment_but_a_sloping_skirt_does_not():

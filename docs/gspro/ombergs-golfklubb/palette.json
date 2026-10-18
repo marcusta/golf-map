@@ -185,6 +185,10 @@
     {
       "model": "arborist:CE_Oak_CE_Tall_Fanned_3",
       "enabled": true
+    },
+    {
+      "model": "arborist:S7_AmurCork_Winter",
+      "enabled": false
     }
   ],
   "species": {

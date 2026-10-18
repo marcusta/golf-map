@@ -5,8 +5,14 @@ reduces single-return spikes. Height-dependent maximum windows (radius 1 +
 0.15 * height, 2 to 7 m) separate markers, then an 8-connected watershed of
 the inverted height assigns crown area. Radius is the equal-area circle,
 capped at 0.35 * height (maximum 10 m) to limit merged understory/hedges,
-except for flat compact crowns (below). No species inference is made from
-this low-density, unclassified lidar.
+except for flat compact crowns (below) and free-standing compact crowns: a
+segment with at most 25 % of its edge cells against another segment keeps its
+equal-area radius (at most 0.6 * height and 10 m) when it passes the flat
+rule's compactness. Omberg 2026-10-18: an oak by the hole 10 tee, 19.7 m with
+a 322 m² segment (equal-area r 10.1) of which 6 % of the edge meets a 13 m
+neighbour, was drawn 13.8 m wide; the cap is for stand shares, which a mostly
+lone crown is not. No species inference is made from this low-density,
+unclassified lidar.
 
 Support thresholds are two-tier. The candidate mask starts at
 DEFAULT_MIN_HEIGHT_M (1.0 m; the roof-suppressed nDSM has no floor, so this
@@ -99,6 +105,8 @@ TALL_HEIGHT_M = R["tall-height"]
 TALL_MIN_AREA_M2 = R["tall-min-area"]
 LOW_CROWN_MAX_RADIUS_M = R["low-crown-radius"]
 TREE_CROWN_RADIUS_PER_HEIGHT = R["crown-radius-per-height"]
+FREE_CROWN_RADIUS_PER_HEIGHT = R["free-crown-radius-per-height"]
+FREE_CROWN_MAX_CONTACT = R["free-crown-max-contact"]
 TREE_CROWN_MAX_RADIUS_M = R["crown-max-radius"]
 FLAT_CROWN_TOP_FRACTION = R["flat-crown-top-fraction"]
 FLAT_CROWN_COMPACTNESS = R["flat-crown-compactness"]
@@ -475,6 +483,26 @@ def segment_top_heights(raw, segments):
     return out
 
 
+def crown_contact(segments, count):
+    """Per segment label (0..count-1): the share of its edge cells (cells with an 8-neighbour outside it)
+    that border another segment rather than open ground; 0 for a crown that stands alone."""
+    lab = np.pad(np.maximum(segments, 0), 1)
+    rows, cols = lab.shape
+    core = lab[1:-1, 1:-1]
+    other = np.zeros(core.shape, dtype=bool)
+    edge = np.zeros(core.shape, dtype=bool)
+    for dr in (-1, 0, 1):
+        for dc in (-1, 0, 1):
+            if dr == dc == 0:
+                continue
+            nb = lab[1 + dr:rows - 1 + dr, 1 + dc:cols - 1 + dc]
+            edge |= (core > 0) & (nb != core)
+            other |= (core > 0) & (nb > 0) & (nb != core)
+    edges = np.bincount(core[edge], minlength=count).astype(float)
+    touching = np.bincount(core[other], minlength=count)
+    return np.divide(touching, edges, out=np.zeros(count), where=edges > 0)
+
+
 def stems_from_ndsm(ndsm, ground, transform, min_height_m=DEFAULT_MIN_HEIGHT_M, min_area_m2=DEFAULT_MIN_AREA_M2,
                     tall_height_m=TALL_HEIGHT_M, tall_min_area_m2=TALL_MIN_AREA_M2, leaf_off_rgb=None,
                     roof_mask=None, roof_guard_area_m2=ROOF_GUARD_AREA_M2, roof_guard_m=ROOF_GUARD_M,
@@ -506,6 +534,7 @@ def stems_from_ndsm(ndsm, ground, transform, min_height_m=DEFAULT_MIN_HEIGHT_M, 
     segments, peaks = split_low_lobes(raw, segments, peaks, cell, min_height_m=min_height_m)
     area = np.bincount(np.maximum(segments, 0).ravel(), minlength=len(peaks) + 1) * cell * cell
     p75, extent = segment_profile(raw, segments, peaks, cell)
+    contact = crown_contact(segments, len(peaks) + 1)
     near_roof = np.zeros(len(peaks) + 1, dtype=bool)
     if roof_mask is None:
         near_roof[:] = True
@@ -543,6 +572,10 @@ def stems_from_ndsm(ndsm, ground, transform, min_height_m=DEFAULT_MIN_HEIGHT_M, 
         radius = min(equal_area, max(cell / 2, TREE_CROWN_RADIUS_PER_HEIGHT * height, LOW_CROWN_MAX_RADIUS_M), TREE_CROWN_MAX_RADIUS_M)
         if equal_area > radius and is_flat_crown(height, p75[idx], equal_area, extent[idx]):
             radius = min(equal_area, FLAT_CROWN_MAX_RADIUS_M)
+        elif equal_area > radius and contact[idx] <= FREE_CROWN_MAX_CONTACT and equal_area >= FLAT_CROWN_COMPACTNESS * extent[idx]:
+            # A free-standing compact crown (most of its edge on open ground) is its own support:
+            # the cap is for stand shares and hedges, which a lone round crown is not.
+            radius = min(equal_area, FREE_CROWN_RADIUS_PER_HEIGHT * height, TREE_CROWN_MAX_RADIUS_M)
         x, y = transform * (col + .5, row + .5)
         score = float(scores[idx - 1])
         stems.append(TreeStem(x, y, height, radius, float(ground[row, col]), int(classify_kind(score, height)), score))
