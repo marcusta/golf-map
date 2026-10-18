@@ -5146,7 +5146,10 @@ def op_path_kerb(ctx, op):
                                     cut=_kerb_cut, seed=zlib.crc32(unit.id.encode()) & 0xFFFF, loose=loose,
                                     seam_depth=float(op.get("seamDepthM", kb.SEAM_DEPTH_M)),
                                     seam_road=float(op.get("seamRoadM", kb.SEAM_ROAD_M)),
-                                    seam_loose=float(op.get("seamLooseM", kb.SEAM_LOOSE_M))))
+                                    seam_loose=float(op.get("seamLooseM", kb.SEAM_LOOSE_M)),
+                                    joint=float(op.get("jointM", kb.JOINT_M)),
+                                    joint_half=float(op.get("jointHalfM", kb.JOINT_HALF_M)),
+                                    joint_depth=float(op.get("jointDepthM", kb.JOINT_DEPTH_M))))
             for o in blends:
                 o[KERB_PROP] = kb.CONVENTION
             run["seconds"] = round(time.time() - t, 2)
@@ -5160,6 +5163,7 @@ def op_path_kerb(ctx, op):
 
 
 KERB_PROP = "golfmap_kerb"
+KERB_SLIVER_M = 0.008
 
 
 def _kerb_cut(pieces, lines):
@@ -5168,7 +5172,9 @@ def _kerb_cut(pieces, lines):
     names = [o.name for o in pieces]
     snap = {o.name: {"co": positions(o).astype(np.float64)} for o in pieces}
     stats = {o.name: _cut_mesh(o, [], lines) for o in pieces}
-    slivers = collapse_cut_slivers(names, snap, SLIVER_M, mark_attr=SPLIT_EDGE_ATTR)
+    # 8 mm, not SLIVER_M: the joint's lines lie 1-5 cm from the seam and from each other, and no z smoothing
+    # follows this cut (the slivers SLIVER_M guards against come from smoothcartpaths, long done)
+    slivers = collapse_cut_slivers(names, snap, KERB_SLIVER_M, mark_attr=SPLIT_EDGE_ATTR)
     welds = weld_tjunctions(names)
     for o in pieces:
         _drop_cut_attrs(o.data)

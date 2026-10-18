@@ -56,7 +56,8 @@ OPS = {
     # Rounds the fringe strips of hard roads (asphalt, concrete, paving) into a lip `depthM` above the verge
     # (shape_apply "golfmap.path_kerb", shape_kerb.py). After split_surfaces and the footprints.
     "golfmap.path_kerb": {"params": {}, "keys": {"depthM", "roadM", "cuts", "surfaces", "paths", "seamDepthM",
-                                                 "seamRoadM", "seamLooseM"}},
+                                                 "seamRoadM", "seamLooseM", "jointM", "jointHalfM",
+                                                 "jointDepthM"}},
     "golfmap.path_edge_fade": {
         "params": {},
         "keys": {"widthM", "maxEdgeM", "amplitude", "surfaces", "weld", "paths"},

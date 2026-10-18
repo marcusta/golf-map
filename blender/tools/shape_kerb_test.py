@@ -55,6 +55,18 @@ class Profile(unittest.TestCase):
         self.assertLess(kb.seam_profile(0.1, True), 0.2)  # flat until near the seam
         self.assertGreater(kb.seam_profile(0.25, False), 0.4)
 
+    def test_offset_ragged_follows_the_teeth_without_loops(self):
+        import math, random
+        rnd = random.Random(3)
+        line = [(i * 0.07, 0.03 * rnd.uniform(-1, 1)) for i in range(60)]  # a ragged seam along x
+        off = kb.offset_ragged(line, 0.035, 1)  # to the left (+y)
+        self.assertGreater(len(off), 45)
+        xs = [p[0] for p in off]
+        self.assertEqual(xs, sorted(xs))  # no point turns back
+        for x, y in off:  # about 3.5 cm off the nearest seam point, never on the other side
+            d = min(math.hypot(x - a, y - b) for a, b in line)
+            self.assertTrue(0.02 < d < 0.05, (x, y, d))
+
     def test_params(self):
         self.assertEqual(kb.validate_params({}), [])
         self.assertEqual(kb.validate_params({"depthM": 0.05, "roadM": 0.2, "cuts": 3, "surfaces": ["asphalt"]}), [])

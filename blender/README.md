@@ -952,6 +952,18 @@ in its angle and grass leaning over it; OPCD's road, fringe strip and grass meet
   lies that much lower at the seam and eases back over `seamLooseM` (0.5 m, where split_surfaces' fade line gives it
   vertices); gravel lobes on the asphalt sit in the broken edge. Omberg `asphalt_4`/`gravel_4`: flat to 0.2 m
   from the seam, -2.0 cm at it, the gravel -0.9 cm 0.2 m out. Report `seamEdges`, `seamLines`, `seamLooseVertices`.
+- **Sawn joint**: just inside that seam, following every tooth (the seam smoothed 1 cm, offset point by point and
+  the points that turn back dropped: `offset_ragged`), three lines `jointM` (0.035 m) in +- `jointHalfM` (0.012 m);
+  the middle one sinks `jointDepthM` (6 mm) and is painted blue on the road piece, so the joint is a thin dark V
+  (Unity: a hard road mesh's blue channel is the `dirt` look tinted `JointTint`, which also draws Afrod's concrete
+  expansion joints). The kerb cut merges slivers under 8 mm only (`KERB_SLIVER_M`; the joint's lines are 1-5 cm
+  apart). Report `jointLines`, `jointVertices`. The path check counts the joint's V and the lip's edges as steep /
+  shading faults (Omberg `roads_1f`: steep 201 -> 546) - they are the groove, not smudges; check the render.
+- **Normals**: the road and gravel pieces keep OPCD's custom normals (both sides of a piece seam shade alike), which
+  would light the lips as flat. Each moved vertex's normal is tilted by the slope of the drop it took (the profile's
+  derivative along the direction away from the edge, capped at 45 deg), the same function of XY in every object,
+  so coincident vertices shade alike and slivers do not smudge; the joint's V is left to its paint. Report
+  `normalsTilted`.
 - Strip objects get smooth shading, custom normals dropped; names and materials stay. Blends carry `golfmap_kerb`
   = `path-kerb-v2`. Report: per blend `strip`, `rungs`, `outer`, `painted`; `lipLines`, `cut`, `moved` per object.
   The path check counts more steep faces on the cut pieces (Omberg `roads_1f` 29 -> 77, all millimetre slivers

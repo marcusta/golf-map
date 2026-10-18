@@ -22,9 +22,19 @@ and shadow in the angle and grass leaning over it. OPCD's road meets the grass f
 5. Where a hard piece meets a loose one (gravel, dirt: split_surfaces' seam, ragged), a milder lip: the asphalt
    rolls down `seamDepthM` (default 2 cm) over its last `seamRoadM` (0.2 m, a line cut there too), the loose piece
    lies that much lower at the seam and rises back over `seamLooseM` (0.5 m: split_surfaces' fade line has
-   vertices there), so gravel lobes on the asphalt sit in the broken edge, a little below it. No paint.
+   vertices there), so gravel lobes on the asphalt sit in the broken edge, a little below it.
+6. A sawn joint in the asphalt just inside that seam, following its every tooth: three lines cut parallel to the
+   ragged seam `jointM` (default 0.035 m) in, +- `jointHalfM` (0.012 m); the middle one sinks `jointDepthM`
+   (6 mm) and is painted blue, the two guards keep the road's paint, so the joint is a thin V of blue a little
+   below the asphalt (Unity draws a hard road's blue as a dark joint, as Afrod's concrete expansion joints).
 
-Objects keep their names and materials; strips get smooth shading with custom normals dropped.
+Normals: the road and gravel pieces carry OPCD's custom normals (set from before the cut, so both sides of a piece
+seam shade alike); flat ones would light the lips as if nothing had moved. Every moved vertex of theirs gets its
+normal tilted by the slope of the drop it took (the profiles' derivative along the direction away from the edge),
+the same function of XY in every object, so coincident vertices still shade alike and the cut's slivers do not
+smudge it; the joint's V is left to its paint. The strips get smooth shading with custom normals dropped.
+
+Objects keep their names and materials.
 """
 
 import math
@@ -37,6 +47,10 @@ LOOSE = ("gravel", "dirt")
 SEAM_DEPTH_M = 0.02
 SEAM_ROAD_M = 0.2
 SEAM_LOOSE_M = 0.5
+JOINT_M = 0.035
+JOINT_HALF_M = 0.012
+JOINT_DEPTH_M = 0.006
+JOINT_SIMPLIFY_M = 0.01  # the seam's grit smoothed this much under the joint (its lines would cross at every tooth)
 SEAM_SIMPLIFY_M = 0.08  # the ragged seam is smoothed this much before its lip line is offset (no kinks)
 TOL_M = 1e-3
 CONVENTION = "path-kerb-v2"  # the blends' golfmap_kerb: rounded once (a replay starts from the OPCD meshes)
@@ -91,7 +105,8 @@ def validate_params(op):
     d = op.get("depthM", DEPTH_M)
     if not isinstance(d, (int, float)) or isinstance(d, bool) or not 0 < d <= 0.2:
         errors.append("depthM must be a number in (0, 0.2]")
-    for key, hi in (("seamDepthM", 0.2), ("seamRoadM", 1), ("seamLooseM", 2)):
+    for key, hi in (("seamDepthM", 0.2), ("seamRoadM", 1), ("seamLooseM", 2), ("jointM", 0.5), ("jointHalfM", 0.1),
+                    ("jointDepthM", 0.05)):
         v = op.get(key, 0.01)
         if not isinstance(v, (int, float)) or isinstance(v, bool) or not 0 <= v <= hi:
             errors.append("%s must be a number in [0, %s]" % (key, hi))
@@ -158,6 +173,29 @@ def offset_away(line, d, far):
     return ss.offset_polyline([(p[0], p[1]) for p in line], d if left else -d, False)
 
 
+def offset_ragged(line, d, side, min_dot=0.2):
+    """A ragged polyline moved `d` to `side` (+1 left, -1 right) point by point along its averaged normals, the
+    points whose segment turns back against the source (where a tooth is sharper than d) dropped, so the offset
+    follows every tooth without loops."""
+    n = len(line)
+    out = []
+    for i in range(n):
+        a = line[i - 1] if i > 0 else line[i]
+        b = line[i + 1] if i < n - 1 else line[i]
+        dx, dy = b[0] - a[0], b[1] - a[1]
+        L = math.hypot(dx, dy) or 1.0
+        out.append((line[i][0] - dy / L * d * side, line[i][1] + dx / L * d * side, i))
+    kept = [out[0]]
+    for q in out[1:]:
+        p0 = kept[-1]
+        sx, sy = line[q[2]][0] - line[p0[2]][0], line[q[2]][1] - line[p0[2]][1]
+        ox, oy = q[0] - p0[0], q[1] - p0[1]
+        ls, lo = math.hypot(sx, sy), math.hypot(ox, oy)
+        if ls > 0 and lo > 0 and (sx * ox + sy * oy) / (ls * lo) >= min_dot:
+            kept.append(q)
+    return [(x, y) for x, y, _ in kept]
+
+
 def seam_profile(d, road_side, seam_road=SEAM_ROAD_M, seam_loose=SEAM_LOOSE_M):
     """Share (0..1) of the seam drop at distance d from a hard/loose seam: on the road a quarter ellipse over its
     last seam_road, on the loose side the full drop at the seam easing back to nothing at seam_loose."""
@@ -167,7 +205,8 @@ def seam_profile(d, road_side, seam_road=SEAM_ROAD_M, seam_loose=SEAM_LOOSE_M):
 
 
 def kerb_core(pieces, blends, roads, others, depth=DEPTH_M, road_m=ROAD_M, cuts=CUTS, cut=None, seed=0, tol=TOL_M,
-              loose=(), seam_depth=SEAM_DEPTH_M, seam_road=SEAM_ROAD_M, seam_loose=SEAM_LOOSE_M):
+              loose=(), seam_depth=SEAM_DEPTH_M, seam_road=SEAM_ROAD_M, seam_loose=SEAM_LOOSE_M,
+              joint=JOINT_M, joint_half=JOINT_HALF_M, joint_depth=JOINT_DEPTH_M):
     """Round the strips of `blends` along the boundaries of `pieces` (hard road meshes). `roads`: every road mesh
     near (any surface: an outer vertex on one marks a road-to-road strip); `others`: every other mesh near (their
     vertices at a moved point move with it); `cut(pieces, polylines)`: inserts the lines into the pieces (shape_apply's
@@ -290,9 +329,35 @@ def kerb_core(pieces, blends, roads, others, depth=DEPTH_M, road_m=ROAD_M, cuts=
             mx = (a[0] + b[0]) / 2 - (b[1] - a[1]) / L * 0.1
             my = (a[1] + b[1]) / 2 + (b[0] - a[0]) / L * 0.1
             seam_lines.append(ss.offset_polyline(pts, seam_road if on_hard(mx, my) else -seam_road, False))
-    if (lines or seam_lines) and cut is not None:
-        out["cut"] = cut(pieces, lines + seam_lines)
-    out["lipLines"], out["seamLines"] = len(lines), len(seam_lines)
+    # 6. the sawn joint: three lines along the ragged seam itself, inside the asphalt
+    joint_lines = []
+    if seam_edges and joint > 0 and joint_half > 0:
+        from mathutils.bvhtree import BVHTree
+        import shape_surfaces as ss
+        trees = [BVHTree.FromPolygons([v.co for v in o.data.vertices], [list(p.vertices) for p in o.data.polygons])
+                 for o in pieces]
+
+        def hard_at(x, y):
+            return any(t.ray_cast((x, y, 1e4), (0, 0, -1))[0] is not None for t in trees)
+
+        for line in chains(seam_edges):
+            if len(line) < 3:
+                continue
+            votes = 0
+            for i in range(0, len(line) - 1, max(1, (len(line) - 1) // 9)):
+                a, b = line[i], line[i + 1]
+                L = math.hypot(b[0] - a[0], b[1] - a[1]) or 1.0
+                mx, my = (a[0] + b[0]) / 2 - (b[1] - a[1]) / L * 0.04, (a[1] + b[1]) / 2 + (b[0] - a[0]) / L * 0.04
+                votes += 1 if hard_at(mx, my) else -1
+            side = 1 if votes >= 0 else -1
+            src = ss.simplify([(p[0], p[1]) for p in line], JOINT_SIMPLIFY_M)
+            for d in (joint - joint_half, joint, joint + joint_half):
+                off = offset_ragged(src, d, side)
+                if len(off) >= 2:
+                    joint_lines.append(off)
+    if (lines or seam_lines or joint_lines) and cut is not None:
+        out["cut"] = cut(pieces, lines + seam_lines + joint_lines)
+    out["lipLines"], out["seamLines"], out["jointLines"] = len(lines), len(seam_lines), len(joint_lines)
 
     # 3. the drop, decided on the pieces, strips and loose pieces, carried to every vertex at the same place
     moved_pts, moved_dz = [], []
@@ -303,6 +368,8 @@ def kerb_core(pieces, blends, roads, others, depth=DEPTH_M, road_m=ROAD_M, cuts=
             ds = seam_d(v.co.x, v.co.y)
             if ds < seam_road or ds <= tol:
                 dz = min(dz, -seam_depth * seam_profile(ds, True, seam_road, seam_loose))
+            if o in pieces and joint_lines and abs(ds - joint) < joint_half * 0.5:
+                dz -= joint_depth
             if dz < 0:
                 moved_pts.append((v.co.x, v.co.y))
                 moved_dz.append(dz)
@@ -363,5 +430,96 @@ def kerb_core(pieces, blends, roads, others, depth=DEPTH_M, road_m=ROAD_M, cuts=
             me.attributes.remove(custom)
         me.update()
         strips[o.name]["painted"] = len(paint)
+    # the pieces' normals tilted by the drop's slope (see the module docstring)
+    def nearest_dir(kd, x, y):
+        if kd is None:
+            return float("inf"), (0.0, 0.0)
+        co, _, d = kd.find((x, y, 0.0))
+        if d <= 1e-9:
+            return 0.0, (0.0, 0.0)
+        return d, ((x - co[0]) / d, (y - co[1]) / d)
+
+    def slope(fn, d, h=0.002):
+        # capped at 1 (45 deg): the quarter ellipse is vertical at the edge, the mesh's last faces are not
+        g = (fn(d + h) - fn(max(0.0, d - h))) / (d + h - max(0.0, d - h))
+        return max(-1.0, min(1.0, g))
+
+    def kerb_dz(d):
+        return -depth * profile(1.0 - d / W) if d < W else 0.0
+
+    def seam_dz(d, road):
+        return -seam_depth * seam_profile(d, road, seam_road, seam_loose)
+
+    tilted = 0
+    for o, road in [(o, True) for o in pieces] + [(o, False) for o in loose]:
+        me = o.data
+        if not len(me.loops):
+            continue
+        me.update()
+        cn = np.empty(len(me.loops) * 3, dtype=np.float32)
+        me.corner_normals.foreach_get("vector", cn)
+        cn = cn.reshape(-1, 3)
+        cv = np.empty(len(me.loops), dtype=np.int64)
+        me.loops.foreach_get("vertex_index", cv)
+        grads = {}
+        for vi in set(cv.tolist()):
+            co = me.vertices[vi].co
+            gx = gy = 0.0
+            if road:
+                d1, u1 = nearest_dir(k_out, co.x, co.y)
+                d2, u2 = nearest_dir(k_seam, co.x, co.y)
+                a1 = kerb_dz(d1) if d1 < W else 0.0
+                a2 = seam_dz(d2, True) if d2 < seam_road else 0.0
+                if a1 < 0 and a1 <= a2:
+                    g = slope(kerb_dz, d1)
+                    gx, gy = g * u1[0], g * u1[1]
+                elif a2 < 0:
+                    g = slope(lambda d: seam_dz(d, True), d2)
+                    gx, gy = g * u2[0], g * u2[1]
+            else:
+                d2, u2 = nearest_dir(k_seam, co.x, co.y)
+                if d2 < seam_loose:
+                    g = slope(lambda d: seam_dz(d, False), d2)
+                    gx, gy = g * u2[0], g * u2[1]
+            if gx or gy:
+                grads[vi] = (gx, gy)
+        if not grads:
+            continue
+        for li, vi in enumerate(cv.tolist()):
+            g = grads.get(vi)
+            if g is None:
+                continue
+            nx, ny, nz = cn[li]
+            nx, ny = nx - g[0] * nz, ny - g[1] * nz
+            L = math.sqrt(nx * nx + ny * ny + nz * nz) or 1.0
+            cn[li] = (nx / L, ny / L, nz / L)
+        me.normals_split_custom_set([tuple(v) for v in cn.tolist()])
+        me.update()
+        tilted += len(grads)
+    out["normalsTilted"] = tilted
+
+    # 6's paint: the joint's middle line blue on the hard pieces (the guards keep the road's paint)
+    if joint_lines:
+        painted = 0
+        for o in pieces:
+            me = o.data
+            attr = me.color_attributes.get("Col")
+            if attr is None or attr.domain != "CORNER":
+                continue
+            buf = np.empty(len(me.loops) * 4, dtype=np.float32)
+            attr.data.foreach_get("color_srgb", buf)
+            buf = buf.reshape(-1, 4)
+            cv = np.empty(len(me.loops), dtype=np.int64)
+            me.loops.foreach_get("vertex_index", cv)
+            hit = {vi for vi in set(cv.tolist())
+                   if abs(seam_d(me.vertices[vi].co.x, me.vertices[vi].co.y) - joint) < joint_half * 0.5}
+            if not hit:
+                continue
+            mask = np.array([vi in hit for vi in cv.tolist()])
+            buf[mask, :3] = (0.0, 0.0, 1.0)
+            attr.data.foreach_set("color_srgb", buf.reshape(-1))
+            me.update()
+            painted += len(hit)
+        out["jointVertices"] = painted
     out["stripWidthM"] = round(strip_w, 3)
     return out
