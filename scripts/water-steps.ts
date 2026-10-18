@@ -146,9 +146,14 @@ try {
         console.log(`stored: ${plan.updates.length} changed, ${created.length} created; the old features are in ${backup}`);
         const name = `"${course.name}"`;
         console.log('next:');
-        console.log(`  bun run terrain:generate -- ${name} water-digs     (the ponds dug to hold their levels)`);
-        console.log(`  bun run terrain:generate -- ${name} creek-digs`);
-        console.log(`  bun run gspro:update -- ${name} terrain, then shapes (the SVG; build it in OPCD), meshes, waterfalls`);
+        if (flags['split'] === true) {
+            console.log(`  bun run terrain:generate -- ${name} water-digs     (the ponds dug to hold their levels)`);
+            console.log(`  bun run terrain:generate -- ${name} creek-digs`);
+            console.log(`  bun run gspro:update -- ${name} terrain, then shapes (the SVG; build it in OPCD), meshes, waterfalls`);
+        } else {
+            console.log(`  bun run terrain:generate -- ${name} creek-digs --feature <each creek>   (cut at the falls; set digDepthM/digBankSlopeDeg first)`);
+            console.log(`  bun run gspro:update -- ${name} terrain, then terrain.obj and meshes (no OPCD build), creeks, waterfalls`);
+        }
     }
 } catch (e) {
     console.error(`error: ${(e as Error).message}`);
