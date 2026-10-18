@@ -38,6 +38,10 @@ DEFAULT_STATION_M = 1.0
 DEFAULT_SURFACE_SMOOTH_M = 10.0
 # Below a fall (surface_profile's `breaks`) the first stations still see the sill and its face.
 BREAK_CLEAR_M = 1.5
+# A stretch between falls that falls less than this plus this much per metre is a pond: one level, the low quartile
+# of its water (water plants and reeds read high, nothing reads low). golfpipe.water_steps' RUN_FLAT_M/_SLOPE.
+POND_FLAT_M = 0.3
+POND_FLAT_SLOPE = 0.002
 
 
 def ribbon_centerline(polygon: Polygon, spacing_m: float = 0.5) -> tuple[LineString, float] | None:
@@ -153,7 +157,8 @@ def surface_profile(
     `breaks` ([[x, y], …], a waterfall's lip on the creek: shared/features/
     waterfall.ts) cut the profile: each stretch between them is made to fall
     and smoothed on its own, so a chain of ponds keeps each pond flat at its
-    level and the step between them sharp, instead of a 10 m ramp."""
+    level and the step between them sharp, instead of a 10 m ramp. A stretch
+    that hardly falls (POND_FLAT_*) is a pond and gets one level."""
     line = np.asarray(line, dtype=np.float64)
     seg = np.hypot(*np.diff(line, axis=0).T)
     cum = np.concatenate([[0.0], np.cumsum(seg)])
@@ -216,6 +221,8 @@ def surface_profile(
         if k > 1 and m > 2:
             pad = np.concatenate([np.full(k, seg[0]), seg, np.full(k, seg[-1])])
             seg = np.minimum.accumulate(np.convolve(pad, np.ones(k) / k, mode="same")[k:-k])
+        if cuts and m > 1 and seg[0] - seg[-1] < POND_FLAT_M + POND_FLAT_SLOPE * (s[b - 1] - s[a]):
+            seg = np.full(m, float(np.percentile(raw, 25)))
         z[a:b] = seg
     # Never climbing downstream across a fall either.
     z = np.minimum.accumulate(z)
