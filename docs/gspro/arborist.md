@@ -130,6 +130,51 @@ bun run arborist -- vreta --close-others --screenshot      # Unity and GreenKeep
   `data/arborist/<slug>-vsp-far.json` beside the planted trees, so after a trial that trim list can
   be ahead of the course folder's file.
 
+### The edit loop: one tree or bush, live
+
+A tree or bush Arborist draws (an `arborist:` model) is moved, resized, turned, deleted, added or
+made another model in the running Arborist at once, and saved — **never through Unity** (Marcus,
+2026-10-19: a Unity replant for one bush is minutes, this is under a second):
+
+```bash
+bun run arborist -- edit omberg move --by 2,0 --picked        # the bush marked with P in Arborist, 2 m east
+bun run arborist -- edit omberg resize 1.2 --near 268,472     # the Arborist tree nearest world x, z
+bun run arborist -- edit omberg rotate 45 --pick              # the one under the mouse in Arborist
+bun run arborist -- edit omberg delete --id epsg3006:477289.50:6457208.50
+bun run arborist -- edit omberg swap S7_American_Elm --picked # another model, the same height
+bun run arborist -- edit omberg add CE_Plants_buckthorn-bush --at 270,475 --height 2.4
+bun run arborist -- edit omberg show --picked                 # which tree it is; --dry-run on any op
+```
+
+- **Naming the tree**: Marcus points at it in Arborist and presses **P**: the mod marks the instance
+  under the mouse with a yellow ▼ (Esc unmarks) and `--picked` takes it. The key is put up by the
+  first edit after Arborist starts (or `call.ts veg.picker`). `--pick [u,v]` takes what is under the
+  mouse (or at a point of the picture) right now; `--near x,z` the nearest Arborist tree within
+  15 m; `--id` a tree id.
+- **Optimistic**: live first — the mod's `veg.edit` takes the instance out of VSP's persistent
+  storage and adds it again as it now is (item id, position, scale, rotation; 6 ms in Arborist,
+  0.1 s round trip, drawn on the next frame). Then saved, about 1.5 s (Omberg, 8.8 MB file), in
+  this order: `arboristdata.dat` (`arborist.py edit`: the instance, into another 100 m cell when it
+  crosses one), `arboristdata.ids.json` (its drawn entry), `<prefix>-<terrain>-placements.json`
+  (the placement: the next `gspro:export arborist` draws it the same) and
+  `<prefix>-<terrain>-tree-edits.json` (the record `golfmap.trees.edit` would write: model, drawn
+  height and crown width with `sized`, terrain-local x/z, rotation when turned — so the next plant in
+  Unity places it the same). Checked 2026-10-19 on Omberg: a bush moved, grown and another deleted,
+  then the trees export rerun from the dump on disk drew them so.
+- A moved or added tree stands on Arborist's own ground (the mod's `ground`, the highest collider).
+- A model whose item the file lacks (a `swap` or `add` to a model the course has not drawn yet)
+  cannot be shown live: the item is made from the species library and Arborist reloads (about 15 s).
+- With Arborist closed the files are still written (a moved tree keeps its height then). A freshly
+  started Arborist waits at Unity's "Arborist Configuration" dialog until Play is pressed
+  (`apps.ps1 start` sends Enter), and the mod's bridge is not up before that: an `edit` right after a
+  start finds no Arborist and only saves.
+- Verified live 2026-10-19 on Omberg: a bush moved 1 m live in 10 ms, saved in 2 s (2.6 s for the
+  whole command), and moved back (5 ms live, 1.5 s saved).
+- One edit at a time: the service queues them, and `arboristdata.dat.edit.lock` keeps two processes apart.
+- Only `arborist:` models: a tree of the course's VSP is refused (edit it with `golfmap.trees.edit`).
+  Code: `server/services/arborist-edit.service.ts`, `scripts/arborist-edit.ts`,
+  `unity/ArboristMod/Commands/EditCommands.cs`.
+
 ### The same by hand
 
 `bun run gspro:export -- <course> arborist` is the regenerate step on its own; the commands below

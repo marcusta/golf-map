@@ -18,7 +18,7 @@ bun unity/ArboristMod/call.ts ──HTTP 127.0.0.1:8790+──▶ GolfMapPlayerB
 | BepInEx 5.4.23.2 (x64) | The loader, unpacked next to `Arborist.exe` (`winhttp.dll`, `doorstop_config.ini`, `BepInEx/`). Not in the repo. Arborist's own files are untouched; deleting `winhttp.dll` switches the mod off. An Arborist update through the launcher may remove it. |
 | `Loader/BepInExLoader.cs` | BepInEx plugin whose `Awake` calls `PlayerBridge.Boot()`. |
 | `Core/` | `PlayerBridge` (HTTP listener, jobs on the main thread, log capture, discovery file) and `PlayerRegistry` (`commands`, `reload`). Reuses `BridgeJson.cs` and `BridgeCommands.cs` from `unity/Editor/GolfMapBridge/`. |
-| `Commands/` | `PlayerCommands` (`console`, `scene`, `camera`, `screenshot`), `ReflectCommands` (`types`, `objects`, `get`, `set`, `call`) and `ArboristCommands` (`arb.catalog`, `arb.biomes`, `arb.biome.new/add/export`, `arb.tint`), and for reading how a loaded course is made (read-only; results in `docs/gspro/reference-courses.md`) `LookCommands` (`look`: render settings, lights, cameras, post-processing and fog components, VSP settings per item, shader use) and `MeshCommands` (`mesh.bunkers`, `mesh.classes`, `material`, `veg.surfaces`). |
+| `Commands/` | `PlayerCommands` (`console`, `scene`, `camera`, `screenshot`), `ReflectCommands` (`types`, `objects`, `get`, `set`, `call`) and `ArboristCommands` (`arb.catalog`, `arb.biomes`, `arb.biome.new/add/export`, `arb.tint`), and for reading how a loaded course is made (read-only; results in `docs/gspro/reference-courses.md`) `LookCommands` (`look`: render settings, lights, cameras, post-processing and fog components, VSP settings per item, shader use) and `MeshCommands` (`mesh.bunkers`, `mesh.classes`, `material`, `veg.surfaces`). `EditCommands`: `veg.edit` (one placed instance changed live: found by item id and x, z, taken out, added again as it now is), `veg.pick` (the instance under the mouse or at a viewport point, judged by its stem as seen), `veg.picker` / `veg.picked` (the P key marks the tree under the mouse with a ▼; Esc unmarks). |
 | `library.ts`, `calibrate.py` | The species library (Arborist's own default item settings, exported as a biome) and the colour calibration. |
 | `build.ps1` | Compiles with the Unity editor's Roslyn against Arborist's `Managed` folder and installs into `BepInEx/plugins/GolfMapPlayerBridge/`. |
 | `call.ts` | `bun unity/ArboristMod/call.ts [command] ['{json args}'] [timeoutSec]`; no command lists the running players. |
@@ -114,6 +114,10 @@ changing (the documented 85 s only as the cap), and then takes the screenshots w
 running, the mod not loaded, or the memory gone — instead of timing out. See
 [docs/gspro/arborist.md](../../docs/gspro/arborist.md), "The loop: one command". It never starts
 Arborist or loads a course in it.
+
+One tree or bush changed live and saved, no Unity: **`bun run arborist -- edit <course> <op> ...
+(--picked | --pick | --near x,z | --id <id>)`** (`scripts/arborist-edit.ts`, `veg.edit` live first,
+then the files; docs/gspro/arborist.md, "The edit loop"). `--picked` is the tree Marcus marked with P.
 
 `call.ts` also exports its discovery for other scripts: `players()`, `player(app?)`, `playerDir()`.
 

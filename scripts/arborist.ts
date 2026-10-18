@@ -209,16 +209,7 @@ export async function runArboristLoop(
                     + '(or bun run gspro:export -- <course> gkd --course-dir <folder>)');
             }
             // Arborist names its vegetation system by the course's scene, which is the folder's name.
-            const scene = path.basename(course.courseDir);
-            const lines: string[] = [];
-            const t0 = deps.now();
-            await player.call('call', { type: VSPRO_TYPE, method: 'ResetVSPro', args: [scene] }, RESET_TIMEOUT_SEC);
-            lines.push(`ResetVSPro('${scene}') after ${seconds(deps, t0)} s`);
-            const t1 = deps.now();
-            await player.call('call', { type: VSPRO_TYPE, instance: 0, method: 'LoadData' }, LOAD_TIMEOUT_SEC);
-            lines.push(`LoadData returned after ${seconds(deps, t1)} s`);
-            lines.push(await waitForLoad(player, opts.waitSec, deps));
-            return lines;
+            return reloadInArborist(player, path.basename(course.courseDir), opts.waitSec, deps);
         });
     }
     if (opts.screenshot) {
@@ -233,7 +224,20 @@ export async function runArboristLoop(
     return result;
 }
 
-const seconds = (deps: LoopDeps, from: number) => Math.round((deps.now() - from) / 100) / 10;
+const seconds = (deps: Pick<LoopDeps, 'now'>, from: number) => Math.round((deps.now() - from) / 100) / 10;
+
+/** The course file read again by the running Arborist: ResetVSPro on `scene`, LoadData, and the wait for the load. */
+export async function reloadInArborist(player: PlayerBridgeLike, scene: string, waitSec: number, deps: Pick<LoopDeps, 'now' | 'sleep'>): Promise<string[]> {
+    const lines: string[] = [];
+    const t0 = deps.now();
+    await player.call('call', { type: VSPRO_TYPE, method: 'ResetVSPro', args: [scene] }, RESET_TIMEOUT_SEC);
+    lines.push(`ResetVSPro('${scene}') after ${seconds(deps, t0)} s`);
+    const t1 = deps.now();
+    await player.call('call', { type: VSPRO_TYPE, instance: 0, method: 'LoadData' }, LOAD_TIMEOUT_SEC);
+    lines.push(`LoadData returned after ${seconds(deps, t1)} s`);
+    lines.push(await waitForLoad(player, waitSec, deps));
+    return lines;
+}
 
 /**
  * Stands in for the open Unity editor when it is closed: `golfmap.trees.dump`
@@ -269,7 +273,7 @@ export function dumpOnDisk(): UnityEditor & { read: { file: string; trees: numbe
  * the same twice in a row. `waitSec` is the cap, and all there is when the
  * build has no `veg.systems`.
  */
-export async function waitForLoad(player: PlayerBridgeLike, waitSec: number, deps: LoopDeps): Promise<string> {
+export async function waitForLoad(player: PlayerBridgeLike, waitSec: number, deps: Pick<LoopDeps, 'now' | 'sleep'>): Promise<string> {
     const t0 = deps.now();
     const left = () => waitSec * 1000 - (deps.now() - t0);
     let last = '';
@@ -434,6 +438,8 @@ export function usageText(): string {
         '                  The course is never one of them: name it first',
         '--close-others    close Unity and GreenKeeper first (Arborist needs 11-12 GB)',
         "--out <folder>    a trial: write the file there, leave the course folder's alone",
+        '',
+        'One tree or bush Arborist draws, changed live and saved: bun run arborist -- edit <course> <op> ... (edit --help)',
     ].join('\n');
 }
 
@@ -506,50 +512,64 @@ export function parseArgs(argv: string[]): { course: string; opts: LoopOptions; 
     return { course, opts, out };
 }
 
-async function main(): Promise<void> {
-    const parsed = parseArgs(process.argv.slice(2));
-    if ('error' in parsed) {
-        console.error(`error: ${parsed.error}\n\n${usageText()}`);
-        process.exit(2);
-    }
+/** Where the server's services find their inputs, as the server itself has them. */
+export interface CliPaths { dataDir: string; pipelineDir: string; courseDocsRoot: string; python: string }
+
+/**
+ * The course a command line names — id, name, slug or a unique name substring, the same resolution
+ * as scripts/gspro-export.ts — with its folders from its own settings. Exits 2 (with the reason)
+ * when there is no such Arborist course. `close` lets go of the database.
+ */
+export async function openCourse(query: string, outDir?: string): Promise<{ course: ArboristCourse; id: string; arborist: ArboristService; paths: CliPaths; close(): Promise<void> }> {
     const dataDir = process.env.DATA_DIR ?? path.join(ROOT, 'data');
     const dbPath = process.env.DB_PATH ?? path.join(ROOT, 'data', 'app.sqlite');
     const pipelineDir = process.env.MAP_PIPELINE_DIR ?? path.join(ROOT, 'pipeline');
-    const courseDocsRoot = path.join(ROOT, 'docs', 'gspro');
+    const paths: CliPaths = { dataDir, pipelineDir, courseDocsRoot: path.join(ROOT, 'docs', 'gspro'), python: process.env.MAP_PIPELINE_PYTHON ?? venvPython(pipelineDir) };
     if (!await statOrNull(dbPath)) {
         console.error(`error: no database at ${dbPath}`);
         process.exit(2);
     }
     const db = createDb<Database>(dbPath);
-    const courses = new CoursesService(db);
+    const close = () => db.destroy();
     const exporter = new GsproExportService({
-        db, courses, assets: new AssetsService(db, dataDir), dataDir,
-        terrainEdits: new TerrainEditsService(db), pipelineDir, courseDocsRoot,
+        db, courses: new CoursesService(db), assets: new AssetsService(db, dataDir), dataDir,
+        terrainEdits: new TerrainEditsService(db), pipelineDir, courseDocsRoot: paths.courseDocsRoot,
     });
-    const arborist = new ArboristService({
-        dataDir, pipelineDir, courseDocsRoot,
-        runner: defaultRunner(process.env.MAP_PIPELINE_PYTHON ?? venvPython(pipelineDir)),
-        outDir: parsed.out ?? undefined,
-    });
+    const arborist = new ArboristService({ ...paths, runner: defaultRunner(paths.python), outDir });
+    const rows = await db.selectFrom('courses').select(['id', 'name']).execute();
+    const q = query.toLowerCase();
+    const exact = rows.filter((r) => r.id.toLowerCase() === q || r.name.toLowerCase() === q || courseSlug(r.name) === q);
+    const picked = exact.length === 1 ? exact : rows.filter((r) => r.name.toLowerCase().includes(q));
+    if (picked.length !== 1) {
+        const names = (picked.length ? picked : rows).map((r) => `  ${r.name} (${r.id})`).join('\n');
+        console.error(`error: ${picked.length ? 'several' : 'no'} courses match '${query}':\n${names}`);
+        await close();
+        process.exit(2);
+    }
+    const row = picked[0]!;
+    const settings = await exporter.settings(row.id);
+    const course: ArboristCourse = { name: row.name, exportDir: settings.dir, courseDir: settings.courseDir };
+    if (!await arborist.used(course)) {
+        console.error(`error: ${row.name} is not an Arborist course: no docs/gspro/${courseSlug(row.name)}/arborist-species.json`);
+        await close();
+        process.exit(2);
+    }
+    return { course, id: row.id, arborist, paths, close };
+}
+
+async function main(): Promise<void> {
+    if (process.argv[2] === 'edit') {
+        const { editMain } = await import('./arborist-edit');
+        return editMain(process.argv.slice(3));
+    }
+    const parsed = parseArgs(process.argv.slice(2));
+    if ('error' in parsed) {
+        console.error(`error: ${parsed.error}\n\n${usageText()}`);
+        process.exit(2);
+    }
+    const { course, id, arborist, close } = await openCourse(parsed.course, parsed.out ?? undefined);
     try {
-        // The same resolution as scripts/gspro-export.ts: id, name, slug or a unique name substring.
-        const rows = await db.selectFrom('courses').select(['id', 'name']).execute();
-        const q = parsed.course.toLowerCase();
-        const exact = rows.filter((r) => r.id.toLowerCase() === q || r.name.toLowerCase() === q || courseSlug(r.name) === q);
-        const picked = exact.length === 1 ? exact : rows.filter((r) => r.name.toLowerCase().includes(q));
-        if (picked.length !== 1) {
-            const names = (picked.length ? picked : rows).map((r) => `  ${r.name} (${r.id})`).join('\n');
-            console.error(`error: ${picked.length ? 'several' : 'no'} courses match '${parsed.course}':\n${names}`);
-            process.exit(2);
-        }
-        const row = picked[0]!;
-        const settings = await exporter.settings(row.id);
-        const course: ArboristCourse = { name: row.name, exportDir: settings.dir, courseDir: settings.courseDir };
-        if (!await arborist.used(course)) {
-            console.error(`error: ${row.name} is not an Arborist course: no docs/gspro/${courseSlug(row.name)}/arborist-species.json`);
-            process.exit(2);
-        }
-        console.log(`${row.name} (${row.id})`);
+        console.log(`${course.name} (${id})`);
         console.log(`GSPro course folder: ${course.courseDir ?? '(not set — bun run gspro:export -- <course> gkd --course-dir <folder>)'}`);
         console.log(`export folder:       ${course.exportDir}`);
         if (parsed.out) console.log(`trial: the file goes to ${parsed.out}, the course folder's is left alone (Arborist still reloads its own)`);
@@ -566,7 +586,7 @@ async function main(): Promise<void> {
         console.error(`error: ${(e as Error).message}`);
         process.exit(1);
     } finally {
-        await db.destroy();
+        await close();
     }
 }
 

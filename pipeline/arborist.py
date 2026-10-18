@@ -12,6 +12,7 @@ Commands:
   encode <json> <dat>     wrap a JSON file
   init                    a new course's first arboristdata.dat, from another course's without its vegetation
   trial                   a few trees round two spots of a course, to see GSPro draw them
+  edit                    hand changes to placed trees in the file, in place (the Arborist edit loop)
 
 The item definitions (about 140 settings each, the baked billboards included) are never
 written from scratch: they are cloned from real Arborist files (`--templates`).
@@ -467,6 +468,17 @@ def apply_look(item: dict, rules: list[dict], also: str = "") -> None:
         item["DisableShadows"] = not look["shadows"]
 
 
+def tree_item(base: dict, variant: str, looks: list[dict], far: bool) -> dict:
+    """The trees package's item `variant`: the library item `base` under that name in `looks` (apply_look's
+    rules, the species file's treeSettings first), or with `far` its billboard-only copy. Its id follows
+    from the name, so every run (and the edit loop) gives the same item the same id."""
+    import uuid
+    item = copy.deepcopy(base)
+    item.update({"Name": variant, "VegetationItemID": str(uuid.uuid5(uuid.NAMESPACE_URL, "golfmap-trees/" + variant)), "EnableRuntimeSpawn": False})
+    apply_look(item, looks)
+    return far_copy(item) if far else item
+
+
 def far_copy(item: dict) -> dict:
     """A background tree, as Arborist courses make them (e.g. OconeeGC's "Pine Forest Billboards"):
     render distance factor 0, so no mesh at any distance and the billboard from the first metre;
@@ -648,7 +660,6 @@ def trees(args) -> None:
     model's look from --models (the course's models.json). The VSP placements name the tree ids of the dump's
     trees. Every placement Arborist is handed - drawn, or left out by the routing policy and why - is listed
     by tree id in arboristdata.ids.json beside the .dat (golfmap-arborist-ids-v1)."""
-    import uuid
 
     key = key_file(args.key_file)
     # Several catalogue names end in a space; names are compared without it.
@@ -721,10 +732,7 @@ def trees(args) -> None:
             slot = variant + (FAR_SUFFIX if far else "")
             if slot in items or (far and not can_far):
                 continue
-            item = copy.deepcopy(base)
-            item.update({"Name": variant, "VegetationItemID": str(uuid.uuid5(uuid.NAMESPACE_URL, "golfmap-trees/" + variant)), "EnableRuntimeSpawn": False})
-            apply_look(item, look + looks)
-            items[slot] = far_copy(item) if far else item
+            items[slot] = tree_item(base, variant, look + looks, far)
 
     def route(x: float, z: float, far: bool) -> tuple[int | None, dict | None, str | None]:
         """The routing policy for a tree Arborist draws: (its cell index, the cell's rect, None), or
@@ -964,6 +972,132 @@ def trees(args) -> None:
         print(f"no Arborist species for (add them under \"trees\" in {args.species}):\n  " + "\n  ".join(unmapped))
 
 
+EDIT_WITHIN_M = 0.5  # how far from `at` an edited instance may stand (Unity's 1 cm cell-edge nudge, rounding)
+
+
+def patch_instances(doc: dict, ops: list[dict], grid: Grid, make_item=None) -> dict:
+    """Hand changes to placed instances of the trees package, in place (the Arborist edit loop,
+    server/services/arborist-edit.service.ts; the mod's veg.edit makes the same change live). Each op:
+
+      item       the instance's VegetationItemID
+      at         [x, z] world: the instance of `item` nearest to it (within `within`, default EDIT_WITHIN_M)
+                 is taken out; none = a new instance
+      delete     true: only taken out
+      position   [x, y, z] world; scale [x, y, z]; rotation [x, y, z, w]: the instance as it is now (what is
+                 not given stays as it was; a new one needs all three)
+      as         another item id: the instance becomes one of that item
+      newItem    {label, variant, far, look}: how to make the item it ends as when the package lacks it
+                 (make_item(newItem) returns it; its id must be the one asked for)
+
+    An instance that moves into another 100 m cell moves into that cell's list. Returns what was done."""
+    package = next((p for p in doc["VSProSettings"]["vegetationPackages"] if p.get("PackageName") == TREES_PACKAGE), None)
+    if package is None:
+        raise ValueError(f"no package '{TREES_PACKAGE}' in the file: write the trees first (arborist.py trees)")
+    known = {item["VegetationItemID"]: item for item in package.get("VegetationInfoList") or []}
+    cells = doc["PersistentVegetationPackage"]["PersistentVegetationCellList"]
+    by_index = {cell["cellIndex"]: cell for cell in cells}
+    done = {"removed": [], "added": [], "newItems": []}
+    for op in ops:
+        item_id = op["item"]
+        was = None
+        if op.get("at") is not None:
+            ax, az = float(op["at"][0]) - grid.x0, float(op["at"][1]) - grid.z0
+            within = float(op.get("within", EDIT_WITHIN_M))
+            best = None
+            for cell in cells:
+                for info in cell["PersistentVegetationInfoList"]:
+                    if info["VegetationItemID"] != item_id:
+                        continue
+                    for i, inst in enumerate(info["VegetationItemList"]):
+                        d = math.hypot(inst["Position"]["x"] - ax, inst["Position"]["z"] - az)
+                        if d <= within and (best is None or d < best[0]):
+                            best = (d, cell, info, i)
+            if best is None:
+                name = known[item_id]["Name"] if item_id in known else item_id
+                raise ValueError(f"no instance of '{name}' within {within:g} m of ({op['at'][0]}, {op['at'][1]}) in the file")
+            _, cell, info, i = best
+            was = info["VegetationItemList"].pop(i)
+            if not info["VegetationItemList"]:
+                cell["PersistentVegetationInfoList"].remove(info)
+            done["removed"].append({"item": item_id, "cellIndex": cell["cellIndex"],
+                                    "position": [was["Position"]["x"] + grid.x0, was["Position"]["y"], was["Position"]["z"] + grid.z0]})
+        if op.get("delete"):
+            continue
+        if was is None and not all(op.get(k) is not None for k in ("position", "scale", "rotation")):
+            raise ValueError("a new instance needs position, scale and rotation")
+        target = op.get("as") or item_id
+        if target not in known:
+            if not op.get("newItem") or make_item is None:
+                raise ValueError(f"the package has no item {target}, and the op says not how to make it")
+            item = make_item(op["newItem"])
+            if item["VegetationItemID"] != target:
+                raise ValueError(f"the item made for {op['newItem'].get('variant')} has the id {item['VegetationItemID']}, not {target}")
+            package.setdefault("VegetationInfoList", []).append(item)
+            known[target] = item
+            done["newItems"].append(item["Name"])
+        if op.get("position") is not None:
+            x, y, z = (float(v) for v in op["position"])
+        else:
+            x, y, z = was["Position"]["x"] + grid.x0, was["Position"]["y"], was["Position"]["z"] + grid.z0
+        index, rect = grid.cell(x, z)
+        cell = by_index.get(index)
+        if cell is None:
+            cell = by_index[index] = {"cellIndex": index, "cellRect": rect, "PersistentVegetationInfoList": []}
+            cells.append(cell)
+        info = next((i for i in cell["PersistentVegetationInfoList"] if i["VegetationItemID"] == target), None)
+        if info is None:
+            info = {"VegetationItemID": target, "VegetationItemList": []}
+            cell["PersistentVegetationInfoList"].append(info)
+        sx, sy, sz = (float(v) for v in op["scale"]) if op.get("scale") is not None else (was["Scale"][k] for k in "xyz")
+        qx, qy, qz, qw = (float(v) for v in op["rotation"]) if op.get("rotation") is not None else (was["Rotation"][k] for k in "xyzw")
+        info["VegetationItemList"].append({
+            "Position": {"x": round(x - grid.x0, 3), "y": round(y, 3), "z": round(z - grid.z0, 3)},
+            "Scale": {"x": round(sx, 4), "y": round(sy, 4), "z": round(sz, 4)},
+            "Rotation": {"x": qx, "y": qy, "z": qz, "w": qw},
+            "VegetationSourceID": was["VegetationSourceID"] if was else TREE_SOURCE_ID,
+            "DistanceFalloff": was["DistanceFalloff"] if was else 1})
+        done["added"].append({"item": target, "cellIndex": index, "position": [round(x, 3), round(y, 3), round(z, 3)]})
+    # Cells emptied by the edit go, as arborist.py trees writes none; the list stays in cell order.
+    doc["PersistentVegetationPackage"]["PersistentVegetationCellList"] = sorted(
+        (c for c in cells if c["PersistentVegetationInfoList"]), key=lambda c: c["cellIndex"])
+    doc["VSProSettings"]["totalPrefabs"] = sum(len(p.get("VegetationInfoList") or []) for p in doc["VSProSettings"]["vegetationPackages"])
+    return done
+
+
+def edit(args) -> None:
+    """The Arborist edit loop's file half: patch_instances on the course's file, written back in place
+    (or to --out). --ops is a JSON file {"ops": [...]}; prints what was done as one JSON line."""
+    src = Path(args.dat)
+    out = Path(args.out or args.dat)
+    key = key_file(args.key_file) if ".dat" in (src.suffix.lower(), out.suffix.lower()) else None
+    doc = load_any(src, key)
+    ops = json.loads(Path(args.ops).read_text(encoding="utf-8-sig"))["ops"]
+    library = species_file = None
+
+    def make_item(spec: dict) -> dict:
+        nonlocal library, species_file
+        if library is None:
+            if not args.library or not Path(args.library).is_file():
+                raise ValueError(f"a new item ({spec.get('variant')}) needs the species library (--library)")
+            library = {item["Name"].strip(): item for item in json.loads(Path(args.library).read_text(encoding="utf-8-sig"))["VegetationInfoList"]}
+            species_file = json.loads(Path(args.species).read_text(encoding="utf-8")) if args.species and Path(args.species).is_file() else {}
+        base = library.get(str(spec["label"]).strip())
+        if base is None:
+            raise ValueError(f"Arborist's library has no {spec['label']}")
+        look = dict(spec.get("look") or {})
+        return tree_item(base, spec["variant"], species_file.get("treeSettings", []) + ([dict(look, match=["*"])] if look else []), bool(spec.get("far")))
+
+    try:
+        done = patch_instances(doc, ops, Grid(*args.terrains_square), make_item)
+    except ValueError as e:
+        sys.exit(str(e))
+    if out.suffix.lower() == ".dat":
+        write_dat(doc, out, key)
+    else:
+        out.write_text(json.dumps(doc, ensure_ascii=False, separators=(",", ":")), encoding="utf-8")
+    print(json.dumps(done))
+
+
 LINEUP_PACKAGE = "GolfMap lineup"
 
 
@@ -1135,6 +1269,14 @@ def main() -> None:
     p.add_argument("--models", help="the course's model library (models.json, golfmap-models-v1): an Arborist model's look")
     p.add_argument("--gkd", help="the course's .GKD for the boundary (default: the one in --course-dir)")
     p.add_argument("--key-file")
+    p = sub.add_parser("edit", help="hand changes to placed trees (move, resize, rotate, delete, add, another item) in the file, in place")
+    p.add_argument("--dat", required=True, help="the course's arboristdata.dat (or a decoded .json)")
+    p.add_argument("--out", help="write here instead (default: in place)")
+    p.add_argument("--ops", required=True, help='JSON file {"ops": [...]} (patch_instances)')
+    p.add_argument("--terrains-square", nargs=4, type=float, required=True, metavar=("X0", "Z0", "X1", "Z1"))
+    p.add_argument("--library", default=str(HERE.parent / "data" / "arborist" / "GolfMap library.biome"), help="for an item the package lacks")
+    p.add_argument("--species", help="the course's arborist-species.json (its treeSettings) for an item the package lacks")
+    p.add_argument("--key-file")
     p = sub.add_parser("lower", help="the palettes' prefab items (bushes, woodland floor) spread by the zones export's masks")
     p.add_argument("--course-dir", required=True, help="GSPro course folder; its arboristdata.dat is the document the package goes into")
     p.add_argument("--base", help="another arboristdata.dat / .json to start from")
@@ -1183,6 +1325,8 @@ def main() -> None:
         lower(args)
     elif args.command == "trees":
         trees(args)
+    elif args.command == "edit":
+        edit(args)
     elif args.command == "lineup":
         lineup(args)
     elif args.command == "init":
