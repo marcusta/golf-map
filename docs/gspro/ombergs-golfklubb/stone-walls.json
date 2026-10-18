@@ -4956,6 +4956,136 @@
    "yawDeg": 149,
    "lengthM": 0.7,
    "topM": 1.32
+  },
+  {
+   "id": "h16-birch-boulder-01",
+   "asset": "heap_5",
+   "e": 477608.1,
+   "n": 6457102.8,
+   "yawDeg": 30,
+   "lengthM": 1.1,
+   "topM": 0.58,
+   "note": "Pale round boulder on the lobe's slab (2023 and 2025 orthos)."
+  },
+  {
+   "id": "h16-birch-boulder-02",
+   "asset": "heap_2",
+   "e": 477596.8,
+   "n": 6457101.9,
+   "yawDeg": 110,
+   "lengthM": 0.9,
+   "topM": 0.48,
+   "note": "In the grass at the lobe's west edge, beside the shrub (ortho)."
+  },
+  {
+   "id": "h16-birch-boulder-03",
+   "asset": "heap_6",
+   "e": 477597.0,
+   "n": 6457103.4,
+   "yawDeg": 60,
+   "lengthM": 0.6,
+   "topM": 0.32,
+   "note": "In the grass at the lobe's west edge, beside the shrub (ortho)."
+  },
+  {
+   "id": "h16-birch-boulder-04",
+   "asset": "heap_8",
+   "e": 477606.0,
+   "n": 6457100.2,
+   "yawDeg": 150,
+   "lengthM": 1.3,
+   "topM": 0.69,
+   "note": "On the lobe's slab, the biggest of the band (photo)."
+  },
+  {
+   "id": "h16-birch-boulder-05",
+   "asset": "heap_1",
+   "e": 477603.5,
+   "n": 6457099.5,
+   "yawDeg": 80,
+   "lengthM": 0.8,
+   "topM": 0.42,
+   "note": "On the lobe's slab (photo)."
+  },
+  {
+   "id": "h16-birch-boulder-06",
+   "asset": "heap_4",
+   "e": 477610.5,
+   "n": 6457098.0,
+   "yawDeg": 20,
+   "lengthM": 0.7,
+   "topM": 0.37,
+   "note": "On the lobe's slab (photo)."
+  },
+  {
+   "id": "h16-birch-boulder-07",
+   "asset": "heap_9",
+   "e": 477609.3,
+   "n": 6457095.5,
+   "yawDeg": 125,
+   "lengthM": 1.1,
+   "topM": 0.58,
+   "note": "On the lobe's south slab (photo)."
+  },
+  {
+   "id": "h16-birch-boulder-08",
+   "asset": "heap_3",
+   "e": 477606.5,
+   "n": 6457093.0,
+   "yawDeg": 45,
+   "lengthM": 0.9,
+   "topM": 0.48,
+   "note": "On the lobe's south slab (photo)."
+  },
+  {
+   "id": "h16-birch-boulder-09",
+   "asset": "heap_7",
+   "e": 477620.6,
+   "n": 6457094.3,
+   "yawDeg": 95,
+   "lengthM": 1.0,
+   "topM": 0.53,
+   "note": "Pale boulder on the east slab (ortho)."
+  },
+  {
+   "id": "h16-birch-boulder-10",
+   "asset": "heap_5",
+   "e": 477619.9,
+   "n": 6457093.0,
+   "yawDeg": 10,
+   "lengthM": 0.7,
+   "topM": 0.37,
+   "note": "Pale boulder on the east slab (ortho)."
+  },
+  {
+   "id": "h16-birch-boulder-11",
+   "asset": "heap_3",
+   "e": 477621.3,
+   "n": 6457064.3,
+   "yawDeg": 70,
+   "lengthM": 1.1,
+   "topM": 0.58,
+   "note": "Rim of slab 150, right of the birch's trunk; lidar returns here."
+  },
+  {
+   "id": "h16-birch-boulder-12",
+   "asset": "heap_6",
+   "e": 477622.6,
+   "n": 6457066.0,
+   "yawDeg": 130,
+   "lengthM": 0.8,
+   "topM": 0.42,
+   "note": "Rim of slab 150, right of the birch's trunk."
+  },
+  {
+   "id": "h16-birch-boulder-13",
+   "asset": "heap_9",
+   "e": 477623.0,
+   "n": 6457080.5,
+   "yawDeg": 55,
+   "lengthM": 1.0,
+   "topM": 0.53,
+   "note": "North end of slab 150; lidar returns here."
   }
  ],
  "placedColors": {}

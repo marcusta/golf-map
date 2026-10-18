@@ -170,6 +170,34 @@ H1_BOULDERS = [
 ]
 
 
+# Loose boulders on hole 16's rock round the big silver birch (Marcus's photo + video frame, 2026-10-18): the grey
+# granite of slab 126's west lobe NW of the birch with boulders of 0.5-1.2 m sitting on and between the slabs, and a
+# few on the rim of slab 150 right at the birch. Seen as pale round stones in the 2023/2025 orthos at the first
+# ones (one on the lobe, two in the grass at its west edge by a shrub, two on the east slab); the rest are placed
+# on the slabs' flat parts from the photo. e/n = centre (EPSG:3006), yawDeg = bearing of the long side.
+def _birch_boulders():
+    rows = [  # n, asset, e, n, yaw, lengthM, note
+        ("heap_5", 477608.1, 6457102.8, 30, 1.1, "Pale round boulder on the lobe's slab (2023 and 2025 orthos)."),
+        ("heap_2", 477596.8, 6457101.9, 110, 0.9, "In the grass at the lobe's west edge, beside the shrub (ortho)."),
+        ("heap_6", 477597.0, 6457103.4, 60, 0.6, "In the grass at the lobe's west edge, beside the shrub (ortho)."),
+        ("heap_8", 477606.0, 6457100.2, 150, 1.3, "On the lobe's slab, the biggest of the band (photo)."),
+        ("heap_1", 477603.5, 6457099.5, 80, 0.8, "On the lobe's slab (photo)."),
+        ("heap_4", 477610.5, 6457098.0, 20, 0.7, "On the lobe's slab (photo)."),
+        ("heap_9", 477609.3, 6457095.5, 125, 1.1, "On the lobe's south slab (photo)."),
+        ("heap_3", 477606.5, 6457093.0, 45, 0.9, "On the lobe's south slab (photo)."),
+        ("heap_7", 477620.6, 6457094.3, 95, 1.0, "Pale boulder on the east slab (ortho)."),
+        ("heap_5", 477619.9, 6457093.0, 10, 0.7, "Pale boulder on the east slab (ortho)."),
+        ("heap_3", 477621.3, 6457064.3, 70, 1.1, "Rim of slab 150, right of the birch's trunk; lidar returns here."),
+        ("heap_6", 477622.6, 6457066.0, 130, 0.8, "Rim of slab 150, right of the birch's trunk."),
+        ("heap_9", 477623.0, 6457080.5, 55, 1.0, "North end of slab 150; lidar returns here."),
+    ]
+    return [{"id": "h16-birch-boulder-%02d" % (i + 1), "asset": a, "e": e, "n": n, "yawDeg": y, "lengthM": L,
+             "topM": round(0.53 * L, 2), "note": note} for i, (a, e, n, y, L, note) in enumerate(rows)]
+
+
+BIRCH_BOULDERS = _birch_boulders()
+
+
 def h2_heap():
     """The stenrose at hole 2's tee (photo from the tee, 2026-10-18; round 2: 7-8 m long, 4-5 m deep, 3 m high, one dominant
     top stone of 2.5 m at the right = the north end). The 2023 and 2025 orthos show eight pale stones 1-1.5 m across at
@@ -365,7 +393,7 @@ def main():
         walls.append({"id": w["id"], "note": w["note"], "seed": sum(map(ord, w["id"])), "toe": toe, "lip": lip})
     spec = {"format": "golfmap-walls-v1", "source": "docs/gspro/ombergs-golfklubb/stone-walls.gen.py", "stonesFolder": STONES_FOLDER,
             "physicMaterial": PHYSIC_MATERIAL, "stoneSets": STONE_SETS, "defaults": DEFAULTS, "styles": STYLES,
-            "walls": walls, "boulders": H1_BOULDERS + H2_BOULDERS + BOX_BOULDERS, "placedColors": {}}
+            "walls": walls, "boulders": H1_BOULDERS + H2_BOULDERS + BOX_BOULDERS + BIRCH_BOULDERS, "placedColors": {}}
     outs = [(os.path.join(HERE, "stone-walls.json"), spec), (os.path.join(HERE, "wall-stones.json"), stones_spec())]
     if a.out:
         outs.append((os.path.join(a.out, "stone-walls.json"), spec))

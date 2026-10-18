@@ -527,6 +527,15 @@
       "crownWidthM": 14.0411053,
       "kind": "broadleaf",
       "form": "tree"
+    },
+    {
+      "id": "arborist:S7_European_White_Birch",
+      "species": "birch",
+      "renderer": "arborist",
+      "heightM": 14.6773872,
+      "crownWidthM": 12.3129873,
+      "kind": "broadleaf",
+      "form": "tree"
     }
   ]
 }
