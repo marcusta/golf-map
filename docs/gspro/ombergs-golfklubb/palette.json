@@ -105,10 +105,6 @@
       "selectionWeight": 1
     },
     {
-      "model": "vsp:Broadleaf_Desktop",
-      "enabled": false
-    },
-    {
       "model": "vsp:Maple",
       "enabled": false
     },

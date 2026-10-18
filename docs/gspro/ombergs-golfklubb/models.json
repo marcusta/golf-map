@@ -261,22 +261,6 @@
       }
     },
     {
-      "id": "vsp:Broadleaf_Desktop",
-      "species": "broadleaf",
-      "renderer": "vsp",
-      "heightM": 21.142154693603516,
-      "crownWidthM": 20.20050811767578,
-      "kind": "broadleaf",
-      "form": "tree",
-      "unity": {
-        "guid": "670f72ca03b1ee8d2a4eb501c9f1978a",
-        "path": "Assets/GolfMap/Omberg/FoliageTrialV2/Broadleaf Balanced.prefab",
-        "assetType": "prefab",
-        "catalogueGuid": "add40014f8bd6a64cac74ac7089d563a",
-        "originalPath": "Assets/Trees/Broadleaf/Broadleaf_Desktop.prefab"
-      }
-    },
-    {
       "id": "vsp:Maple",
       "species": "maple",
       "renderer": "vsp",

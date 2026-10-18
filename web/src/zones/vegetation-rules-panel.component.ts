@@ -153,6 +153,18 @@ export class VegetationRulesPanelComponent extends Component {
                 border-top: 1px solid ${t('color-border-subtle')};
                 &.empty { color: ${t('color-text-secondary')}; }
             }
+            & .vr-model {
+                display: flex;
+                align-items: baseline;
+                gap: ${s('sm')};
+                padding: 2px 0;
+                border-top: 1px solid ${t('color-border-subtle')};
+                &.empty { color: ${t('color-text-secondary')}; }
+                & .vr-model__label { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+                & .vr-tag, & .vr-tag--off { flex: none; }
+            }
+            /* In the row's text for readers and search, not on screen: the group header shows it. */
+            & .vr-hidden { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }
         }
     `;
 
@@ -314,7 +326,7 @@ export class VegetationRulesPanelComponent extends Component {
         return d;
     }
 
-    /** Each species' models, one line each: species, model, who draws it; the size in the tooltip. */
+    /** Each species' models, one line each under the species header: model, who draws it; the size in the tooltip. */
     private treeModels(rules: PlantingRules, open: Set<string>): HTMLElement {
         const d = this.details('tree-models', open);
         const summary = el('summary');
@@ -327,12 +339,12 @@ export class VegetationRulesPanelComponent extends Component {
             const group = el('div', 'vr-group');
             group.appendChild(el('div', 'vr-group__title', `${sp.species} · weight ${sp.weight}`));
             for (const m of sp.models) {
-                const row = el('div', m.enabled ? 'vr-mix' : 'vr-mix empty');
+                const row = el('div', m.enabled ? 'vr-model' : 'vr-model empty');
                 row.dataset.testid = 'planting-rules-model';
                 row.dataset.model = m.id;
                 const size = m.missing ? 'not in the model library (models.json)' : `${m.heightM.toFixed(1)} m tall, ${m.crownWidthM.toFixed(1)} m crown`;
                 row.title = `${m.id}\n${size}${m.enabled ? '' : '\n(disabled in the palette)'}`;
-                row.append(el('span', 'vr-rule__key', sp.species), el('span', undefined, modelLabel(m.id)),
+                row.append(el('span', 'vr-hidden', `${sp.species} `), el('span', 'vr-model__label', modelLabel(m.id)),
                     el('span', m.enabled ? 'vr-tag' : 'vr-tag--off', rendererName(m.renderer)));
                 group.appendChild(row);
             }
