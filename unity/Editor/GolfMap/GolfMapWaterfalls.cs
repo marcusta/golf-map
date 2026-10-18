@@ -58,7 +58,7 @@ namespace GolfMap.Editor
             public string id, style;
             public List<Vector2> lip = new List<Vector2>();
             public Vector2 flow;
-            public float topY, bottomY, widthM, sillM;
+            public float topY, bottomY, widthM, sillM, heightM;
         }
 
         public sealed class Options
@@ -137,6 +137,18 @@ namespace GolfMap.Editor
 
             foreach (var f in falls)
             {
+                if (f.style == "fountain" || f.style == "cascade")
+                {
+                    var along = new Dictionary<string, object> { { "id", f.id }, { "style", f.style } };
+                    rows.Add(along);
+                    if (dryRun) continue;
+                    var holder = new GameObject(NamePrefix + f.id);
+                    holder.transform.SetParent(root.transform, false);
+                    Undo.RegisterCreatedObjectUndo(holder, "Build waterfalls");
+                    if (f.style == "fountain") Fountain(holder, f, foam, splash, along);
+                    else Cascade(holder, f, splineType, profile, profileType, material, splash, o, along);
+                    continue;
+                }
                 var mid = Mid(f.lip);
                 // An outlet is a pipe's spout out of the bank, not the lip's whole width.
                 float width = f.style == "outlet" ? Mathf.Min(f.widthM, o.outletWidthM) : f.widthM;
@@ -213,6 +225,112 @@ namespace GolfMap.Editor
                 { "madeFrom", madeFrom }, { "rows", rows },
             };
         }
+
+        // A fountain: a jet heightM high at the middle of its line, falling back as spray, splash round its foot.
+        static void Fountain(GameObject holder, Fall f, Material foam, Material splash, Dictionary<string, object> row)
+        {
+            var at = Mid(f.lip);
+            float level = f.topY;
+            var foot = new Vector3(at.x, level + 0.02f, at.y);
+            float v = Mathf.Sqrt(2f * 9.81f * Mathf.Max(f.heightM, 0.2f));
+            if (foam != null)
+            {
+                var jet = new GameObject("Jet");
+                jet.transform.SetParent(holder.transform, false);
+                jet.transform.position = foot;
+                jet.transform.rotation = Quaternion.LookRotation(Vector3.up, Vector3.forward);
+                var ps = jet.AddComponent<ParticleSystem>();
+                var main = ps.main;
+                main.loop = true; main.playOnAwake = true;
+                main.simulationSpace = ParticleSystemSimulationSpace.World;
+                main.startSpeed = new ParticleSystem.MinMaxCurve(v * 0.9f, v);
+                main.startLifetime = new ParticleSystem.MinMaxCurve(2f * v / 9.81f * 0.9f, 2f * v / 9.81f);
+                main.startSize = new ParticleSystem.MinMaxCurve(0.12f, 0.28f);
+                main.startColor = new Color(1f, 1f, 1f, 0.55f);
+                main.gravityModifier = 1f;
+                main.maxParticles = 600;
+                var emission = ps.emission; emission.rateOverTime = 160f;
+                var shape = ps.shape; shape.shapeType = ParticleSystemShapeType.Cone; shape.angle = 4f; shape.radius = 0.05f;
+                var r = jet.GetComponent<ParticleSystemRenderer>();
+                r.sharedMaterial = foam; r.shadowCastingMode = UnityEngine.Rendering.ShadowCastingMode.Off; r.receiveShadows = false;
+                ps.Simulate(2f, true, true);
+            }
+            if (splash != null)
+            {
+                var ring = new GameObject("Splash");
+                ring.transform.SetParent(holder.transform, false);
+                ring.transform.position = foot;
+                ring.transform.rotation = Quaternion.LookRotation(Vector3.up, Vector3.forward);
+                var sp = ring.AddComponent<ParticleSystem>();
+                var sm = sp.main;
+                sm.loop = true; sm.playOnAwake = true; sm.simulationSpace = ParticleSystemSimulationSpace.World;
+                sm.startSpeed = new ParticleSystem.MinMaxCurve(0.2f, 0.6f);
+                sm.startLifetime = new ParticleSystem.MinMaxCurve(0.8f, 1.4f);
+                sm.startSize = new ParticleSystem.MinMaxCurve(0.3f, 0.6f);
+                sm.startColor = new Color(1f, 1f, 1f, 0.45f);
+                sm.maxParticles = 200;
+                var se = sp.emission; se.rateOverTime = 40f;
+                var ss = sp.shape; ss.shapeType = ParticleSystemShapeType.Circle; ss.radius = Mathf.Max(0.3f, f.heightM * 0.35f);
+                var rr = ring.GetComponent<ParticleSystemRenderer>();
+                rr.sharedMaterial = splash; rr.shadowCastingMode = UnityEngine.Rendering.ShadowCastingMode.Off; rr.receiveShadows = false;
+                sp.Simulate(2f, true, true);
+            }
+            row["at"] = new List<object> { Math.Round(at.x, 2), Math.Round(at.y, 2) };
+            row["levelY"] = Math.Round(level, 3);
+            row["heightM"] = f.heightM;
+        }
+
+        // A cascade: a R.A.M. spline down its line (upstream to downstream) on the ground under it (the runnel), only
+        // ever falling, from the upper water to the lower; R.A.M.'s profile draws the steep stretches white.
+        static void Cascade(GameObject holder, Fall f, Type splineType, UnityEngine.Object profile, Type profileType, Material material,
+            Material splash, Options o, Dictionary<string, object> row)
+        {
+            var pts = new List<Vector2>();
+            for (int i = 1; i < f.lip.Count; i++)
+            {
+                var a = f.lip[i - 1]; var b = f.lip[i];
+                int n = Mathf.Max(1, Mathf.CeilToInt(Vector2.Distance(a, b) / 1f));
+                for (int k = 0; k < n; k++) pts.Add(Vector2.Lerp(a, b, k / (float)n));
+            }
+            pts.Add(f.lip[f.lip.Count - 1]);
+            var ys = new List<float>();
+            for (int i = 0; i < pts.Count; i++)
+            {
+                float? g = GolfMapProps.Ground(pts[i].x, pts[i].y, holder.transform);
+                float y = g != null ? g.Value + CascadeAboveGroundM : Mathf.Lerp(f.topY, f.bottomY, i / (float)(pts.Count - 1));
+                ys.Add(Mathf.Clamp(y, f.bottomY, f.topY));
+            }
+            ys[0] = f.topY; ys[ys.Count - 1] = f.bottomY;
+            for (int i = 1; i < ys.Count; i++) ys[i] = Mathf.Min(ys[i], ys[i - 1]);
+            var spline = (Component)splineType.GetMethod("CreateSpline", BindingFlags.Public | BindingFlags.Static).Invoke(null, new object[] { material, null });
+            spline.gameObject.name = "Water";
+            spline.transform.SetParent(holder.transform, false);
+            spline.transform.localPosition = Vector3.zero;
+            var addPoint = splineType.GetMethod("AddPoint", new[] { typeof(Vector4) });
+            for (int i = 0; i < pts.Count; i++) addPoint.Invoke(spline, new object[] { new Vector4(pts[i].x, ys[i], pts[i].y, f.widthM) });
+            splineType.GetField("width").SetValue(spline, f.widthM);
+            splineType.GetField("snapToTerrain").SetValue(spline, false);
+            ApplyProfile(spline, splineType, profile, profileType);
+            if (material != null) spline.GetComponent<MeshRenderer>().sharedMaterial = material;
+            splineType.GetMethod("GenerateSpline").Invoke(spline, new object[] { null });
+            foreach (var r in spline.GetComponentsInChildren<MeshRenderer>(true))
+            {
+                r.shadowCastingMode = UnityEngine.Rendering.ShadowCastingMode.Off;
+                r.reflectionProbeUsage = UnityEngine.Rendering.ReflectionProbeUsage.BlendProbes;
+            }
+            if (splash != null && o.particles)
+            {
+                var end = pts[pts.Count - 1]; var before = pts[Mathf.Max(0, pts.Count - 2)];
+                var u = (end - before).normalized;
+                Emitter(holder, "Splash", splash, new Vector3(end.x, f.bottomY + 0.03f, end.y), new Vector3(-u.y, 0, u.x), f.widthM, u,
+                    f.topY - f.bottomY, o.splashRate, true);
+            }
+            row["points"] = pts.Count;
+            row["topY"] = Math.Round(f.topY, 3);
+            row["bottomY"] = Math.Round(f.bottomY, 3);
+        }
+
+        const float CascadeAboveGroundM = 0.08f;
 
         // The spline's points (x, y, z) down the middle of the fall, upstream to downstream.
         static List<Vector3> Profile(Fall f, Vector2 mid, Vector2 u, float topY, float bottomY, float land)
@@ -454,6 +572,7 @@ namespace GolfMap.Editor
                     id = o.String("id"), style = o.String("style") ?? "sill",
                     topY = (float)o.Number("topY"), bottomY = (float)o.Number("bottomY"),
                     widthM = (float)o.Number("widthM", 1.5), sillM = (float)o.Number("sillM", 1),
+                    heightM = (float)o.Number("heightM", 1.5),
                 };
                 foreach (var p in (o.Array("lip") ?? new List<object>()).OfType<List<object>>())
                 {
@@ -462,7 +581,7 @@ namespace GolfMap.Editor
                 }
                 var flow = (o.Array("flow") ?? new List<object>()).OfType<GolfMapJsonNumber>().Select(n => (float)n.Value).ToArray();
                 if (flow.Length >= 2) f.flow = new Vector2(flow[0], flow[1]);
-                if (!string.IsNullOrEmpty(f.id) && f.lip.Count >= 2 && f.flow.sqrMagnitude > 0) list.Add(f);
+                if (!string.IsNullOrEmpty(f.id) && f.lip.Count >= 2 && (f.flow.sqrMagnitude > 0 || f.style == "fountain")) list.Add(f);
             }
             return list;
         }
