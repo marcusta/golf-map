@@ -1,7 +1,9 @@
 # Shaping queue: one Blender run for many requests (design, 2026-10-18)
 
 Status: built 2026-10-18 (`server/services/shaping-queue.ts`, `ShapingService.apply`, the CLI, the web's
-Update meshes). The live test with two processes against a real course is still to do.
+Update meshes). Live test on Omberg, 2026-10-19: three `--dry-run` CLI processes started 10 s and 12 s
+apart gave two runs, A on its own and B + C together, all done in ~34 s each (most of it the 30 s
+Unity probe, as the editor was busy).
 
 ## Problem
 

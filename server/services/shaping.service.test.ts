@@ -12,7 +12,7 @@ import { ConflictError, NotFoundError } from '@basics/core/server/auth';
 import { createTestDb } from '../testing/db';
 import { seedCourse, TEST_COURSE_ID } from '../db/seeds/course';
 import { startFakeShapingWorker, type FakeShapingWorker } from '../testing/fake-shaping-worker';
-import { ShapingService, objectName, isRockSlab, LATEST_LOG, LOG_KEEP_DAYS, type ShapingTimeouts } from './shaping.service';
+import { ShapingService, objectName, isRockSlab, newerBlendFirst, LATEST_LOG, LOG_KEEP_DAYS, type ShapingTimeouts } from './shaping.service';
 import { defaultUnityBridge } from './unity-bridge';
 import { GsproExportService, type ExportRunner } from './gspro-export.service';
 
@@ -683,6 +683,13 @@ test('a lease left by a process that died is taken over, and the request it was 
     const left = JSON.parse(await Bun.file(path.join(dir, 'requests', 'orphan-1.json')).text());
     expect(left).toMatchObject({ state: 'done', ok: true, runId: job.runId });
     expect(await Bun.file(path.join(dir, 'lease.json')).exists()).toBe(false);
+});
+
+test('the newest .blend: by mtime, and on a tie the higher build number (svg_110 over svg_109, svg_100 over svg_99)', () => {
+    const pick = (list: Array<{ name: string; mtime: number }>) => list.slice().sort(newerBlendFirst)[0]!.name;
+    expect(pick([{ name: 'c_svg_109.blend', mtime: 5 }, { name: 'c_svg_110.blend', mtime: 5 }])).toBe('c_svg_110.blend');
+    expect(pick([{ name: 'c_svg_99.blend', mtime: 5 }, { name: 'c_svg_100.blend', mtime: 5 }])).toBe('c_svg_100.blend');
+    expect(pick([{ name: 'c_svg_110.blend', mtime: 4 }, { name: 'c_svg_109.blend', mtime: 5 }])).toBe('c_svg_109.blend');
 });
 
 test('recipes: the library for a surface with its default; [] while there is no library', async () => {

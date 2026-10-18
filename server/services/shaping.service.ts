@@ -857,7 +857,7 @@ export class ShapingService {
             const file = path.join(exportDir, n);
             return { file, name: n, mtime: (await stat(file)).mtimeMs, conformed: n.toLowerCase().endsWith('.conformed.blend') };
         }));
-        const newest = (list: typeof blends) => list.sort((a, b) => b.mtime - a.mtime || a.name.localeCompare(b.name))[0] ?? null;
+        const newest = (list: typeof blends) => list.sort(newerBlendFirst)[0] ?? null;
         const conformed = newest(blends.filter(b => b.conformed));
         const source = newest(blends.filter(b => !b.conformed));
         // The newest SOURCE .blend is the course as OPCD last built it; the worker makes or reuses
@@ -1143,6 +1143,17 @@ export class ShapingService {
 }
 
 // --- Helpers ---
+
+/**
+ * Newest first by mtime; on a tie the higher build number (`_svg_110` before
+ * `_svg_109`, numbers compared as numbers). A copied .blend keeps its source's
+ * mtime, and the name order picked the older build: Omberg's svg_109 and
+ * svg_110 had the same mtime, and an apply would have loaded svg_109 over the
+ * svg_110 the worker held.
+ */
+export function newerBlendFirst(a: { name: string; mtime: number }, b: { name: string; mtime: number }): number {
+    return b.mtime - a.mtime || b.name.localeCompare(a.name, undefined, { numeric: true });
+}
 
 /** GOLFMAP_BLENDER, else Blender 4.5's default install on Windows, else `blender` on PATH. */
 export function blenderExecutable(): string {
