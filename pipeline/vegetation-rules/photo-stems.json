@@ -1,0 +1,70 @@
+{
+  "format": "golfmap-vegetation-rule-defaults-v1",
+  "source": "photo-stems",
+  "label": "Photo stems",
+  "script": "golfpipe photo-stems",
+  "summary": "Young trees on open ground (rough, semi rough, deep rough, fairway) that the lidar missed, found from their shadows in the summer photo, sized by the lidar stems that cast a shadow there and typed from the leaf-off photo; proposals until accepted in the Vegetation mode (Trees in photo) or with bun run trees:photo, then planted like lidar stems.",
+  "steps": [
+    "Open ground: rough, semi rough, deep rough and fairway minus greens, tees, bunkers, water, creeks, paths, rock slabs, tree areas and the woodland floor, whatever order they were drawn in, with a band kept off them and a wider one off the water (pond-bank stones cast shadows too).",
+    "Shadows: on the open ground only, the summer photo's luminance against the open grass round it; a patch darker than shadow-grow with a core darker than shadow-seed is a shadow.",
+    "Sun: the shadow direction is the median direction from the lidar stems to the shadows that reach them; the sun factor is a shadow's tip distance per metre of lidar height over the lidar stems whose own shadow ends next to them.",
+    "Where: a photo stem stands offset (or offset-per-width x the shadow's width, when more) sun-side of where its shadow ends; never within dedupe-m of a lidar stem or in a lidar tree's own shadow.",
+    "Size: height and crown radius as the matched lidar trees have them for that shadow tip distance and width (a least-squares line over them; a thin young crown casts a lighter, shorter-looking shadow); with fewer than min-fit matches the sun factor alone, with fewer than min-matches the defaults.",
+    "Kind: in the leaf-off photo a crown dark and green is a conifer, bare branches darker than the ground a broadleaf, nothing to see unknown.",
+    "Accepted photo stems are kept in tiles/<site>/tree-stems-photo.json (Regenerate trees leaves them), skipped ones are remembered there too, and gspro.py trees plants the accepted ones with src photo."
+  ],
+  "groups": [
+    {
+      "title": "Shadows in the summer photo",
+      "rules": [
+        { "key": "shadow-seed", "value": 0.72, "unit": "x grass", "text": "A shadow in the summer photo has a core darker than this share of the open grass round it ..." },
+        { "key": "shadow-grow", "value": 0.85, "unit": "x grass", "text": "... and reaches as far as the photo stays darker than this share." },
+        { "key": "shadow-end", "value": 0.75, "unit": "x grass", "text": "A shadow ends on the sun side at the first 0.32 m slice across it that is darker than this on the whole (a green crown tuft there is dark too, but less)." },
+        { "key": "min-shadow-length", "value": 0.6, "unit": "m", "text": "Shorter dark patches along the shadow direction are no tree's shadow." },
+        { "key": "min-shadow-area", "value": 1.0, "unit": "m²", "text": "Smaller dark patches are no tree's shadow." },
+        { "key": "max-shadow-area", "value": 80.0, "unit": "m²", "text": "Larger dark patches are a stand or a big tree, which the lidar has." },
+        { "key": "min-elongation", "value": 1.0, "unit": "x", "text": "A shadow's long axis is at least this times its short one ..." },
+        { "key": "max-axis-off", "value": 45.0, "unit": "°", "text": "... and an elongated one points within this of the shadow direction." }
+      ]
+    },
+    {
+      "title": "Open ground",
+      "rules": [
+        { "key": "water-band", "value": 4.0, "unit": "m", "text": "Nothing this close to water (the bank stones cast shadows in the rough)." },
+        { "key": "closed-band", "value": 0.5, "unit": "m", "text": "Nothing this close to a green, tee, bunker, path, rock slab, tree area or the woodland floor." }
+      ]
+    },
+    {
+      "title": "Where the stem stands",
+      "rules": [
+        { "key": "offset", "value": 1.0, "unit": "m", "text": "A photo stem stands this far sun-side of where its shadow ends (a young tree's crown tuft) ..." },
+        { "key": "offset-per-width", "value": 0.5, "unit": "x width", "text": "... or this times the shadow's width when that is more (a wide crown hides the foot of its own shadow)." },
+        { "key": "piece-reach", "value": 1.5, "unit": "m", "text": "A smaller dark patch from this far sun-side of a bigger shadow's stem to that shadow's tip is a piece of the same tree (its crown tuft, a broken shadow)." },
+        { "key": "dedupe-m", "value": 3.0, "unit": "m", "text": "No photo stem within this of a lidar stem." }
+      ]
+    },
+    {
+      "title": "Calibration on the lidar stems",
+      "rules": [
+        { "key": "match-m", "value": 3.0, "unit": "m", "text": "A lidar stem casts the shadow that starts within this of it (calibration)." },
+        { "key": "min-matches", "value": 3, "unit": "stems", "text": "With fewer matched lidar stems the photo is sized by the defaults below." },
+        { "key": "min-fit", "value": 6, "unit": "stems", "text": "From this many matched lidar stems the photo stems are sized like them (a line from shadow length and width to lidar height and crown radius); fewer, by the sun factor alone." },
+        { "key": "default-shadow-azimuth", "value": 305.0, "unit": "°", "text": "Shadow direction (compass) when too few lidar stems cast a shadow (Omberg 2025-06-14: 304)." },
+        { "key": "default-sun-factor", "value": 1.6, "unit": "m per m", "text": "Shadow tip distance per metre of tree height by default (Omberg 2025-06-14: 1.63, a sun about 32° up)." },
+        { "key": "default-radius-per-width", "value": 0.35, "unit": "x width", "text": "Crown radius per metre of shadow width by default (Omberg 2025-06-14: 0.35)." },
+        { "key": "min-height", "value": 1.5, "unit": "m", "text": "Lowest photo stem proposed." },
+        { "key": "max-height", "value": 15.0, "unit": "m", "text": "Highest photo stem proposed (a longer shadow is a lidar tree's)." }
+      ]
+    },
+    {
+      "title": "Kind from the leaf-off photo",
+      "rules": [
+        { "key": "conifer-max-ratio", "value": 0.6, "unit": "x ground", "text": "Leaf-off photo: a crown darker than this share of the ground round it ..." },
+        { "key": "conifer-min-area", "value": 1.0, "unit": "m²", "text": "... covering at least this ..." },
+        { "key": "conifer-min-greenness", "value": 0.01, "unit": "greenness", "text": "... and this much greener than the ground, (G - R) / (R + G + B), with a conifer score (greenness-anchors) of conifer-threshold or more, is a conifer (green in April)." },
+        { "key": "bare-max-ratio", "value": 0.85, "unit": "x ground", "text": "Leaf-off photo: else pixels darker than this ..." },
+        { "key": "bare-min-area", "value": 0.3, "unit": "m²", "text": "... over at least this are bare branches, a broadleaf; less, the kind is unknown." }
+      ]
+    }
+  ]
+}

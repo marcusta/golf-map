@@ -22,6 +22,7 @@ import { GeojsonImportService } from '../import/geojson-import.service';
 import { GsproSyncService } from '../export/gspro-sync.service';
 import { ZoneTypesService, zoneTypeKeyOf } from '../zones/zone-types.service';
 import { VegetationRulesService } from '../zones/vegetation-rules.service';
+import { PhotoStemsService } from '../zones/photo-stems.service';
 import { VEGETATION_TOOL_ID } from '../zones/vegetation-tool';
 import { PlantVegetationService, arboristOutcome } from '../zones/plant-vegetation.service';
 import { ShapingService, type ShapingJob } from '../terrain-edit/shaping.service';
@@ -771,6 +772,7 @@ export class CommandBarComponent extends Component<{ mode: CommandBarMode }> {
     private gsproSync = this.inject(GsproSyncService);
     private zoneTypesSvc = this.inject(ZoneTypesService);
     private vegetationRulesSvc = this.inject(VegetationRulesService);
+    private photoStemsSvc = this.inject(PhotoStemsService);
     private mapBuild = this.inject(MapBuildClientService);
     private tileset = this.inject(TilesetService);
     private mapSvc = this.inject(MapService);
@@ -1488,7 +1490,9 @@ export class CommandBarComponent extends Component<{ mode: CommandBarMode }> {
             + `<div class="cmd-ft-policy"><button type="button" class="cmd-zt-edit" data-k="edit" data-testid="zone-types-edit-btn">`
             + `${icon('layers', 16)}<span>Edit zone types…</span></button>`
             + `<button type="button" class="cmd-zt-edit" data-k="rules" data-testid="planting-rules-btn" title="How the grass, ground plants and trees are planted now">`
-            + `${icon('info', 16)}<span>Planting rules…</span></button></div>`;
+            + `${icon('info', 16)}<span>Planting rules…</span></button>`
+            + `<button type="button" class="cmd-zt-edit" data-k="photo" data-testid="photo-stems-btn" title="Young trees on open ground the lidar missed, found from their shadows in the summer photo">`
+            + `${icon('tree-pine', 16)}<span>Trees in photo…</span></button></div>`;
         const grid = host.querySelector<HTMLElement>('[data-k="grid"]')!;
         // A tree species area: the species mix the Unity tree planter uses inside it.
         const treeArea = document.createElement('button');
@@ -1517,6 +1521,11 @@ export class CommandBarComponent extends Component<{ mode: CommandBarMode }> {
             const course = this.svc.course.peek();
             close();
             if (course) void this.vegetationRulesSvc.openFor(course.id);
+        };
+        host.querySelector<HTMLButtonElement>('[data-k="photo"]')!.onclick = () => {
+            const course = this.svc.course.peek();
+            close();
+            if (course) this.photoStemsSvc.open(course.id);
         };
         track(effect(() => {
             const types = this.zoneTypesSvc.items.get();

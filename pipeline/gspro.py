@@ -99,6 +99,7 @@ from golfpipe import stac
 from golfpipe import commands
 from golfpipe import grid_dem as grid_dem_mod
 from golfpipe.raster import mosaic_and_crop
+from golfpipe.stems_asset import PHOTO_SOURCE as PHOTO_STEM_SOURCE, StemsAssetError, read_rows as read_stem_rows, stem_id
 import vegetation_rules
 
 WGS84 = CRS.from_epsg(4326)
@@ -1012,18 +1013,31 @@ TREE_RULES = vegetation_rules.load("trees")
 BUSH_RADIUS_FRACTION = TREE_RULES["bush-radius-fraction"]
 
 
+def _load_photo_stems(path: Path, lidar: list[dict]) -> list[dict]:
+    """The accepted photo stems of a tree-stems-photo.json (the tree-stems asset's rows plus `id`
+    and `source`; its `skipped` ids are not trees) as stem dicts with source ortho-shadow. A row
+    without a ground height takes the nearest lidar stem's."""
+    if not path.is_file():
+        raise SystemExit(f"error: no such photo stems file: {path}")
+    rows = []
+    for d in _load_stems(path):
+        d["source"] = PHOTO_STEM_SOURCE
+        if d.get("groundM") is None:
+            near = min(lidar, key=lambda t: (float(t["x"]) - float(d["x"])) ** 2 + (float(t["y"]) - float(d["y"])) ** 2, default=None)
+            d["groundM"] = float(near["groundM"]) if near is not None else 0.0
+        rows.append(d)
+    return rows
+
+
 def _load_stems(path: Path) -> list[dict]:
     """Rows of a tree-stems-v1/v2 compact asset as dicts (x, y, heightM,
     crownRadiusM, groundM, kind); v1 rows get kind 2 (unknown)."""
-    asset = json.loads(path.read_text(encoding="utf-8"))
-    fields = asset.get("fields") or []
-    if asset.get("crs") != "EPSG:3006" or not isinstance(asset.get("trees"), list) or "x" not in fields:
-        raise SystemExit(f"error: {path} is not a tree-stems asset")
-    rows = []
-    for row in asset["trees"]:
-        d = dict(zip(fields, row))
+    try:
+        rows = read_stem_rows(path)
+    except StemsAssetError as exc:
+        raise SystemExit(f"error: {exc}") from None
+    for d in rows:
         d.setdefault("kind", 2)
-        rows.append(d)
     return rows
 
 
@@ -1292,7 +1306,8 @@ def cmd_power_lines(course_ident: str, out: Path, db_path: Path | None = None) -
 
 def cmd_trees(bbox, stems_path: Path, sidecar_path: Path, out: Path, terrain: str | None = None,
               exclude: Extent | None = None, extent: Extent | None = None,
-              db_path: Path | None = None, course: str | None = None, rocks_path: Path | None = None) -> None:
+              db_path: Path | None = None, course: str | None = None, rocks_path: Path | None = None,
+              size_factor: float = 1.0, photo_stems_paths: list[Path] | None = None) -> None:
     """Write a unity-trees-v1 file for one terrain: every stem inside the
     square (and outside `exclude`, the inner square when this is the outer)
     as x/z metres from the square's south-west corner, with the plot's
@@ -1302,9 +1317,15 @@ def cmd_trees(bbox, stems_path: Path, sidecar_path: Path, out: Path, terrain: st
     stem inside one names it in `area`, and stems standing on the course's
     paths are moved to just beside them (_move_stems_off_paths), and stems that
     are really a power line or a rock (the course's `power_line` and `rock_slab`
-    features, and the placed rocks of `rocks_path`) are left out."""
+    features, and the placed rocks of `rocks_path`) are left out. `size_factor` scales every lidar
+    stem's height and crown radius (the course's trees.lidarSizeFactor: an old or leaf-off flight
+    measures the trees smaller than they stand now); stems from another source keep their size.
+    `photo_stems_paths`: the accepted photo stems (golfpipe photo-stems, tree-stems-photo.json) go in
+    with them, each with its own `id` and `"src": "photo"` (lidar trees carry no `src`)."""
     if not stems_path.is_file():
         raise SystemExit(f"error: no such tree-stems asset: {stems_path}")
+    if not size_factor > 0:
+        raise SystemExit(f"error: the size factor must be above 0, not {size_factor}")
     if not sidecar_path.is_file():
         raise SystemExit(f"error: no such heightmap sidecar: {sidecar_path} (export the heightmap first)")
     extent = extent or _square_3006_extent(bbox)
@@ -1318,7 +1339,9 @@ def cmd_trees(bbox, stems_path: Path, sidecar_path: Path, out: Path, terrain: st
     trees = []
     outside = excluded = duplicates = 0
     seen: dict[str, int] = {}
-    for s in _load_stems(stems_path):
+    lidar = _load_stems(stems_path)
+    photo = [row for p in (photo_stems_paths or []) for row in _load_photo_stems(p, lidar)]
+    for s in lidar + photo:
         x, y = float(s["x"]), float(s["y"])
         if not (e0 <= x <= e1 and n0 <= y <= n1):
             outside += 1
@@ -1327,19 +1350,21 @@ def cmd_trees(bbox, stems_path: Path, sidecar_path: Path, out: Path, terrain: st
             excluded += 1
             continue
         h, r = float(s["heightM"]), float(s["crownRadiusM"])
-        stem_id = f"epsg3006:{x:.2f}:{y:.2f}"
+        if (s.get("source") or "lidar") == "lidar":
+            h, r = round(h * size_factor, 2), round(r * size_factor, 2)
+        sid = s.get("id") or stem_id(x, y)
         # The detector can seed two crowns on one cell (a lobe marker landing
         # on its parent's peak); the planter keys stems by id, so keep the
         # wider crown and drop the twin.
-        if stem_id in seen:
+        if sid in seen:
             duplicates += 1
-            if r > trees[seen[stem_id]]["r"]:
-                trees[seen[stem_id]].update({"h": h, "r": r, "g": float(s["groundM"]), "k": int(s["kind"]),
-                                             "bush": r > BUSH_RADIUS_FRACTION * h})
+            if r > trees[seen[sid]]["r"]:
+                trees[seen[sid]].update({"h": h, "r": r, "g": float(s["groundM"]), "k": int(s["kind"]),
+                                         "bush": r > BUSH_RADIUS_FRACTION * h})
             continue
-        seen[stem_id] = len(trees)
+        seen[sid] = len(trees)
         trees.append({
-            "id": stem_id,
+            "id": sid,
             "x": round(x - e0, 3),
             "z": round(y - n0, 3),
             "h": h,
@@ -1348,6 +1373,8 @@ def cmd_trees(bbox, stems_path: Path, sidecar_path: Path, out: Path, terrain: st
             "k": int(s["kind"]),
             "bush": r > BUSH_RADIUS_FRACTION * h,
         })
+        if s.get("source") == PHOTO_STEM_SOURCE:
+            trees[-1]["src"] = "photo"
 
     rocks = _load_placed_rocks(rocks_path) if rocks_path is not None and rocks_path.is_file() else []
     wires = []
@@ -1384,7 +1411,8 @@ def cmd_trees(bbox, stems_path: Path, sidecar_path: Path, out: Path, terrain: st
           f"(broadleaf {kinds[0]}, conifer {kinds[1]}, unknown {kinds[2]}; "
           f"{sum(1 for t in trees if t['bush'])} bushes); {outside} outside the square"
           + (f", {excluded} left to the inner terrain" if exclude is not None else "")
-          + (f", {duplicates} duplicate position(s) merged" if duplicates else ""))
+          + (f", {duplicates} duplicate position(s) merged" if duplicates else "")
+          + (f"; {sum(1 for t in trees if t.get('src') == 'photo')} of them photo stems" if photo else ""))
     if as_rock or as_wire:
         print(f"  left out: {as_rock} stem(s) under {TREE_ROCK_MAX_HEIGHT_M:g} m on a rock slab or placed rock, "
               f"{as_wire} in a power line's corridor")
@@ -7457,6 +7485,10 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--course", help="course id or name substring: add its tree species areas (and each stem's area), "
                                     "leave out the stems on its rock slabs and in its power lines' corridors")
     p.add_argument("--rocks", help="a golfmap-walls-v1 stone-walls.json: low stems on its placed rocks are left out")
+    p.add_argument("--size-factor", dest="size_factor", type=float, default=1.0,
+                   help="scale every lidar stem's height and crown radius (the course's trees.lidarSizeFactor; default 1)")
+    p.add_argument("--photo-stems", dest="photo_stems", action="append", default=[],
+                   help="accepted photo stems (tree-stems-photo.json, golfpipe photo-stems): planted too, each with \"src\": \"photo\"; repeatable")
     p.add_argument("--db", default=str(DEFAULT_DB), help=f"app database for --course (default {DEFAULT_DB})")
 
     p = sub.add_parser("power-lines", help="write the course's power_line features for Unity's golfmap.powerlines.build")
@@ -7674,7 +7706,8 @@ def main(argv: list[str] | None = None) -> int:
         cmd_trees(bbox, Path(args.stems), Path(args.sidecar), Path(args.out), args.terrain,
                   _parse_square(args.exclude_square) if args.exclude_square else None, extent=extent,
                   db_path=Path(args.db), course=args.course,
-                  rocks_path=Path(args.rocks) if args.rocks else None)
+                  rocks_path=Path(args.rocks) if args.rocks else None, size_factor=args.size_factor,
+                  photo_stems_paths=[Path(p) for p in args.photo_stems])
     elif args.command == "buildings":
         cmd_buildings(bbox, Path(args.survey), Path(args.sidecar), Path(args.out), args.terrain,
                       _parse_square(args.exclude_square) if args.exclude_square else None, extent=extent)

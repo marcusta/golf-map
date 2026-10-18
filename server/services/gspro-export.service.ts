@@ -1442,10 +1442,23 @@ export class GsproExportService {
         // The course's placed rocks (golfmap.walls.build's spec): the lidar reads a boulder as a low bush.
         const rocks = path.join(this.courseDocsRoot, courseSlug(course.name), 'stone-walls.json');
         if (await statOrNull(rocks)) args.push('--rocks', rocks);
+        // The course's trees.lidarSizeFactor (its vegetation-rules.json): an old or leaf-off flight
+        // measures the trees smaller than they stand now (Omberg: lidar March 2022 vs shadows June 2025).
+        const rulesFile = path.join(this.courseDocsRoot, courseSlug(course.name), VEGETATION_RULES_FILE);
+        const sizeFactor = await statOrNull(rulesFile)
+            ? (JSON.parse(await readFile(rulesFile, 'utf8')) as { trees?: { lidarSizeFactor?: unknown } }).trees?.lidarSizeFactor
+            : undefined;
+        if (sizeFactor !== undefined) {
+            if (typeof sizeFactor !== 'number' || !(sizeFactor > 0)) throw new ConflictError(`${rulesFile}: trees.lidarSizeFactor must be a number above 0`);
+            args.push('--size-factor', String(sizeFactor));
+        }
+        // The accepted photo stems (PhotoStemsService): young trees the lidar missed, planted with src "photo".
+        const photoStems = this.assets.resolvePhotoStemsPath(siteId);
+        if (await statOrNull(photoStems)) args.push('--photo-stems', photoStems);
         const rendered = await this.runIfChanged(`GSPro ${kind} trees`, args, out, {
             // The file carries the course's tree species areas, so its feature stamp joins the hash.
-            files: [stems, sidecar, rocks],
-            values: { features: await this.history.latestStamp(courseId) },
+            files: [stems, sidecar, rocks, photoStems],
+            values: { features: await this.history.latestStamp(courseId), sizeFactor: sizeFactor ?? 1 },
         }, opts.force);
         return { path: rendered.path, report: [...prepared, ...fetched, ...rendered.report] };
     }

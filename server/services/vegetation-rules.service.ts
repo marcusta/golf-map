@@ -211,6 +211,9 @@ export class VegetationRulesService {
         const trees: PlantingRuleSection[] = [];
         const treeDoc = defaults.get('trees');
         if (treeDoc) trees.push(section(treeDoc, null, null));
+        // The photo stems (golfpipe photo-stems): young trees the lidar missed, from their shadows in the summer photo.
+        const photoDoc = defaults.get('photo-stems');
+        if (photoDoc) trees.push(section(photoDoc, null, null));
         let palette: unknown = null;
         for (const source of ['tree-palette', 'arborist']) {
             const doc = defaults.get(source) as (RuleDefaultsDoc & { courseFile?: string }) | undefined;

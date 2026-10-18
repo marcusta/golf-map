@@ -103,6 +103,12 @@ export class AssetsService {
         return path.join(this.dataDir, 'tiles', siteId, 'tree-stems.json');
     }
 
+    /** The accepted photo stems (PhotoStemsService) next to the lidar stems: "Regenerate trees" leaves them. */
+    resolvePhotoStemsPath(siteId: string): string {
+        if (!SAFE_ID_RE.test(siteId)) throw new Error('Invalid site id');
+        return path.join(this.dataDir, 'tiles', siteId, 'tree-stems-photo.json');
+    }
+
     // --- Queries (read) ---
 
     private assets() {

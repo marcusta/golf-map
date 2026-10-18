@@ -8,6 +8,7 @@ import { GeojsonImportPanelComponent } from '../import/geojson-import-panel.comp
 import { GsproExportPanelComponent } from '../export/gspro-export-panel.component';
 import { ZoneTypesPanelComponent } from '../zones/zone-types-panel.component';
 import { VegetationRulesPanelComponent } from '../zones/vegetation-rules-panel.component';
+import { PhotoStemsPanelComponent } from '../zones/photo-stems-panel.component';
 import { HoleInfoPanelComponent } from './hole-info-panel.component';
 import { HoleSidebarComponent } from './hole-sidebar.component';
 import { ContextDockComponent } from '../draw/feature-dock.component';
@@ -126,6 +127,8 @@ export class CourseDetailComponent extends Component {
         this.spawn(ZoneTypesPanelComponent, this.ref(frag, 'editorCanvas'));
         // The planting rules (read-only), opened from the same picker.
         this.spawn(VegetationRulesPanelComponent, this.ref(frag, 'editorCanvas'));
+        // Trees in photo (young trees the lidar missed, rings on the map), opened from the same picker.
+        this.spawn(PhotoStemsPanelComponent, this.ref(frag, 'editorCanvas'));
         // Photos sub-mode surfaces over the map (catalog, photo card, viewer);
         // each shows only while the Photos tool is active.
         this.spawn(PhotoBrowserComponent, this.ref(frag, 'editorCanvas'));

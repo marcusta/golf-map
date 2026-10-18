@@ -495,6 +495,29 @@ def test_outer_trees_leave_the_inner_square_to_the_inner_terrain(tmp_path):
     assert doc["trees"][0]["k"] == 2  # v1 asset: kind unknown
 
 
+def test_trees_size_factor_grows_lidar_stems_only(tmp_path):
+    """Omberg's lidar (March 2022, leaf-off) measures the trees 14 % lower and 16 % narrower than
+    their shadows in the June 2025 photo: the course's factor scales lidar stems, not others."""
+    extent = (0.0, 0.0, 100.0, 100.0)
+    stems = tmp_path / "s.json"
+    stems.write_text(json.dumps({"format": "tree-stems-v2", "crs": "EPSG:3006",
+                                 "fields": ["x", "y", "heightM", "crownRadiusM", "groundM", "kind", "source"],
+                                 "trees": [[10.0, 10.0, 20.0, 5.0, 80.0, 0, "lidar"], [30.0, 30.0, 8.0, 2.0, 80.0, 0, "ortho-shadow"],
+                                           [50.0, 50.0, 10.0, 3.0, 80.0, 1, None]]}))
+    sidecar = tmp_path / "s.tif.json"
+    _sidecar(sidecar, extent, 1.0, 2.0, "inner")
+    out = tmp_path / "o.json"
+
+    gspro.cmd_trees(None, stems, sidecar, out, extent=extent, size_factor=1.15)
+
+    trees = {t["id"]: (t["h"], t["r"]) for t in json.loads(out.read_text())["trees"]}
+    assert trees["epsg3006:10.00:10.00"] == (23.0, 5.75)
+    assert trees["epsg3006:30.00:30.00"] == (8.0, 2.0)          # a photo stem is already measured as it stands
+    assert trees["epsg3006:50.00:50.00"] == (11.5, 3.45)        # no source: the lidar's
+    with pytest.raises(SystemExit):
+        gspro.cmd_trees(None, stems, sidecar, out, extent=extent, size_factor=0)
+
+
 def test_trees_merges_two_stems_on_one_cell_into_one_id(tmp_path):
     """The detector can put two crowns on the same cell; the planter keys by
     id, so the wider crown wins and the id stays unique."""

@@ -26,6 +26,7 @@ Commands:
   tile-ortho        GeoTIFF -> WebP XYZ tile pyramid
   tile-terrain      GeoTIFF (DEM) -> Terrain-RGB PNG XYZ tile pyramid
   canopy            Lidar -> canopy / canopy-color / surface tile pyramids + manifest update (--trees-out: tree polygons too)
+  photo-stems       Summer + leaf-off photo, lidar stems, course features -> young trees the lidar missed, from their shadows on open ground
   trees-features    Cleaned canopy grid (canopy.tif or lidar) -> tree polygons GeoJSON with height stats
   lowveg-features   Lidar returns 0.5..3 m above ground -> shrub-zone proposals (vegetation_zone GeoJSON, trees and roofs cut out)
   woodland-features Cleaned canopy grid -> woodland-floor zone proposals per closed stand (+ floor colour from an ortho)
@@ -58,6 +59,8 @@ from golfpipe import hydro
 from golfpipe import lake_plane
 from golfpipe import sources
 from golfpipe import trees_stems
+from golfpipe import photo_stems
+import vegetation_rules
 from golfpipe import osm
 from golfpipe import patches
 from golfpipe import roads
@@ -687,6 +690,18 @@ def build_parser() -> argparse.ArgumentParser:
                         "tiling re-reads the lidar per tile, so it only pays on very large or dense boxes)")
     p.add_argument("--workers", type=int, help="processes for tiled detection (default: every core)")
 
+    p = sub.add_parser("photo-stems", help="Young trees the lidar missed on open ground, found from their shadows in the summer photo (golfmap-photo-stems-v1)")
+    p.add_argument("--summer-ortho", required=True, help="leaf-on ortho GeoTIFF (EPSG:3006) the shadows are read from")
+    p.add_argument("--leaf-off-ortho", help="leaf-off ortho GeoTIFF the kind is read from (default: every proposal unknown)")
+    p.add_argument("--stems", required=True, help="the site's lidar tree-stems asset (v2)")
+    p.add_argument("--features", required=True, help="the course's features: JSON list of {type, source, attributes, geometry}")
+    p.add_argument("--out", required=True, help="output golfmap-photo-stems-v1 JSON")
+    p.add_argument("--known", help="ids to leave out (accepted or skipped): JSON list, or {trees, skipped} with ids")
+    p.add_argument("--dem", help="DEM GeoTIFF (EPSG:3006) each proposal's groundM is read from")
+    p.add_argument("--lidar-size-factor", dest="lidar_size_factor", type=float, default=1.0,
+                   help="the course's trees.lidarSizeFactor: calibrate against the lidar stems at the size the trees export plants them (default 1)")
+    vegetation_rules.add_overrides_flag(p)
+
     p = sub.add_parser("rock-candidates", help="Boulders standing on the ground, found in the lidar and ranked with the course's ortho vintages")
     p.add_argument("--lidar", action="append", required=True)
     p.add_argument("--out", required=True, help="output EPSG:3006 GeoJSON, best candidates first")
@@ -1081,6 +1096,15 @@ def main(argv: list[str] | None = None) -> int:
                 tile_m=args.tile_m, workers=args.workers,
             )
 
+        elif args.command == "photo-stems":
+            photo_stems.cmd_photo_stems(
+                Path(args.summer_ortho), Path(args.leaf_off_ortho) if args.leaf_off_ortho else None,
+                Path(args.stems), Path(args.features), Path(args.out),
+                known_path=Path(args.known) if args.known else None,
+                dem=Path(args.dem) if args.dem else None,
+                lidar_size_factor=args.lidar_size_factor,
+            )
+
         elif args.command == "rock-candidates":
             commands.cmd_rock_candidates(
                 [Path(p) for p in args.lidar], Path(args.out),
@@ -1134,6 +1158,9 @@ def main(argv: list[str] | None = None) -> int:
         print(f"error: {exc}", file=sys.stderr)
         return 1
     except hydro.HydroError as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return 1
+    except photo_stems.PhotoStemsError as exc:
         print(f"error: {exc}", file=sys.stderr)
         return 1
     except lake_plane.LakePlaneError as exc:
