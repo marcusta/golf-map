@@ -88,11 +88,14 @@ do when hole 7 is built). The tall growth is the creek's `bankVeg` (its
 
 ## State
 
-- 2026-10-18: steps finder, `waterfall` type, Unity builder and the
-  water-plane clipping done; the Find falls UI/CLI and the waterfalls export
-  and board row being built. **Waiting**: the DB split, the digs and anything
-  through OPCD/Blender/Unity wait until the new map's integration into
-  Blender and Unity is finished (Marcus). DB backup:
+- 2026-10-18: all tools in and committed: steps finder, `waterfall` type,
+  Find falls (terrain editor + `bun run water:steps`), the waterfalls export
+  and its board row, the Unity builder, the water-plane clipping. The dry run
+  of Find falls on the live data gives the table above. **Waiting**: the DB
+  split (run Find falls / `bun run water:steps -- "Ombergs Golfklubb"
+  --feature hole_3_23e --feature hole_3_23c --cut 478141,6457677`), the digs
+  and anything through OPCD/Blender/Unity wait until the new map's
+  integration into Blender and Unity is finished (Marcus). DB backup:
   `data/backups/app-before-hole3-water-2026-10-18.sqlite`.
 - The waterfall look is not judged yet: in the scene the place is still tall
   grass (no ponds); the R.A.M. "big cascade" reads as a white wall until it
