@@ -1705,45 +1705,28 @@ CREEK_TYPE = "water_creek"
 CREEK_MIN_WIDTH_M = 1.0
 
 
-# A creek's part under a lake/pond (`water`) is cut out of the creek: two water
-# surfaces on one spot add nothing, and Omberg's hole-7 creek with 3 m2 of
-# hole 9's pond over it failed the whole OPCD build, built with that bit cut
-# away (2026-10-18). The pond keeps its shape; a creek piece left under
-# MIN_SHAPE_AREA_M2 by the cut is dropped. The creek stops this far short of
-# the pond (Marcus' margin): whatever lies under fills the strip between them.
-CREEK_WATER_GAP_M = 0.25
-# The cut edge is simplified this much (under the gap, so it never reaches the pond).
-CREEK_CUT_SIMPLIFY_M = 0.05
-
-
-def _cut_creeks_by_water(rows: list, tol: float, grown: dict) -> list[tuple[str, float]]:
-    """Cut every lake/pond out of the creeks under it, in place in `grown`
-    (feature id -> the shape to write, flattened): [(creek id, m2 cut)]."""
-    from shapely import STRtree, unary_union
-    from shapely.geometry import MultiPolygon
+# A creek that runs into a lake/pond (`water`) stays out of the SVG, like a
+# narrow one: its bed is dug in the DEM and R.A.M. puts the water on in Unity.
+# Omberg 2026-10-18: hole 7's creek with 3 m2 of hole 9's pond over it failed
+# the whole OPCD build; cut back from the pond it failed again in the full
+# export, and every way of cutting hole 18's creek at its pond failed too,
+# while the export without the two creeks built. Ponds are never cut.
+def _creeks_into_water(rows: list, tol: float) -> set[str]:
+    """Ids of the creeks that overlap a lake/pond."""
+    from shapely import STRtree
 
     water = [s for s in (_row_shape(r, tol) for r in rows if r["type"] == "water") if s is not None and not s.is_empty]
     if not water:
-        return []
+        return set()
     tree = STRtree(water)
-    cuts = []
+    out = set()
     for r in rows:
         if r["type"] != CREEK_TYPE:
             continue
-        shape = grown.get(r["id"]) or _row_shape(r, tol)
-        if shape is None or shape.is_empty:
-            continue
-        over = [water[int(i)] for i in tree.query(shape) if water[int(i)].intersection(shape).area > 0.01]
-        if not over:
-            continue
-        # Mitre, not round: a round buffer's arcs left the cut edge a sawtooth of
-        # 1-2 mm edges, and hole 18's creek cut that way failed the build again.
-        cut = (shape.difference(unary_union(over).buffer(CREEK_WATER_GAP_M, join_style="mitre"))
-               .simplify(CREEK_CUT_SIMPLIFY_M))
-        kept = [p for p in _polygons(cut) if p.area >= MIN_SHAPE_AREA_M2]
-        grown[r["id"]] = kept[0] if len(kept) == 1 else MultiPolygon(kept)
-        cuts.append((r["id"], shape.area - sum(p.area for p in kept)))
-    return cuts
+        shape = _row_shape(r, tol)
+        if shape is not None and any(water[int(i)].intersection(shape).area > 0.01 for i in tree.query(shape)):
+            out.add(r["id"])
+    return out
 
 
 def _is_narrow_creek(row, tol: float) -> bool:
@@ -3479,12 +3462,15 @@ def cmd_svg(bbox, out: Path, db_path: Path, course_ident: str,
     if narrow_creeks:
         narrow_ids = {r["id"] for r in narrow_creeks}
         rows = [r for r in rows if r["id"] not in narrow_ids]
+    # So do creeks that run into a lake or pond (the pond is never cut).
+    into_water = _creeks_into_water(rows, tol)
+    pond_creeks = [r for r in rows if r["id"] in into_water]
+    rows = [r for r in rows if r["id"] not in into_water]
     tiny = _tiny_rows(rows, tol, fills)
     tiny_ids = {r["id"] for r in tiny}
     rows = [r for r in rows if r["id"] not in tiny_ids]
     roads, road_notes = _merged_roads(rows, fills, tol)
     grown, grown_gaps = _road_edge_fills(rows, fills, roads, tol)
-    creek_cuts = _cut_creeks_by_water(rows, tol, grown)
 
     # One Inkscape layer per hole (Hole1…, the unpadded spelling every OPCD
     # course file here uses) plus 'Others' for features not tied to a hole
@@ -3671,11 +3657,11 @@ def cmd_svg(bbox, out: Path, db_path: Path, course_ident: str,
     if grown_gaps:
         print(f"  {grown_gaps} sliver(s) between a road and the surface beside it filled with that surface "
               f"({len(grown)} feature(s), written flattened)")
-    if creek_cuts:
-        by_id = {r["id"]: r for r in rows}
-        listed = ", ".join(("others" if by_id[fid]["hole_number"] is None else f"hole_{by_id[fid]['hole_number']}")
-                           + f"_{shape_ids[fid]} ({m2:.1f} m2)" for fid, m2 in creek_cuts)
-        print(f"  {len(creek_cuts)} creek(s) cut where a lake or pond lies over them (written flattened): {listed}")
+    if pond_creeks:
+        names = ", ".join(("others" if r["hole_number"] is None else f"hole_{r['hole_number']}") + f"_{shape_ids[r['id']]}"
+                          for r in pond_creeks)
+        print(f"  {len(pond_creeks)} creek(s) running into a lake or pond left out (OPCD fails on the overlap; "
+              f"dug in the DEM by creek-digs, R.A.M. water in Unity): {names}")
     if decks:
         print(f"  bridge decks left out (props in Unity, not ground): {sum(decks.values())} feature(s)")
     if tiny:
@@ -4357,14 +4343,15 @@ def shaping_features(db_path: Path, course_ident: str, library: Path | None = No
         edits[fid] = params if isinstance(params, dict) else {}
 
     mode, known_params = _recipe_override_support(engine)
-    # A creek the SVG leaves out (under a metre wide) has no OPCD mesh to shape.
+    # A creek the SVG leaves out (under a metre wide, or running into a pond) has no OPCD mesh to shape.
+    into_water = _creeks_into_water(rows, ROADS_FLATTEN_M)
     stats["creeks_left_out"] = 0
     ops = []
     for r in rows:
         surface = SHAPING_RECIPE_SURFACE.get(r["type"])
         if surface is None or r["id"] not in shape_ids or _is_bridge_deck(r):
             continue
-        if _is_narrow_creek(r, ROADS_FLATTEN_M):
+        if _is_narrow_creek(r, ROADS_FLATTEN_M) or r["id"] in into_water:
             stats["creeks_left_out"] += 1
             continue
         name = shape_ids[r["id"]]

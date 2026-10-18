@@ -975,28 +975,12 @@ def test_creeks_under_a_metre_wide_stay_out(tmp_path, capsys):
     assert "1 creek(s) under 1 m wide left out" in capsys.readouterr().out
 
 
-def test_a_pond_is_cut_out_of_the_creek_under_it(tmp_path, capsys):
-    """Omberg's hole-7 creek with 3 m2 of hole 9's pond over it failed the
-    whole OPCD build and built with that bit cut away: the creek is written
-    flattened without the pond's part, the pond keeps its curves."""
-    ring = _edge_ring(0.5, 0.5, 20)
-    cx, cy = ring["points"][0]["x"], ring["points"][0]["y"]
-    feats = [("water_creek", 1, 0, [_band(cx, cy, 40, 3)], "bezier"),
-             ("water", 2, 0, [_band(cx + 30, cy - 5, 20, 20)], "bezier")]
-    out = _export(tmp_path, feats)
-    paths = {p.get("id"): p.get("d") for p in ET.parse(out).getroot().iter(f"{SVG_NS}path")}
-    assert set(paths) == {"hole_1_1", "hole_2_2"}
-    xs = [float(x.split(",")[0]) for x in re.findall(r"-?[\d.]+,-?[\d.]+", paths["hole_1_1"])]
-    pond_left = min(float(x.split(",")[0]) for x in re.findall(r"-?[\d.]+,-?[\d.]+", paths["hole_2_2"]))
-    assert max(xs) <= pond_left - 0.01          # the creek stops short of the pond
-    assert "1 creek(s) cut where a lake or pond lies over them" in capsys.readouterr().out
 
-
-def test_the_creek_cut_edge_has_no_millimetre_sawtooth(tmp_path):
-    """A round buffer's arcs left the cut edge a sawtooth of 1-2 mm edges and
-    Omberg's hole-18 creek, cut that way, failed the build: the cut is mitred
-    and simplified, so no edge of the creek is shorter than a few centimetres."""
-    import math
+def test_a_creek_running_into_a_pond_stays_out_and_the_pond_is_untouched(tmp_path, capsys):
+    """Omberg's hole-7 creek with 3 m2 of hole 9's pond over it failed the whole
+    OPCD build, and cutting it back from the pond failed in the full export too;
+    without the creek it built. The creek is left out and named; the pond keeps
+    its drawn curves."""
     ring = _edge_ring(0.5, 0.5, 20)
     cx, cy = ring["points"][0]["x"], ring["points"][0]["y"]
     pond = _edge_ring(0.5, 0.5, 12)
@@ -1004,9 +988,11 @@ def test_the_creek_cut_edge_has_no_millimetre_sawtooth(tmp_path):
         q["x"] += cx - pond["points"][0]["x"] + 20
         q["y"] += cy - pond["points"][0]["y"]
     feats = [("water_creek", 1, 0, [_band(cx, cy - 1, 25, 2)], "bezier"),
-             ("water", 2, 0, [pond], "bspline")]
+             ("water", 2, 0, [pond], "bspline"),
+             ("water_creek", 1, 0, [_band(cx, cy + 40, 25, 2)], "bezier")]
     out = _export(tmp_path, feats)
-    d = next(p.get("d") for p in ET.parse(out).getroot().iter(f"{SVG_NS}path") if p.get("id") == "hole_1_1")
-    pts = [tuple(map(float, x.split(","))) for x in re.findall(r"-?[\d.]+,-?[\d.]+", d)]
-    assert " C " not in d                                   # cut, so written flattened
-    assert min(math.dist(pts[i], pts[i + 1]) for i in range(len(pts) - 1)) > 0.02
+    paths = {p.get("id"): p.get("d") for p in ET.parse(out).getroot().iter(f"{SVG_NS}path")}
+    assert set(paths) == {"hole_2_2", "hole_1_3"}
+    assert " C " in paths["hole_2_2"]                    # the pond as drawn
+    report = capsys.readouterr().out
+    assert "1 creek(s) running into a lake or pond left out" in report and "hole_1_1" in report
