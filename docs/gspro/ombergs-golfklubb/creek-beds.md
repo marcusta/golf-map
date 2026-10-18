@@ -13,6 +13,11 @@ survive. The DEM (0.5 m, `creek-digs`) holds the groove; Blender cuts it into a 
    `Spline_brook_h17_WaterBrook_-_Mesh`, refined to 0.2 m triangles and set to the edited DEM (`rise` mode `dem`, apron
    1 m, the granite shaping off). `WaterBrook` is the one surface a cut-out may give that holds a golf word (shape_layers
    `CUT_OUT_WATER_SURFACE`): Unity's `Classify` reads Water from it, so no vegetation grows in the creek.
+   Then `golfmap.creek_channel` (`shape_creek.py`, [shaping-pending/20-creek-beds.json](shaping-pending/20-creek-beds.json) op `brook-h17-channel`)
+   cuts the channel itself into that mesh: a flat bottom `depthM` 0.7 under the ground beside the creek (median of the bed vertices
+   1.0-1.2 m from the line), `widthM` 0.7 wide, walls `wallM` 0.15, easing in over `rampM` 1.5 from each end; the mesh border is not
+   moved. Needed because the DEM alone leaves a V (its 0.5 m cells and the 1 m bank taper): 0.3-0.4 m deep beside the line. Test on
+   `svg_110.conformed`: bottom 0.7 m wide, walls 0.15 m, 0.7 m under the shoulder, the cut 8 s + the channel 0.03 s.
 3. Unity (`paint.json` rule `creek-bed`, kind `object`, [unity/README.md](../../../unity/README.md) "Vertex paint"): black
    vertex paint from `fadeM` 0.5 inside the border (the bed meets the ground around it), on a copy of the nearest rough's
    material whose black channel draws pebbles (NatureManufacture River Auto Material `T_Ground_Pebbles_01`, 1.2 m a tile,
