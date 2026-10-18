@@ -1,0 +1,19 @@
+{
+ "format": "golfmap-props-spec-v1",
+ "course": "ombergs-golfklubb",
+ "note": "The stone footbridge over the creek between hole 17's two ponds (hole_17_233), 4.8 x 2.5 m on bearing 69 deg: a pale grey-beige granite deck on a low arch with low parapets. Position and bearing from the 2023 ortho (a pale slab 4.7 x 1.7 m, centre 477672.7 / 6457220.7, long axis 68 deg) and Marcus's 'stone bridge at 477669.7 / 6457222.4'. Build and install: see tee-signs/tee-signs.gen.py (same steps, this spec instead).",
+ "origin": [477672.6, 6457220.5],
+ "assets": {
+  "omberg_creek_bridge_17": {
+   "category": "structure",
+   "collider": "mesh",
+   "parts": [
+    {"kind": "bridge_brick", "length": 4.8, "width": 2.0, "rise": 0.2, "parapet": 0.55, "wallThickness": 0.25,
+     "wall": "granite_beige", "deck": "granite_plinth"}
+   ]
+  }
+ },
+ "instances": [
+  {"asset": "omberg_creek_bridge_17", "e": 477672.6, "n": 6457220.5, "yawDeg": 69.0, "ground": "max", "dz": 0.0}
+ ]
+}

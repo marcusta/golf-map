@@ -1,0 +1,48 @@
+{
+ "type": "FeatureCollection",
+ "crs": {
+  "type": "name",
+  "properties": {
+   "name": "EPSG:3006"
+  }
+ },
+ "features": [
+  {
+   "type": "Feature",
+   "geometry": {
+    "type": "Polygon",
+    "coordinates": [
+     [
+      [
+       477669.48,
+       6457221.93
+      ],
+      [
+       477673.96,
+       6457223.65
+      ],
+      [
+       477675.72,
+       6457219.07
+      ],
+      [
+       477671.24,
+       6457217.35
+      ],
+      [
+       477669.48,
+       6457221.93
+      ]
+     ]
+    ]
+   },
+   "properties": {
+    "type": "path",
+    "source": "props-bridges",
+    "source_ref": "omberg_creek_bridge_17",
+    "license": "own",
+    "surface": "bridge"
+   }
+  }
+ ]
+}
