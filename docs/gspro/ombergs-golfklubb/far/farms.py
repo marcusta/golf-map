@@ -376,6 +376,55 @@ def b_shed(S):
                 open={0: [win(-1.0, 0.8, 0.8, 1.1)], 2: [door(0.5, 0.9, 1.9)]})
 
 
+# ===== Farmstead C (between A and B, E 478745-478785, N 6457325-6457375; not in OSM) =================================
+# ---- C1 house, orange tile: planes z=123.313+0.865v / 122.04-0.887v (frame 82 deg at 478768, 6457337.5; n=164/50, rms 0.05-0.06),
+# ridge v=-0.73 z 122.68 (6.2 m); lidar roof u -7.2..5.5, v -4.4..3.2 (+0.35). White walls (the ortho's south wall shows white).
+@building("omberg_far_c_house", 478768.0, 6457337.5, 82.0, (-7.6, 6.0, -5.2, 3.9))
+def c_house(S):
+    pc = gable_x(-0.73, S.Z(122.68), 0.887, 0.865, -7.5, 6.0, -4.75, 3.4, (0.4, 0.4, 0.45, 0.45), mats=["roof_tile_orange", "roof_tile_orange"])
+    return dict(name="c_house", outline=walls_rect(pc), pieces=[pc], tile="roof_tile_orange", wall="wall_white", thick=0.12, zb=0.35,
+                open={0: [win(x, 1.0, 1.2, 0.95) for x in (-5.0, -2.5, 0.0, 2.5)] + [door(4.2, 1.0, 2.0)],
+                      1: [win(-0.7, 0.9, 1.0, 1.0), win(-0.7, 0.8, 0.9, 3.6)],
+                      3: [win(-0.7, 0.9, 1.0, 1.0), win(-0.7, 0.8, 0.9, 3.6)],
+                      2: [win(-6.0, 0.9, 1.1, 0.95)]})
+
+
+# ---- C1 north wing: flat roof returns z 119.0-119.3 (2.7-3.0 m, u -4..6, v 2.5..6.5), white/pale sheet roof in the ortho; same frame
+@building("omberg_far_c_house_wing", 478768.0, 6457337.5, 82.0, (-0.2, 6.0, 2.8, 7.1))
+def c_house_wing(S):
+    pc = W.piece([(0, 0, S.Z(119.3))], (1.5, 5.8, 2.95, 6.9), (0.3, 0.3, 0.0, 0.4), mats=["sheet_pale"])    # the white part (ortho u 1.8..5.5)
+    return dict(name="c_house_wing", outline=walls_rect(pc), pieces=[pc], tile="sheet_pale", wall="wall_white", thick=0.12, zb=0.3,
+                open={2: [win(x, 1.0, 1.2, 0.9) for x in (2.8, 4.5)], 1: [door(4.7, 0.9, 1.9)], 3: [win(4.7, 0.9, 1.0, 0.9)]})
+
+
+# ---- C1 west part of the north wing: same flat returns (u -4..1), dark brown roof in the ortho (dE 89,80,85)
+@building("omberg_far_c_house_wing_w", 478768.0, 6457337.5, 82.0, (-5.4, 1.6, 2.8, 7.1))
+def c_house_wing_w(S):
+    pc = W.piece([(0, 0, S.Z(119.3))], (-5.2, 1.5, 2.95, 6.1), (0.3, 0.3, 0.0, 0.4), mats=["sheet_dark"])
+    return dict(name="c_house_wing_w", outline=walls_rect(pc), pieces=[pc], tile="sheet_dark", wall="wall_white", thick=0.12, zb=0.3,
+                open={2: [win(-2.5, 1.0, 1.2, 0.9)], 3: [win(4.0, 0.9, 1.0, 0.9)]})
+
+
+# ---- C2 dark outbuilding (frame -33 deg at 478772, 6457367): section at u=0 gives a ridge v=-2.6 z 4.3 m (south slope 0.72, north 0.84),
+# a low-pitch lean-to north of it (plane z=117.93-0.10v, 2.5 -> 2.1 m; n=263 rms 0.05); roof u -6.2..9.9, v -4.1..4.1. Walls falu red (inferred)
+@building("omberg_far_c_barn", 478772.0, 6457367.0, -33.0, (-6.7, 10.2, -5.2, 4.3))
+def c_barn(S):
+    main = gable_x(-2.6, S.Z(115.4 + 4.3), 0.84, 0.72, -6.5, 10.0, -5.0, 0.0, (0.4, 0.4, 0.45, 0.0), mats=["sheet_dark", "sheet_char"])
+    lean = W.piece([(0, -0.1, S.Z(117.93))], (-6.5, 10.0, -0.45, 4.2), (0.4, 0.4, 0.0, 0.45), mats=["sheet_dark"])
+    return dict(name="c_barn", outline=W.rect_outline(-6.1, 9.6, -4.55, 3.75), pieces=[main, lean], tile="sheet_dark", wall=RED, thick=0.12, zb=0.3,
+                open={0: [barn_door(2.0, 3.0, 2.4, "door_black"), win(-3.0, 1.0, 0.9, 1.1), win(7.0, 1.0, 0.9, 1.1)],
+                      2: [win(x, 1.0, 0.9, 1.1) for x in (7.0, 3.5, 0.0, -3.0)],
+                      3: [win(-0.5, 0.9, 0.9, 1.1)], 1: [door(0.0, 1.0, 1.9)]})
+
+
+# ---- C3 small dark shed (mostly in tree shadow; ortho ~5 x 4.6 m, no returns): inferred eave 2.3, ridge 3.4
+@building("omberg_far_c_shed", 478777.5, 6457353.5, 0.0, (-3.0, 3.0, -2.7, 2.7))
+def c_shed(S):
+    pc = gable_x(0.0, 3.4, 0.55, 0.55, -2.8, 2.8, -2.4, 2.4, (0.3, 0.3, 0.3, 0.3), mats=["sheet_dark", "sheet_char"])
+    return dict(name="c_shed", outline=walls_rect(pc), pieces=[pc], tile="sheet_dark", wall=RED, thick=0.1, zb=0.2,
+                open={0: [win(-1.0, 0.8, 0.8, 1.1)], 2: [door(0.8, 0.9, 1.8)]})
+
+
 def build(add, new, ev):
     for aid, (cx, cy, ang, rect), fn in BUILDINGS:
         S = Frame(ev, cx, cy, ang, rect)
