@@ -1,0 +1,17 @@
+{
+  "name": "Omberg far farmsteads",
+  "dataDir": "../../../../data/omberg-far",
+  "crop": "crop.json",
+  "origin": [
+    478800,
+    6457310,
+    100.0
+  ],
+  "assetPrefix": "omberg_far_",
+  "groundAssets": [],
+  "osm": {},
+  "footprints": "../../../../data/omberg-far/osm-buildings.json",
+  "categories": [
+    "building"
+  ]
+}
