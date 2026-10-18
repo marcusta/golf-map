@@ -149,6 +149,13 @@ export const MAX_CENTERLINE_WIDTH_M = 60;
 /** How closely the flattened curve follows the true spline (m). */
 export const CENTERLINE_FLATTEN_TOLERANCE_M = 0.05;
 /**
+ * And how far one flattened segment may turn (radians, 3°): closely spaced
+ * controls bow less than the distance tolerance, so on that alone the curve
+ * came out as its control polygon - a kink at every point, plain to see on a
+ * narrow band (Omberg's 0.7 m creek, controls 1.4 m apart turning ~15°).
+ */
+const FLATTEN_MAX_TURN_RAD = (3 * Math.PI) / 180;
+/**
  * Clicked paths: a bend turning at least this much becomes a corner (a real
  * corner, not a curve the user clicked round in a few steps).
  */
@@ -252,6 +259,17 @@ export function centerlineBeziers(points: readonly CenterlinePoint[]): Array<[XY
     return out;
 }
 
+/** How far a cubic's direction turns from its start to its end (radians; 0 when a handle is degenerate). */
+function turn(c: [XY, XY, XY, XY]): number {
+    const [p0, , , p3] = c;
+    const apart = (a: XY, b: XY) => Math.hypot(b.x - a.x, b.y - a.y) > 1e-9;
+    const s = c.slice(1).find(q => apart(p0, q));            // where it heads from p0
+    const e = c.slice(0, 3).reverse().find(q => apart(q, p3)); // where it comes into p3 from
+    if (!s || !e) return 0;
+    const h1 = Math.atan2(s.y - p0.y, s.x - p0.x), h2 = Math.atan2(p3.y - e.y, p3.x - e.x);
+    return Math.abs(((h2 - h1 + 3 * Math.PI) % (2 * Math.PI)) - Math.PI);
+}
+
 function flattenCubic(c: [XY, XY, XY, XY], tol: number, out: XY[], depth = 0): void {
     const [p0, p1, p2, p3] = c;
     const dx = p3.x - p0.x, dy = p3.y - p0.y;
@@ -259,7 +277,7 @@ function flattenCubic(c: [XY, XY, XY, XY], tol: number, out: XY[], depth = 0): v
     const off = (q: XY) => chord < 1e-9
         ? Math.hypot(q.x - p0.x, q.y - p0.y)
         : Math.abs((q.x - p0.x) * dy - (q.y - p0.y) * dx) / chord;
-    if (depth >= 12 || Math.max(off(p1), off(p2)) <= tol) {
+    if (depth >= 12 || (Math.max(off(p1), off(p2)) <= tol && turn(c) <= FLATTEN_MAX_TURN_RAD)) {
         out.push({ x: p3.x, y: p3.y });
         return;
     }

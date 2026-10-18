@@ -176,6 +176,39 @@ describe('centerline curve', () => {
         for (const q of curve) expect(Math.abs(Math.hypot(q.x - X, q.y - Y) - 40)).toBeLessThan(0.1);
     });
 
+    test('closely spaced points bend smoothly, not with a corner at every control point', () => {
+        // Omberg's hole-17 creek: controls ~1.4 m apart, each turning up to 19°. The bow of
+        // such a span is under the 5 cm distance tolerance, so the curve came out as the
+        // control polygon - a kink at every point, plain to see on a 0.7 m band.
+        const points: CenterlinePoint[] = [];
+        let x = 0, y = 0, heading = 0;
+        for (let i = 0; i < 12; i++) {
+            points.push(p(x, y));
+            heading += 15 * Math.PI / 180;
+            x += 1.4 * Math.cos(heading);
+            y += 1.4 * Math.sin(heading);
+        }
+        const line = flattenCenterline(points);
+        const turns = line.slice(1, -1).map((q, i) => {
+            const a = line[i], c = line[i + 2];
+            const h1 = Math.atan2(q.y - a.y, q.x - a.x), h2 = Math.atan2(c.y - q.y, c.x - q.x);
+            return Math.abs(((h2 - h1) * 180 / Math.PI + 540) % 360 - 180);
+        });
+        expect(Math.max(...turns)).toBeLessThanOrEqual(5);
+        // ... and the band built on it has no sharp vertex along its sides either.
+        const ring = corridorRings({ points, widthM: 0.7 })![0].points;
+        const first = points[0], last = points[points.length - 1];
+        const sideTurns = ring.flatMap((q, i) => {
+            // The round caps step in their own arc; only the sides are bends.
+            if (Math.hypot(q.x - first.x, q.y - first.y) < 1 || Math.hypot(q.x - last.x, q.y - last.y) < 1) return [];
+            const a = ring[(i + ring.length - 1) % ring.length], c = ring[(i + 1) % ring.length];
+            const h1 = Math.atan2(q.y - a.y, q.x - a.x), h2 = Math.atan2(c.y - q.y, c.x - q.x);
+            return [Math.abs(((h2 - h1) * 180 / Math.PI + 540) % 360 - 180)];
+        });
+        expect(sideTurns.length).toBeGreaterThan(20);
+        expect(Math.max(...sideTurns)).toBeLessThanOrEqual(6);
+    });
+
     test('a long straight into a tight bend does not overshoot', () => {
         const curve = flattenCenterline([p(0, 0), p(200, 0), p(205, 5), p(205, 10)]);
         for (const q of curve) expect(q.y - Y).toBeGreaterThan(-0.5);
