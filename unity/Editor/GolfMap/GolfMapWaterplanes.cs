@@ -5,6 +5,8 @@
 //     level: the lowest vertex on its edge (all edges, islands included) minus belowM;
 //   - every edge is pushed outwards by outsetM (a flat ring, like OPCD's offset_edges
 //     extrude), so the plane runs in under the banks and the blends;
+//     near another pond the ring stops half way to its water, so two ponds a weir or a dam
+//     apart (a waterfall between them, GolfMapWaterfalls) don't overlap at two levels;
 //   - the mesh is all red vertex colour, normals up, no UVs (AQUAS-Lite samples its
 //     waves in world XZ), saved to <course>/WaterPlanes/<name>.asset;
 //   - the object, <lake key>_WaterPlane under 'Waterplanes', stands liftM above that
@@ -125,9 +127,31 @@ namespace GolfMap.Editor
             var slabs = a.Bool("slabs", true)
                 ? all.Where(g => g.activeInHierarchy && GolfMapRockSlabs.IsSlab(g.name) && MeshOf(g) != null).ToList()
                 : new List<GameObject>();
+            // Every lake's footprint (XZ), so a plane's outset ring stops short of the next pond's water: ponds a
+            // weir or a dam apart (a waterfall between them) would otherwise overlap at two levels.
+            var footprints = FindLakes(all, new string[0]).ToDictionary(l => l.planeName, l =>
+            {
+                var m = l.go.transform.localToWorldMatrix;
+                return l.mesh.vertices.Select(v => { var w = m.MultiplyPoint3x4(v); return new Vector2(w.x, w.z); }).ToList();
+            });
             foreach (var lake in lakes)
             {
-                var geo = Flatten(lake, outset, below, parent != null ? parent.transform : null, slabs);
+                var grownBox = lake.bounds; grownBox.Expand(4f * outset + 1f);
+                var neighbours = new Dictionary<Vector2Int, List<Vector2>>();
+                float cellM = Mathf.Max(2f * outset, 1f);
+                foreach (var kv in footprints)
+                {
+                    if (kv.Key == lake.planeName) continue;
+                    foreach (var p in kv.Value)
+                    {
+                        if (p.x < grownBox.min.x || p.x > grownBox.max.x || p.y < grownBox.min.z || p.y > grownBox.max.z) continue;
+                        var c = new Vector2Int(Mathf.FloorToInt(p.x / cellM), Mathf.FloorToInt(p.y / cellM));
+                        List<Vector2> l;
+                        if (!neighbours.TryGetValue(c, out l)) neighbours[c] = l = new List<Vector2>();
+                        l.Add(p);
+                    }
+                }
+                var geo = Flatten(lake, outset, below, parent != null ? parent.transform : null, slabs, neighbours);
                 var mine = planes.FirstOrDefault(p => p.name == lake.planeName && ours(p));
                 var others = planes.Where(p => p.activeInHierarchy && !ours(p) && Covers(p, lake.bounds, geo.rimMin)).ToList();
                 float lift = liftArg ?? (mine != null ? mine.transform.localPosition.y : 0.3f);
@@ -159,6 +183,7 @@ namespace GolfMap.Editor
                     { "boundaryEdges", geo.boundaryEdges },
                     { "slabs", geo.slabs.Select(s => (object)s).ToList() },
                     { "rimLeftOutNearSlabs", geo.rimLeftOut },
+                    { "outsetClippedNearPonds", geo.outsetClipped },
                     { "action", mine != null ? "rebuild" : "create" },
                 };
                 if (lake.creek) entry["warning"] = "A creek base: one flat level over a creek that falls leaves the upper end dry. R.A.M. creeks (golfmap.creeks.import) follow the fall.";
@@ -355,7 +380,7 @@ namespace GolfMap.Editor
             public List<int> triangles = new List<int>();
             public float level, rimMin, rimMax;
             public List<float> rimHeights = new List<float>();
-            public int boundaryEdges, rimLeftOut;
+            public int boundaryEdges, rimLeftOut, outsetClipped;
             public List<string> slabs = new List<string>();
 
             public Mesh ToMesh(string name)
@@ -412,7 +437,7 @@ namespace GolfMap.Editor
         // water; or one drawn into a notch of the shore) joins the plane, so the water runs on round it, and the lake's
         // rim near it does not set the level: a notch's rim lies down on the lake bed (Vreta hole 15, 2026-10-15:
         // the water stood 1.5 m low).
-        static Geometry Flatten(Lake lake, float outset, float below, Transform parent, List<GameObject> slabs = null)
+        static Geometry Flatten(Lake lake, float outset, float below, Transform parent, List<GameObject> slabs = null, Dictionary<Vector2Int, List<Vector2>> neighbours = null)
         {
             var index = new Dictionary<Vector3Int, int>();   // millimetres
             var world = new List<Vector3>();
@@ -520,6 +545,20 @@ namespace GolfMap.Editor
                 float cos = kv.Value.Min(n => Vector2.Dot(dir, n));
                 float len = outset / Mathf.Max(cos, 0.35f);
                 var w = world[kv.Key];
+                // Another pond nearby: the ring reaches at most half way to its water.
+                if (neighbours != null && neighbours.Count > 0)
+                {
+                    var here = new Vector2(w.x, w.z);
+                    float cellM = Mathf.Max(2f * outset, 1f), nearest = float.MaxValue;
+                    int cx = Mathf.FloorToInt(here.x / cellM), cz = Mathf.FloorToInt(here.y / cellM);
+                    List<Vector2> l;
+                    for (int dx = -1; dx <= 1; dx++)
+                        for (int dz = -1; dz <= 1; dz++)
+                            if (neighbours.TryGetValue(new Vector2Int(cx + dx, cz + dz), out l))
+                                foreach (var q in l) { float d = (q - here).sqrMagnitude; if (d < nearest) nearest = d; }
+                    nearest = Mathf.Sqrt(nearest);
+                    if (nearest < 2f * len) { len = Mathf.Max(nearest * 0.5f - 0.05f, 0f); geo.outsetClipped++; }
+                }
                 outer[kv.Key] = geo.vertices.Count;
                 geo.vertices.Add(place(new Vector3(w.x + dir.x * len, 0f, w.z + dir.y * len)));
             }
