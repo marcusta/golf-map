@@ -6763,9 +6763,11 @@ CREEK_SIMPLIFY_M = 0.5
 CREEK_MIN_LENGTH_M = 2.0
 
 
-# A waterfall's lip within this of a creek is on it (m); a stretch below a fall starts this far past the lip.
+# A waterfall's lip within this of a creek is on it (m); the lower water is read this far past the lip, and the
+# creek's spline drops from the upper water at the lip to the lower within CREEK_FALL_RUN_M.
 CREEK_FALL_NEAR_M = 2.0
 CREEK_BELOW_FALL_M = 0.5
+CREEK_FALL_RUN_M = 0.4
 
 
 def _load_creeks(db_path: Path, course_ident: str) -> tuple[sqlite3.Row, list[sqlite3.Row]]:
@@ -6889,31 +6891,45 @@ def cmd_creeks(bbox, db_path: Path, course_ident: str, dem_path: Path, sidecar_p
         _, station = cKDTree(np.column_stack([prof.x, prof.y])).query(control)
         z = np.minimum.accumulate(prof.z[station])
         s_ctrl = prof.s[station]
-        # One stretch per run between falls: the upper one ends where its sill starts, the lower starts just below
-        # the lip (the fall's own water spans the gap).
-        sills = {}
+        # One spline down the whole creek. At each fall it runs flat over the sill at the upper water, then drops
+        # over the lip within CREEK_FALL_RUN_M to the lower water: R.A.M. draws a steep stretch as a cascade (its
+        # profile's flowWaterfall and big-cascade texture), so the fall is the creek's own water.
+        falls_here = []
         for lip, sill in on_it:
             mid = lip.interpolate(0.5, normalized=True)
-            sills[float(prof.s[int(np.argmin(np.hypot(prof.x - mid.x, prof.y - mid.y)))])] = sill
-        bounds = [-np.inf] + list(prof.break_s) + [np.inf]
-        for k in range(len(bounds) - 1):
-            lo = bounds[k] + (CREEK_BELOW_FALL_M if k > 0 else 0.0)
-            hi = bounds[k + 1] - (sills.get(bounds[k + 1], 0.0) if k + 1 < len(bounds) - 1 else 0.0)
-            keep = (s_ctrl >= lo) & (s_ctrl <= hi)
-            if keep.sum() < 2:
-                continue
-            c_pts, c_z = control[keep], z[keep]
-            creeks.append({
-                "id": f"feature:{r['id']}" + (f"#{k + 1}" if k > 0 else ""),
-                "profile": str(attrs.get("ramProfile") or DEFAULT_RAM_PROFILE),
-                "widthM": round(width, 2),
-                "lengthM": round(float(s_ctrl[keep][-1] - s_ctrl[keep][0]), 1),
-                "fallM": round(float(c_z[0] - c_z[-1]), 2),
-                "source": source,
-                **({"stretch": k + 1, "stretches": len(bounds) - 1} if len(bounds) > 2 else {}),
-                "points": [[round(float(x - e0), 3), round(float(h - min_m + surface_offset_m), 3), round(float(y - n0), 3), round(width, 2)]
-                           for (x, y), h in zip(c_pts, c_z)],
-            })
+            sb = float(prof.s[int(np.argmin(np.hypot(prof.x - mid.x, prof.y - mid.y)))])
+            if any(abs(sb - b) < 1e-6 for b in prof.break_s):
+                falls_here.append((sb, sill))
+        pts_s = list(s_ctrl)
+        pts_xy = [tuple(p) for p in control]
+        pts_z = list(z)
+        for sb, sill in sorted(falls_here):
+            top = float(np.interp(sb - max(sill, 0.5) - 0.5, prof.s, prof.z))
+            bottom = float(np.interp(sb + CREEK_BELOW_FALL_M + 1.0, prof.s, prof.z))
+            keep = [i for i, sv in enumerate(pts_s) if not (sb - sill - 0.5 < sv < sb + CREEK_FALL_RUN_M + 1.0)]
+            pts_s = [pts_s[i] for i in keep]; pts_xy = [pts_xy[i] for i in keep]; pts_z = [pts_z[i] for i in keep]
+            for sv, h in ((sb - sill, top), (sb - 0.05, top - 0.02), (sb + CREEK_FALL_RUN_M, bottom + 0.02),
+                          (sb + CREEK_FALL_RUN_M + 1.0, bottom)):
+                pts_s.append(sv)
+                pts_xy.append((float(np.interp(sv, prof.s, prof.x)), float(np.interp(sv, prof.s, prof.y))))
+                pts_z.append(h)
+        order = np.argsort(pts_s)
+        c_xy = [pts_xy[i] for i in order]
+        c_z = [pts_z[i] for i in order]
+        creeks.append({
+            "id": f"feature:{r['id']}",
+            "profile": str(attrs.get("ramProfile") or DEFAULT_RAM_PROFILE),
+            **({"water": str(attrs["ramWater"])} if attrs.get("ramWater") in ("lake", "profile") else {}),
+            "widthM": round(width, 2),
+            "lengthM": round(float(prof.s[-1]), 1),
+            "fallM": round(float(c_z[0] - c_z[-1]), 2),
+            "source": source,
+            **({"falls": len(falls_here),
+                "fallsAt": [[round(float(np.interp(sb, prof.s, prof.x)) - e0, 3), round(float(np.interp(sb, prof.s, prof.y)) - n0, 3)]
+                            for sb, _ in sorted(falls_here)]} if falls_here else {}),
+            "points": [[round(float(x - e0), 3), round(float(h - min_m + surface_offset_m), 3), round(float(y - n0), 3), round(width, 2)]
+                       for (x, y), h in zip(c_xy, c_z)],
+        })
     doc = {
         "format": UNITY_CREEKS_FORMAT,
         "plot": {

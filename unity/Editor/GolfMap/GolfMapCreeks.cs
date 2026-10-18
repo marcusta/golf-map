@@ -79,8 +79,12 @@ namespace GolfMap.Editor
         {
             public string id, profile, source;
             public float widthM, lengthM, fallM;
-            // A stretch of a creek cut at its waterfalls (the export's `stretches`): a dug pond holds its water.
+            // A creek with waterfalls (the export's `falls`): a chain of dug ponds, each holding its water, the spline
+            // dropping over each lip (fallsAt, plot x/z) where R.A.M. draws the cascade.
             public bool held;
+            public List<Vector2> fallsAt = new List<Vector2>();
+            // The look for this creek alone (the feature's ramWater: lake|profile), else the import's.
+            public string water;
             public List<Vector4> points = new List<Vector4>();
         }
 
@@ -149,6 +153,7 @@ namespace GolfMap.Editor
             var missingProfiles = new SortedSet<string>();
             var rows = new List<object>();
             var imported = new List<GameObject>();
+            var perCreek = new Dictionary<GameObject, string>();
             int created = 0, updated = 0;
 
             if (!dryRun)
@@ -214,6 +219,7 @@ namespace GolfMap.Editor
                 splineType.GetMethod("GenerateSpline").Invoke(spline, new object[] { null });
                 EditorUtility.SetDirty(spline);
                 imported.Add(go);
+                if (c.water == "lake" || c.water == "profile") perCreek[go] = c.water;
             }
 
             // Creeks no longer in the export (not when only some were refitted).
@@ -222,7 +228,7 @@ namespace GolfMap.Editor
             Dictionary<string, object> water = null;
             if (!dryRun)
             {
-                water = Wear(imported, fit.water, course, splineType, profileType);
+                water = Wear(imported, fit.water, course, splineType, profileType, perCreek);
                 foreach (var go in existing.Values) Undo.DestroyObjectImmediate(go);
                 Undo.CollapseUndoOperations(undoGroup);
                 EditorSceneManager.MarkSceneDirty(scene);
@@ -255,8 +261,14 @@ namespace GolfMap.Editor
                 {
                     id = o.String("id"), profile = o.String("profile") ?? "Small Stream Profile", source = o.String("source") ?? "",
                     widthM = (float)o.Number("widthM", 2), lengthM = (float)o.Number("lengthM"), fallM = (float)o.Number("fallM"),
-                    held = o.Number("stretches", 0) > 1,
+                    held = o.Number("stretches", 0) > 1 || o.Number("falls", 0) > 0,
+                    water = o.String("water"),
                 };
+                foreach (var q in (o.Array("fallsAt") ?? new List<object>()).OfType<List<object>>())
+                {
+                    var v = q.OfType<GolfMapJsonNumber>().Select(n => (float)n.Value).ToArray();
+                    if (v.Length >= 2) c.fallsAt.Add(new Vector2(v[0], v[1]));
+                }
                 foreach (var p in (o.Array("points") ?? new List<object>()).OfType<List<object>>())
                 {
                     var v = p.OfType<GolfMapJsonNumber>().Select(n => (float)n.Value).ToArray();
@@ -324,12 +336,16 @@ namespace GolfMap.Editor
         // Give the creeks their water: the lakes' (a course copy of OPCD's AQUAS
         // material, reflecting the nearest lake's probe) or each spline's profile
         // material. The parts R.A.M. splits a long spline into follow the parent.
-        static Dictionary<string, object> Wear(List<GameObject> creeks, string water, GolfMapCourse course, Type splineType, Type profileType)
+        static Dictionary<string, object> Wear(List<GameObject> creeks, string water, GolfMapCourse course, Type splineType, Type profileType,
+            Dictionary<GameObject, string> perCreek = null)
         {
+            perCreek = perCreek ?? new Dictionary<GameObject, string>();
+            Func<GameObject, string> waterOf = go => { string w; return perCreek.TryGetValue(go, out w) ? w : water; };
             var result = new Dictionary<string, object> { { "water", water }, { "creeks", creeks.Count } };
+            if (perCreek.Count > 0) result["ownWater"] = perCreek.ToDictionary(kv => kv.Key.name, kv => (object)kv.Value);
             Material lake = null;
             var probes = new List<ReflectionProbe>();
-            if (water == "lake")
+            if (creeks.Any(go => waterOf(go) == "lake"))
             {
                 string made;
                 lake = LakeLook(course, out made);
@@ -348,11 +364,14 @@ namespace GolfMap.Editor
             var anchors = new SortedDictionary<string, int>(StringComparer.Ordinal);
             foreach (var go in creeks)
             {
-                Material material = lake;
+                Material material = waterOf(go) == "lake" ? lake : null;
                 if (material == null)
                 {
                     var profile = splineType.GetField("currentProfile").GetValue(go.GetComponent(splineType)) as UnityEngine.Object;
                     material = profile != null ? profileType.GetField("splineMaterial").GetValue(profile) as Material : null;
+                    // A creek with its own R.A.M. look wears the course's copy of the profile's material (made once,
+                    // then kept: its cascade and foam are tuned there, the package's material is left alone).
+                    if (perCreek.ContainsKey(go) && material != null) material = ProfileLook(course, material);
                 }
                 var centre = go.GetComponent<Renderer>() != null ? go.GetComponent<Renderer>().bounds.center : go.transform.position;
                 var probe = probes.OrderBy(p => (p.transform.position - centre).sqrMagnitude).FirstOrDefault();
@@ -372,8 +391,21 @@ namespace GolfMap.Editor
                     r.probeAnchor = probe != null ? probe.transform : null;
                 }
             }
-            if (water == "lake") result["probeFrom"] = anchors.ToDictionary(kv => kv.Key, kv => (object)kv.Value);
+            if (lake != null) result["probeFrom"] = anchors.ToDictionary(kv => kv.Key, kv => (object)kv.Value);
             return result;
+        }
+
+        // "<course>/Creeks/Creek water (<R.A.M. material>).mat": made once from the profile's material, then left as it is.
+        static Material ProfileLook(GolfMapCourse course, Material from)
+        {
+            var folder = GolfMapCourses.Folder(course) + MaterialFolder;
+            var path = folder + "/Creek water (" + from.name + ").mat";
+            var have = AssetDatabase.LoadAssetAtPath<Material>(path);
+            if (have != null) return have;
+            if (!AssetDatabase.IsValidFolder(folder)) AssetDatabase.CreateFolder(folder.Substring(0, folder.LastIndexOf('/')), MaterialFolder);
+            var made = new Material(from);
+            AssetDatabase.CreateAsset(made, path);
+            return made;
         }
 
         // The course's creek water: made once from OPCD's water plane material, then left as it is.
@@ -407,6 +439,8 @@ namespace GolfMap.Editor
         // culvert), with its ramps down to within RampM of that lower bed: the
         // water runs under it at the bed level either side, hidden.
         const float BumpM = 0.3f, CrossingM = 20f, RampM = 0.1f;
+        // No crossing within this of a waterfall's lip (its sill is no culvert).
+        const float FallClearM = 4f;
 
         sealed class Station
         {
@@ -465,7 +499,9 @@ namespace GolfMap.Editor
                 float b = stations[k].bed;
                 if (float.IsNaN(b)) continue;
                 float up = SideLow(stations, k - window, k - 1), down = SideLow(stations, k + 1, k + window);
-                stations[k].crossing = !float.IsNaN(up) && !float.IsNaN(down) && b > Mathf.Max(up, down) + BumpM;
+                stations[k].crossing = !float.IsNaN(up) && !float.IsNaN(down) && b > Mathf.Max(up, down) + BumpM
+                    // A waterfall's sill stands above the ponds either side: the water goes over it, not under.
+                    && !c.fallsAt.Any(fp => Vector2.Distance(fp, stations[k].pos) < FallClearM);
             }
             // A crossing takes in its ramps, down to the low bed either side.
             for (int k = 0; k < ns; k++)

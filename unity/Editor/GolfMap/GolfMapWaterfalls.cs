@@ -11,7 +11,10 @@
 //                       "topY", "bottomY", "flow": [dx, dz], "widthM", "sillM" } ] }
 //
 // Each fall becomes one object "Waterfall <id>" under "GolfMap Waterfalls":
-// - the water: a NatureManufacture R.A.M. spline running down the fall's
+// - the water: on a creek that R.A.M. already carries over the lip (gspro.py
+//   creeks drops the creek's spline at each fall: `fallsAt`), the creek's own
+//   water and R.A.M.'s cascade are the fall and nothing is added; otherwise
+//   (an outlet between two waters) a NatureManufacture R.A.M. spline running down the fall's
 //   middle, as wide as the lip: over the sill's crest at the upper water,
 //   over the lip and down to the lower water, so R.A.M.'s profile gives the
 //   steep part its fast, foamy flow (flowWaterfall). A `sill` fall starts on
@@ -114,7 +117,8 @@ namespace GolfMap.Editor
             var mist = FindAsset(MistMaterial, typeof(Material)) as Material;
             string madeFrom = null;
             var material = dryRun ? null : WaterLook(course, profileType.GetField("splineMaterial").GetValue(profile) as Material, o.resetMaterial, out madeFrom);
-            var creeks = CreekLines(course);
+            List<Vector2> creekFalls;
+            var creeks = CreekLines(course, out creekFalls);
 
             var scene = EditorSceneManager.GetActiveScene();
             var old = scene.GetRootGameObjects().FirstOrDefault(g => g.name == RootName);
@@ -148,32 +152,39 @@ namespace GolfMap.Editor
                 };
                 rows.Add(row);
                 if (drop < 0.05f) { row["skipped"] = "no drop between the waters found"; continue; }
+                // On a creek whose R.A.M. spline already drops over this lip (gspro.py creeks' fallsAt), the creek's own
+                // water is the fall: only the white water is added here.
+                bool onCreek = creekFalls.Any(q => Vector2.Distance(q, mid) < CreekFallNearM);
+                row["water"] = onCreek ? "the creek's R.A.M. spline" : "its own R.A.M. spline";
                 if (dryRun) continue;
 
                 var go = new GameObject(NamePrefix + f.id);
                 go.transform.SetParent(root.transform, false);
                 Undo.RegisterCreatedObjectUndo(go, "Build waterfalls");
 
-                // The water: down the middle of the lip, as wide as it.
+                // The water: down the middle of the lip, as wide as it (unless the creek's spline carries it).
                 var pts = Profile(f, mid, u, topY, bottomY, land);
-                    var spline = (Component)splineType.GetMethod("CreateSpline", BindingFlags.Public | BindingFlags.Static)
-                    .Invoke(null, new object[] { material, null });
-                spline.gameObject.name = "Water";
-                spline.transform.SetParent(go.transform, false);
-                spline.transform.localPosition = Vector3.zero;
-                var addPoint = splineType.GetMethod("AddPoint", new[] { typeof(Vector4) });
-                foreach (var p in pts) addPoint.Invoke(spline, new object[] { new Vector4(p.x, p.y, p.z, f.widthM) });
-                splineType.GetField("width").SetValue(spline, f.widthM);
-                splineType.GetField("snapToTerrain").SetValue(spline, false);
-                ApplyProfile(spline, splineType, profile, profileType);
-                if (material != null) spline.GetComponent<MeshRenderer>().sharedMaterial = material;
-                splineType.GetMethod("GenerateSpline").Invoke(spline, new object[] { null });
-                foreach (var r in spline.GetComponentsInChildren<MeshRenderer>(true))
+                if (!onCreek)
                 {
-                    r.shadowCastingMode = UnityEngine.Rendering.ShadowCastingMode.Off;
-                    r.reflectionProbeUsage = UnityEngine.Rendering.ReflectionProbeUsage.BlendProbes;
+                    var spline = (Component)splineType.GetMethod("CreateSpline", BindingFlags.Public | BindingFlags.Static)
+                        .Invoke(null, new object[] { material, null });
+                    spline.gameObject.name = "Water";
+                    spline.transform.SetParent(go.transform, false);
+                    spline.transform.localPosition = Vector3.zero;
+                    var addPoint = splineType.GetMethod("AddPoint", new[] { typeof(Vector4) });
+                    foreach (var p in pts) addPoint.Invoke(spline, new object[] { new Vector4(p.x, p.y, p.z, f.widthM) });
+                    splineType.GetField("width").SetValue(spline, f.widthM);
+                    splineType.GetField("snapToTerrain").SetValue(spline, false);
+                    ApplyProfile(spline, splineType, profile, profileType);
+                    if (material != null) spline.GetComponent<MeshRenderer>().sharedMaterial = material;
+                    splineType.GetMethod("GenerateSpline").Invoke(spline, new object[] { null });
+                    foreach (var r in spline.GetComponentsInChildren<MeshRenderer>(true))
+                    {
+                        r.shadowCastingMode = UnityEngine.Rendering.ShadowCastingMode.Off;
+                        r.reflectionProbeUsage = UnityEngine.Rendering.ReflectionProbeUsage.BlendProbes;
+                    }
+                    row["points"] = pts.Count;
                 }
-                row["points"] = pts.Count;
 
                 if (o.particles)
                 {
@@ -329,14 +340,22 @@ namespace GolfMap.Editor
 
         // The creeks' water (the creeks export golfmap.creeks.import fits; one line per creek stretch, [x, y, z]):
         // R.A.M. splines have no collider to hit.
-        static List<List<Vector3>> CreekLines(GolfMapCourse course)
+        const float CreekFallNearM = 3f;
+
+        static List<List<Vector3>> CreekLines(GolfMapCourse course, out List<Vector2> fallsAt)
         {
             var lines = new List<List<Vector3>>();
+            fallsAt = new List<Vector2>();
             var file = GolfMapCourses.ExportFile(course, "inner", "creeks");
             if (string.IsNullOrEmpty(file) || !File.Exists(file)) return lines;
             var root = GolfMapJsonDoc.ParseObject(File.ReadAllText(file));
             foreach (var c in (root.Array("creeks") ?? new List<object>()).OfType<GolfMapJsonObject>())
             {
+                foreach (var q in (c.Array("fallsAt") ?? new List<object>()).OfType<List<object>>())
+                {
+                    var v = q.OfType<GolfMapJsonNumber>().Select(n => (float)n.Value).ToArray();
+                    if (v.Length >= 2) fallsAt.Add(new Vector2(v[0], v[1]));
+                }
                 var line = (c.Array("points") ?? new List<object>()).OfType<List<object>>()
                     .Select(q => q.OfType<GolfMapJsonNumber>().Select(n => (float)n.Value).ToArray())
                     .Where(v => v.Length >= 3).Select(v => new Vector3(v[0], v[1], v[2])).ToList();

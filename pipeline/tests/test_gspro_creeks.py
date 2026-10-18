@@ -96,7 +96,7 @@ def test_creeks_export_splines_at_the_surface_running_downstream(tmp_path, capsy
     assert "skipped creek k3: ram: false" in capsys.readouterr().out
 
 
-def test_a_waterfall_cuts_the_creek_into_stretches_each_at_its_own_water(tmp_path):
+def test_a_waterfall_drops_the_creeks_spline_over_its_lip(tmp_path):
     # The polygon creek along y = N0 + 40 with a 1 m step at x = 100: a pond at 19.0 above, 18.0 below.
     n = int(SIDE / RES)
     rows, cols = np.mgrid[0:n, 0:n]
@@ -122,12 +122,15 @@ def test_a_waterfall_cuts_the_creek_into_stretches_each_at_its_own_water(tmp_pat
     gspro.cmd_creeks(None, db, "c1", path, sidecar, out, extent=EXTENT)
 
     by_id = {c["id"]: c for c in json.loads(out.read_text())["creeks"]}
-    upper, lower = by_id["feature:k2"], by_id["feature:k2#2"]
-    assert (upper["stretch"], lower["stretch"], upper["stretches"]) == (1, 2, 2)
-    up_y = [p[1] + MIN_M for p in upper["points"]]
-    low_y = [p[1] + MIN_M for p in lower["points"]]
-    assert all(v == pytest.approx(19.0, abs=0.02) for v in up_y)      # flat to the sill, no ramp
-    assert all(v == pytest.approx(18.0, abs=0.02) for v in low_y)
-    assert max(p[0] for p in upper["points"]) <= 99.0 + 0.01            # ends where the 1 m sill starts
-    assert min(p[0] for p in lower["points"]) >= 100.0                  # starts below the lip
-    assert by_id["feature:k1"].get("stretch") is None                   # the other creek has no fall
+    creek = by_id["feature:k2"]
+    assert creek["falls"] == 1 and "feature:k2#2" not in by_id          # one spline down the whole creek
+    pts = [(p[0], p[1] + MIN_M) for p in creek["points"]]
+    upper = [h for x, h in pts if x < 98.5]
+    lower = [h for x, h in pts if x > 101.5]
+    assert all(h == pytest.approx(19.0, abs=0.03) for h in upper)       # flat above the fall, no ramp
+    assert all(h == pytest.approx(18.0, abs=0.03) for h in lower)
+    # The drop happens over the lip: from the upper water at the lip to the lower within half a metre.
+    drops = [(b[0] - a[0], a[1] - b[1]) for a, b in zip(pts, pts[1:]) if a[1] - b[1] > 0.5]
+    assert len(drops) == 1 and drops[0][0] <= 0.5 and drops[0][1] == pytest.approx(0.96, abs=0.06)
+    assert 99.0 <= [x for x, h in pts if h > 18.9][-1] <= 101.0          # the lip near x = 100
+    assert by_id["feature:k1"].get("falls") is None                     # the other creek has no fall
