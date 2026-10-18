@@ -403,6 +403,17 @@ namespace GolfMap.Editor
             public void Dispose() { foreach (var go in temporary) if (go) DestroyImmediate(go); temporary.Clear(); colliders.Clear(); }
         }
 
+        // Where a stem stands: on the course's meshes where the probe hits one, else on the terrain, then
+        // its tree edit's ground offset (dy). Counts the mesh and terrain hits.
+        Vector3 GroundPosition(GolfMapTree tree, GroundProbe probe, ref int meshHits, ref int terrainHits)
+        {
+            var pos = WorldPos(tree);
+            bool meshHit; pos.y = probe.Height(pos, out meshHit);
+            if (meshHit) meshHits++; else terrainHits++;
+            GolfMapTreeEdit edit; if (treeEdits.TryGetValue(tree, out edit)) pos.y += edit.dy;
+            return pos;
+        }
+
         // Prefab, ground position, scale and rotation for one survey stem.
         // prefab is null when the stem has no mapping (biome: unmatched).
         PreparedTree PrepareOne(GolfMapTree tree, GroundProbe probe, Dictionary<GameObject, Proto> cache, ref int meshHits, ref int terrainHits, ref int clamped)
@@ -411,15 +422,98 @@ namespace GolfMap.Editor
             var prefab = Pick(tree, rng);
             if (!prefab) return new PreparedTree { tree = tree };
             var proto = Measure(prefab, cache);
-            var pos = WorldPos(tree);
-            bool meshHit; pos.y = probe.Height(pos, out meshHit);
-            if (meshHit) meshHits++; else terrainHits++;
-            GolfMapTreeEdit edit; if (treeEdits.TryGetValue(tree, out edit)) pos.y += edit.dy;
+            var pos = GroundPosition(tree, probe, ref meshHits, ref terrainHits);
             float hs = HeightScale(tree, proto), ws = WidthScale(tree, proto, hs);
             if (Mathf.Abs(hs - tree.h / proto.heightM) > 0.0001f || (scaleWidth && Mathf.Abs(ws - 2 * tree.r / proto.widthM) > 0.0001f)) clamped++;
             float yaw = TreeRotation(tree, rng);
             var rotation = useBiome ? Orientation(biomeMatches[tree], yaw) : Quaternion.Euler(0, yaw, 0);
             return new PreparedTree { tree = tree, prefab = prefab, position = pos, scale = new Vector3(ws, hs, ws), rotation = rotation, yaw = yaw };
+        }
+
+        // A stem whose match is an Arborist model: ground position, scale and rotation as PrepareOne finds
+        // them, without a prefab. It never goes into the course's VSP; the placements file hands it to the
+        // Arborist writer (pipeline/arborist.py trees --placements).
+        PreparedTree PrepareArborist(GolfMapTree tree, GolfMapBiomeMatch m, GroundProbe probe, ref int meshHits, ref int terrainHits)
+        {
+            var pos = GroundPosition(tree, probe, ref meshHits, ref terrainHits);
+            float hs = (float)m.scale, ws = m.widthScale > 0 ? (float)m.widthScale : hs;
+            float yaw = (float)m.rotation;
+            return new PreparedTree { tree = tree, position = pos, scale = new Vector3(ws, hs, ws), rotation = Orientation(m, yaw), yaw = yaw };
+        }
+
+        // <export folder>/<prefix>-<terrain>-placements.json (golfmap-placements-v1): every tree this planting
+        // planted, before any renderer (CONTEXT.md "Placement"): tree id, model, species, world position on the
+        // ground, rotation (yaw, lean and the quaternion), scale. The VSP ones as stored (a cell-edge nudge
+        // included), the Arborist ones as the Arborist writer must draw them. Null when the course has no
+        // export folder.
+        string WritePlacements(List<PreparedTree> inVsp, List<PreparedTree> forArborist)
+        {
+            var file = GolfMapCourses.ExportFile(Course, RoleKey, "placements");
+            if (file == null) return null;
+            var text = new System.Text.StringBuilder();
+            text.Append("{\"format\":\"golfmap-placements-v1\",\"course\":").Append(GolfMap.Bridge.BridgeJson.Write(GolfMapCourses.Name(Course)))
+                .Append(",\"terrain\":\"").Append(RoleKey).Append("\",\"written\":\"").Append(DateTime.UtcNow.ToString("o")).Append("\"")
+                .Append(",\"trees\":").Append(GolfMap.Bridge.BridgeJson.Write(Path.GetFileName(filePath)))
+                .Append(",\"placements\":[");
+            bool first = true;
+            foreach (var t in inVsp.Concat(forArborist))
+            {
+                if (!first) text.Append(',');
+                first = false;
+                text.Append('\n').Append(PlacementJson(t));
+            }
+            text.Append("\n]}\n");
+            Directory.CreateDirectory(Path.GetDirectoryName(file));
+            File.WriteAllText(file, text.ToString());
+            return file;
+        }
+
+        // The command that writes the course's Arborist file (ArboristService), the Arborist trees included.
+        const string ArboristExport = "bun run gspro:export -- <course> arborist";
+
+        // The status's last line: where the placements went, and what of the Arborist trees.
+        static string PlacementsNote(string placements, int inVsp, int forArborist)
+        {
+            if (forArborist == 0 && placements != null) return "\nPlacements: " + placements + ".";
+            var note = "\n" + forArborist + " trees of Arborist models are not in VSP";
+            if (placements == null) return note + ", and the course has no export folder for their placements file: Arborist will not draw them.";
+            return note + "; " + (inVsp + forArborist) + " placements written to " + placements + " (the Arborist writer draws the Arborist ones: " + ArboristExport + ").";
+        }
+
+        // One placement of the placements file, its fields in the file's order.
+        string PlacementJson(PreparedTree t)
+        {
+            GolfMapBiomeMatch m = null; if (useBiome) biomeMatches.TryGetValue(t.tree, out m);
+            var asset = m != null ? m.asset : null;
+            string model = asset != null ? asset.model : GolfMapModels.Id(GolfMapModels.Vsp, t.prefab ? t.prefab.name : "?");
+            string species = asset != null ? asset.Label : GolfMapBiome.KindName(t.tree.k);
+            var json = new JsonFields()
+                .Text("id", t.tree.id).Text("model", model).Text("species", species)
+                .Text("renderer", asset != null && asset.IsArborist ? GolfMapModels.Arborist : GolfMapModels.Vsp)
+                .Number("x", t.position.x, "0.###").Number("y", t.position.y, "0.###").Number("z", t.position.z, "0.###")
+                .Number("rotationY", t.yaw, "0.###")
+                .Number("leanDeg", m != null ? m.lean : 0, "0.####").Number("leanDirectionY", m != null ? m.leanDirection : 0, "0.###")
+                .Number("scale", t.scale.y, "0.#####").Number("widthScale", t.scale.x, "0.#####")
+                .Numbers("q", "0.######", t.rotation.x, t.rotation.y, t.rotation.z, t.rotation.w);
+            if (asset != null) json.Number("heightM", asset.heightM * t.scale.y, "0.##").Number("crownWidthM", asset.crownWidthM * t.scale.x, "0.##");
+            return json.ToString();
+        }
+
+        // A JSON object written field by field, each number in its own fixed format (invariant culture).
+        class JsonFields
+        {
+            static readonly System.Globalization.CultureInfo C = System.Globalization.CultureInfo.InvariantCulture;
+            readonly System.Text.StringBuilder text = new System.Text.StringBuilder("{");
+            System.Text.StringBuilder Key(string key) { if (text.Length > 1) text.Append(','); return text.Append('"').Append(key).Append("\":"); }
+            public JsonFields Text(string key, string value) { Key(key).Append(GolfMap.Bridge.BridgeJson.Write(value)); return this; }
+            public JsonFields Number(string key, float value, string format) { Key(key).Append(value.ToString(format, C)); return this; }
+            public JsonFields Number(string key, double value, string format) { Key(key).Append(value.ToString(format, C)); return this; }
+            public JsonFields Numbers(string key, string format, params float[] values)
+            {
+                Key(key).Append('[').Append(string.Join(",", values.Select(v => v.ToString(format, C)).ToArray())).Append(']');
+                return this;
+            }
+            public override string ToString() { return text + "}"; }
         }
 
         // VSP resolves a position with a zero-size rect (also inside AddVegetationItemInstance), which misses
@@ -548,6 +642,7 @@ namespace GolfMap.Editor
         {
             GroundProbe probe = null;
             var prepared = new List<PreparedTree>();
+            var arborist = new List<PreparedTree>();   // trees of Arborist models: placements only, never in VSP
             var cache = new Dictionary<GameObject, Proto>();
             int meshHits = 0, terrainHits = 0, skipped = 0, clamped = 0, nudged = 0;
             try
@@ -578,11 +673,13 @@ namespace GolfMap.Editor
                 foreach (var tree in loaded.trees)
                 {
                     if (!InsidePlot(tree) || tree.h < minHeightM) { skipped++; continue; }
+                    GolfMapBiomeMatch match;
+                    if (useBiome && biomeMatches.TryGetValue(tree, out match) && match.asset.IsArborist) { arborist.Add(PrepareArborist(tree, match, probe, ref meshHits, ref terrainHits)); continue; }
                     var t = PrepareOne(tree, probe, cache, ref meshHits, ref terrainHits, ref clamped);
                     if (!t.prefab) {if(useBiome){skipped++;continue;}throw new InvalidOperationException("No prefab mapping for kind " + tree.k + ". Existing import retained.");}
                     prepared.Add(t);
                 }
-                if (prepared.Count == 0) throw new InvalidOperationException("No eligible trees. Existing import retained.");
+                if (prepared.Count == 0 && arborist.Count == 0) throw new InvalidOperationException("No eligible trees. Existing import retained.");
                 VegetationSystemPro system; PersistentVegetationStoragePackage package;
                 CheckStorageReady(out system, out package);
                 system.PersistentVegetationStorage = storage;
@@ -620,7 +717,8 @@ namespace GolfMap.Editor
                 EditorSceneManager.MarkSceneDirty(terrain.gameObject.scene);
                 RefreshStorage();
                 AssetDatabase.SaveAssets();
-                status = "Replaced " + prior + " " + RoleKey + " trees with " + prepared.Count + ": " + meshHits + " mesh hits, " + terrainHits + " terrain fallback, " + skipped + " skipped, " + clamped + " scale-clamped, " + nudged + " nudged off cell edges" + (pruned > 0 ? ", " + pruned + " retired catalogue item(s) pruned" : "") + ". Source 42. Save the scene to retain setup." + (untrimmed > 0 ? "\nHybrid course: " + untrimmed + " trimmed trees are back in the storage. Write the Arborist trees again (bun run gspro:export -- <course> arborist), then golfmap.vsp.trees.trim file=<its vsp-far.json>." : "");
+                var placements = WritePlacements(prepared, arborist);
+                status = "Replaced " + prior + " " + RoleKey + " trees with " + prepared.Count + ": " + meshHits + " mesh hits, " + terrainHits + " terrain fallback, " + skipped + " skipped, " + clamped + " scale-clamped, " + nudged + " nudged off cell edges" + (pruned > 0 ? ", " + pruned + " retired catalogue item(s) pruned" : "") + ". Source 42. Save the scene to retain setup." + (untrimmed > 0 ? "\nHybrid course: " + untrimmed + " trimmed trees are back in the storage. Write the Arborist trees again (" + ArboristExport + "), then golfmap.vsp.trees.trim file=<its vsp-far.json>." : "") + PlacementsNote(placements, prepared.Count, arborist.Count);
                 File.WriteAllText(GolfMapCourses.ReportPath(Course, "tree_import.txt"), DateTime.UtcNow.ToString("o") + "\n" + status + "\n" + AlignmentReport() + "\nStorage: " + AssetDatabase.GetAssetPath(package));
                 Debug.Log("[GolfMap] " + status);
             }

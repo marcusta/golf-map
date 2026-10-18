@@ -30,7 +30,7 @@
 //                         (GOLFMAP_ARBORIST_KEY overrides)
 import * as path from 'node:path';
 import { readFile, readdir } from 'node:fs/promises';
-import { courseSlug, statOrNull, surfacesExportFileName, treesExportFileName, zonesExportFileName, type ExportRunner } from './gspro-export.service';
+import { courseSlug, placementsExportFileName, statOrNull, surfacesExportFileName, treesExportFileName, zonesExportFileName, type ExportRunner } from './gspro-export.service';
 import type { UnityEditor } from './unity-bridge';
 
 /** `arborist.py lower` on Vreta takes 10 s, `trees` 5 s plus the dump; a 5 km outer square with the far rule is the slow case. */
@@ -164,6 +164,16 @@ export class ArboristService {
         const stems = path.join(course.exportDir, treesExportFileName(course.name, 'inner'));
         const palette = this.docs(course, 'palette.json');
         if (await statOrNull(stems) && await statOrNull(palette)) args.push('--stems', stems, '--palette', palette);
+        // The trees of Arborist models are not in the course's VSP, so not in the dump: Unity's planter hands them
+        // over as placements (<slug>-<terrain>-placements.json), in the look the model library gives them.
+        const placements: string[] = [];
+        for (const terrain of ['inner', 'outer'] as const) {
+            const file = path.join(course.exportDir, placementsExportFileName(course.name, terrain));
+            if (await statOrNull(file)) placements.push(file);
+        }
+        if (placements.length) args.push('--placements', ...placements);
+        const models = this.docs(course, 'models.json');
+        if (await statOrNull(models)) args.push('--models', models);
         // The trees the course's own VSP must stop drawing: arborist.py writes the list beside the planted trees.
         const farFile = path.join(path.dirname(planted), `${slug}-vsp-far.json`);
         const before = await positionsIn(farFile);

@@ -1,0 +1,532 @@
+{
+  "format": "golfmap-models-v1",
+  "comment": "Every tree model Omberg can draw (CONTEXT.md 'Model library'). id: arborist:<Arborist catalogue label> or vsp:<Unity prefab>; renderer: what draws it in GSPro. Sizes: a vsp model's from the Unity catalogue, an Arborist model's from data/arborist/catalog-sizes.json (first LOD). The palette refers to these by id. Beech and elm are Arborist-only (Marcus, Arborist Ultra lineup 2026-10-18); the S7 elm's look is his darkened one. Add one: bun run models -- add \"Ombergs Golfklubb\" arborist:<label> --species <species>.",
+  "models": [
+    {
+      "id": "vsp:Fir_02_S",
+      "renderer": "vsp",
+      "heightM": 6.829712867736816,
+      "crownWidthM": 4.604089260101318,
+      "kind": "conifer",
+      "form": "tree",
+      "unity": {
+        "guid": "d4e8b82cbdb8c8844b6e009cdcfe704c",
+        "path": "Assets/2018.2 Prefabs/Trees - NM - FORST/Fir-NM/Fir_02_S.prefab",
+        "assetType": "prefab"
+      }
+    },
+    {
+      "id": "vsp:PF Birch A large 1",
+      "species": "birch",
+      "renderer": "vsp",
+      "heightM": 17.913339614868164,
+      "crownWidthM": 6.924151420593262,
+      "kind": "broadleaf",
+      "form": "tree",
+      "unity": {
+        "guid": "811dabdafb4a7fb3085cb71e08ef8a16",
+        "path": "Assets/GolfMap/Omberg/FoliageTrialV2/PF Birch A large 1.prefab",
+        "assetType": "prefab",
+        "catalogueGuid": "0b2b38bbcc2b9a147b973ca085308922",
+        "originalPath": "Assets/2018.2 Prefabs/Trees - NM - FORST/Birch-FORST/PF Birch A large 1.prefab"
+      }
+    },
+    {
+      "id": "vsp:PF Birch C wide",
+      "species": "birch",
+      "renderer": "vsp",
+      "heightM": 14.02978515625,
+      "crownWidthM": 8.805159568786621,
+      "kind": "broadleaf",
+      "form": "tree",
+      "unity": {
+        "guid": "184a78b11b4ca7394b0afca8cc17530d",
+        "path": "Assets/GolfMap/Omberg/FoliageTrialV2/PF Birch C wide.prefab",
+        "assetType": "prefab",
+        "catalogueGuid": "76674d230e18bf840891405405424fae",
+        "originalPath": "Assets/2018.2 Prefabs/Trees - NM - FORST/Birch-FORST/PF Birch C wide.prefab"
+      }
+    },
+    {
+      "id": "vsp:PF Birch D generic",
+      "species": "birch",
+      "renderer": "vsp",
+      "heightM": 11.665733337402344,
+      "crownWidthM": 6.122479438781738,
+      "kind": "broadleaf",
+      "form": "tree",
+      "unity": {
+        "guid": "7024fa2a142e977a4d562a3ea8fb76cf",
+        "path": "Assets/GolfMap/Omberg/FoliageTrialV2/PF Birch D generic.prefab",
+        "assetType": "prefab",
+        "catalogueGuid": "406410c359ed8c841986ecc6d734719b",
+        "originalPath": "Assets/2018.2 Prefabs/Trees - NM - FORST/Birch-FORST/PF Birch D generic.prefab"
+      }
+    },
+    {
+      "id": "vsp:PF Birch F Sapling",
+      "species": "birch",
+      "renderer": "vsp",
+      "heightM": 5.632429599761963,
+      "crownWidthM": 2.5672972202301025,
+      "kind": "broadleaf",
+      "form": "tree",
+      "unity": {
+        "guid": "0c433b9da181816103c399e271078461",
+        "path": "Assets/GolfMap/Omberg/FoliageTrialV2/PF Birch F Sapling.prefab",
+        "assetType": "prefab",
+        "catalogueGuid": "e3b1ff1095c2dbd4382bfcdf25f50b5e",
+        "originalPath": "Assets/2018.2 Prefabs/Trees - NM - FORST/Birch-FORST/PF Birch F Sapling.prefab"
+      }
+    },
+    {
+      "id": "vsp:PF_Oak_big Terrain",
+      "species": "oak",
+      "renderer": "vsp",
+      "heightM": 18.593582153320312,
+      "crownWidthM": 16.049440383911133,
+      "kind": "broadleaf",
+      "form": "tree",
+      "unity": {
+        "guid": "184e4b3a96ecf0f67418d744fe991a36",
+        "path": "Assets/GolfMap/Omberg/FoliageTrialV2/PF_Oak_big Terrain.prefab",
+        "assetType": "prefab",
+        "catalogueGuid": "bc4a1afc76c9fb5408a3b1d0960d4cdd",
+        "originalPath": "Assets/2018.2 Prefabs/Trees - NM - FORST/Oak-FORST/PF_Oak_big Terrain.prefab"
+      }
+    },
+    {
+      "id": "vsp:PF_Oak_small Terrain",
+      "species": "oak",
+      "renderer": "vsp",
+      "heightM": 14.865435600280762,
+      "crownWidthM": 13.2813138961792,
+      "kind": "broadleaf",
+      "form": "tree",
+      "unity": {
+        "guid": "dd057089cd882d43a88f85cef1e5d9ec",
+        "path": "Assets/GolfMap/Omberg/FoliageTrialV2/PF_Oak_small Terrain.prefab",
+        "assetType": "prefab",
+        "catalogueGuid": "5202e06f1f9c6b346abeb22108f93c09",
+        "originalPath": "Assets/2018.2 Prefabs/Trees - NM - FORST/Oak-FORST/PF_Oak_small Terrain.prefab"
+      }
+    },
+    {
+      "id": "vsp:Fir_03_Medium",
+      "renderer": "vsp",
+      "heightM": 12.5182523727417,
+      "crownWidthM": 5.984769344329834,
+      "kind": "conifer",
+      "form": "tree",
+      "unity": {
+        "guid": "d33215fc339f51347b539c98045721bd",
+        "path": "Assets/NatureManufacture Assets/Dynamic Nature - Mountain Tree Pack/Models/Fir_03_Medium.FBX",
+        "assetType": "model"
+      }
+    },
+    {
+      "id": "vsp:Fir_07_Forest_cheap",
+      "renderer": "vsp",
+      "heightM": 21.941478729248047,
+      "crownWidthM": 9.437744140625,
+      "kind": "conifer",
+      "form": "tree",
+      "unity": {
+        "guid": "969d319aac2f7e341bc6049793d744ef",
+        "path": "Assets/NatureManufacture Assets/Dynamic Nature - Mountain Tree Pack/Models/Fir_07_Forest_cheap.FBX",
+        "assetType": "model"
+      }
+    },
+    {
+      "id": "vsp:Fir_05_Standalone_cheap",
+      "renderer": "vsp",
+      "heightM": 18.584327697753906,
+      "crownWidthM": 5.422457695007324,
+      "kind": "conifer",
+      "form": "tree",
+      "unity": {
+        "guid": "8a86ce237a4ae084ab5b80d1731e82fd",
+        "path": "Assets/NatureManufacture Assets/Dynamic Nature - Mountain Tree Pack/Models/Fir_05_Standalone_cheap.FBX",
+        "assetType": "model"
+      }
+    },
+    {
+      "id": "vsp:Prefab_dwarf_pine_big_04",
+      "renderer": "vsp",
+      "heightM": 2.4631316661834717,
+      "crownWidthM": 2.3320236206054688,
+      "kind": "conifer",
+      "form": "shrub",
+      "unity": {
+        "guid": "eb4568b5e5559c4919fef7e96d454ac0",
+        "path": "Assets/GolfMap/Omberg/FoliageTrialV2/Prefab_dwarf_pine_big_04.prefab",
+        "assetType": "prefab",
+        "catalogueGuid": "99f09c1b20821264caade60f29014ff9",
+        "originalPath": "Assets/NatureManufacture Assets/Mountain Environment/0-Prefab-OPCD-Optimized/Bushes/Prefab_dwarf_pine_big_04.prefab"
+      }
+    },
+    {
+      "id": "vsp:Prefab_dwarf_pine_medium_04",
+      "renderer": "vsp",
+      "heightM": 1.7633088827133179,
+      "crownWidthM": 2.036891222000122,
+      "kind": "conifer",
+      "form": "shrub",
+      "unity": {
+        "guid": "263aefbed4f07878ba01f9fc244fe250",
+        "path": "Assets/GolfMap/Omberg/FoliageTrialV2/Prefab_dwarf_pine_medium_04.prefab",
+        "assetType": "prefab",
+        "catalogueGuid": "b395c038ec73dcb468925e10949ef206",
+        "originalPath": "Assets/NatureManufacture Assets/Mountain Environment/0-Prefab-OPCD-Optimized/Bushes/Prefab_dwarf_pine_medium_04.prefab"
+      }
+    },
+    {
+      "id": "vsp:Prefab_Forest_pine_03",
+      "species": "pine",
+      "renderer": "vsp",
+      "heightM": 23.039470672607422,
+      "crownWidthM": 11.346927642822266,
+      "kind": "conifer",
+      "form": "tree",
+      "unity": {
+        "guid": "5792dd73c5b63e7801de251a88d15dfd",
+        "path": "Assets/GolfMap/Omberg/FoliageTrialV2/Prefab_Forest_pine_03.prefab",
+        "assetType": "prefab",
+        "catalogueGuid": "516b19d29968a544aae1f18060d4f317",
+        "originalPath": "Assets/NatureManufacture Assets/Mountain Environment/0-Prefab-OPCD-Optimized/Pines/Prefab_Forest_pine_03.prefab"
+      }
+    },
+    {
+      "id": "vsp:Prefab_Forest_pine_01",
+      "species": "pine",
+      "renderer": "vsp",
+      "heightM": 16.367759704589844,
+      "crownWidthM": 7.4019694328308105,
+      "kind": "conifer",
+      "form": "tree",
+      "unity": {
+        "guid": "5abe202fe9908c3834c240ce3d24bb0e",
+        "path": "Assets/GolfMap/Omberg/FoliageTrialV2/Prefab_Forest_pine_01.prefab",
+        "assetType": "prefab",
+        "catalogueGuid": "65f6ff344d819874e9ce9963d5538020",
+        "originalPath": "Assets/NatureManufacture Assets/Mountain Environment/0-Prefab-OPCD-Optimized/Pines/Prefab_Forest_pine_01.prefab"
+      }
+    },
+    {
+      "id": "vsp:Prefab_Forest_pine_05",
+      "species": "pine",
+      "renderer": "vsp",
+      "heightM": 24.471864700317383,
+      "crownWidthM": 18.575191497802734,
+      "kind": "conifer",
+      "form": "tree",
+      "unity": {
+        "guid": "1209f0c77816fb0a2d04c180120aec81",
+        "path": "Assets/GolfMap/Omberg/FoliageTrialV2/Prefab_Forest_pine_05.prefab",
+        "assetType": "prefab",
+        "catalogueGuid": "a4dd8d99cb75a0246806ba45e34a8979",
+        "originalPath": "Assets/NatureManufacture Assets/Mountain Environment/0-Prefab-OPCD-Optimized/Pines/Prefab_Forest_pine_05.prefab"
+      }
+    },
+    {
+      "id": "vsp:Prefab_Forest_pine_tree_00_B",
+      "species": "pine",
+      "renderer": "vsp",
+      "heightM": 6.427957534790039,
+      "crownWidthM": 3.612703561782837,
+      "kind": "conifer",
+      "form": "tree",
+      "unity": {
+        "guid": "1b211468c4fd008b158a83d08925498b",
+        "path": "Assets/GolfMap/Omberg/FoliageTrialV2/Prefab_Forest_pine_tree_00_B.prefab",
+        "assetType": "prefab",
+        "catalogueGuid": "8199eb6a27c19c84687534bb5ae2d796",
+        "originalPath": "Assets/NatureManufacture Assets/Mountain Environment/0-Prefab-OPCD-Optimized/Pines/Prefab_Forest_pine_tree_00_B.prefab"
+      }
+    },
+    {
+      "id": "vsp:Prefab_Forest_pine_tree_00_C",
+      "species": "pine",
+      "renderer": "vsp",
+      "heightM": 9.001596450805664,
+      "crownWidthM": 4.155701637268066,
+      "kind": "conifer",
+      "form": "tree",
+      "unity": {
+        "guid": "341bda744d850c2f3c3e890081b73d5f",
+        "path": "Assets/GolfMap/Omberg/FoliageTrialV2/Prefab_Forest_pine_tree_00_C.prefab",
+        "assetType": "prefab",
+        "catalogueGuid": "c87eeed2c0de1524489e8eaed9f9a921",
+        "originalPath": "Assets/NatureManufacture Assets/Mountain Environment/0-Prefab-OPCD-Optimized/Pines/Prefab_Forest_pine_tree_00_C.prefab"
+      }
+    },
+    {
+      "id": "vsp:Broadleaf_Desktop",
+      "species": "broadleaf",
+      "renderer": "vsp",
+      "heightM": 21.142154693603516,
+      "crownWidthM": 20.20050811767578,
+      "kind": "broadleaf",
+      "form": "tree",
+      "unity": {
+        "guid": "670f72ca03b1ee8d2a4eb501c9f1978a",
+        "path": "Assets/GolfMap/Omberg/FoliageTrialV2/Broadleaf Balanced.prefab",
+        "assetType": "prefab",
+        "catalogueGuid": "add40014f8bd6a64cac74ac7089d563a",
+        "originalPath": "Assets/Trees/Broadleaf/Broadleaf_Desktop.prefab"
+      }
+    },
+    {
+      "id": "vsp:Maple",
+      "species": "maple",
+      "renderer": "vsp",
+      "heightM": 11.33663558959961,
+      "crownWidthM": 12.370033264160156,
+      "kind": "broadleaf",
+      "form": "tree",
+      "unity": {
+        "guid": "f010b93b81ec5ff41bdc1b5154a54ab4",
+        "path": "Assets/TreeShare/Maple/Maple.prefab",
+        "assetType": "prefab"
+      }
+    },
+    {
+      "id": "vsp:PF_Oak_tall_bare Terrain",
+      "species": "oak",
+      "renderer": "vsp",
+      "heightM": 20.402992248535156,
+      "crownWidthM": 14.67121410369873,
+      "kind": "broadleaf",
+      "form": "tree",
+      "unity": {
+        "guid": "f673fc5b0dcc58950c3672f242fb74a5",
+        "path": "Assets/GolfMap/Omberg/FoliageTrialV2/PF_Oak_tall_bare Terrain.prefab",
+        "assetType": "prefab",
+        "catalogueGuid": "7522093029bb57441a5cf73f03198466",
+        "originalPath": "Assets/2018.2 Prefabs/Trees - NM - FORST/Oak-FORST/PF_Oak_tall_bare Terrain.prefab"
+      }
+    },
+    {
+      "id": "vsp:PF_Oak_tall Terrain",
+      "species": "oak",
+      "renderer": "vsp",
+      "heightM": 20.402992248535156,
+      "crownWidthM": 14.67121410369873,
+      "kind": "broadleaf",
+      "form": "tree",
+      "unity": {
+        "guid": "7306a18832d3db94b90f549ebb577ed9",
+        "path": "Assets/GolfMap/Omberg/FoliageTrialV2/PF_Oak_tall Terrain.prefab",
+        "assetType": "prefab",
+        "catalogueGuid": "58c5da182b52c9c4bb38216e85e63377",
+        "originalPath": "Assets/2018.2 Prefabs/Trees - NM - FORST/Oak-FORST/PF_Oak_tall Terrain.prefab"
+      }
+    },
+    {
+      "id": "vsp:Prefab_Forest_pine_04",
+      "species": "pine",
+      "renderer": "vsp",
+      "heightM": 23.747766494750977,
+      "crownWidthM": 11.687714576721191,
+      "kind": "conifer",
+      "form": "tree",
+      "unity": {
+        "guid": "4658c13a13b3576e323642b8d0b90164",
+        "path": "Assets/GolfMap/Omberg/FoliageTrialV2/Prefab_Forest_pine_04.prefab",
+        "assetType": "prefab",
+        "catalogueGuid": "83ffffa3aca8421428f7a06679f967ea",
+        "originalPath": "Assets/NatureManufacture Assets/Mountain Environment/0-Prefab-OPCD-Optimized/Pines/Prefab_Forest_pine_04.prefab"
+      }
+    },
+    {
+      "id": "vsp:Prefab_Forest_pine_06",
+      "species": "pine",
+      "renderer": "vsp",
+      "heightM": 25.39019012451172,
+      "crownWidthM": 12.712520599365234,
+      "kind": "conifer",
+      "form": "tree",
+      "unity": {
+        "guid": "5ca6460233a02396936f0697c9480154",
+        "path": "Assets/GolfMap/Omberg/FoliageTrialV2/Prefab_Forest_pine_06.prefab",
+        "assetType": "prefab",
+        "catalogueGuid": "c1736559a50e39b438b237260b6a48d3",
+        "originalPath": "Assets/NatureManufacture Assets/Mountain Environment/0-Prefab-OPCD-Optimized/Pines/Prefab_Forest_pine_06.prefab"
+      }
+    },
+    {
+      "id": "vsp:VS_prefab_01_Poplar",
+      "species": "poplar",
+      "renderer": "vsp",
+      "heightM": 7.849353313446045,
+      "crownWidthM": 4.450461387634277,
+      "kind": "broadleaf",
+      "form": "tree",
+      "unity": {
+        "guid": "4a1c3a4e35d870b8a39f53c339b91879",
+        "path": "Assets/GolfMap/Omberg/FoliageTrialV2/VS_prefab_01_Poplar.prefab",
+        "assetType": "prefab",
+        "catalogueGuid": "4f10dc56b4fc90a4db48c8b9676fcc56",
+        "originalPath": "Assets/NatureManufacture Assets/Meadow Environment Dynamic Nature/Trees/VS Prefabs/VS_prefab_01_Poplar.prefab"
+      }
+    },
+    {
+      "id": "vsp:VS_prefab_06_Poplar",
+      "species": "poplar",
+      "renderer": "vsp",
+      "heightM": 25.20624542236328,
+      "crownWidthM": 14.476861953735352,
+      "kind": "broadleaf",
+      "form": "tree",
+      "unity": {
+        "guid": "0518a50c95d3c3477bf96027d03a2645",
+        "path": "Assets/GolfMap/Omberg/FoliageTrialV2/VS_prefab_06_Poplar.prefab",
+        "assetType": "prefab",
+        "catalogueGuid": "b05e7118c3749a343ba1dc93661a3ed6",
+        "originalPath": "Assets/NatureManufacture Assets/Meadow Environment Dynamic Nature/Trees/VS Prefabs/VS_prefab_06_Poplar.prefab"
+      }
+    },
+    {
+      "id": "vsp:VS_prefab_07_Poplar",
+      "species": "poplar",
+      "renderer": "vsp",
+      "heightM": 25.48114585876465,
+      "crownWidthM": 15.460978507995605,
+      "kind": "broadleaf",
+      "form": "tree",
+      "unity": {
+        "guid": "9f8cffbe9c94ec13a525026bd445a01f",
+        "path": "Assets/GolfMap/Omberg/FoliageTrialV2/VS_prefab_07_Poplar.prefab",
+        "assetType": "prefab",
+        "catalogueGuid": "ae68016db637c1d4b9f7615a8a6efccf",
+        "originalPath": "Assets/NatureManufacture Assets/Meadow Environment Dynamic Nature/Trees/VS Prefabs/VS_prefab_07_Poplar.prefab"
+      }
+    },
+    {
+      "id": "vsp:VS_prefab_05_Poplar",
+      "species": "poplar",
+      "renderer": "vsp",
+      "heightM": 24.378360748291016,
+      "crownWidthM": 14.454353332519531,
+      "kind": "broadleaf",
+      "form": "tree",
+      "unity": {
+        "guid": "67cf7196f365dd44cd55a1ecf33f50bb",
+        "path": "Assets/GolfMap/Omberg/FoliageTrialV2/VS_prefab_05_Poplar.prefab",
+        "assetType": "prefab",
+        "catalogueGuid": "68a0ca7d6ecb5fc4d9e86871527ae321",
+        "originalPath": "Assets/NatureManufacture Assets/Meadow Environment Dynamic Nature/Trees/VS Prefabs/VS_prefab_05_Poplar.prefab"
+      }
+    },
+    {
+      "id": "vsp:VS_prefab_03_Poplar",
+      "species": "poplar",
+      "renderer": "vsp",
+      "heightM": 18.206308364868164,
+      "crownWidthM": 11.608781814575195,
+      "kind": "broadleaf",
+      "form": "tree",
+      "unity": {
+        "guid": "da830b4f387bb025130ca249c52110de",
+        "path": "Assets/GolfMap/Omberg/FoliageTrialV2/VS_prefab_03_Poplar.prefab",
+        "assetType": "prefab",
+        "catalogueGuid": "c9257313c5ed05f4ab1d114e7cb447ef",
+        "originalPath": "Assets/NatureManufacture Assets/Meadow Environment Dynamic Nature/Trees/VS Prefabs/VS_prefab_03_Poplar.prefab"
+      }
+    },
+    {
+      "id": "arborist:Forest_Large_beech_tree_03",
+      "species": "beech",
+      "renderer": "arborist",
+      "heightM": 15.0733385,
+      "crownWidthM": 9.906925,
+      "kind": "broadleaf",
+      "form": "tree"
+    },
+    {
+      "id": "arborist:Forest_Large_beech_tree_04",
+      "species": "beech",
+      "renderer": "arborist",
+      "heightM": 19.3740673,
+      "crownWidthM": 12.3398418,
+      "kind": "broadleaf",
+      "form": "tree"
+    },
+    {
+      "id": "arborist:Forest_Large_beech_tree_05",
+      "species": "beech",
+      "renderer": "arborist",
+      "heightM": 20.93724,
+      "crownWidthM": 17.9851265,
+      "kind": "broadleaf",
+      "form": "tree"
+    },
+    {
+      "id": "arborist:CE_DA_Forest_Tree_16018",
+      "species": "beech",
+      "renderer": "arborist",
+      "heightM": 22.8515739,
+      "crownWidthM": 13.96229,
+      "kind": "broadleaf",
+      "form": "tree"
+    },
+    {
+      "id": "arborist:CE_DA_Forest_Tree_18195",
+      "species": "beech",
+      "renderer": "arborist",
+      "heightM": 20.8907242,
+      "crownWidthM": 13.7004929,
+      "kind": "broadleaf",
+      "form": "tree"
+    },
+    {
+      "id": "arborist:CE_DA_Forest_Tree_11164",
+      "species": "beech",
+      "renderer": "arborist",
+      "heightM": 28.2474918,
+      "crownWidthM": 15.5914688,
+      "kind": "broadleaf",
+      "form": "tree"
+    },
+    {
+      "id": "arborist:S7_American_Elm",
+      "species": "elm",
+      "renderer": "arborist",
+      "heightM": 11.1583967,
+      "crownWidthM": 14.6115055,
+      "kind": "broadleaf",
+      "form": "tree",
+      "look": {
+        "tint": "#868c90",
+        "barkTint": "#6e6862"
+      }
+    },
+    {
+      "id": "arborist:CE_Oak_CE_Tall_Fanned_1",
+      "species": "elm",
+      "renderer": "arborist",
+      "heightM": 24.50739,
+      "crownWidthM": 15.6562777,
+      "kind": "broadleaf",
+      "form": "tree"
+    },
+    {
+      "id": "arborist:CE_Oak_CE_Tall_Fanned_2",
+      "species": "elm",
+      "renderer": "arborist",
+      "heightM": 16.778759,
+      "crownWidthM": 17.8745975,
+      "kind": "broadleaf",
+      "form": "tree"
+    },
+    {
+      "id": "arborist:CE_Oak_CE_Tall_Fanned_3",
+      "species": "elm",
+      "renderer": "arborist",
+      "heightM": 22.435421,
+      "crownWidthM": 14.0411053,
+      "kind": "broadleaf",
+      "form": "tree"
+    }
+  ]
+}

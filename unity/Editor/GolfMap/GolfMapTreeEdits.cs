@@ -29,7 +29,9 @@ namespace GolfMap.Editor
         public int k;                 // crown kind 0 broadleaf, 1 conifer, 2 unknown
         public bool bush;
         public string species = "";   // "" = biome decides
-        public string guid = "";      // "" = biome decides within the species
+        public string guid = "";      // "" = biome decides within the species; else the asset's MatchKey (its prefab guid)
+        public string model = "";     // a model id of the palette (arborist:<label> | vsp:<prefab>); wins over species and guid
+        public bool sized;            // h and r are the tree's drawn size (golfmap.trees.edit heightM / crownWidthM): the fit takes them as they are
         public float rotation;        // degrees, used when rotationSet
         public bool rotationSet;
         public float dy;              // vertical offset from the ground, metres (sink a tree to lower its branches)
@@ -66,6 +68,7 @@ namespace GolfMap.Editor
                 if (e.op != "delete" && (!(e.h > 0) || !(e.r > 0) || e.k < 0 || e.k > 2)) throw new Exception("Invalid height, radius or kind for edit " + e.id);
                 if (e.species == null) e.species = "";
                 if (e.guid == null) e.guid = "";
+                if (e.model == null) e.model = "";
             }
             return file;
         }

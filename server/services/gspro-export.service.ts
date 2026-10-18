@@ -438,6 +438,11 @@ export function treesExportFileName(courseName: string, kind: TerrainKind): stri
     return `${courseSlug(courseName)}-${kind}-trees.json`;
 }
 
+/** `Vreta`, inner -> `vreta-inner-placements.json` (golfmap-placements-v1): what Unity's planter planted, before any renderer. */
+export function placementsExportFileName(courseName: string, kind: TerrainKind): string {
+    return `${courseSlug(courseName)}-${kind}-placements.json`;
+}
+
 /** `Vreta`, outer -> `vreta-outer-buildings.json` (unity-buildings-v1). */
 export function buildingsExportFileName(courseName: string, kind: TerrainKind): string {
     return `${courseSlug(courseName)}-${kind}-buildings.json`;

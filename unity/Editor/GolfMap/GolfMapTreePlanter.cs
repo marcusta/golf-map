@@ -469,17 +469,27 @@ namespace GolfMap.Editor
         {
             GolfMapTreeEdit edit; treeEdits.TryGetValue(t, out edit);
             var source = biome; int kind = t.k;
-            if (edit != null && (!string.IsNullOrEmpty(edit.species) || !string.IsNullOrEmpty(edit.guid)))
+            if (edit != null && !string.IsNullOrEmpty(edit.model))
             {
-                var assets = biome.assets.Where(a => a.enabled && (string.IsNullOrEmpty(edit.guid) ? a.species == edit.species : a.guid == edit.guid)).ToList();
+                // A hand-picked model: that one, whatever the palette enables.
+                var assets = biome.assets.Where(a => a.model == edit.model).ToList();
+                if (assets.Count == 0) throw new Exception("Model '" + edit.model + "' is not in the palette (tree " + t.id + ").");
+                if (!assets[0].enabled && !assets[0].IsArborist) throw new Exception("Model '" + edit.model + "' is disabled in the palette: enable it to plant tree " + t.id + " with it.");
+                source = biome.OnlyAssets(assets.Take(1).Select(a => { var c = a.Clone(); c.enabled = true; return c; }).ToList());
+                kind = GolfMapBiome.StemKind(source.assets);
+            }
+            else if (edit != null && (!string.IsNullOrEmpty(edit.species) || !string.IsNullOrEmpty(edit.guid)))
+            {
+                var assets = biome.assets.Where(a => a.enabled && (string.IsNullOrEmpty(edit.guid) ? a.species == edit.species : a.MatchKey == edit.guid)).ToList();
                 if (assets.Count == 0) throw new Exception("No enabled biome asset for species '" + edit.species + "' / asset '" + edit.guid + "' (tree " + t.id + ").");
-                source = new GolfMapBiome { format = biome.format, seed = biome.seed, rules = biome.rules, assets = assets };
-                kind = assets.All(a => a.kind == "conifer") ? 1 : assets.All(a => a.kind == "broadleaf") ? 0 : 2;
+                source = biome.OnlyAssets(assets);
+                kind = GolfMapBiome.MatchKind(assets);
             }
             // A tree species area gives the stem its mix; a hand-picked species or asset wins over it.
             GolfMapAreaMix area = null;
             if (source == biome && !string.IsNullOrEmpty(t.area)) areaMixes.TryGetValue(t.area, out area);
-            var m = GolfMapBiomeMatcher.Match(source, t.id, t.h, t.r, kind, woodland, area);
+            // Match owns the sized rule: a stem sized by hand gets no woodland canopy.
+            var m = GolfMapBiomeMatcher.Match(source, t.id, t.h, t.r, kind, woodland, area, edit != null && edit.sized);
             if (m != null && edit != null && edit.rotationSet) m.rotation = edit.rotation;
             if (m != null && edit != null)
             {
@@ -490,6 +500,8 @@ namespace GolfMap.Editor
                 m.widthScale = forceBillboards ? 0 : 2 * t.r / m.asset.crownWidthM;
                 m.heightError = 0;
                 m.widthError = m.widthScale > 0 ? 0 : Math.Abs(Math.Log(m.asset.crownWidthM * m.scale / (2 * t.r)));
+                // A tree whose model or size was set by hand is what was asked for, not a fit to review.
+                if (!string.IsNullOrEmpty(edit.model) || edit.sized) m.review = false;
             }
             return m;
         }
@@ -596,6 +608,8 @@ namespace GolfMap.Editor
             foreach(var a in biome.assets){
                 if(!a.enabled)continue;
                 if(!(a.heightM>0&&a.crownWidthM>0)||double.IsInfinity(a.heightM)||double.IsInfinity(a.crownWidthM))throw new Exception("Invalid dimensions: "+a.name);
+                // An Arborist model has no prefab here: its trees become placements for the Arborist writer.
+                if(a.IsArborist)continue;
                 var actual=AssetDatabase.GUIDToAssetPath(a.guid);
                 if(actual!=a.path)throw new Exception("Biome asset missing or moved: "+a.name+". Expected "+a.path);
                 var prefab=AssetDatabase.LoadAssetAtPath<GameObject>(actual);
@@ -609,7 +623,7 @@ namespace GolfMap.Editor
             foreach(var group in biome.species)foreach(var look in group.looks){
                 if(look.original||!(look.weight>0))continue;
                 foreach(var shape in GolfMapLooks.Shapes(biome,group.name,look)){
-                    if(!shape.enabled)continue;
+                    if(!shape.enabled||shape.IsArborist)continue;
                     var copy=GolfMapLooks.Prefab(GolfMapCourses.For(component),group.name,look,shape);
                     // A look the palette records but this project never generated: build it from the recorded values.
                     if(!copy){GolfMapLooks.Generate(GolfMapCourses.For(component),biome,group.name,look,null);GolfMapLooks.Apply(GolfMapCourses.For(component),biome,group.name,look);copy=GolfMapLooks.Prefab(GolfMapCourses.For(component),group.name,look,shape);}
@@ -841,7 +855,7 @@ namespace GolfMap.Editor
 
         GameObject Pick(GolfMapTree t, System.Random rng)
         {
-            if(useBiome){GolfMapBiomeMatch match;return biomeMatches.TryGetValue(t,out match)?biomePrefabs[biome.PrefabKey(match)]:null;}
+            if(useBiome){GolfMapBiomeMatch match;return biomeMatches.TryGetValue(t,out match)&&!match.asset.IsArborist?biomePrefabs[biome.PrefabKey(match)]:null;}
             var list = t.bush ? Nonnull(bushPrefabs) : null;
             if (list == null || list.Count == 0) list = Fallback(t.k);
             if (list.Count == 0) return null;

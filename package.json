@@ -31,6 +31,7 @@
         "water:import": "bun scripts/water-import.ts",
         "shaping": "bun scripts/shaping-apply.ts",
         "arborist": "bun scripts/arborist.ts",
+        "models": "bun scripts/models.ts",
         "opcd:build": "bun scripts/opcd-build.ts",
         "e2e": "playwright test --config e2e/playwright.config.ts",
         "e2e:headed": "playwright test --config e2e/playwright.config.ts --headed",

@@ -17,6 +17,8 @@ import type { CoursesService } from './courses.service';
 import type { CourseFeaturesService } from './course-features.service';
 import type { ZoneTypesService } from './zone-types.service';
 import { courseSlug } from './gspro-export.service';
+import { loadModelLibrary, resolveAsset, type PaletteAsset } from '../../shared/vegetation/tree-models';
+import { rendererOf } from '../../shared/vegetation/model-id';
 import { DEFAULT_PIPELINE_DIR } from './pipeline-dir';
 import {
     VEGETATION_GENERATORS, VEGETATION_RULES_FILE, readRuleDefaults,
@@ -90,6 +92,27 @@ export interface PlantingRules {
     treeAreas: TreeAreaRule[];
     /** The tree palette's assets per species (enabled / all). */
     treeAssets: { species: string; enabled: number; total: number }[];
+    /** Each species of the palette with its weight and its models (model library: who draws it, its size), by species name. */
+    treeModels: TreeSpeciesModels[];
+}
+
+export interface TreeModelRule {
+    /** `arborist:<label>` or `vsp:<prefab>`. */
+    id: string;
+    /** What draws it in GSPro: `arborist` or `vsp`. */
+    renderer: string;
+    heightM: number;
+    crownWidthM: number;
+    enabled: boolean;
+    /** The palette refers to a model its library (models.json) lacks: shown so it can be fixed, with no size. */
+    missing?: boolean;
+}
+
+export interface TreeSpeciesModels {
+    species: string;
+    /** The palette's speciesWeights share; 0 = not raced for. */
+    weight: number;
+    models: TreeModelRule[];
 }
 
 export interface VegetationRulesDeps {
@@ -198,15 +221,16 @@ export class VegetationRulesService {
             trees.push(section(doc, values, values ? rel(file) : null));
         }
 
-        const assets = (at(palette, 'assets') as { species?: string; kind?: string; enabled?: boolean }[] | undefined) ?? [];
+        const models = palette ? paletteModels(docs, palette) : [];
         const bySpecies = new Map<string, { enabled: number; total: number }>();
-        for (const a of assets) {
-            const label = a.species || a.kind || 'unlabelled';
-            const n = bySpecies.get(label) ?? { enabled: 0, total: 0 };
+        for (const m of models) {
+            const n = bySpecies.get(m.species) ?? { enabled: 0, total: 0 };
             n.total++;
-            if (a.enabled !== false) n.enabled++;
-            bySpecies.set(label, n);
+            if (m.rule.enabled) n.enabled++;
+            bySpecies.set(m.species, n);
         }
+        const weights = (at(palette, 'rules.speciesWeights') ?? {}) as Record<string, number>;
+        const treeModels = groupBySpecies(models, weights);
 
         const treeAreas = (await this.deps.features.listByCourse(courseId))
             .filter((f) => f.type === TREE_AREA_TYPE)
@@ -219,6 +243,41 @@ export class VegetationRulesService {
         return {
             courseId, courseName: course.name, courseDocs: rel(docs), generators, trees, treeAreas,
             treeAssets: [...bySpecies].map(([species, n]) => ({ species, ...n })).sort((a, b) => b.total - a.total),
+            treeModels,
         };
     }
+}
+
+/** A palette asset as the Planting rules show it: its model, and the species it is counted under. */
+interface PaletteModel { species: string; rule: TreeModelRule }
+
+/** A model the palette refers to that its library lacks is counted under this name. */
+const MISSING_SPECIES = 'not in models.json';
+
+/**
+ * The palette's assets read through the course's model library (shared/vegetation/tree-models.ts, as the
+ * planter reads them), in palette order. A reference the library lacks is kept, flagged missing.
+ */
+function paletteModels(docs: string, palette: unknown): PaletteModel[] {
+    const byId = new Map(loadModelLibrary(docs).models.map((m) => [m.id, m]));
+    return ((at(palette, 'assets') as PaletteAsset[] | undefined) ?? []).map((asset) => {
+        try {
+            const a = resolveAsset(asset, byId);
+            return {
+                species: a.species || a.kind || 'unlabelled',
+                rule: { id: a.model, renderer: a.renderer, heightM: a.heightM, crownWidthM: a.crownWidthM, enabled: a.enabled !== false },
+            };
+        } catch {
+            const id = String(asset.model);
+            return { species: MISSING_SPECIES, rule: { id, renderer: rendererOf(id) ?? '?', heightM: 0, crownWidthM: 0, enabled: asset.enabled !== false, missing: true } };
+        }
+    });
+}
+
+/** Each species with its palette weight and its models, by species name. */
+function groupBySpecies(models: PaletteModel[], weights: Record<string, number>): TreeSpeciesModels[] {
+    const bySpecies = new Map<string, TreeModelRule[]>();
+    for (const m of models) bySpecies.set(m.species, [...(bySpecies.get(m.species) ?? []), m.rule]);
+    return [...bySpecies].sort(([a], [b]) => a.localeCompare(b))
+        .map(([species, rules]) => ({ species, weight: weights[species] ?? 0, models: rules }));
 }

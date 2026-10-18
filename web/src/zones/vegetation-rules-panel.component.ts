@@ -15,6 +15,7 @@ import { s, btn, glassPanel, panelTitle, statusTag, OVERLAY_W, OVERLAY_INSET } f
 import { icon } from '../ui/icons';
 import { VegetationRulesService, formatRuleValue, ruleValueLines } from './vegetation-rules.service';
 import type { PlantingRule, PlantingRuleSection, PlantingRules } from '../../../shared/api/vegetation-rules.gen';
+import { modelLabel, rendererName } from '../../../shared/vegetation/model-id';
 
 const EXPLAIN_KEY = 'golfmap.plantingRules.explain';
 
@@ -196,6 +197,7 @@ export class VegetationRulesPanelComponent extends Component {
         heading('Trees', 'Detection from the lidar, the species and model per tree in Unity, and who draws it in GSPro');
         for (const tr of rules.trees) body.appendChild(this.section(tr, explainOn, open));
         body.appendChild(this.treeAreas(rules, open));
+        if (rules.treeModels?.length) body.appendChild(this.treeModels(rules, open));
     }
 
     private details(id: string, open: Set<string>): HTMLDetailsElement {
@@ -304,6 +306,34 @@ export class VegetationRulesPanelComponent extends Component {
             for (const a of rules.treeAssets) {
                 const row = el('div', 'vr-mix');
                 row.append(el('span', 'vr-rule__key', a.species), el('span', undefined, `${a.enabled} / ${a.total}`));
+                group.appendChild(row);
+            }
+            b.appendChild(group);
+        }
+        d.appendChild(b);
+        return d;
+    }
+
+    /** Each species' models, one line each: species, model, who draws it; the size in the tooltip. */
+    private treeModels(rules: PlantingRules, open: Set<string>): HTMLElement {
+        const d = this.details('tree-models', open);
+        const summary = el('summary');
+        summary.title = "The palette's species and their models from the course's model library (models.json); the size fit picks among a species' models";
+        const count = rules.treeModels.reduce((n, sp) => n + sp.models.length, 0);
+        summary.append(el('span', 'vr-section__label', 'Tree models'), el('span', 'vr-section__script', 'models.json'), el('span', 'vr-tag', String(count)));
+        d.appendChild(summary);
+        const b = el('div', 'vr-section__body');
+        for (const sp of rules.treeModels) {
+            const group = el('div', 'vr-group');
+            group.appendChild(el('div', 'vr-group__title', `${sp.species} · weight ${sp.weight}`));
+            for (const m of sp.models) {
+                const row = el('div', m.enabled ? 'vr-mix' : 'vr-mix empty');
+                row.dataset.testid = 'planting-rules-model';
+                row.dataset.model = m.id;
+                const size = m.missing ? 'not in the model library (models.json)' : `${m.heightM.toFixed(1)} m tall, ${m.crownWidthM.toFixed(1)} m crown`;
+                row.title = `${m.id}\n${size}${m.enabled ? '' : '\n(disabled in the palette)'}`;
+                row.append(el('span', 'vr-rule__key', sp.species), el('span', undefined, modelLabel(m.id)),
+                    el('span', m.enabled ? 'vr-tag' : 'vr-tag--off', rendererName(m.renderer)));
                 group.appendChild(row);
             }
             b.appendChild(group);

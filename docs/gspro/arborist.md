@@ -216,6 +216,44 @@ not yet seen in GSPro.
 - The same items must not spawn in VSP too: `golfmap.vsp.plants on=false` in Unity
   (`golfmap.grass.apply` puts the palette's spawning back).
 
+## Models, placements and tree ids
+
+A course's trees are models of its model library (`docs/gspro/<course>/models.json`, golfmap-models-v1;
+Unity's copy beside its `palette.json`, kept equal). A model is `arborist:<catalogue label>` or
+`vsp:<Unity prefab>` with its species, renderer, size (an Arborist model's from `catalog-sizes.json`,
+first LOD) and look; the palette refers to models (`assets[].model`) and never names a renderer
+(CONTEXT.md). `shared/vegetation/tree-models.ts loadCoursePalette` resolves the two for the matcher
+(the server and `unity/*.mjs` read it; a model id is parsed and built only in
+`shared/vegetation/model-id.ts`, `GolfMapModels.Parse/Id` and `arborist.py parse_model_id/model_id`),
+Unity's `GolfMapPalette.Load` the same. A resolved asset's `guid` is its Unity prefab's only (none for an
+Arborist model); the matcher hashes `key` / `MatchKey` (the prefab guid, else the model id).
+
+- **Add an Arborist model**: `bun run models -- add "<course>" arborist:<label> --species <s> [--dry-run]`
+  (refuses a label Arborist lacks), or Unity's Palette panel, **Add Arborist model** (library and palette
+  reference; Save the palette).
+- **Placements**: Unity's planter writes `<export>/<prefix>-<terrain>-placements.json`
+  (golfmap-placements-v1; `golfmap.course` lists it as `exports['inner-placements']`): every planted tree
+  by id with its model, position, rotation and scale. Only vsp models go into the course's VSP; the
+  Arborist ones exist only as placements, and `ArboristService` passes the file to `arborist.py trees
+  --placements` with `--models` (the model's look).
+- **Tree ids**: `arborist.py trees` writes `arboristdata.ids.json` beside the `.dat`
+  (golfmap-arborist-ids-v1): every tree it was handed, `drawn` (item, x, z) or `leftOut` by the routing
+  policy with the reason.
+- **Tree edits by id** without the Scene view: `golfmap.trees.edit {terrain, op: modify|add|delete|revert, id,
+  model | species, heightM, crownWidthM, rotationY, x, z}` records into the tree-edits file; plant to apply.
+  `golfmap.vsp.trees.stored` counts what the course's VSP holds (or lists it `near: [x, z]`).
+- Omberg 2026-10-18: beech (Forest_Large_beech_tree_03/04/05, CE_DA_Forest_Tree_16018/18195/11164) and elm
+  (S7_American_Elm, darkened, and CE_Oak_CE_Tall_Fanned_1/2/3) are Arborist models; the Unity stand-ins
+  and the list mapping under `"trees"` are gone. Open: the poplars, firs and pines are still vsp models that
+  the `"vsp"` keep list hides in VSP and `"trees"` hands to Arborist - as models of their own they would be
+  `arborist:` ones.
+- Open (first delivery): the Scene view tree editor handles VSP trees only - a tree that would become an
+  Arborist model, or is one, is edited with `golfmap.trees.edit`. Unity's terrain-tree and GameObject planting
+  modes plant no Arborist model and write no placements. The model library has two copies (docs and Unity's,
+  equal by hand) and two add implementations (`bun run models -- add` writes the docs copy only; the Palette
+  panel writes Unity's copy at once, before the draft palette is saved, and adds the palette reference).
+  A hand-picked model that is disabled in the palette plants for an Arborist model, not for a vsp one.
+
 ## The planted trees (`arborist.py trees`)
 
 Seen drawing in Arborist (2026-10-12, Vreta: 144 475 trees, 24 species, 12.5 MB file with the lower

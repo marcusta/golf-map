@@ -36,7 +36,7 @@ namespace GolfMap.Editor
 
         public static List<GolfMapBiomeAsset> Shapes(GolfMapBiome biome, string species, GolfMapBiomeLook look)
         {
-            return biome.assets.Where(a => a.Label == species && (look == null || look.shapes == null || look.shapes.Contains(a.guid))).ToList();
+            return biome.assets.Where(a => !a.IsArborist && a.Label == species && (look == null || look.shapes == null || look.shapes.Contains(a.guid))).ToList();
         }
 
         static GameObject Source(GolfMapBiomeAsset shape)

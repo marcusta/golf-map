@@ -47,7 +47,8 @@ Indexed (read the full text before touching the area):
 - **VSP cell edges**: whole-metre stems sit on 100 m cell edges; keep the 1 cm nudge in `PlantStorage`.
 - **One object, two panels**: single `GolfMap Trees` object, role-fixed inner/outer; no append mode, no editable terrain/storage field.
 - **Planter is a scene component**: settings live on `GolfMapTrees`; call `Dirty()` after changing them from code.
-- **Tree edits file** `<course>-<terrain>-tree-edits.json`: a replant or survey regeneration keeps it.
+- **Tree edits file** `<course>-<terrain>-tree-edits.json`: a replant or survey regeneration keeps it; `golfmap.trees.edit` writes it by tree id.
+- **Arborist models** in the palette (`arborist:<label>`, models.json beside palette.json): no prefab and never in VSP; their trees exist only in `<prefix>-<terrain>-placements.json`. Keep Unity's palette.json/models.json equal to docs/gspro/<course>/.
 - **VSP draws one mesh per LOD**: multi-renderer LODs render as blobs; use `VS_` or baked variants.
 - **VegetationSystemPro name**: GSPro resolves the system by that exact name; build via `GolfMapVspRig.cs`, find systems by storage asset.
 - **Copied tree shader names**: never rename; GSPro's forked VSP throws and drops every tree in the package. Stock names only.

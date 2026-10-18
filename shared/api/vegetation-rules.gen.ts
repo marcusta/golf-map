@@ -9,6 +9,7 @@ export interface PlantingRules {
     trees: PlantingRuleSection[];
     treeAreas: TreeAreaRule[];
     treeAssets: { species: string; enabled: number; total: number }[];
+    treeModels: TreeSpeciesModels[];
 }
 
 export interface PlantingRuleSection {
@@ -29,6 +30,12 @@ export interface TreeAreaRule {
     ignoreKind: boolean;
 }
 
+export interface TreeSpeciesModels {
+    species: string;
+    weight: number;
+    models: TreeModelRule[];
+}
+
 export interface PlantingRuleGroup {
     title: string;
     rules: PlantingRule[];
@@ -40,6 +47,15 @@ export interface PlantingMix {
     variant: string;
     variantName: string;
     items: string[];
+}
+
+export interface TreeModelRule {
+    id: string;
+    renderer: string;
+    heightM: number;
+    crownWidthM: number;
+    enabled: boolean;
+    missing?: boolean;
 }
 
 export interface PlantingRule {

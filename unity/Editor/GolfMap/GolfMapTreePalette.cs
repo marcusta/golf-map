@@ -30,6 +30,9 @@ namespace GolfMap.Editor
         string diskText = "", draftText = "";   // file as loaded/saved, and as the draft would write it
         string paletteNote = "";
         string newSpecies = "";
+        string arboristLabel = "", arboristSpecies = "", arboristAddNote = "";
+        bool arboristConifer;
+        const string CataloguePref = "GolfMap.ArboristCatalogueSizes";   // data/arborist/catalog-sizes.json of the golf-map repo
         [SerializeField] bool showRules, showAssets = true;
         [SerializeField] Vector2 assetScroll;
 
@@ -314,17 +317,58 @@ namespace GolfMap.Editor
                     using (new EditorGUILayout.HorizontalScope())
                     {
                         a.enabled = EditorGUILayout.Toggle(a.enabled, GUILayout.Width(16));
-                        if (GUILayout.Button(new GUIContent(a.name, a.path), EditorStyles.label, GUILayout.MinWidth(80)))
+                        if (GUILayout.Button(new GUIContent(a.name, a.IsArborist ? a.model + ": drawn by Arborist, not by the course's VSP" : a.path), EditorStyles.label, GUILayout.MinWidth(80)) && !a.IsArborist)
                             EditorGUIUtility.PingObject(AssetDatabase.LoadMainAssetAtPath(AssetDatabase.GUIDToAssetPath(a.guid)));
+                        GUILayout.Label(new GUIContent(a.IsArborist ? "Arborist" : "VSP", "Who draws this model in GSPro (the model library, models.json)"), EditorStyles.miniLabel, GUILayout.Width(44));
                         GUILayout.Label(new GUIContent(a.heightM.ToString("0.#") + " x " + a.crownWidthM.ToString("0.#"), "Natural height x crown width (m)"), EditorStyles.miniLabel, GUILayout.Width(62));
                         a.selectionWeight = Math.Round(Math.Max(0, EditorGUILayout.DoubleField(new GUIContent("", "Share of this species' stems among its variants that fit (0 = unset, counts as 1)."), a.selectionWeight, GUILayout.Width(40))), 3);
-                        int count; previewAssets.TryGetValue(a.guid, out count);
-                        int planted; plantedAssets.TryGetValue(a.guid, out planted);
+                        int count; previewAssets.TryGetValue(a.MatchKey, out count);
+                        int planted; plantedAssets.TryGetValue(a.MatchKey, out planted);
                         GUILayout.Label(new GUIContent(previewStale || !AnyLoaded ? "" : count + (planted != count && CheckedCount > 0 ? " (" + planted + ")" : ""), "Stems in the preview (at the last check)"), EditorStyles.miniLabel, GUILayout.Width(84));
                     }
                 }
             }
             EditorGUILayout.EndScrollView();
+            DrawAddArborist();
+        }
+
+        // An Arborist model from Arborist's catalogue joins the course's model library (models.json beside the
+        // palette, sized from the catalogue's first LOD; bun run models -- add does the same on the repo's copy)
+        // and the draft palette refers to it. Save the palette to plant it.
+        void DrawAddArborist()
+        {
+            EditorGUILayout.LabelField(new GUIContent("Add Arborist model", "A model of Arborist's catalogue: Arborist draws its trees, the course's VSP never holds them."), EditorStyles.miniBoldLabel);
+            string catalogue = EditorPrefs.GetString(CataloguePref, "");
+            using (new EditorGUILayout.HorizontalScope())
+            {
+                EditorGUILayout.LabelField(new GUIContent("Catalogue", "Arborist's model sizes: data/arborist/catalog-sizes.json in the golf-map repo"), GUILayout.Width(70));
+                EditorGUILayout.LabelField(string.IsNullOrEmpty(catalogue) ? "(pick catalog-sizes.json)" : catalogue, EditorStyles.miniLabel);
+                if (GUILayout.Button("...", GUILayout.Width(30)))
+                {
+                    var picked = EditorUtility.OpenFilePanel("Arborist catalogue sizes (catalog-sizes.json)", string.IsNullOrEmpty(catalogue) ? "" : Path.GetDirectoryName(catalogue), "json");
+                    if (!string.IsNullOrEmpty(picked)) EditorPrefs.SetString(CataloguePref, picked);
+                }
+            }
+            using (new EditorGUILayout.HorizontalScope())
+            {
+                arboristLabel = EditorGUILayout.TextField(new GUIContent("Label", "Arborist's catalogue label, e.g. CE_DA_Forest_Tree_16018"), arboristLabel);
+                arboristSpecies = EditorGUILayout.TextField(arboristSpecies, GUILayout.Width(70)).Trim().ToLowerInvariant();
+                arboristConifer = GUILayout.Toggle(arboristConifer, new GUIContent("conifer", "Off: broadleaf"), GUILayout.Width(60));
+                using (new EditorGUI.DisabledScope(string.IsNullOrEmpty(catalogue) || arboristLabel.Trim().Length == 0 || arboristSpecies.Length == 0))
+                    if (GUILayout.Button("Add", GUILayout.Width(44)))
+                    {
+                        try
+                        {
+                            var asset = GolfMapModels.AddArborist(GolfMapModels.PathBeside(draftPath), arboristLabel, arboristSpecies, arboristConifer ? "conifer" : "broadleaf", "tree", catalogue);
+                            asset.enabled = true;
+                            draft.assets.Add(asset);
+                            arboristAddNote = "Added " + asset.model + " (" + asset.heightM.ToString("0.0") + " x " + asset.crownWidthM.ToString("0.0") + " m) to " + GolfMapModels.PathBeside(draftPath) + ". Save the palette to plant it.";
+                            arboristLabel = ""; GUI.changed = true; GUI.FocusControl(null);
+                        }
+                        catch (Exception e) { arboristAddNote = e.Message; }
+                    }
+            }
+            if (!string.IsNullOrEmpty(arboristAddNote)) EditorGUILayout.LabelField(arboristAddNote, EditorStyles.wordWrappedMiniLabel);
         }
 
         // Re-run the matcher over every loaded survey with the draft in place of the saved palette.
@@ -344,7 +388,7 @@ namespace GolfMap.Editor
         // This area's share of the palette panel's preview: its survey matched with the panel's draft.
         void CountInto(GolfMapTreePlanter panel)
         {
-            foreach (var m in biomeMatches.Values) { Bump(panel.plantedSpecies, SpeciesLabel(m.asset)); Bump(panel.plantedAssets, m.asset.guid); }
+            foreach (var m in biomeMatches.Values) { Bump(panel.plantedSpecies, SpeciesLabel(m.asset)); Bump(panel.plantedAssets, m.asset.MatchKey); }
             var saved = biome;
             try
             {
@@ -357,9 +401,9 @@ namespace GolfMap.Editor
                     GolfMapBiomeMatch before; biomeMatches.TryGetValue(t, out before);
                     if (m == null || (m.review && !includeReviewMatches)) { if (m == null) panel.previewUnmatched++; if (before != null) panel.previewChanged++; continue; }
                     panel.previewTotal++;
-                    Bump(panel.previewSpecies, SpeciesLabel(m.asset)); Bump(panel.previewAssets, m.asset.guid);
+                    Bump(panel.previewSpecies, SpeciesLabel(m.asset)); Bump(panel.previewAssets, m.asset.MatchKey);
                     if (m.look != null) Bump(panel.previewLooks, m.asset.Label + ":" + m.look);
-                    if (before == null || before.asset.guid != m.asset.guid || before.look != m.look) panel.previewChanged++;
+                    if (before == null || before.asset.MatchKey != m.asset.MatchKey || before.look != m.look) panel.previewChanged++;
                 }
             }
             finally { biome = saved; }

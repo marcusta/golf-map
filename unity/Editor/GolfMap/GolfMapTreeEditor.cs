@@ -124,9 +124,9 @@ namespace GolfMap.Editor
                 if (newSpecies != fieldSpecies) { fieldSpecies = newSpecies; fieldGuid = ""; }
                 var assets = biome.assets.Where(a => a.enabled && (string.IsNullOrEmpty(fieldSpecies) || a.species == fieldSpecies)).OrderBy(a => a.name).ToList();
                 var assetChoices = new List<string> { "(auto)" }; assetChoices.AddRange(assets.Select(a => a.name));
-                int aIndex = Mathf.Max(0, assets.FindIndex(a => a.guid == fieldGuid) + 1);
+                int aIndex = Mathf.Max(0, assets.FindIndex(a => a.MatchKey == fieldGuid) + 1);
                 aIndex = EditorGUILayout.Popup("Asset", aIndex, assetChoices.ToArray());
-                fieldGuid = aIndex == 0 ? "" : assets[aIndex - 1].guid;
+                fieldGuid = aIndex == 0 ? "" : assets[aIndex - 1].MatchKey;
                 using (new EditorGUILayout.HorizontalScope())
                 {
                     if (GUILayout.Button("Apply")) ApplyFields(et);
@@ -320,6 +320,7 @@ namespace GolfMap.Editor
         {
             var m = MatchTree(et.tree, woodlandTrees.Contains(et.tree));
             if (m == null) throw new InvalidOperationException("No biome asset fits tree " + et.tree.id + " (height " + et.tree.h + " m, radius " + et.tree.r + " m). Choose another species or size.");
+            if (m.asset.IsArborist) throw new InvalidOperationException("Tree " + et.tree.id + " would become " + m.asset.model + ", which Arborist draws: the Scene view editor handles the course's VSP trees only. Use golfmap.trees.edit for it.");
             biomeMatches[et.tree] = m;
             et.prefab = biomePrefabs[biome.PrefabKey(m)];
             var mapping = EnsureCatalog(editSystem, new[] { et.prefab }, false);
@@ -374,8 +375,8 @@ namespace GolfMap.Editor
                 var edit = RecordFor(et);
                 et.tree.h = fieldH; et.tree.r = fieldR;
                 edit.species = fieldSpecies ?? ""; edit.guid = fieldGuid ?? "";
-                if (!string.IsNullOrEmpty(edit.guid)) { var a = biome.assets.First(x => x.guid == edit.guid); edit.species = a.species; }
-                if (!string.IsNullOrEmpty(edit.species)) et.tree.k = biome.assets.Where(a => a.enabled && a.species == edit.species).All(a => a.kind == "conifer") ? 1 : 0;
+                if (!string.IsNullOrEmpty(edit.guid)) { var a = biome.assets.First(x => x.MatchKey == edit.guid); edit.species = a.species; }
+                if (!string.IsNullOrEmpty(edit.species)) et.tree.k = GolfMapBiome.StemKind(biome.assets.Where(a => a.enabled && a.species == edit.species));
                 edit.rotation = fieldRot; edit.rotationSet = true; edit.dy = fieldDy;
                 CommitTree(et);
                 LoadFields(et);
@@ -442,7 +443,7 @@ namespace GolfMap.Editor
                 if (!(addHeight > 0) || !(addRadius > 0)) throw new Exception("Height and radius must be positive.");
                 var t = new GolfMapTree { id = GolfMapTreeEdits.NewId(), x = ground.x - terrain.transform.position.x, z = ground.z - terrain.transform.position.z, h = addHeight, r = addRadius, g = 0 };
                 if (!InsidePlot(t)) throw new Exception("That point is outside the plot (or inside the excluded inner terrain).");
-                t.k = biome.assets.Where(a => a.enabled && a.species == addSpecies).All(a => a.kind == "conifer") ? 1 : 0;
+                t.k = GolfMapBiome.StemKind(biome.assets.Where(a => a.enabled && a.species == addSpecies));
                 var edit = new GolfMapTreeEdit { id = t.id, op = "add", ox = t.x, oz = t.z, species = addSpecies };
                 treeEdits[t] = edit; editFile.edits.Add(edit); loaded.trees.Add(t);
                 var et = new EditorTree { tree = t };

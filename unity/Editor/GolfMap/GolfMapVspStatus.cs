@@ -155,6 +155,41 @@ namespace GolfMap.Editor
             return new Dictionary<string, object> { { "file", file }, { "bytes", text.Length }, { "catalogues", report } };
         }
 
+        [BridgeCommand("golfmap.vsp.trees.stored", "The trees the course's own VSP holds: the instances stored in the scene's GolfMap storages for the planted tree catalogues (trees golfmap.vsp.trees.trim took out are not stored). Without near: the count per catalogue item (only items with instances). near=[x, z] with radiusM: every stored tree within that many metres of the point, with its item and world position.",
+            args = "near ([x, z] world metres; omit for the counts), radiusM=1")]
+        static object TreesStored(BridgeArgs a)
+        {
+            var near = a.List("near");
+            if (near != null && (near.Count != 2 || !near.All(o => o is double))) throw new System.InvalidOperationException("near must be [x, z].");
+            double radius = a.Number("radiusM", 1);
+            var scene = UnityEngine.SceneManagement.SceneManager.GetActiveScene();
+            var counts = new SortedDictionary<string, long>(System.StringComparer.Ordinal);
+            var instances = new List<object>();
+            foreach (var s in Resources.FindObjectsOfTypeAll<VegetationSystemPro>().Where(x => x && x.gameObject.scene == scene && !EditorUtility.IsPersistent(x)))
+            {
+                var storage = s.PersistentVegetationStorage;
+                var package = storage ? storage.PersistentVegetationStoragePackage : null;
+                if (!package || !GolfMapTreePlanter.IsGolfMapStorage(storage)) continue;
+                var origin = s.VegetationSystemPosition;
+                var items = s.VegetationPackageProList.Where(GolfMapTreePlanter.IsImportedCatalogue).SelectMany(c => c.VegetationInfoList).GroupBy(i => i.VegetationItemID).ToDictionary(g => g.Key, g => g.First().Name);
+                foreach (var info in package.PersistentVegetationCellList.SelectMany(c => c.PersistentVegetationInfoList))
+                {
+                    string name;
+                    if (!items.TryGetValue(info.VegetationItemID, out name) || info.VegetationItemList.Count == 0) continue;
+                    if (near == null) { long n; counts.TryGetValue(name, out n); counts[name] = n + info.VegetationItemList.Count; continue; }
+                    foreach (var it in info.VegetationItemList)
+                    {
+                        var p = it.Position + origin;
+                        double dx = p.x - (double)near[0], dz = p.z - (double)near[1];
+                        if (dx * dx + dz * dz <= radius * radius)
+                            instances.Add(new Dictionary<string, object> { { "item", name }, { "x", (double)p.x }, { "y", (double)p.y }, { "z", (double)p.z } });
+                    }
+                }
+            }
+            if (near != null) return new Dictionary<string, object> { { "near", near }, { "radiusM", radius }, { "instances", instances } };
+            return new Dictionary<string, object> { { "items", counts.ToDictionary(kv => kv.Key, kv => (object)kv.Value) }, { "total", counts.Values.Sum() } };
+        }
+
         [BridgeCommand("golfmap.trees.colliders", "Tree colliders in VSP: per tree item of the scene's systems its collider type and what its prefab carries (capsule/sphere/mesh colliders, their physic materials; GSPro reads bounce off those). enable=true sets every tree item to From Prefab, so VSP's collider system builds the prefab's own colliders; the tree planter does the same on every plant. Trees whose prefab has no collider are listed under noCollider. Writes the package assets, does not save the scene.",
             args = "enable=false")]
         static object TreeColliders(BridgeArgs a)

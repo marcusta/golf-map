@@ -28,6 +28,24 @@ namespace GolfMap.Editor
                 { { "terrain", terrain }, { "planted", !check }, { "dryRun", check }, { "file", component.filePath }, { "status", status } };
         }
 
+        [BridgeCommand("golfmap.trees.edit", "One hand change to one tree by its id, recorded in <prefix>-<terrain>-tree-edits.json as the Scene view tree editor records it (the next golfmap.trees.plant applies it; a replant or a regenerated survey keeps it). op=modify: another model (model=arborist:<label>|vsp:<prefab>, from the palette) or species, heightM, crownWidthM, rotationY (degrees), x, z (world metres) - what is not named stays; a model without crownWidthM keeps its own proportions. op=add: a new tree at x, z with species or model and heightM (crownWidthM unless a model gives it); returns its id. op=delete: not planted. op=revert: the tree's edit is removed (the survey's tree again; an added tree is gone). Plants nothing.",
+            args = "terrain=inner|outer, op=modify|add|delete|revert, id (not for add), model, species, heightM, crownWidthM, rotationY, x, z")]
+        static object EditTree(BridgeArgs a)
+        {
+            var terrain = a.String("terrain", "inner");
+            if (terrain != "inner" && terrain != "outer") throw new System.InvalidOperationException("terrain must be inner or outer.");
+            var host = GolfMapTreePlanter.Host();
+            var component = terrain == "outer" ? GolfMapTreePlanter.Outer(host) : host;
+            System.Func<string, double?> number = key => a.Has(key) ? (double?)a.Number(key, double.NaN) : null;
+            foreach (var key in new[] { "heightM", "crownWidthM", "rotationY", "x", "z" })
+                if (a.Has(key) && double.IsNaN(a.Number(key, double.NaN))) throw new System.InvalidOperationException(key + " must be a number.");
+            return GolfMapTreePlanter.For(component).EditFromBridge(new TreeEditRequest
+            {
+                op = a.Require("op"), id = a.String("id"), model = a.String("model"), species = a.String("species"),
+                x = number("x"), z = number("z"), heightM = number("heightM"), crownWidthM = number("crownWidthM"), rotationY = number("rotationY"),
+            });
+        }
+
         [BridgeCommand("golfmap.course", "The active GolfMap course and every course in the project: folder, scene, palette, export files (present, size, modified) and reports.")]
         static object Course()
         {
@@ -60,7 +78,7 @@ namespace GolfMap.Editor
             d["palette"] = FileInfo(GolfMapCourses.PalettePath(course));
             var exports = new Dictionary<string, object>();
             foreach (var terrain in new[] { "inner", "outer" })
-                foreach (var kind in new[] { "trees", "zones" })
+                foreach (var kind in new[] { "trees", "zones", "placements" })
                 {
                     var path = GolfMapCourses.ExportFile(course, terrain, kind);
                     if (path != null) exports[terrain + "-" + kind] = FileInfo(path);

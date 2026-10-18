@@ -222,7 +222,7 @@ def mask_rule(group_id: str, selector: int, min_density: float) -> dict:
             "TextureMaskPropertiesList": [prop("RgbaSelector", "ChannelSelector", "Select channel", selector), prop("Boolean", "Inverse", "Inverse")]}
 
 
-def species_for(prefab: str, labels: list[str], overrides: dict) -> str | list[str] | None:
+def species_for(prefab: str, labels: list[str], overrides: dict) -> str | None:
     """The Arborist label a palette prefab becomes: the species file's entry, else the one catalogue
     label that ends with the prefab's name without its 'prefab_' (the OPCD copies of the same
     NatureManufacture models are named <pack>_<model>)."""
@@ -335,6 +335,28 @@ def lower(args) -> None:
 TREES_PACKAGE = "GolfMap trees"
 TREE_SOURCE_ID = 42  # as the Unity planter's imported trees
 FAR_SUFFIX = " (far)"
+
+# A tree model's id (CONTEXT.md "Model"): '<renderer>:<label>', the label being what the renderer calls
+# it - 'arborist:<catalogue label>' or 'vsp:<Unity prefab>'. Parsed and built only here in Python; the
+# twins are shared/vegetation/model-id.ts and GolfMapModels.Parse/Id in Unity.
+ARBORIST, VSP = "arborist", "vsp"
+
+
+def model_id(renderer: str, label: str) -> str:
+    return f"{renderer}:{label}"
+
+
+def parse_model_id(model: str) -> tuple[str | None, str]:
+    """'arborist:S7_American_Elm' -> ('arborist', 'S7_American_Elm'); an id of another shape -> (None, the id)."""
+    renderer, sep, label = str(model).partition(":")
+    return (renderer, label) if sep and label and renderer in (ARBORIST, VSP) else (None, str(model))
+
+
+# The dump's trees are matched to their placements by position in whole centimetres, within
+# NUDGE_TOLERANCE_CM: Unity's planter moves a stem lying on a VSP cell edge 1 cm into the cell
+# (GolfMapTreePlanterVsp.cs ResolveCell), and stores it there.
+CM = 100
+NUDGE_TOLERANCE_CM = 2
 FOLIAGE_COLOURS = ("TintColor1", "TintColor2", "HealthyColorTint", "DryColorTint")
 BARK_COLOURS = ("BarkColor", "BarkTintColor", "BarkTint")
 
@@ -618,7 +640,14 @@ def trees(args) -> None:
     proportions otherwise. Prefabs under "vsp" in the species file are left out (see below).
     With --surfaces, FarRule decides tree by tree which are billboard-only copies; without it the
     whole outer catalogue is. With --surfaces and "forstRing" in the species file, the "vsp" trees
-    beyond the ring are full models of the species it names (ForstRing)."""
+    beyond the ring are full models of the species it names (ForstRing).
+
+    --placements (golfmap-placements-v1, Unity's planter: <prefix>-<terrain>-placements.json) hands over the
+    trees of Arborist models, which the course's VSP never holds: each is drawn at its position, rotation and
+    scale as Unity placed it, through the same routing policy (the far rule's billboards, outerKeep), in the
+    model's look from --models (the course's models.json). The VSP placements name the tree ids of the dump's
+    trees. Every placement Arborist is handed - drawn, or left out by the routing policy and why - is listed
+    by tree id in arboristdata.ids.json beside the .dat (golfmap-arborist-ids-v1)."""
     import uuid
 
     key = key_file(args.key_file)
@@ -651,6 +680,89 @@ def trees(args) -> None:
             sys.exit("No .GKD in the course folder for the course boundary; give --gkd.")
         rule = FarRule(Path(args.surfaces), gkds[0], (x0, z0, x1, z1), float(beyond.get("outsideOob", BILLBOARD_OUTSIDE_OOB_M)), float(beyond.get("fromPlay", BILLBOARD_FROM_PLAY_M)))
     rows, unmapped, outside, thinned, left, trim = [], [], 0, 0, {}, []
+    # Tree ids (arboristdata.ids.json): the placements of every tree handed to Arborist, drawn or left out.
+    drawn: list[dict] = []
+    left_out: list[dict] = []
+    placement_docs = [json.loads(Path(p).read_text(encoding="utf-8-sig")) for p in (args.placements or [])]
+    for p, doc in zip(args.placements or [], placement_docs):
+        if doc.get("format") != "golfmap-placements-v1":
+            sys.exit(f"{p}: not a golfmap-placements-v1 file")
+    # The dump's trees by position, to their placement (the VSP ones; Unity's 1 cm cell-edge nudge included).
+    placed_at: dict[tuple[int, int], dict] = {}
+    for doc in placement_docs:
+        for placement in doc["placements"]:
+            if parse_model_id(placement.get("model", ""))[0] != ARBORIST:
+                placed_at[(round(placement["x"] * CM), round(placement["z"] * CM))] = placement
+    nudges = range(-NUDGE_TOLERANCE_CM, NUDGE_TOLERANCE_CM + 1)
+
+    def placement_at(x: float, z: float) -> dict | None:
+        kx, kz = round(x * CM), round(z * CM)
+        return next((placed_at[k] for k in ((kx + dx, kz + dz) for dx in nudges for dz in nudges) if k in placed_at), None)
+
+    def dump_entry(x: float, z: float, name: str) -> dict:
+        """A dump tree's tree id and model: its placement's, or none for a tree of the course's VSP without one."""
+        placement = placement_at(x, z) if placed_at else None
+        return {"id": placement["id"] if placement else None, "model": placement["model"] if placement else model_id(VSP, name)}
+
+    def record_drawn(entry: dict, slot: str, x: float, z: float) -> None:
+        drawn.append({**entry, "item": slot, "x": round(x, 3), "z": round(z, 3)})
+
+    def record_left_out(entry: dict, reason: str) -> None:
+        left_out.append({**entry, "reason": reason})
+
+    def billboarded(base: dict):
+        """Whether a library item gets a billboard-only copy for the scenery trees (--far, a tree with a billboard)."""
+        return args.far and base.get("VegetationType") == "Tree" and bool(base.get("BillboardTexture"))
+
+    def ensure_items(base: dict, variant: str, can_far: bool, looks: list[dict]) -> None:
+        """The Arborist item `variant` (the library's `base` under that name, in the species file's treeSettings
+        and then `looks`) and, when it can_far, its billboard-only copy; each made once."""
+        for far in (False, True):
+            slot = variant + (FAR_SUFFIX if far else "")
+            if slot in items or (far and not can_far):
+                continue
+            item = copy.deepcopy(base)
+            item.update({"Name": variant, "VegetationItemID": str(uuid.uuid5(uuid.NAMESPACE_URL, "golfmap-trees/" + variant)), "EnableRuntimeSpawn": False})
+            apply_look(item, look + looks)
+            items[slot] = far_copy(item) if far else item
+
+    def route(x: float, z: float, far: bool) -> tuple[int | None, dict | None, str | None]:
+        """The routing policy for a tree Arborist draws: (its cell index, the cell's rect, None), or
+        (None, None, why it is left out).
+
+        "outerKeep" in the species file thins the billboard-only trees outside the course boundary, more
+        the further out: [[400, 0.8], [1000, 0.6], [null, 0.2]] keeps 80 % within 400 m of the boundary,
+        60 % within 1000 m and 20 % beyond (a number = that share everywhere). Which trees go follows from
+        their position, so a rerun leaves the same ones out."""
+        nonlocal outside
+        if far and rule and outer_keep:
+            out_m = rule.outside(x, z)
+            if out_m > 0:
+                band = next(i for i, (limit, _) in enumerate(outer_keep) if limit is None or out_m <= limit)
+                bands[band][0] += 1
+                if zlib.crc32(f"o{x:.2f},{z:.2f}".encode()) / 0xFFFFFFFF >= outer_keep[band][1]:
+                    bands[band][1] += 1
+                    return None, None, f"outerKeep: {out_m:.0f} m outside the course boundary, keep {outer_keep[band][1]:g}"
+        try:
+            index, rect = grid.cell(x, z)
+        except ValueError:
+            outside += 1
+            return None, None, "outside the terrains"
+        return index, rect, None
+
+    def bucket(index: int, rect: dict, item_id: str, position: tuple, scale: tuple, rotation: tuple) -> None:
+        """One tree instance into its cell, under its item."""
+        cell = cells.setdefault(index, {"cellIndex": index, "cellRect": rect, "PersistentVegetationInfoList": [], "_by": {}})
+        info = cell["_by"].get(item_id)
+        if info is None:
+            info = cell["_by"][item_id] = {"VegetationItemID": item_id, "VegetationItemList": []}
+            cell["PersistentVegetationInfoList"].append(info)
+        (x, y, z), (sx, sy, sz), (qx, qy, qz, qw) = position, scale, rotation
+        info["VegetationItemList"].append({
+            "Position": {"x": round(x - x0, 3), "y": y, "z": round(z - z0, 3)},
+            "Scale": {"x": round(sx, 4), "y": round(sy, 4), "z": round(sz, 4)},
+            "Rotation": {"x": qx, "y": qy, "z": qz, "w": qw}, "VegetationSourceID": TREE_SOURCE_ID, "DistanceFalloff": 1})
+
     # "forstRing" (ForstRing): the "vsp" trees beyond the ring and inside the far rule become full models here.
     ring = ForstRing(species_file["forstRing"]) if rule and species_file.get("forstRing") else None
     ringed: dict[str, dict[str, int]] = {}   # Arborist item -> prefab -> trees
@@ -681,45 +793,33 @@ def trees(args) -> None:
             # Scenery trees are billboards only, where the species has a billboard: the outer catalogue's,
             # or with the far rule every tree it names.
             base = library[label]
-            can_far = far_too and args.far and base.get("VegetationType") == "Tree" and bool(base.get("BillboardTexture"))
+            can_far = far_too and billboarded(base)
             variant = label + (" [" + extra + "]" if extra else "")
-            for far in (False, True):
-                slot = variant + (FAR_SUFFIX if far else "")
-                if slot in items or (far and not can_far):
-                    continue
-                item = copy.deepcopy(base)
-                item.update({"Name": variant, "VegetationItemID": str(uuid.uuid5(uuid.NAMESPACE_URL, "golfmap-trees/" + variant)), "EnableRuntimeSpawn": False})
-                # The billboard takes its colour from the same tints (seen in Arborist 2026-10-12: far
-                # copies left at the defaults stood out yellow-green), so the look goes on both.
-                # Where the model is the same NatureManufacture one (scale factor 1), the leaf and bark
-                # colours approved in Unity come along (tint1/tint2/bark1): they win over the caps and
-                # lose to a tint the species file or the variant names.
-                unity = source.get("colours") or {}
-                same_model = source["heightM"] > 0 and abs(source["heightM"] / sizes[label]["heightM"] - 1) < 0.02
-                carried = {}
-                if same_model and "HealtyColor" in unity:
-                    carried = {"match": ["*"], "tint1": unity["HealtyColor"], "tint2": unity.get("DryColor", unity["HealtyColor"])}
-                    if "BarkColor" in unity:
-                        carried["bark1"] = unity["BarkColor"]
-                apply_look(item, look + ([carried] if carried else []) + ([dict(own, match=["*"])] if own else []))
-                items[slot] = far_copy(item) if far else item
+            # The billboard takes its colour from the same tints (seen in Arborist 2026-10-12: far
+            # copies left at the defaults stood out yellow-green), so the look goes on both.
+            # Where the model is the same NatureManufacture one (scale factor 1), the leaf and bark
+            # colours approved in Unity come along (tint1/tint2/bark1): they win over the caps and
+            # lose to a tint the species file or the variant names.
+            unity = source.get("colours") or {}
+            same_model = source["heightM"] > 0 and abs(source["heightM"] / sizes[label]["heightM"] - 1) < 0.02
+            carried = {}
+            if same_model and "HealtyColor" in unity:
+                carried = {"match": ["*"], "tint1": unity["HealtyColor"], "tint2": unity.get("DryColor", unity["HealtyColor"])}
+                if "BarkColor" in unity:
+                    carried["bark1"] = unity["BarkColor"]
+            ensure_items(base, variant, can_far, ([carried] if carried else []) + ([dict(own, match=["*"])] if own else []))
             return label, variant, can_far, keep, (source["heightM"] / sizes[label]["heightM"] if source["heightM"] > 0 else 1.0)
 
-        # A list under "trees" shares the prefab's trees between several Arborist species (variants of
-        # one look, e.g. three elm models): each tree takes one by its position, so a rerun picks the same.
-        target = species_for(source["prefab"], list(library), overrides)
-        mains = [m for m in (variant_of(t) for t in (target if isinstance(target, list) else [target])) if m]
-        if not mains:
+        main = variant_of(species_for(source["prefab"], list(library), overrides))
+        if main is None:
             continue
-        label, variant, can_far, keep, factor = mains[0]
+        label, variant, can_far, keep, factor = main
         stem = Path(source["prefab"]).stem
         ring_as = variant_of(ring.target(stem), far_too=False) if ring and kept_in_vsp and not outer and ring.target(stem) else None
         ring_m = ring.radius(stem) if ring_as else 0.0
         counts: dict[str, int] = {}
         scales: dict[str, float] = {}   # per slot, summed: the report shows the mean factor
         for x, y, z, sx, sy, sz, qx, qy, qz, qw in source["instances"]:
-            if len(mains) > 1:
-                label, variant, can_far, keep, factor = mains[zlib.crc32(f"v{x:.2f},{z:.2f}".encode()) % len(mains)]
             far = can_far and (rule.far(x, z) if rule else outer)
             slot, scale, share, model = variant + (FAR_SUFFIX if far else ""), factor, keep, label
             if kept_in_vsp and not outer:
@@ -732,7 +832,6 @@ def trees(args) -> None:
                     of = ringed.setdefault(slot, {})
                     of[source["name"]] = of.get(source["name"], 0) + 1
                 trim.append([round(x, 3), round(z, 3)])
-            item_id = items[slot]["VegetationItemID"]
             other = sizes[model]
             if fit and source["heightM"] > 0 and source.get("widthM", 0) > 0 and other.get("widthM", 0) > 0                     and not (abs(source["heightM"] / other["heightM"] - 1) < 0.02 and abs(source["widthM"] / other["widthM"] - 1) < 0.02):
                 ratio = fit.ratio(x, z, source, other)
@@ -742,37 +841,59 @@ def trees(args) -> None:
                     scale, fitted = ratio, fitted + 1
             if share < 1 and zlib.crc32(f"{x:.2f},{z:.2f}".encode()) / 0xFFFFFFFF >= share:
                 thinned += 1
+                record_left_out(dump_entry(x, z, source["name"]), f"thinned: keep={share:g} in the species file")
                 continue
-            # "outerKeep" in the species file thins the billboard-only trees outside the course boundary, more
-            # the further out: [[400, 0.8], [1000, 0.6], [null, 0.2]] keeps 80 % within 400 m of the boundary,
-            # 60 % within 1000 m and 20 % beyond (a number = that share everywhere). Which trees go follows from
-            # their position, so a rerun leaves the same ones out.
-            if far and rule and outer_keep:
-                out_m = rule.outside(x, z)
-                if out_m > 0:
-                    band = next(i for i, (limit, _) in enumerate(outer_keep) if limit is None or out_m <= limit)
-                    bands[band][0] += 1
-                    if zlib.crc32(f"o{x:.2f},{z:.2f}".encode()) / 0xFFFFFFFF >= outer_keep[band][1]:
-                        bands[band][1] += 1
-                        continue
-            try:
-                index, rect = grid.cell(x, z)
-            except ValueError:
-                outside += 1
+            index, rect, reason = route(x, z, far)
+            if reason:
+                record_left_out(dump_entry(x, z, source["name"]), reason)
                 continue
-            cell = cells.setdefault(index, {"cellIndex": index, "cellRect": rect, "PersistentVegetationInfoList": [], "_by": {}})
-            info = cell["_by"].get(item_id)
-            if info is None:
-                info = cell["_by"][item_id] = {"VegetationItemID": item_id, "VegetationItemList": []}
-                cell["PersistentVegetationInfoList"].append(info)
-            info["VegetationItemList"].append({
-                "Position": {"x": round(x - x0, 3), "y": y, "z": round(z - z0, 3)},
-                "Scale": {"x": round(sx * scale, 4), "y": round(sy * scale, 4), "z": round(sz * scale, 4)},
-                "Rotation": {"x": qx, "y": qy, "z": qz, "w": qw}, "VegetationSourceID": TREE_SOURCE_ID, "DistanceFalloff": 1})
+            bucket(index, rect, items[slot]["VegetationItemID"], (x, y, z), (sx * scale, sy * scale, sz * scale), (qx, qy, qz, qw))
             counts[slot] = counts.get(slot, 0) + 1
             scales[slot] = scales.get(slot, 0.0) + scale
+            record_drawn(dump_entry(x, z, source["name"]), slot, x, z)
         for slot, count in counts.items():
             rows.append((source["catalogue"], source["name"], slot, count, scales[slot] / count))
+
+    # The trees of Arborist models (--placements): never in the course's VSP, so not in the dump.
+    models = {m["id"]: m for m in json.loads(Path(args.models).read_text(encoding="utf-8-sig"))["models"]} if args.models else {}
+    placed = 0
+    for doc in placement_docs:
+        outer = doc.get("terrain") == "outer"
+        rows_by_model_slot: dict[tuple[str, str], int] = {}   # (model, slot) -> trees
+        for placement in doc["placements"]:
+            model = str(placement.get("model", ""))
+            renderer, label = parse_model_id(model)
+            if renderer != ARBORIST:
+                continue
+            entry = {"id": placement["id"], "model": model}
+            base = library.get(label)
+            if base is None or label not in sizes:
+                record_left_out(entry, f"Arborist has no model {label} (not in the library or its sizes)")
+                unmapped.append(f"{model} (placement {placement['id']}): not in the library")
+                continue
+            # The model's own look, in Arborist's terms (models.json), on top of the species file's treeSettings.
+            model_look = dict(models.get(model, {}).get("look") or {})
+            extra = ",".join(f"{k}={v}" for k, v in model_look.items())
+            variant = label + (" [" + extra + "]" if extra else "")
+            can_far = billboarded(base)
+            ensure_items(base, variant, can_far, [dict(model_look, match=["*"])] if model_look else [])
+            x, y, z = float(placement["x"]), float(placement["y"]), float(placement["z"])
+            far = can_far and (rule.far(x, z) if rule else outer)
+            slot = variant + (FAR_SUFFIX if far else "")
+            index, rect, reason = route(x, z, far)
+            if reason:
+                record_left_out(entry, reason)
+                continue
+            # Drawn as Unity placed it: the placement's scale is relative to the model's own size.
+            hs = float(placement["scale"])
+            ws = float(placement.get("widthScale") or hs)
+            bucket(index, rect, items[slot]["VegetationItemID"], (x, y, z), (ws, hs, ws), tuple(float(v) for v in placement["q"]))
+            record_drawn(entry, slot, x, z)
+            rows_by_model_slot[(model, slot)] = rows_by_model_slot.get((model, slot), 0) + 1
+            placed += 1
+        # No scale factor to report: a placement carries Unity's own scale, not a prefab's to correct.
+        for (model, slot), count in rows_by_model_slot.items():
+            rows.append((f"placements ({doc.get('terrain', '?')})", model, slot, count, 1.0))
     for cell in cells.values():
         del cell["_by"]
 
@@ -798,6 +919,10 @@ def trees(args) -> None:
     write_dat(doc, out_dir / "arboristdata.dat", key)
     (out_dir / "arboristversion.dat").write_text(str(doc.get("catalogVersion", CATALOG_VERSION)), encoding="ascii")
     total = sum(r[3] for r in rows)
+    (out_dir / "arboristdata.ids.json").write_text(json.dumps({
+        "format": "golfmap-arborist-ids-v1",
+        "comment": "Every tree arborist.py trees handed to Arborist, by tree id: drawn (the item it is drawn as, its x/z in world metres) or left out by the routing policy (and why). id null: a tree of the course's VSP with no placement at its position (no --placements, or moved by hand in VSP).",
+        "drawn": drawn, "leftOut": left_out}), encoding="utf-8")
     print(f"wrote {out_dir / 'arboristdata.dat'} ({(out_dir / 'arboristdata.dat').stat().st_size / 1e6:.1f} MB): {total} trees of "
           f"{len(items)} Arborist species in {len(cells)} cells, package '{TREES_PACKAGE}'"
           + (f"; replaced {', '.join(p['PackageName'] for p in replaced)}" if replaced else ""))
@@ -810,6 +935,9 @@ def trees(args) -> None:
         print(f"{outside} tree(s) outside the terrains, left out")
     if thinned:
         print(f"{thinned} tree(s) thinned out (keep=)")
+    if placement_docs:
+        print(f"{placed} tree(s) of Arborist models from the placements ({', '.join(Path(p).name for p in args.placements)}); "
+              f"{len(drawn)} drawn and {len(left_out)} left out by tree id: {out_dir / 'arboristdata.ids.json'}")
     if fit:
         print(f"{fitted} tree(s) of another shape than their Unity prefab sized to their lidar stem (palette rules)"
               + (f", {unfitted} without a stem at their position kept the height" if unfitted else ""))
@@ -1003,6 +1131,8 @@ def main() -> None:
     p.add_argument("--surfaces", help=f"<course>-inner-surfaces.json of the export: turns on the far rule (FarRule; distances under billboardBeyondM in the species file, default {BILLBOARD_OUTSIDE_OOB_M:g} / {BILLBOARD_FROM_PLAY_M:g} m)")
     p.add_argument("--stems", help="<course>-inner-trees.json of the export (unity-trees-v1): with --palette, a tree whose Arborist model differs from its Unity prefab is sized to its lidar stem (SizeFit), not to the prefab's height")
     p.add_argument("--palette", help="the course's tree palette.json (rules as in Unity's GolfMapBiome)")
+    p.add_argument("--placements", nargs="*", help="<course>-<terrain>-placements.json of the export (golfmap-placements-v1, Unity's planter): the trees of Arborist models, drawn as placed; the VSP ones give the dump's trees their ids")
+    p.add_argument("--models", help="the course's model library (models.json, golfmap-models-v1): an Arborist model's look")
     p.add_argument("--gkd", help="the course's .GKD for the boundary (default: the one in --course-dir)")
     p.add_argument("--key-file")
     p = sub.add_parser("lower", help="the palettes' prefab items (bushes, woodland floor) spread by the zones export's masks")

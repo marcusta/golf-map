@@ -22,6 +22,15 @@ namespace GolfMap.Editor
             return look==null||look.original?m.asset.guid:LookKey(m.asset.guid,m.look);
         }
         public static string LookKey(string guid,string look) { return guid+":"+look; }
+        // The palette's format, seed and rules with only these assets, and no species groups: a stem whose
+        // model or species was picked by hand races among those assets only, and plants them in no look.
+        public GolfMapBiome OnlyAssets(List<GolfMapBiomeAsset> only) { return new GolfMapBiome {format=format,seed=seed,rules=rules,assets=only}; }
+        // A stem's kind (0 broadleaf, 1 conifer, 2 unknown: either) for a set of assets.
+        // StemKind is what a tree record stores: conifer only when every asset is one.
+        public static int StemKind(IEnumerable<GolfMapBiomeAsset> of) { return of.All(a=>a.kind=="conifer")?1:0; }
+        // MatchKind is what the matcher races with: unknown when the assets are of both kinds (or none).
+        public static int MatchKind(IEnumerable<GolfMapBiomeAsset> of) { return of.All(a=>a.kind=="conifer")?1:of.All(a=>a.kind=="broadleaf")?0:2; }
+        public static string KindName(int kind) { return kind==1?"conifer":"broadleaf"; }
     }
     // A species groups shapes (assets: sizes and LOD sets) under looks (material settings).
     public class GolfMapBiomeSpecies
@@ -64,6 +73,17 @@ namespace GolfMap.Editor
         public string guid, catalogueGuid, name, path, kind, form, species, assetType;
         public double heightM, crownWidthM, selectionWeight;
         public bool enabled=true;
+        // The model this asset is (CONTEXT.md): 'arborist:<label>' or 'vsp:<prefab>', and what draws it.
+        // guid is the Unity prefab's only: null for an Arborist model, which has no prefab here.
+        public string model, renderer=GolfMapModels.Vsp;
+        // The palette names it by reference ({model, enabled, selectionWeight}); its size, species and
+        // prefab come from the course's model library (models.json beside the palette).
+        public bool fromLibrary;
+        public bool IsArborist { get { return renderer==GolfMapModels.Arborist; } }
+        // What the matcher hashes and breaks ties on (shared/vegetation/tree-models.ts: key): the prefab
+        // guid, else the model id, so a palette moved into the library matches exactly as before.
+        public string MatchKey { get { return string.IsNullOrEmpty(guid)?model:guid; } }
+        public GolfMapBiomeAsset Clone() { return (GolfMapBiomeAsset)MemberwiseClone(); }
         // An asset without a species races, and is looked up, under its kind.
         public string Label { get { return string.IsNullOrEmpty(species)?kind:species; } }
     }
@@ -114,11 +134,24 @@ namespace GolfMap.Editor
                 }
                 biome.species.Add(group);
             }
+            Dictionary<string,GolfMapJsonObject> library=null;
             foreach(var entry in assets){
                 var o=entry as GolfMapJsonObject;if(o==null)throw new Exception("Invalid biome asset entry.");
-                biome.assets.Add(new GolfMapBiomeAsset {guid=o.String("guid"),catalogueGuid=o.String("catalogueGuid"),name=o.String("name"),path=o.String("path"),
+                string modelId=o.String("model");
+                if(!string.IsNullOrEmpty(modelId)){
+                    if(library==null)library=GolfMapModels.Load(GolfMapModels.PathBeside(path));
+                    GolfMapJsonObject m;
+                    if(!library.TryGetValue(modelId,out m))throw new Exception("Palette asset "+modelId+" is not in the course's model library ("+GolfMapModels.PathBeside(path)+").");
+                    var a=GolfMapModels.Asset(m);
+                    a.enabled=o.Bool("enabled",true);a.selectionWeight=o.Number("selectionWeight");
+                    biome.assets.Add(a);
+                    continue;
+                }
+                var name=o.String("name");
+                biome.assets.Add(new GolfMapBiomeAsset {guid=o.String("guid"),catalogueGuid=o.String("catalogueGuid"),name=name,path=o.String("path"),
                     kind=o.String("kind"),form=o.String("form"),species=o.String("species"),assetType=o.String("assetType"),
-                    heightM=o.Number("heightM"),crownWidthM=o.Number("crownWidthM"),selectionWeight=o.Number("selectionWeight"),enabled=o.Bool("enabled",true)});
+                    heightM=o.Number("heightM"),crownWidthM=o.Number("crownWidthM"),selectionWeight=o.Number("selectionWeight"),enabled=o.Bool("enabled",true),
+                    model=GolfMapModels.Id(GolfMapModels.Vsp,name),renderer=GolfMapModels.Vsp});
             }
             return biome;
         }
@@ -140,10 +173,20 @@ namespace GolfMap.Editor
                 foreach(var key in weights.keys.ToArray())if(!biome.rules.speciesWeights.species.Contains(key))weights.Remove(key);
                 foreach(var name in biome.rules.speciesWeights.species)weights.SetNumber(name,biome.rules.speciesWeights.Weight(name));
             }
-            var existing=doc.Array("assets").Cast<GolfMapJsonObject>().ToDictionary(o=>o.String("guid"));
+            // An entry is keyed by its model reference, or by its prefab guid in the inline form.
+            var existing=new Dictionary<string,GolfMapJsonObject>();
+            foreach(var e in doc.Array("assets").Cast<GolfMapJsonObject>()){var key=e.String("model")??e.String("guid");if(key!=null&&!existing.ContainsKey(key))existing[key]=e;}
             var list=new List<object>();
             foreach(var a in biome.assets){
                 GolfMapJsonObject o;
+                if(a.fromLibrary){
+                    // A reference: what the model is lives in the library; the palette says only whether and how often.
+                    if(!existing.TryGetValue(a.model,out o)){o=new GolfMapJsonObject();o.SetString("model",a.model);}
+                    o.SetBool("enabled",a.enabled);
+                    if(o.Has("selectionWeight")||a.selectionWeight>0)o.SetNumber("selectionWeight",a.selectionWeight);
+                    list.Add(o);
+                    continue;
+                }
                 if(!existing.TryGetValue(a.guid,out o))o=new GolfMapJsonObject();
                 // Key order of a new entry follows the entries the node scripts write.
                 o.SetString("guid",a.guid);o.SetString("name",a.name);o.SetString("path",a.path);
@@ -187,15 +230,17 @@ namespace GolfMap.Editor
         {
             unchecked { uint h=(uint)(Hash(text)*4294967296.0);h^=h>>16;h*=0x85ebca6b;h^=h>>13;h*=0xc2b2ae35;h^=h>>16;return h/4294967296.0; }
         }
-        public static GolfMapBiomeMatch Match(GolfMapBiome biome,string id,double height,double radius,int kind,bool woodland=false,GolfMapAreaMix area=null)
+        // sized: a stem sized by hand (a tree edit naming its height and crown width) is that size, with
+        // no lidar pad and no woodland canopy (tree-matching.mjs: stem.sized).
+        public static GolfMapBiomeMatch Match(GolfMapBiome biome,string id,double height,double radius,int kind,bool woodland=false,GolfMapAreaMix area=null,bool sized=false)
         {
             var r=biome.rules;
             if(string.IsNullOrEmpty(id)||double.IsNaN(height)||double.IsInfinity(height)||height<=0||double.IsNaN(radius)||double.IsInfinity(radius)||radius<=0||kind<0||kind>2)throw new ArgumentException("Invalid tree dimensions, kind or ID");
             string form=height<=r.shrubMaxHeightM?"shrub":"tree";
-            bool canopy=woodland&&form=="tree"&&r.woodlandCrownMultiplier>=1&&r.woodlandWidthWeight>0;
+            bool canopy=!sized&&woodland&&form=="tree"&&r.woodlandCrownMultiplier>=1&&r.woodlandWidthWeight>0;
             // Lidar also loses the edge of an open-grown crown, about the same width whatever the tree's
             // size (the ortho's shadows): a pad in metres, not a multiplier. 0 = off, as the weight's 0.
-            bool open=form=="tree"&&!canopy;
+            bool open=!sized&&form=="tree"&&!canopy;
             double targetWidth=canopy?2*radius*r.woodlandCrownMultiplier:2*radius+(open?r.openCrownPadM:0);
             double widthWeight=canopy?r.woodlandWidthWeight:open&&r.openWidthWeight>0?r.openWidthWeight:1;
             Func<GolfMapBiomeAsset,GolfMapBiomeMatch> fit=a=>{
@@ -206,7 +251,7 @@ namespace GolfMap.Editor
                 m.score=2*m.heightError+widthWeight*m.widthError+r.scalePenalty*Math.Abs(Math.Log(m.scale));return m;
             };
             string detected=kind==0?"broadleaf":"conifer";
-            var ranked=biome.assets.Where(a=>a.enabled&&a.form==form&&(kind==2||a.kind==detected)).Select(fit).OrderBy(m=>m.score).ThenBy(m=>m.asset.guid,StringComparer.Ordinal).ToList();
+            var ranked=biome.assets.Where(a=>a.enabled&&a.form==form&&(kind==2||a.kind==detected)).Select(fit).OrderBy(m=>m.score).ThenBy(m=>m.asset.MatchKey,StringComparer.Ordinal).ToList();
             // Inside a tree species area the mix is the rule: every species of it with a model of the
             // stem's form races by the area's weight, however well it fits (the fit picks the size), and
             // the survey's broadleaf/conifer class only counts unless the area ignores it. No such model
@@ -214,7 +259,7 @@ namespace GolfMap.Editor
             List<GolfMapBiomeMatch> pool=null;
             if(area!=null){
                 var inMix=biome.assets.Where(a=>a.enabled&&a.form==form&&(area.ignoreKind||kind==2||a.kind==detected)&&area.Weight(a.Label)>0)
-                    .Select(fit).OrderBy(m=>m.score).ThenBy(m=>m.asset.guid,StringComparer.Ordinal).ToList();
+                    .Select(fit).OrderBy(m=>m.score).ThenBy(m=>m.asset.MatchKey,StringComparer.Ordinal).ToList();
                 if(inMix.Count>0){
                     var mixSpecies=inMix.Select(m=>m.asset.Label).Distinct().OrderBy(s=>s,StringComparer.Ordinal).ToList();
                     string picked=mixSpecies.OrderBy(s=>-Math.Log(Math.Max(2.220446049250313e-16,SpeciesHash(biome.seed+":"+id+":species:"+s)))/area.Weight(s)).First();
@@ -234,21 +279,21 @@ namespace GolfMap.Editor
                 }
             }
             var close=pool.Where(m=>m.score<=pool[0].score+r.variationBand).ToList();
-            var result=close.OrderBy(m=>Hash(biome.seed+":"+id+":"+m.asset.guid)).First();
+            var result=close.OrderBy(m=>Hash(biome.seed+":"+id+":"+m.asset.MatchKey)).First();
             if(result.asset.species=="pine"){
                 var pinePool=pool.Where(m=>m.asset.species=="pine"&&m.score<=pool[0].score+Math.Max(r.variationBand,0.5));
-                result=pinePool.OrderBy(m=>-Math.Log(Math.Max(2.220446049250313e-16,SpeciesHash(biome.seed+":"+id+":pine:"+m.asset.guid)))/(m.asset.selectionWeight>0?m.asset.selectionWeight:1)).First();
+                result=pinePool.OrderBy(m=>-Math.Log(Math.Max(2.220446049250313e-16,SpeciesHash(biome.seed+":"+id+":pine:"+m.asset.MatchKey)))/(m.asset.selectionWeight>0?m.asset.selectionWeight:1)).First();
             }
             else if(close.Any(m=>m.asset.Label==result.asset.Label&&m.asset.selectionWeight>0)){
                 // Opt-in shares within the drawn species, between its variants that fit: no weights,
                 // no change to the plain hash pick.
                 string label=result.asset.Label;
-                result=close.Where(m=>m.asset.Label==label).OrderBy(m=>-Math.Log(Math.Max(2.220446049250313e-16,SpeciesHash(biome.seed+":"+id+":asset:"+m.asset.guid)))/(m.asset.selectionWeight>0?m.asset.selectionWeight:1)).First();
+                result=close.Where(m=>m.asset.Label==label).OrderBy(m=>-Math.Log(Math.Max(2.220446049250313e-16,SpeciesHash(biome.seed+":"+id+":asset:"+m.asset.MatchKey)))/(m.asset.selectionWeight>0?m.asset.selectionWeight:1)).First();
             }
             // The look is drawn on its own hash, so adding one never moves a stem to another shape.
             var group=biome.Species(result.asset.Label);
             if(group!=null){
-                var looks=group.looks.Where(l=>l.weight>0&&(l.shapes==null||l.shapes.Contains(result.asset.guid))).ToList();
+                var looks=group.looks.Where(l=>l.weight>0&&(l.shapes==null||l.shapes.Contains(result.asset.MatchKey))).ToList();
                 if(looks.Count>0)result.look=looks.OrderBy(l=>-Math.Log(Math.Max(2.220446049250313e-16,SpeciesHash(biome.seed+":"+id+":look:"+l.id)))/l.weight).ThenBy(l=>l.id,StringComparer.Ordinal).First().id;
             }
             if(canopy&&r.woodlandScaleBoost>1){
