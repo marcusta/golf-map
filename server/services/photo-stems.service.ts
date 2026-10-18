@@ -8,7 +8,7 @@
 // - propose: the site's summer photo (the newest leaf-on vintage of the tiles manifest), its leaf-off photo (the
 //   newest leaf-off one, for the kind), the lidar stems and the course's features go to the pipeline; what comes back
 //   leaves out the ids already accepted or skipped. A dry run writes nothing under the data folder; a real one keeps
-//   the proposal (`tiles/<site>/photo-stems-proposal.json`) for accept to look the ids up in.
+//   the proposal (`tiles/<site>/photo-stems-proposal-<course id>.json`) for accept to look the ids up in.
 // - accept: the accepted stems go to their own asset next to the lidar stems, `tiles/<site>/tree-stems-photo.json`
 //   (the tree-stems asset's shape plus `id` and `source` per row, and the `skipped` ids), so "Regenerate trees" never
 //   wipes them; the GSPro trees export plants them with `src: "photo"` (GsproExportService.exportTrees).
@@ -22,7 +22,7 @@ import type { CourseFeaturesService } from './course-features.service';
 import { courseSlug, defaultRunner, ensureDir, failure, statOrNull, venvPython, type ExportRunner } from './gspro-export.service';
 import { readJsonOrNull, writeAtomic } from './json-file';
 import { DEFAULT_PIPELINE_DIR } from './pipeline-dir';
-import { VEGETATION_RULES_FILE, readRuleDefaults, ruleOf } from './vegetation-generators';
+import { RULE_OVERRIDES_FLAG, VEGETATION_RULES_FILE, readRuleDefaults, ruleOf } from './vegetation-generators';
 
 export const PHOTO_STEMS_FORMAT = 'golfmap-photo-stems-v1';
 /** The source tag of a photo stem: the same wire value as PHOTO_SOURCE in pipeline/golfpipe/stems_asset.py. */
@@ -32,7 +32,8 @@ export const PHOTO_STEMS_FIELDS = ['x', 'y', 'heightM', 'crownRadiusM', 'groundM
 /** A stem's kind code (PhotoStemProposal.kind, the tree-stems asset's `kind`) by name: golfpipe/trees_stems.py KIND_*. */
 export const PHOTO_STEM_KINDS = ['broadleaf', 'conifer', 'unknown'] as const;
 export type PhotoStemKindName = (typeof PHOTO_STEM_KINDS)[number];
-const PROPOSAL_FILE = 'photo-stems-proposal.json';
+/** The last proposal of a course, `tiles/<site>/photo-stems-proposal-<course id>.json`: per course, since two courses on one site see other open ground. */
+const PROPOSAL_PREFIX = 'photo-stems-proposal-';
 /** Leaf-off months when the rules file cannot be read (trees.json `leaf-off-months`). */
 const LEAF_OFF_MONTHS = [10, 11, 12, 1, 2, 3, 4];
 
@@ -107,8 +108,12 @@ export interface PhotoStemsProposal {
 
 export interface PhotoStemsAcceptResult {
     courseId: string;
+    /** Accepted and skipped stems the site holds now, this call's with the earlier ones. */
     accepted: number;
     skipped: number;
+    /** What this call accepted and skipped. */
+    acceptedNow: number;
+    skippedNow: number;
     /** The asset the accepted stems are kept in. */
     path: string;
 }
@@ -207,7 +212,7 @@ export class PhotoStemsService {
         const skip = [...new Set(input.skip)];
         const both = accept.filter((id) => skip.includes(id));
         if (both.length) throw new ConflictError(`Accept or skip, not both: ${both.join(', ')}`);
-        const last = await readJsonOrNull<{ courseId: string; proposals: PhotoStemProposal[] }>(this.proposalFile(siteId));
+        const last = await readJsonOrNull<{ courseId: string; proposals: PhotoStemProposal[] }>(this.proposalFile(siteId, courseId));
         const byId = new Map((last?.proposals ?? []).map((p) => [p.id, p]));
         const missing = accept.filter((id) => !byId.has(id));
         if (missing.length) {
@@ -222,7 +227,7 @@ export class PhotoStemsService {
         const skipped = [...new Set([...asset.skipped.filter((id) => !accept.includes(id)), ...skip])].sort();
         await ensureDir(path.dirname(file));
         await writeAtomic(file, JSON.stringify({ ...emptyAsset(), trees: rows, skipped }) + '\n');
-        return { courseId, accepted: rows.length, skipped: skipped.length, path: file };
+        return { courseId, accepted: rows.length, skipped: skipped.length, acceptedNow: accept.length, skippedNow: skip.length, path: file };
     }
 
     /** The site's files the pipeline reads, checked: the lidar stems and the summer photo must be there. */
@@ -236,7 +241,9 @@ export class PhotoStemsService {
         if (!await statOrNull(summerTif)) throw new ConflictError(`No summer photo (sources/ortho-${summer}.tif) for this course — build its map first`);
         const leafOffTif = leafOff ? path.join(sources, `ortho-${leafOff}.tif`) : null;
         const leafOffThere = !!leafOffTif && !!await statOrNull(leafOffTif);
-        const dem = path.join(sources, 'dem.tif');
+        // The ground as the terrain exports it: the edited DEM (shore, roads, pads) when there is one.
+        const edited = path.join(sources, 'dem-edited.tif');
+        const dem = await statOrNull(edited) ? edited : path.join(sources, 'dem.tif');
         const photoStems = this.assets.resolvePhotoStemsPath(siteId);
         return {
             siteId, stems, summer, summerTif,
@@ -268,9 +275,11 @@ export class PhotoStemsService {
             ];
             if (await statOrNull(inputs.photoStems)) args.push('--known', inputs.photoStems);
             if (inputs.dem) args.push('--dem', inputs.dem);
+            const rules = await coursePhotoStemRules(path.join(this.courseDocsRoot, courseSlug((await this.courses.get(courseId)).name)));
             // The trees export plants the lidar stems this much larger (Omberg 1.15): calibrate against them at that size.
-            const sizeFactor = await lidarSizeFactor(path.join(this.courseDocsRoot, courseSlug((await this.courses.get(courseId)).name)));
-            if (sizeFactor !== 1) args.push('--lidar-size-factor', String(sizeFactor));
+            if (rules.lidarSizeFactor !== 1) args.push('--lidar-size-factor', String(rules.lidarSizeFactor));
+            // The course's own photo-stems rules (pipeline/vegetation-rules/photo-stems.json keys).
+            if (Object.keys(rules.overrides).length) args.push(RULE_OVERRIDES_FLAG, JSON.stringify({ 'photo-stems': rules.overrides }));
             const res = await this.runner(args, this.pipelineDir, { timeoutMs: 600_000 });
             if (res.code !== 0) {
                 const msg = /error: (.*)$/m.exec(res.stderr.trim().split('\n').pop() ?? '')?.[1];
@@ -287,11 +296,11 @@ export class PhotoStemsService {
 
     /** Keep the proposal for accept to look its ids up in. */
     private async keepProposal(siteId: string, courseId: string, proposals: PhotoStemProposal[]): Promise<void> {
-        await writeAtomic(this.proposalFile(siteId), JSON.stringify({ format: PHOTO_STEMS_FORMAT, courseId, proposals }) + '\n');
+        await writeAtomic(this.proposalFile(siteId, courseId), JSON.stringify({ format: PHOTO_STEMS_FORMAT, courseId, proposals }) + '\n');
     }
 
-    private proposalFile(siteId: string): string {
-        return path.join(this.dataDir, 'tiles', siteId, PROPOSAL_FILE);
+    private proposalFile(siteId: string, courseId: string): string {
+        return path.join(this.dataDir, 'tiles', siteId, `${PROPOSAL_PREFIX}${courseId.replace(/[^A-Za-z0-9_-]/g, '_')}.json`);
     }
 
     private async siteOf(courseId: string): Promise<string> {
@@ -347,14 +356,18 @@ async function readAsset(file: string): Promise<PhotoStemsAsset | null> {
 }
 
 /**
- * A course's `trees.lidarSizeFactor` (its docs folder's vegetation-rules.json; 1 without one): the factor the GSPro
- * trees export scales every lidar stem's height and crown radius by (gspro.py trees --size-factor).
+ * What a course's docs folder sets for photo stems in its vegetation-rules.json (defaults without one):
+ * `trees.lidarSizeFactor`, the factor the GSPro trees export scales every lidar stem by (gspro.py trees
+ * --size-factor; 1 without one), and `photoStems`, its own values of pipeline/vegetation-rules/photo-stems.json's
+ * rules (`{"photoStems": {"shadow-seed": 0.7}}`; the pipeline refuses a key that file lacks). Not under
+ * `generators`: that block is the vegetation generators' (grass:zones), and photo stems are none.
  */
-export async function lidarSizeFactor(courseDocsDir: string): Promise<number> {
+export async function coursePhotoStemRules(courseDocsDir: string): Promise<{ lidarSizeFactor: number; overrides: Record<string, unknown> }> {
     const file = path.join(courseDocsDir, VEGETATION_RULES_FILE);
-    const doc = await readJsonOrNull<{ trees?: { lidarSizeFactor?: unknown } }>(file);
-    const factor = doc?.trees?.lidarSizeFactor;
-    if (factor === undefined) return 1;
+    const doc = await readJsonOrNull<{ trees?: { lidarSizeFactor?: unknown }; photoStems?: unknown }>(file);
+    const factor = doc?.trees?.lidarSizeFactor ?? 1;
     if (typeof factor !== 'number' || !(factor > 0)) throw new ConflictError(`${file}: trees.lidarSizeFactor must be a number above 0`);
-    return factor;
+    const own = doc?.photoStems ?? {};
+    if (typeof own !== 'object' || own === null || Array.isArray(own)) throw new ConflictError(`${file}: photoStems must be an object of rule values`);
+    return { lidarSizeFactor: factor, overrides: Object.fromEntries(Object.entries(own).filter(([k]) => !k.startsWith('_'))) };
 }

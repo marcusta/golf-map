@@ -91,7 +91,8 @@ export class PhotoStemsPanelComponent extends Component {
             find: { onclick: () => void svc.find(), disabled: () => !!svc.busy.get() },
             findLabel: { textContent: () => svc.busy.get() === 'find' ? 'Finding…' : 'Find' },
             count: { textContent: () => svc.proposals.get().length ? `${svc.acceptCount()} to plant` : '' },
-            accept: { onclick: () => void svc.accept(), disabled: () => !!svc.busy.get() || svc.acceptCount() === 0 },
+            // Enabled with every ring skipped too: Accept then only remembers the skips.
+            accept: { onclick: () => void svc.accept(), disabled: () => !!svc.busy.get() || svc.proposals.get().length === 0 },
             discard: { onclick: () => svc.discard(), disabled: () => !!svc.busy.get() || svc.proposals.get().length === 0 },
             status: {
                 className: () => svc.error.get() ? 'photo-stems__status error' : 'photo-stems__status',

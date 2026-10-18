@@ -28,7 +28,8 @@ ends. The rules are config: vegetation-rules/photo-stems.json. The steps:
 
 Output `golfmap-photo-stems-v1` (EPSG:3006): `calibration`, `matched`, `proposals` with ids
 `epsg3006:<x>:<y>` (2 decimals, stems_asset.stem_id), the id gspro.py trees gives a stem there. The
-same inputs give the same ids; `--known` leaves accepted and skipped ids out without moving the others.
+same inputs give the same ids; `--known` leaves accepted and skipped stems out (by id, and anything within
+`known-m` of one) without moving the others.
 """
 from __future__ import annotations
 
@@ -76,6 +77,7 @@ MIN_ELONGATION = RULES["min-elongation"]
 MAX_AXIS_OFF_DEG = RULES["max-axis-off"]
 MATCH_M = RULES["match-m"]
 DEDUPE_M = RULES["dedupe-m"]
+KNOWN_M = RULES["known-m"]
 PIECE_REACH_M = RULES["piece-reach"]
 MIN_MATCHES = RULES["min-matches"]
 MIN_HEIGHT_M = RULES["min-height"]
@@ -714,7 +716,10 @@ def _proposals(kept: list[Candidate], leaf_off: Path | None, dem: Path | None, k
     grounds = ground_heights(dem, kept) if dem else [None] * len(kept)
     out = [c.doc(kind, g) for c, kind, g in zip(kept, kinds, grounds)]
     if known:
-        out = [p for p in out if p["id"] not in known]
+        # By id, and by place: a later run can find the same tree a few centimetres off, under another id.
+        spots = [xy for xy in map(stems_asset.id_position, known) if xy is not None]
+        out = [p for p in out if p["id"] not in known
+               and not any(math.hypot(p["x"] - x, p["y"] - y) < KNOWN_M for x, y in spots)]
     out.sort(key=lambda p: (-p["y"], p["x"]))
     return out
 
@@ -812,28 +817,13 @@ def read_stems(path: Path) -> list[dict]:
 
 
 def read_known(path: Path | None) -> set[str]:
-    """Ids to leave out: a JSON list of ids, or an object with `trees`/`skipped` rows or ids."""
+    """The ids already accepted or skipped: those of an accepted photo stems asset (tree-stems-photo.json)."""
     if path is None or not path.is_file():
         return set()
-    doc = json.loads(path.read_text(encoding="utf-8"))
-    ids: set[str] = set()
-
-    def take(items):
-        for it in items or []:
-            if isinstance(it, str):
-                ids.add(it)
-            elif isinstance(it, dict) and isinstance(it.get("id"), str):
-                ids.add(it["id"])
-            elif isinstance(it, list) and doc.get("fields") and "id" in doc["fields"]:
-                ids.add(it[doc["fields"].index("id")])
-
-    if isinstance(doc, list):
-        take(doc)
-    else:
-        take(doc.get("trees"))
-        take(doc.get("skipped"))
-        take(doc.get("ids"))
-    return ids
+    try:
+        return stems_asset.known_ids(path)
+    except stems_asset.StemsAssetError as exc:
+        raise PhotoStemsError(str(exc)) from None
 
 
 def cmd_photo_stems(summer: Path, leaf_off: Path | None, stems_path: Path, features_path: Path, out: Path,

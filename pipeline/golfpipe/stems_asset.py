@@ -32,3 +32,20 @@ def read_rows(path: Path) -> list[dict]:
     if asset.get("crs") != CRS or not isinstance(asset.get("trees"), list) or "x" not in fields:
         raise StemsAssetError(f"{path} is not a tree-stems asset")
     return [dict(zip(fields, row)) for row in asset["trees"]]
+
+
+def id_position(stem: str) -> tuple[float, float] | None:
+    """The (x, y) a stem id names, None for an id of another form (manual:...)."""
+    parts = stem.split(":")
+    if len(parts) != 3 or parts[0] != "epsg3006":
+        return None
+    try:
+        return float(parts[1]), float(parts[2])
+    except ValueError:
+        return None
+
+
+def known_ids(path: Path) -> set[str]:
+    """The ids an accepted photo stems asset holds: its accepted rows' and its `skipped` ones."""
+    doc = json.loads(path.read_text(encoding="utf-8"))
+    return {str(r["id"]) for r in read_rows(path) if r.get("id")} | {str(i) for i in doc.get("skipped") or []}

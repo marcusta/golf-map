@@ -40,7 +40,8 @@
         { "key": "offset", "value": 1.0, "unit": "m", "text": "A photo stem stands this far sun-side of where its shadow ends (a young tree's crown tuft) ..." },
         { "key": "offset-per-width", "value": 0.5, "unit": "x width", "text": "... or this times the shadow's width when that is more (a wide crown hides the foot of its own shadow)." },
         { "key": "piece-reach", "value": 1.5, "unit": "m", "text": "A smaller dark patch from this far sun-side of a bigger shadow's stem to that shadow's tip is a piece of the same tree (its crown tuft, a broken shadow)." },
-        { "key": "dedupe-m", "value": 3.0, "unit": "m", "text": "No photo stem within this of a lidar stem." }
+        { "key": "dedupe-m", "value": 3.0, "unit": "m", "text": "No photo stem within this of a lidar stem." },
+        { "key": "known-m", "value": 1.0, "unit": "m", "text": "No photo stem within this of one already accepted or skipped (the same tree found a little elsewhere on a later run)." }
       ]
     },
     {

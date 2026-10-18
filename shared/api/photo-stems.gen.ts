@@ -18,6 +18,8 @@ export interface PhotoStemsAcceptResult {
     courseId: string;
     accepted: number;
     skipped: number;
+    acceptedNow: number;
+    skippedNow: number;
     path: string;
 }
 

@@ -1,6 +1,7 @@
 """golfpipe photo-stems beyond the frozen acceptance cases (tests/acceptance/test_photo_stems_omberg.py)."""
 from __future__ import annotations
 
+import json
 import statistics
 from pathlib import Path
 
@@ -27,3 +28,22 @@ def test_the_lidar_size_factor_sizes_the_photo_stems_like_the_scaled_lidar_trees
     assert abs(h1 / h0 - 1.15) < 0.05
     assert abs(r1 / r0 - 1.15) < 0.1
     assert scaled["calibration"]["lidarSizeFactor"] == 1.15
+
+
+def test_a_tree_already_accepted_or_skipped_is_not_offered_again_even_found_a_little_elsewhere(tmp_path):
+    """--known leaves out the accepted and skipped stems by id, and anything within known-m of one: a later
+    run (another photo, other rules) can find the same tree a few centimetres off, under another id."""
+    first = _run(tmp_path, 1.0)["proposals"]
+    a, b, c = first[0], first[1], first[2]
+    known = tmp_path / "tree-stems-photo.json"
+    moved = f"epsg3006:{a['x'] + 0.3:.2f}:{a['y'] - 0.2:.2f}"  # accepted on an earlier run, 0.36 m from where it is found now
+    known.write_text(json.dumps({
+        "version": 2, "crs": "EPSG:3006", "source": "ortho-shadow",
+        "fields": ["x", "y", "heightM", "crownRadiusM", "groundM", "kind", "id", "source"],
+        "trees": [[a["x"] + 0.3, a["y"] - 0.2, a["heightM"], a["crownRadiusM"], None, a["kind"], moved, "ortho-shadow"],
+                  [b["x"], b["y"], b["heightM"], b["crownRadiusM"], None, b["kind"], b["id"], "ortho-shadow"]],
+        "skipped": [c["id"]]}))
+    again = photo_stems.cmd_photo_stems(
+        CUT / "ortho-orto-l2-2025.tif", CUT / "ortho-orto-l2-2023.tif", CUT / "tree-stems.json",
+        CUT / "features.json", tmp_path / "again.json", known_path=known)["proposals"]
+    assert [p["id"] for p in again] == [p["id"] for p in first[3:]]

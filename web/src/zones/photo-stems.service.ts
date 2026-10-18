@@ -89,9 +89,13 @@ export class PhotoStemsService {
         this.busy.set('accept');
         this.error.set('');
         try {
-            await api.photoStems.accept({ courseId, accept, skip });
+            const res = await api.photoStems.accept({ courseId, accept, skip });
             this.discard();
-            this.done.set(`${accept.length} planted${skip.length ? `, ${skip.length} skipped` : ''} — update the trees`);
+            const planted = res.acceptedNow ?? accept.length;
+            const skipped = res.skippedNow ?? skip.length;
+            this.done.set(planted
+                ? `${planted} planted${skipped ? `, ${skipped} skipped` : ''} — update the trees`
+                : `${skipped} skipped, not offered again`);
         } catch (e) {
             this.error.set(e instanceof Error ? e.message : String(e));
         } finally {

@@ -696,7 +696,7 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--stems", required=True, help="the site's lidar tree-stems asset (v2)")
     p.add_argument("--features", required=True, help="the course's features: JSON list of {type, source, attributes, geometry}")
     p.add_argument("--out", required=True, help="output golfmap-photo-stems-v1 JSON")
-    p.add_argument("--known", help="ids to leave out (accepted or skipped): JSON list, or {trees, skipped} with ids")
+    p.add_argument("--known", help="the accepted photo stems asset (tree-stems-photo.json): its accepted and skipped stems are left out")
     p.add_argument("--dem", help="DEM GeoTIFF (EPSG:3006) each proposal's groundM is read from")
     p.add_argument("--lidar-size-factor", dest="lidar_size_factor", type=float, default=1.0,
                    help="the course's trees.lidarSizeFactor: calibrate against the lidar stems at the size the trees export plants them (default 1)")
