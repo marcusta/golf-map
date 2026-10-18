@@ -61,6 +61,9 @@ DIG_RIM_M = 2.0         # dem_edit.DEFAULT_DIG_RIM_M
 DIG_LEVEL_PERCENTILE = 25.0  # dem_edit.DIG_LEVEL_PERCENTILE
 MIN_PIECE_M2 = 4.0
 PICK_M = 4.0            # an asked cut or skip takes the step this near (and must lie this near its body)
+CASCADE_GAP_M = 40.0    # two waters further apart than gapM but within this: water running down between them
+CASCADE_WIDTH_M = 1.2   # ... a stream this wide, along the lowest ground (a rockery's runnel)
+SLIVER_M2 = 40.0        # a body's first piece smaller than this, cut off by a step, is the end of the water feeding it
 
 
 def _read_dem(path: str, bounds, pad: float = 6.0):
@@ -251,7 +254,7 @@ def water_steps(dem: str, bodies: list[dict], min_drop: float = DEFAULT_MIN_DROP
 
     polys = [Polygon(b["ring"]).buffer(0) for b in bodies]
     allb = unary_union(polys).bounds
-    z, transform = _read_dem(dem, allb, pad=gap_m + 6)
+    z, transform = _read_dem(dem, allb, pad=max(gap_m, CASCADE_GAP_M) + 6)
 
     out_bodies, pieces, falls = [], [], []
     body_pieces: list[list[dict]] = []
@@ -339,7 +342,7 @@ def water_steps(dem: str, bodies: list[dict], min_drop: float = DEFAULT_MIN_DROP
     # Bodies drawn apart: an outlet fall where one comes near another at a lower level.
     for i in range(len(polys)):
         for j in range(len(polys)):
-            if i == j or polys[i].distance(polys[j]) > gap_m:
+            if i == j or polys[i].distance(polys[j]) > max(gap_m, CASCADE_GAP_M):
                 continue
             from shapely.ops import nearest_points
 
@@ -354,6 +357,17 @@ def water_steps(dem: str, bodies: list[dict], min_drop: float = DEFAULT_MIN_DROP
                 continue
             flow = np.array([pj.x - pi.x, pj.y - pi.y])
             flow = flow / max(np.hypot(*flow), 1e-9)
+            if pi.distance(pj) > gap_m:
+                # Too far apart for a spout: the water runs down between them along the lowest ground.
+                path = _low_path(z, transform, (pi.x, pi.y), (pj.x, pj.y), polys[i], polys[j])
+                falls.append({"style": "cascade", "fromBodyId": bodies[i]["id"], "toBodyId": bodies[j]["id"],
+                              "fromPiece": hi_piece["index"], "toPiece": lo_piece["index"],
+                              "line": [[round(x, 3), round(y, 3)] for x, y in path],
+                              "at": [round(path[len(path) // 2][0], 3), round(path[len(path) // 2][1], 3)],
+                              "flow": [round(flow[0], 4), round(flow[1], 4)],
+                              "topM": top, "bottomM": bottom, "dropM": None, "widthM": CASCADE_WIDTH_M,
+                              "gapM": round(pi.distance(pj), 2)})
+                continue
             nrm = np.array([-flow[1], flow[0]])
             half = OUTLET_WIDTH_M / 2
             lip = [[round(pj.x - nrm[0] * half, 3), round(pj.y - nrm[1] * half, 3)],
@@ -363,6 +377,7 @@ def water_steps(dem: str, bodies: list[dict], min_drop: float = DEFAULT_MIN_DROP
                           "at": [round(pj.x, 3), round(pj.y, 3)], "flow": [round(flow[0], 4), round(flow[1], 4)],
                           "topM": top, "bottomM": bottom, "dropM": None, "widthM": OUTLET_WIDTH_M,
                           "gapM": round(pi.distance(pj), 2)})
+    _merge_start_slivers(bodies, polys, body_pieces, pieces, falls, gap_m)
     for f in falls:
         f["dropM"] = round(f["topM"] - f["bottomM"], 2)
     falls = [f for f in falls if f["dropM"] >= min_drop or f.get("forced")]
@@ -372,6 +387,93 @@ def water_steps(dem: str, bodies: list[dict], min_drop: float = DEFAULT_MIN_DROP
         for k in ("_poly", "_line", "_s"):
             p.pop(k, None)
     return {"bodies": out_bodies, "pieces": pieces, "falls": falls, "image": img}
+
+
+def _low_path(z, transform, a, b, poly_a=None, poly_b=None) -> list:
+    """The lowest way over the ground from water a to water b ([(x, y), ...]): a least-cost path on the DEM that
+    prefers low cells, from any edge cell of `poly_a` to any of `poly_b` facing each other (else from the points a
+    and b), simplified to half a metre."""
+    from rasterio.features import rasterize
+    from shapely.geometry import LineString
+    from skimage.graph import MCP_Geometric
+
+    rows, cols = z.shape
+    def rc(p):
+        c = int((p[0] - transform.c) / transform.a)
+        r = int((p[1] - transform.f) / transform.e)
+        return min(max(r, 0), rows - 1), min(max(c, 0), cols - 1)
+    (r0, c0), (r1, c1) = rc(a), rc(b)
+    pad = 20
+    ra, rb = max(min(r0, r1) - pad, 0), min(max(r0, r1) + pad + 1, rows)
+    ca, cb = max(min(c0, c1) - pad, 0), min(max(c0, c1) + pad + 1, cols)
+    win = z[ra:rb, ca:cb]
+    lo, hi = np.nanmin(win), np.nanmax(win)
+    cost = 1.0 + 6.0 * np.nan_to_num((win - lo) / max(hi - lo, 1e-6), nan=1.0)
+    from rasterio.transform import Affine
+    wt = transform * Affine.translation(ca, ra)
+
+    def edge_cells(poly, fallback):
+        if poly is None:
+            return [(fallback[0] - ra, fallback[1] - ca)]
+        ring = poly.exterior.buffer(0.6)
+        m = rasterize([ring], out_shape=win.shape, transform=wt) > 0
+        cells = list(zip(*np.nonzero(m)))
+        return cells or [(fallback[0] - ra, fallback[1] - ca)]
+    starts, ends = edge_cells(poly_a, (r0, c0)), edge_cells(poly_b, (r1, c1))
+    mcp = MCP_Geometric(cost, fully_connected=True)
+    costs, _ = mcp.find_costs(starts, ends, find_all_ends=False)
+    end = min(ends, key=lambda e: costs[e])
+    idx = mcp.traceback(end)
+    pts = [(wt.c + (c + 0.5) * wt.a, wt.f + (r + 0.5) * wt.e) for r, c in idx]
+    if len(pts) < 2:
+        pts = [a, b]
+    return list(LineString(pts).simplify(0.5).coords)
+
+
+def _merge_start_slivers(bodies, polys, body_pieces, pieces, falls, gap_m) -> None:
+    """A body whose first piece is a sliver (under SLIVER_M2) cut off by a step is the tail of the water feeding it
+    (a channel under a bridge, the mouth of a pond's outflow): the step becomes the fall from that water, the spout
+    or cascade into the sliver goes, and the sliver joins the piece below it."""
+    from shapely.ops import unary_union
+
+    for j, mine in enumerate(body_pieces):
+        if len(mine) < 2 or mine[0]["areaM2"] >= SLIVER_M2:
+            continue
+        p0, p1 = mine[0], mine[1]
+        sill = next((f for f in falls if f["style"] == "sill" and f["fromBodyId"] == bodies[j]["id"]
+                     and f["fromPiece"] == p0["index"]), None)
+        if sill is None:
+            continue
+        incoming = [f for f in falls if f["style"] in ("outlet", "cascade") and f["toBodyId"] == bodies[j]["id"]
+                    and f["toPiece"] == p0["index"]]
+        source = None
+        if incoming:
+            f_in = max(incoming, key=lambda f: f["topM"])
+            source = (f_in["fromBodyId"], f_in["fromPiece"], f_in["topM"])
+            for f in incoming:
+                falls.remove(f)
+        else:
+            near = []
+            for i, other in enumerate(body_pieces):
+                if i == j or polys[i].distance(p0["_poly"]) > gap_m:
+                    continue
+                q = min(other, key=lambda p: p["_poly"].distance(p0["_poly"]))
+                level = q["levelM"] if q["levelM"] is not None else q["bottomM"]
+                if level is not None and level >= (p0["levelM"] or p0["topM"]) - 0.15:
+                    near.append((polys[i].distance(p0["_poly"]), bodies[i]["id"], q["index"], level))
+            if near:
+                _, bid, idx, level = min(near)
+                source = (bid, idx, level)
+        if source is None:
+            continue
+        sill["fromBodyId"], sill["fromPiece"], sill["topM"] = source
+        sill["merged"] = True
+        merged = unary_union([p0["_poly"], p1["_poly"]])
+        p1["_poly"] = merged
+        p1["ring"] = _ring(merged)
+        p1["areaM2"] = round(merged.area, 1)
+        mine.remove(p0)
+        pieces.remove(p0)
 
 
 def _image(path: str, ortho: str | None, polys, pieces, falls) -> str:

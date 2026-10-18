@@ -101,3 +101,50 @@ def test_outlet_between_bodies(tmp_path):
     assert (o["fromBodyId"], o["toBodyId"]) == ("a", "b")
     assert o["bottomM"] == pytest.approx(6.0, abs=0.05)
     assert o["at"][0] - E0 == pytest.approx(126.0, abs=0.5)
+
+
+def _flat_dem(path, cells):
+    """A DEM at 12 m everywhere, `cells` a list of (x0, x1, y0, y1, z) boxes (metres from E0, N0) set to z."""
+    w, h = 160.0, 60.0
+    nx, ny = int(w / RES), int(h / RES)
+    xs = (np.arange(nx) + 0.5) * RES - 20.0
+    ys = N0 + 30 - (np.arange(ny) + 0.5) * RES
+    X, Y = np.meshgrid(xs, ys)
+    z = np.full(X.shape, 12.0)
+    for x0, x1, y0, y1, v in cells:
+        z = np.where((X >= x0) & (X <= x1) & (Y - N0 >= y0) & (Y - N0 <= y1), v, z)
+    with rasterio.open(path, "w", driver="GTiff", width=nx, height=ny, count=1, dtype="float32", crs="EPSG:3006",
+                       transform=from_origin(E0 - 20.0, N0 + 30, RES, RES), nodata=-9999) as dst:
+        dst.write(z.astype(np.float32), 1)
+
+
+def box(x0, x1, y0, y1):
+    return [[E0 + x0, N0 + y0], [E0 + x1, N0 + y0], [E0 + x1, N0 + y1], [E0 + x0, N0 + y1]]
+
+
+def test_waters_too_far_apart_for_a_spout_get_a_cascade_along_the_low_ground(tmp_path):
+    # Pond A at 10 m, pond B at 8 m, 25 m apart; a runnel between them falling from 9.9 to 8.1 m.
+    dem = tmp_path / "dem.tif"
+    _flat_dem(dem, [(0, 20, -6, 6, 10.0), (45, 65, -6, 6, 8.0)]
+              + [(20 + k, 21 + k, -1, 1, 9.9 - 1.8 * k / 25) for k in range(25)])
+    r = water_steps(str(dem), [{"id": "a", "type": "water", "ring": box(0, 20, -6, 6)},
+                               {"id": "b", "type": "water", "ring": box(45, 65, -6, 6)}])
+    [f] = r["falls"]
+    assert f["style"] == "cascade" and (f["fromBodyId"], f["toBodyId"]) == ("a", "b")
+    assert f["dropM"] == pytest.approx(2.0, abs=0.05) and f["gapM"] == pytest.approx(25.0, abs=0.5)
+    assert len(f["line"]) >= 2
+    assert all(abs(y - N0) <= 2.0 for _, y in f["line"])                 # down the runnel, not across the grass
+
+
+def test_a_sliver_at_a_bodys_start_is_the_end_of_the_water_feeding_it(tmp_path):
+    # Pond A at 10 m; 3 m on, body B starts with a 2 m channel (under a bridge, the lidar reads 9.6) that steps down
+    # to B's pond at 8 m. One fall, from A's water to B's pond, at the step; the channel joins B's pond.
+    dem = tmp_path / "dem.tif"
+    _flat_dem(dem, [(0, 20, -6, 6, 10.0), (23, 26, -3, 3, 9.6), (26, 60, -3, 3, 8.0)])
+    r = water_steps(str(dem), [{"id": "a", "type": "water", "ring": box(0, 20, -6, 6)},
+                               {"id": "b", "type": "water", "ring": box(23, 60, -3, 3)}])
+    assert [f["style"] for f in r["falls"]] == ["sill"]
+    [f] = r["falls"]
+    assert (f["fromBodyId"], f["toBodyId"], f["merged"]) == ("a", "b", True)
+    assert f["topM"] == pytest.approx(10.0, abs=0.05) and f["bottomM"] == pytest.approx(8.0, abs=0.05)
+    assert [p["bodyId"] for p in r["pieces"]].count("b") == 1
