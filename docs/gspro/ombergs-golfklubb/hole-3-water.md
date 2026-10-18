@@ -32,6 +32,20 @@ x≈477814), E 100.9 -> 99.3 (bridge at hole 9's green), F 99.3 -> 98.0,
 G 98.0 -> 96.8. The water features there (573, 576, 569, 575) are separate
 polygons already.
 
+[views/hole-9-tee-to-green.webp](views/hole-9-tee-to-green.webp), from hole 9's
+tee towards its green (Marcus, 2026-10-18), confirms E: the water falls from
+the upper pond (576, 100.9) under a stone arch bridge into the pond in front
+of the green (573, 99.3). Also in the photo:
+- a **fountain** in 573 (hole 3's 107.50 pond has one too, seen in the
+  ortho): a fountain prop, built like the falls' particles, is a small add to
+  the waterfalls builder;
+- a **stone wall** (dry stone, rounded boulders) from the green's front-left
+  edge down into the water: the stone-walls tool, run along the pond's edge
+  into the water;
+- the pond's **edges are fairly steep** down into the water: a steeper dig
+  than natural_pond (e.g. `digBankSlopeDeg` 40-45, `digBankAboveDeg` 60);
+- big broadleaf trees round the green, the red clubhouse up to the right.
+
 ## The feel to aim for (Marcus's photos)
 
 - [views/hole-3-green-to-creek.webp](views/hole-3-green-to-creek.webp): across
