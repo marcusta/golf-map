@@ -50,7 +50,9 @@ SEAM_LOOSE_M = 0.5
 JOINT_M = 0.035
 JOINT_HALF_M = 0.012
 JOINT_DEPTH_M = 0.006
-JOINT_SIMPLIFY_M = 0.01  # the seam's grit smoothed this much under the joint (its lines would cross at every tooth)
+JOINT_SIMPLIFY_M = 0.01
+JOINT_TRIM_M = 0.08      # the joint stops this far (along the seam) from a seam chain's ends: no hook into the corner
+JOINT_ON_LINE_M = 0.0015  # a vertex is the joint's when it lies this close to its middle line  # the seam's grit smoothed this much under the joint (its lines would cross at every tooth)
 SEAM_SIMPLIFY_M = 0.08  # the ragged seam is smoothed this much before its lip line is offset (no kinks)
 TOL_M = 1e-3
 CONVENTION = "path-kerb-v2"  # the blends' golfmap_kerb: rounded once (a replay starts from the OPCD meshes)
@@ -193,7 +195,57 @@ def offset_ragged(line, d, side, min_dot=0.2):
         ls, lo = math.hypot(sx, sy), math.hypot(ox, oy)
         if ls > 0 and lo > 0 and (sx * ox + sy * oy) / (ls * lo) >= min_dot:
             kept.append(q)
-    return [(x, y) for x, y, _ in kept]
+    return _unloop([(x, y) for x, y, _ in kept])
+
+
+def _cross(a, b, c, d):
+    """The crossing point of segments ab and cd (proper crossings only), else None."""
+    rx, ry, sx, sy = b[0] - a[0], b[1] - a[1], d[0] - c[0], d[1] - c[1]
+    den = rx * sy - ry * sx
+    if abs(den) < 1e-12:
+        return None
+    t = ((c[0] - a[0]) * sy - (c[1] - a[1]) * sx) / den
+    u = ((c[0] - a[0]) * ry - (c[1] - a[1]) * rx) / den
+    if 0 < t < 1 and 0 < u < 1:
+        return (a[0] + t * rx, a[1] + t * ry)
+    return None
+
+
+def _unloop(pts, window=12):
+    """Cut the small loops out of a polyline: where a segment crosses one of the next `window`, the points between
+    go and the crossing joins the two."""
+    out = list(pts)
+    i = 0
+    while i < len(out) - 3:
+        for j in range(min(len(out) - 2, i + window), i + 1, -1):
+            x = _cross(out[i], out[i + 1], out[j], out[j + 1])
+            if x is not None:
+                out = out[:i + 1] + [x] + out[j + 1:]
+                break
+        i += 1
+    return out
+
+
+def trim_ends(pts, trim):
+    """The polyline without its first and last `trim` metres (empty when it is not longer than 2 trim)."""
+    if trim <= 0:
+        return list(pts)
+    length = sum(math.dist(a, b) for a, b in zip(pts, pts[1:]))
+    if length <= 2 * trim:
+        return []
+
+    def cut(seq):
+        acc, out = 0.0, None
+        for a, b in zip(seq, seq[1:]):
+            L = math.dist(a, b)
+            if acc + L >= trim:
+                t = (trim - acc) / L if L > 0 else 0.0
+                out = [(a[0] + (b[0] - a[0]) * t, a[1] + (b[1] - a[1]) * t)] + list(seq[seq.index(b):])
+                break
+            acc += L
+        return out or []
+    head = cut(list(pts))
+    return list(reversed(cut(list(reversed(head)))))
 
 
 def seam_profile(d, road_side, seam_road=SEAM_ROAD_M, seam_loose=SEAM_LOOSE_M):
@@ -330,7 +382,7 @@ def kerb_core(pieces, blends, roads, others, depth=DEPTH_M, road_m=ROAD_M, cuts=
             my = (a[1] + b[1]) / 2 + (b[0] - a[0]) / L * 0.1
             seam_lines.append(ss.offset_polyline(pts, seam_road if on_hard(mx, my) else -seam_road, False))
     # 6. the sawn joint: three lines along the ragged seam itself, inside the asphalt
-    joint_lines = []
+    joint_lines, joint_mid = [], []
     if seam_edges and joint > 0 and joint_half > 0:
         from mathutils.bvhtree import BVHTree
         import shape_surfaces as ss
@@ -350,14 +402,24 @@ def kerb_core(pieces, blends, roads, others, depth=DEPTH_M, road_m=ROAD_M, cuts=
                 mx, my = (a[0] + b[0]) / 2 - (b[1] - a[1]) / L * 0.04, (a[1] + b[1]) / 2 + (b[0] - a[0]) / L * 0.04
                 votes += 1 if hard_at(mx, my) else -1
             side = 1 if votes >= 0 else -1
-            src = ss.simplify([(p[0], p[1]) for p in line], JOINT_SIMPLIFY_M)
+            src = trim_ends(ss.simplify([(p[0], p[1]) for p in line], JOINT_SIMPLIFY_M), JOINT_TRIM_M)
+            if len(src) < 3:
+                continue
             for d in (joint - joint_half, joint, joint + joint_half):
                 off = offset_ragged(src, d, side)
                 if len(off) >= 2:
                     joint_lines.append(off)
+                    if d == joint:
+                        joint_mid.append(off)
     if (lines or seam_lines or joint_lines) and cut is not None:
         out["cut"] = cut(pieces, lines + seam_lines + joint_lines)
     out["lipLines"], out["seamLines"], out["jointLines"] = len(lines), len(seam_lines), len(joint_lines)
+
+    # the joint's own vertices: on its middle line (not every vertex 3.5 cm from the seam: a corner's lip line, ...)
+    k_joint = kd_of(dense([(a, b) for line in joint_mid for a, b in zip(line, line[1:])], 0.002)) if joint_mid else None
+
+    def on_joint(x, y):
+        return k_joint is not None and k_joint.find((x, y, 0.0))[2] <= JOINT_ON_LINE_M
 
     # 3. the drop, decided on the pieces, strips and loose pieces, carried to every vertex at the same place
     moved_pts, moved_dz = [], []
@@ -368,7 +430,7 @@ def kerb_core(pieces, blends, roads, others, depth=DEPTH_M, road_m=ROAD_M, cuts=
             ds = seam_d(v.co.x, v.co.y)
             if ds < seam_road or ds <= tol:
                 dz = min(dz, -seam_depth * seam_profile(ds, True, seam_road, seam_loose))
-            if o in pieces and joint_lines and abs(ds - joint) < joint_half * 0.5:
+            if o in pieces and on_joint(v.co.x, v.co.y):
                 dz -= joint_depth
             if dz < 0:
                 moved_pts.append((v.co.x, v.co.y))
@@ -511,8 +573,7 @@ def kerb_core(pieces, blends, roads, others, depth=DEPTH_M, road_m=ROAD_M, cuts=
             buf = buf.reshape(-1, 4)
             cv = np.empty(len(me.loops), dtype=np.int64)
             me.loops.foreach_get("vertex_index", cv)
-            hit = {vi for vi in set(cv.tolist())
-                   if abs(seam_d(me.vertices[vi].co.x, me.vertices[vi].co.y) - joint) < joint_half * 0.5}
+            hit = {vi for vi in set(cv.tolist()) if on_joint(me.vertices[vi].co.x, me.vertices[vi].co.y)}
             if not hit:
                 continue
             mask = np.array([vi in hit for vi in cv.tolist()])

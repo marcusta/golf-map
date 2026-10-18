@@ -67,6 +67,19 @@ class Profile(unittest.TestCase):
             d = min(math.hypot(x - a, y - b) for a, b in line)
             self.assertTrue(0.02 < d < 0.05, (x, y, d))
 
+    def test_unloop_cuts_a_fold_out_and_trim_shortens_both_ends(self):
+        fold = [(0, 0), (1, 0), (1.2, 0.1), (0.9, 0.2), (1.1, -0.2), (2, 0), (3, 0)]
+        out = kb._unloop(fold)
+        for i in range(len(out) - 1):
+            for j in range(i + 2, len(out) - 1):
+                self.assertIsNone(kb._cross(out[i], out[i + 1], out[j], out[j + 1]))
+        self.assertEqual((out[0], out[-1]), ((0, 0), (3, 0)))
+        line = [(0.0, 0.0), (1.0, 0.0), (2.0, 0.0)]
+        t = kb.trim_ends(line, 0.25)
+        self.assertAlmostEqual(t[0][0], 0.25)
+        self.assertAlmostEqual(t[-1][0], 1.75)
+        self.assertEqual(kb.trim_ends(line, 1.0), [])
+
     def test_params(self):
         self.assertEqual(kb.validate_params({}), [])
         self.assertEqual(kb.validate_params({"depthM": 0.05, "roadM": 0.2, "cuts": 3, "surfaces": ["asphalt"]}), [])

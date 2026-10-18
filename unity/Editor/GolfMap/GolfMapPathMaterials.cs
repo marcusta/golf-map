@@ -66,7 +66,7 @@ namespace GolfMap.Editor
         // golfmap.path_kerb's surfaces (blender/tools/shape_kerb.py SURFACES) and the shadow band's tint
         static readonly HashSet<string> KerbSurfaces = new HashSet<string> { "asphalt", "concrete", "paving" };
         static readonly Color KerbShadowTint = new Color(0.30f, 0.27f, 0.24f);
-        static readonly Color JointTint = new Color(0.16f, 0.15f, 0.14f);        // the neighbour is looked for this far past the strip's far edge
+        static readonly Color JointTint = new Color(0.31f, 0.29f, 0.27f);   // a shade darker than the asphalt, not black        // the neighbour is looked for this far past the strip's far edge
         const int ProbeRays = 40;
 
         [BridgeCommand("golfmap.paths.materials", "Cart path look on the path meshes (*Concrete* course meshes and blends): look=surface (default) = each path mesh's surface (from the SVG export's <prefix>-paths.json) on OPCD's MAHS shader with satellite off (copy of OPCD MAHS Concrete - Asphalt default, all four channels the surface's tiled textures appended to OPCD's arrays), looks from <course>/Paths/path-surfaces.json (golfmap-path-looks-v2, written with defaults on the first run); every fringe blend fades from the surface into the material of the mesh beside it (a copy of that material, its path channel swapped), road-to-road strips into the other road's surface (spec sharpPairs keep a hard edge); look=photo = OPCD's own satellite materials and physics back. OPCD's originals are never edited. Marks the scene dirty, does not save it.",
@@ -1012,7 +1012,7 @@ namespace GolfMap.Editor
                 SetSurfaceChannel(m, BunkerPaintChannel.Blue, "dirt", dirt, s);
                 m.SetColor("_BlueDetailColorTint", JointTint);
                 m.SetColor("_BlueBaseColorTint", JointTint);
-                m.SetFloat("_BlueBlendStrength", 3f);
+                m.SetFloat("_BlueBlendStrength", 1.2f);
             }
             EditorUtility.SetDirty(m);
             return m;
