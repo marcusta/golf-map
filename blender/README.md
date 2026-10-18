@@ -690,6 +690,17 @@ of region keys on a 1062 s run; the all-mesh position and colour hashes and ever
 equal the code before (the FBX hash differs in custom normals only, as two runs of the code before also do); a
 warm rerun: 219 of 219 exact hits, bit-equal to the cold run.
 
+Omberg svg_108 -> svg_110 (same terrain.obj; svg_110 prepared with the snap and the patch), 2026-10-18: the cold
+svg_108 replay stored region entries for every tee and every slab but 4 (hall-58, hall-78, hall-92, hall-a8: their
+weld closes OPCD's own T-junctions far along a border). svg_110 against that cache: **0 region hits** in the first 13
+slabs and the 41 tees (stopped there). Not the keying: between these two builds OPCD rebuilt the gravel road network
+`roads_1f` (one merged shape) and Vättern's `others_15` pieces, which run next to most slabs and tees. Road blends and
+painted road meshes are not plain, so the patch leaves them as OPCD made them, and the ops before the cut-outs (road
+smoothing, the road welds' T-junction splits, building-pad flattens at a median level) carry the change into the fill
+around the slabs: compared unit by unit, every slab's K part differs there. Region entries pay off when an edit leaves
+the roads and the lake alone; the next steps are the patch for blends and roads and region entries for the ops before
+the cut-outs.
+
 
 ## Shaping: surfaces of a merged road
 
