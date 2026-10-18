@@ -67,6 +67,7 @@ namespace GolfMap.Editor
             public bool particles = true, snap = true;
             public bool resetMaterial;        // make <course>/Waterfalls/Waterfall water.mat again from the profile, with this builder's look
             public float overhangM = 0.15f;   // how far past the lip the falling water lands, per metre of drop
+            public float outletWidthM = 0.6f; // an outlet's spout
             public float foamRate = 30f;      // particles per second per metre of lip
             public float splashRate = 14f;
         }
@@ -137,6 +138,8 @@ namespace GolfMap.Editor
             foreach (var f in falls)
             {
                 var mid = Mid(f.lip);
+                // An outlet is a pipe's spout out of the bank, not the lip's whole width.
+                float width = f.style == "outlet" ? Mathf.Min(f.widthM, o.outletWidthM) : f.widthM;
                 var u = f.flow.normalized;
                 float drop0 = f.topY - f.bottomY;
                 float land = Mathf.Clamp(o.overhangM * Mathf.Max(drop0, 0.2f) + 0.2f, 0.25f, 1.2f);
@@ -172,8 +175,8 @@ namespace GolfMap.Editor
                     spline.transform.SetParent(go.transform, false);
                     spline.transform.localPosition = Vector3.zero;
                     var addPoint = splineType.GetMethod("AddPoint", new[] { typeof(Vector4) });
-                    foreach (var p in pts) addPoint.Invoke(spline, new object[] { new Vector4(p.x, p.y, p.z, f.widthM) });
-                    splineType.GetField("width").SetValue(spline, f.widthM);
+                    foreach (var p in pts) addPoint.Invoke(spline, new object[] { new Vector4(p.x, p.y, p.z, width) });
+                    splineType.GetField("width").SetValue(spline, width);
                     splineType.GetField("snapToTerrain").SetValue(spline, false);
                     ApplyProfile(spline, splineType, profile, profileType);
                     if (material != null) spline.GetComponent<MeshRenderer>().sharedMaterial = material;
@@ -191,9 +194,9 @@ namespace GolfMap.Editor
                     var lipDir = Across(f.lip, u);
                     var lipTop = new Vector3(mid.x, topY + 0.02f, mid.y) + new Vector3(u.x, 0, u.y) * 0.05f;
                     var landAt = new Vector3(mid.x + u.x * land, bottomY + 0.03f, mid.y + u.y * land);
-                    if (foam != null) Emitter(go, "Foam over the lip", foam, lipTop, lipDir, f.widthM, u, drop, o.foamRate, false);
-                    if (splash != null) Emitter(go, "Splash", splash, landAt, lipDir, f.widthM, u, drop, o.splashRate, true);
-                    if (mist != null && drop >= 1f) Emitter(go, "Mist", mist, landAt + Vector3.up * 0.2f, lipDir, f.widthM, u, drop, 3f, true, mist: true);
+                    if (foam != null) Emitter(go, "Foam over the lip", foam, lipTop, lipDir, width, u, drop, o.foamRate, false);
+                    if (splash != null) Emitter(go, "Splash", splash, landAt, lipDir, width, u, drop, o.splashRate, true);
+                    if (mist != null && drop >= 1f) Emitter(go, "Mist", mist, landAt + Vector3.up * 0.2f, lipDir, width, u, drop, 3f, true, mist: true);
                 }
             }
 
@@ -219,10 +222,14 @@ namespace GolfMap.Editor
             var pts = new List<Vector3>();
             if (f.style == "outlet")
             {
-                // Out of the bank face a little below the upper water.
-                float outY = topY - Mathf.Min(0.15f, drop * 0.2f);
-                pts.Add(at(-0.4f, outY + 0.02f));
-                pts.Add(at(0f, outY));
+                // Out of the bank face (the spout starts inside it, hidden), a little below the upper water and
+                // under the face's top.
+                float outY = topY - Mathf.Min(0.25f, drop * 0.25f);
+                var face = mid - u * 0.3f;
+                float? ground = GolfMapProps.Ground(face.x, face.y, null);
+                if (ground != null && ground.Value - OutletCoverM < outY) outY = Mathf.Max(ground.Value - OutletCoverM, bottomY + drop * 0.4f);
+                pts.Add(at(-0.8f, outY + 0.02f));
+                pts.Add(at(-0.1f, outY));
             }
             else
             {
@@ -341,6 +348,8 @@ namespace GolfMap.Editor
         // The creeks' water (the creeks export golfmap.creeks.import fits; one line per creek stretch, [x, y, z]):
         // R.A.M. splines have no collider to hit.
         const float CreekFallNearM = 3f;
+        // An outlet's spout comes out at least this far under the bank face's top.
+        const float OutletCoverM = 0.35f;
 
         static List<List<Vector3>> CreekLines(GolfMapCourse course, out List<Vector2> fallsAt)
         {
@@ -366,6 +375,8 @@ namespace GolfMap.Editor
 
         // A creek's water at p: the nearest creek stretch within CreekReachM (along its line), within 1.5 m of `near`.
         const float CreekReachM = 6f;
+        // ... and within this of the export's level: two creeks a fall apart are both near its lip.
+        const float CreekLevelM = 0.4f;
         static float? CreekAt(Vector2 p, float near, List<List<Vector3>> creeks)
         {
             float best = CreekReachM;
@@ -378,7 +389,7 @@ namespace GolfMap.Editor
                     float t = ab.sqrMagnitude > 1e-6f ? Mathf.Clamp01(Vector2.Dot(p - a, ab) / ab.sqrMagnitude) : 0f;
                     float d = Vector2.Distance(p, a + ab * t);
                     float h = Mathf.Lerp(line[i - 1].y, line[i].y, t);
-                    if (d < best && Mathf.Abs(h - near) <= 1.5f) { best = d; y = h; }
+                    if (d < best && Mathf.Abs(h - near) <= CreekLevelM) { best = d; y = h; }
                 }
             return y;
         }
