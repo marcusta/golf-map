@@ -62,6 +62,7 @@ namespace GolfMap.Editor
         {
             public string profile = DefaultProfile;
             public bool particles = true, snap = true;
+            public bool resetMaterial;        // make <course>/Waterfalls/Waterfall water.mat again from the profile, with this builder's look
             public float overhangM = 0.15f;   // how far past the lip the falling water lands, per metre of drop
             public float foamRate = 30f;      // particles per second per metre of lip
             public float splashRate = 14f;
@@ -71,7 +72,7 @@ namespace GolfMap.Editor
         static void Menu() { Debug.Log("[GolfMap Waterfalls] " + GolfMapJson.Serialize(Build(null, false, new Options()), false)); }
 
         [BridgeCommand("golfmap.waterfalls.build", "Build the course's waterfalls (golf-map `waterfall` features; <export folder>/<prefix>-inner-waterfalls.json from `gspro.py waterfalls`) under 'GolfMap Waterfalls': per fall a R.A.M. spline from the upper water over the lip down to the lower water (its profile's waterfall flow on the steep part) and foam and spray particles along the lip and where it lands. The levels snap to the water planes or creeks found just upstream and downstream, else the export's. Replaces every fall the last build made. Marks the scene dirty.",
-            args = "file (default: the active course's export), dryRun=false, profile=Small Stream Profile (a R.A.M. SplineProfile name; its material is copied once to <course>/Waterfalls/Waterfall water.mat and then kept), particles=true, snap=true (false: the export's levels as they are), overhangM=0.15 (per metre of drop), " + GolfMapSceneSave.Arg)]
+            args = "file (default: the active course's export), dryRun=false, profile=Small Stream Profile (a R.A.M. SplineProfile name; its material is copied once to <course>/Waterfalls/Waterfall water.mat and then kept), particles=true, snap=true (false: the export's levels as they are), overhangM=0.15 (per metre of drop), resetMaterial=false (remake the course's Waterfall water.mat from the profile with the builder's look; hand tuning is lost), " + GolfMapSceneSave.Arg)]
         static object Command(BridgeArgs a)
         {
             var o = new Options();
@@ -79,6 +80,7 @@ namespace GolfMap.Editor
             o.particles = a.Bool("particles", o.particles);
             o.snap = a.Bool("snap", o.snap);
             o.overhangM = (float)a.Number("overhangM", o.overhangM);
+            o.resetMaterial = a.Bool("resetMaterial", false);
             return Build(a.String("file"), a.Bool("dryRun", false), o);
         }
 
@@ -111,7 +113,8 @@ namespace GolfMap.Editor
             var splash = FindAsset(SplashMaterial, typeof(Material)) as Material;
             var mist = FindAsset(MistMaterial, typeof(Material)) as Material;
             string madeFrom = null;
-            var material = dryRun ? null : WaterLook(course, profileType.GetField("splineMaterial").GetValue(profile) as Material, out madeFrom);
+            var material = dryRun ? null : WaterLook(course, profileType.GetField("splineMaterial").GetValue(profile) as Material, o.resetMaterial, out madeFrom);
+            var creeks = CreekLines(course);
 
             var scene = EditorSceneManager.GetActiveScene();
             var old = scene.GetRootGameObjects().FirstOrDefault(g => g.name == RootName);
@@ -133,8 +136,8 @@ namespace GolfMap.Editor
                 var u = f.flow.normalized;
                 float drop0 = f.topY - f.bottomY;
                 float land = Mathf.Clamp(o.overhangM * Mathf.Max(drop0, 0.2f) + 0.2f, 0.25f, 1.2f);
-                float? top = o.snap ? WaterAt(mid - u * (f.style == "sill" ? f.sillM + 0.6f : 1.2f), f.topY, old) : null;
-                float? bottom = o.snap ? WaterAt(mid + u * (land + 0.8f), f.bottomY, old) : null;
+                float? top = o.snap ? WaterAt(mid - u * (f.style == "sill" ? f.sillM + 0.6f : 1.2f), f.topY, old, creeks) : null;
+                float? bottom = o.snap ? WaterAt(mid + u * (land + 0.8f), f.bottomY, old, creeks) : null;
                 float topY = top ?? f.topY, bottomY = bottom ?? f.bottomY;
                 float drop = topY - bottomY;
                 var row = new Dictionary<string, object>
@@ -301,22 +304,75 @@ namespace GolfMap.Editor
         }
 
         // The course's waterfall water: a copy of the profile's R.A.M. material, made once and then kept (hand tuning stays).
-        static Material WaterLook(GolfMapCourse course, Material from, out string madeFrom)
+        static Material WaterLook(GolfMapCourse course, Material from, bool reset, out string madeFrom)
         {
             madeFrom = null;
             var folder = GolfMapCourses.Folder(course) + AssetFolder;
             var path = folder + "/" + WaterMaterial + ".mat";
             var have = AssetDatabase.LoadAssetAtPath<Material>(path);
-            if (have != null || from == null) return have;
+            if ((have != null && !reset) || from == null) return have;
             if (!AssetDatabase.IsValidFolder(folder)) AssetDatabase.CreateFolder(folder.Substring(0, folder.LastIndexOf('/')), AssetFolder);
             var made = new Material(from) { name = WaterMaterial };
-            AssetDatabase.CreateAsset(made, path);
+            // R.A.M.'s cascade is drawn for a river's big white falls (HDR white x20, all but opaque): a garden weir's
+            // curtain is clear water with white streaks.
+            foreach (var name in new[] { "_BigCascadeColor", "_CascadeColor", "_SlowCascadeColor" })
+                if (made.HasProperty(name)) made.SetColor(name, new Color(CascadeWhite, CascadeWhite, CascadeWhite, 0f));
+            if (made.HasProperty("_FoamColor")) made.SetColor("_FoamColor", new Color(FoamWhite, FoamWhite, FoamWhite, 0f));
+            if (made.HasProperty("_BigCascadeTransparency")) made.SetFloat("_BigCascadeTransparency", CascadeTransparency);
+            if (have != null) { EditorUtility.CopySerialized(made, have); EditorUtility.SetDirty(have); made = have; }
+            else AssetDatabase.CreateAsset(made, path);
             madeFrom = AssetDatabase.GetAssetPath(from);
             return made;
         }
 
-        // The water's surface straight down at p: the highest water plane or creek hit within 1.5 m of `near`.
-        static float? WaterAt(Vector2 p, float near, GameObject ignore)
+        const float CascadeWhite = 2.5f, FoamWhite = 3f, CascadeTransparency = 0.35f;
+
+        // The creeks' water (the creeks export golfmap.creeks.import fits; one line per creek stretch, [x, y, z]):
+        // R.A.M. splines have no collider to hit.
+        static List<List<Vector3>> CreekLines(GolfMapCourse course)
+        {
+            var lines = new List<List<Vector3>>();
+            var file = GolfMapCourses.ExportFile(course, "inner", "creeks");
+            if (string.IsNullOrEmpty(file) || !File.Exists(file)) return lines;
+            var root = GolfMapJsonDoc.ParseObject(File.ReadAllText(file));
+            foreach (var c in (root.Array("creeks") ?? new List<object>()).OfType<GolfMapJsonObject>())
+            {
+                var line = (c.Array("points") ?? new List<object>()).OfType<List<object>>()
+                    .Select(q => q.OfType<GolfMapJsonNumber>().Select(n => (float)n.Value).ToArray())
+                    .Where(v => v.Length >= 3).Select(v => new Vector3(v[0], v[1], v[2])).ToList();
+                if (line.Count >= 2) lines.Add(line);
+            }
+            return lines;
+        }
+
+        // A creek's water at p: the nearest creek stretch within CreekReachM (along its line), within 1.5 m of `near`.
+        const float CreekReachM = 6f;
+        static float? CreekAt(Vector2 p, float near, List<List<Vector3>> creeks)
+        {
+            float best = CreekReachM;
+            float? y = null;
+            foreach (var line in creeks)
+                for (int i = 1; i < line.Count; i++)
+                {
+                    var a = new Vector2(line[i - 1].x, line[i - 1].z); var b = new Vector2(line[i].x, line[i].z);
+                    var ab = b - a;
+                    float t = ab.sqrMagnitude > 1e-6f ? Mathf.Clamp01(Vector2.Dot(p - a, ab) / ab.sqrMagnitude) : 0f;
+                    float d = Vector2.Distance(p, a + ab * t);
+                    float h = Mathf.Lerp(line[i - 1].y, line[i].y, t);
+                    if (d < best && Mathf.Abs(h - near) <= 1.5f) { best = d; y = h; }
+                }
+            return y;
+        }
+
+        // The water's surface straight down at p: the highest water plane hit within 1.5 m of `near`, else the
+        // nearest creek stretch's water.
+        static float? WaterAt(Vector2 p, float near, GameObject ignore, List<List<Vector3>> creeks)
+        {
+            var plane = PlaneAt(p, near, ignore);
+            return plane ?? CreekAt(p, near, creeks);
+        }
+
+        static float? PlaneAt(Vector2 p, float near, GameObject ignore)
         {
             var hits = Physics.RaycastAll(new Ray(new Vector3(p.x, near + 50f, p.y), Vector3.down), 100f, ~0, QueryTriggerInteraction.Collide);
             float? best = null;
