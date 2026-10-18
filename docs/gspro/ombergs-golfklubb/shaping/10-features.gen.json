@@ -54,9 +54,9 @@
       "select": {
         "feature": "e93fe437-6f5c-4b98-a691-d8b2ced670c8"
       },
-      "recipe": "golfmap-bunker-paint-only.json",
+      "recipe": "cesimgolf-Hazeltine_Bunker_Recipe.json",
       "seed": 82,
-      "note": "golfmap-bunker-paint-only (default for bunker)"
+      "note": "cesimgolf-hazeltine (recipe edit)"
     },
     {
       "id": "recipe-54",
@@ -64,9 +64,9 @@
       "select": {
         "feature": "989b2629-032d-4c9b-9bb8-042bd261d2bb"
       },
-      "recipe": "golfmap-bunker-paint-only.json",
+      "recipe": "cesimgolf-Hazeltine_Bunker_Recipe.json",
       "seed": 84,
-      "note": "golfmap-bunker-paint-only (default for bunker)"
+      "note": "cesimgolf-hazeltine (recipe edit)"
     },
     {
       "id": "recipe-60",
@@ -74,9 +74,9 @@
       "select": {
         "feature": "53c2f2c4-d947-4149-9247-60e6c79b9594"
       },
-      "recipe": "golfmap-bunker-paint-only.json",
+      "recipe": "cesimgolf-Hazeltine_Bunker_Recipe.json",
       "seed": 96,
-      "note": "golfmap-bunker-paint-only (default for bunker)"
+      "note": "cesimgolf-hazeltine (recipe edit)"
     },
     {
       "id": "recipe-61",
@@ -84,9 +84,9 @@
       "select": {
         "feature": "da74fdc7-e99f-4da4-8f02-da4a88e6981a"
       },
-      "recipe": "golfmap-bunker-paint-only.json",
+      "recipe": "cesimgolf-Hazeltine_Bunker_Recipe.json",
       "seed": 97,
-      "note": "golfmap-bunker-paint-only (default for bunker)"
+      "note": "cesimgolf-hazeltine (recipe edit)"
     },
     {
       "id": "recipe-62",
@@ -94,9 +94,9 @@
       "select": {
         "feature": "d1b4aa45-899d-43a5-b0ac-2fa4d90ffe9c"
       },
-      "recipe": "golfmap-bunker-paint-only.json",
+      "recipe": "cesimgolf-Hazeltine_Bunker_Recipe.json",
       "seed": 98,
-      "note": "golfmap-bunker-paint-only (default for bunker)"
+      "note": "cesimgolf-hazeltine (recipe edit)"
     },
     {
       "id": "recipe-63",
@@ -104,9 +104,9 @@
       "select": {
         "feature": "8f02826a-be4f-4d1f-9605-8860464ee183"
       },
-      "recipe": "golfmap-bunker-paint-only.json",
+      "recipe": "cesimgolf-Hazeltine_Bunker_Recipe.json",
       "seed": 99,
-      "note": "golfmap-bunker-paint-only (default for bunker)"
+      "note": "cesimgolf-hazeltine (recipe edit)"
     },
     {
       "id": "recipe-66",
@@ -114,9 +114,9 @@
       "select": {
         "feature": "2afbb7a9-ac2c-4936-9ae7-24dfa75b478f"
       },
-      "recipe": "golfmap-bunker-paint-only.json",
+      "recipe": "cesimgolf-Hazeltine_Bunker_Recipe.json",
       "seed": 102,
-      "note": "golfmap-bunker-paint-only (default for bunker)"
+      "note": "cesimgolf-hazeltine (recipe edit)"
     },
     {
       "id": "recipe-67",
@@ -124,9 +124,9 @@
       "select": {
         "feature": "4b60a89b-f6c4-4e79-8f31-83008369fe43"
       },
-      "recipe": "golfmap-bunker-paint-only.json",
+      "recipe": "cesimgolf-Hazeltine_Bunker_Recipe.json",
       "seed": 103,
-      "note": "golfmap-bunker-paint-only (default for bunker)"
+      "note": "cesimgolf-hazeltine (recipe edit)"
     },
     {
       "id": "recipe-68",
@@ -134,9 +134,9 @@
       "select": {
         "feature": "10b25237-70e1-46e8-856b-adcbfa5376ad"
       },
-      "recipe": "golfmap-bunker-paint-only.json",
+      "recipe": "cesimgolf-Hazeltine_Bunker_Recipe.json",
       "seed": 104,
-      "note": "golfmap-bunker-paint-only (default for bunker)"
+      "note": "cesimgolf-hazeltine (recipe edit)"
     },
     {
       "id": "recipe-69",
@@ -144,9 +144,9 @@
       "select": {
         "feature": "bdc24cf4-6b80-4a7f-8c5b-97dbd7ba0972"
       },
-      "recipe": "golfmap-bunker-paint-only.json",
+      "recipe": "cesimgolf-Hazeltine_Bunker_Recipe.json",
       "seed": 105,
-      "note": "golfmap-bunker-paint-only (default for bunker)"
+      "note": "cesimgolf-hazeltine (recipe edit)"
     },
     {
       "id": "recipe-106",
@@ -154,9 +154,9 @@
       "select": {
         "feature": "cf5726a7-ca59-4d92-aab9-c8d38d43af14"
       },
-      "recipe": "golfmap-bunker-paint-only.json",
+      "recipe": "cesimgolf-Hazeltine_Bunker_Recipe.json",
       "seed": 262,
-      "note": "golfmap-bunker-paint-only (default for bunker)"
+      "note": "cesimgolf-hazeltine (recipe edit)"
     },
     {
       "id": "recipe-111",
@@ -164,9 +164,9 @@
       "select": {
         "feature": "77de67cd-0b87-45c9-8eef-3eb08ec1a212"
       },
-      "recipe": "golfmap-bunker-paint-only.json",
+      "recipe": "cesimgolf-Hazeltine_Bunker_Recipe.json",
       "seed": 273,
-      "note": "golfmap-bunker-paint-only (default for bunker)"
+      "note": "cesimgolf-hazeltine (recipe edit)"
     },
     {
       "id": "recipe-112",
@@ -174,9 +174,9 @@
       "select": {
         "feature": "808fc159-3707-4a46-976e-6ab67ee48273"
       },
-      "recipe": "golfmap-bunker-paint-only.json",
+      "recipe": "cesimgolf-Hazeltine_Bunker_Recipe.json",
       "seed": 274,
-      "note": "golfmap-bunker-paint-only (default for bunker)"
+      "note": "cesimgolf-hazeltine (recipe edit)"
     },
     {
       "id": "recipe-11b",
@@ -184,9 +184,9 @@
       "select": {
         "feature": "7880584d-9b34-4d23-9256-b186aa1bfd1a"
       },
-      "recipe": "golfmap-bunker-paint-only.json",
+      "recipe": "cesimgolf-Hazeltine_Bunker_Recipe.json",
       "seed": 283,
-      "note": "golfmap-bunker-paint-only (default for bunker)"
+      "note": "cesimgolf-hazeltine (recipe edit)"
     },
     {
       "id": "recipe-121",
@@ -194,9 +194,9 @@
       "select": {
         "feature": "7c943660-9a08-4079-b6bd-ca6f2e353cc8"
       },
-      "recipe": "golfmap-bunker-paint-only.json",
+      "recipe": "cesimgolf-Hazeltine_Bunker_Recipe.json",
       "seed": 289,
-      "note": "golfmap-bunker-paint-only (default for bunker)"
+      "note": "cesimgolf-hazeltine (recipe edit)"
     },
     {
       "id": "recipe-127",
@@ -204,9 +204,9 @@
       "select": {
         "feature": "bc73518d-b365-463a-b579-23144a6dc827"
       },
-      "recipe": "golfmap-bunker-paint-only.json",
+      "recipe": "cesimgolf-Hazeltine_Bunker_Recipe.json",
       "seed": 295,
-      "note": "golfmap-bunker-paint-only (default for bunker)"
+      "note": "cesimgolf-hazeltine (recipe edit)"
     },
     {
       "id": "recipe-128",
@@ -214,9 +214,9 @@
       "select": {
         "feature": "6dc9a994-e61b-46cf-ac20-6dc25c1bd4f5"
       },
-      "recipe": "golfmap-bunker-paint-only.json",
+      "recipe": "cesimgolf-Hazeltine_Bunker_Recipe.json",
       "seed": 296,
-      "note": "golfmap-bunker-paint-only (default for bunker)"
+      "note": "cesimgolf-hazeltine (recipe edit)"
     },
     {
       "id": "recipe-129",
@@ -224,9 +224,9 @@
       "select": {
         "feature": "4e3ccc41-319b-4263-8043-a41cd1d2c92c"
       },
-      "recipe": "golfmap-bunker-paint-only.json",
+      "recipe": "cesimgolf-Hazeltine_Bunker_Recipe.json",
       "seed": 297,
-      "note": "golfmap-bunker-paint-only (default for bunker)"
+      "note": "cesimgolf-hazeltine (recipe edit)"
     },
     {
       "id": "recipe-12a",
@@ -234,9 +234,9 @@
       "select": {
         "feature": "7fb549af-2036-43d8-ad60-10807f703a36"
       },
-      "recipe": "golfmap-bunker-paint-only.json",
+      "recipe": "cesimgolf-Hazeltine_Bunker_Recipe.json",
       "seed": 298,
-      "note": "golfmap-bunker-paint-only (default for bunker)"
+      "note": "cesimgolf-hazeltine (recipe edit)"
     },
     {
       "id": "recipe-134",
@@ -244,9 +244,9 @@
       "select": {
         "feature": "1bb86b85-2d5f-4629-be10-b6062e3f0de3"
       },
-      "recipe": "golfmap-bunker-paint-only.json",
+      "recipe": "cesimgolf-Hazeltine_Bunker_Recipe.json",
       "seed": 308,
-      "note": "golfmap-bunker-paint-only (default for bunker)"
+      "note": "cesimgolf-hazeltine (recipe edit)"
     },
     {
       "id": "recipe-135",
@@ -254,9 +254,9 @@
       "select": {
         "feature": "54d9052f-edd4-453e-b0bf-37d29ffb23be"
       },
-      "recipe": "golfmap-bunker-paint-only.json",
+      "recipe": "cesimgolf-Hazeltine_Bunker_Recipe.json",
       "seed": 309,
-      "note": "golfmap-bunker-paint-only (default for bunker)"
+      "note": "cesimgolf-hazeltine (recipe edit)"
     },
     {
       "id": "recipe-13e",
@@ -264,9 +264,9 @@
       "select": {
         "feature": "4737b3ba-4b15-4247-950e-4872a1385648"
       },
-      "recipe": "golfmap-bunker-paint-only.json",
+      "recipe": "cesimgolf-Hazeltine_Bunker_Recipe.json",
       "seed": 318,
-      "note": "golfmap-bunker-paint-only (default for bunker)"
+      "note": "cesimgolf-hazeltine (recipe edit)"
     },
     {
       "id": "recipe-142",
@@ -274,9 +274,9 @@
       "select": {
         "feature": "222e838b-6ce5-4f24-96b8-8836708f81ed"
       },
-      "recipe": "golfmap-bunker-paint-only.json",
+      "recipe": "cesimgolf-Hazeltine_Bunker_Recipe.json",
       "seed": 322,
-      "note": "golfmap-bunker-paint-only (default for bunker)"
+      "note": "cesimgolf-hazeltine (recipe edit)"
     },
     {
       "id": "recipe-150",
@@ -284,9 +284,9 @@
       "select": {
         "feature": "8909d8ce-cb3b-45a2-a6db-6d1e8528e179"
       },
-      "recipe": "golfmap-bunker-paint-only.json",
+      "recipe": "cesimgolf-Hazeltine_Bunker_Recipe.json",
       "seed": 336,
-      "note": "golfmap-bunker-paint-only (default for bunker)"
+      "note": "cesimgolf-hazeltine (recipe edit)"
     },
     {
       "id": "recipe-17d",
@@ -294,9 +294,9 @@
       "select": {
         "feature": "11a23ef9-0940-4d41-ada5-afd17e2bb669"
       },
-      "recipe": "golfmap-bunker-paint-only.json",
+      "recipe": "cesimgolf-Hazeltine_Bunker_Recipe.json",
       "seed": 381,
-      "note": "golfmap-bunker-paint-only (default for bunker)"
+      "note": "cesimgolf-hazeltine (recipe edit)"
     },
     {
       "id": "recipe-198",
@@ -304,9 +304,9 @@
       "select": {
         "feature": "cb2dea7a-3dd7-4dc6-856b-6049369f72df"
       },
-      "recipe": "golfmap-bunker-paint-only.json",
+      "recipe": "cesimgolf-Hazeltine_Bunker_Recipe.json",
       "seed": 408,
-      "note": "golfmap-bunker-paint-only (default for bunker)"
+      "note": "cesimgolf-hazeltine (recipe edit)"
     },
     {
       "id": "recipe-199",
@@ -314,9 +314,9 @@
       "select": {
         "feature": "4bf32e2e-b3cf-42a2-a6af-d1601bdcb1cb"
       },
-      "recipe": "golfmap-bunker-paint-only.json",
+      "recipe": "cesimgolf-Hazeltine_Bunker_Recipe.json",
       "seed": 409,
-      "note": "golfmap-bunker-paint-only (default for bunker)"
+      "note": "cesimgolf-hazeltine (recipe edit)"
     },
     {
       "id": "recipe-1a3",
@@ -324,9 +324,9 @@
       "select": {
         "feature": "9c7dece5-e0eb-445e-8569-5695b60ab128"
       },
-      "recipe": "golfmap-bunker-paint-only.json",
+      "recipe": "cesimgolf-Hazeltine_Bunker_Recipe.json",
       "seed": 419,
-      "note": "golfmap-bunker-paint-only (default for bunker)"
+      "note": "cesimgolf-hazeltine (recipe edit)"
     },
     {
       "id": "recipe-1a4",
@@ -334,9 +334,9 @@
       "select": {
         "feature": "50c37ddb-f7a7-4ded-87d3-6365c05e3670"
       },
-      "recipe": "golfmap-bunker-paint-only.json",
+      "recipe": "cesimgolf-Hazeltine_Bunker_Recipe.json",
       "seed": 420,
-      "note": "golfmap-bunker-paint-only (default for bunker)"
+      "note": "cesimgolf-hazeltine (recipe edit)"
     },
     {
       "id": "recipe-1a6",
@@ -344,9 +344,9 @@
       "select": {
         "feature": "fbed6f31-254d-421c-8f9c-d57d2c607168"
       },
-      "recipe": "golfmap-bunker-paint-only.json",
+      "recipe": "cesimgolf-Hazeltine_Bunker_Recipe.json",
       "seed": 422,
-      "note": "golfmap-bunker-paint-only (default for bunker)"
+      "note": "cesimgolf-hazeltine (recipe edit)"
     },
     {
       "id": "recipe-1ab",
@@ -354,9 +354,9 @@
       "select": {
         "feature": "ac7faa76-6708-4970-9926-bf7660c38fa3"
       },
-      "recipe": "golfmap-bunker-paint-only.json",
+      "recipe": "cesimgolf-Hazeltine_Bunker_Recipe.json",
       "seed": 427,
-      "note": "golfmap-bunker-paint-only (default for bunker)"
+      "note": "cesimgolf-hazeltine (recipe edit)"
     },
     {
       "id": "recipe-1ac",
@@ -364,9 +364,9 @@
       "select": {
         "feature": "9c83cb97-1783-4989-85a1-ce31a6163d6c"
       },
-      "recipe": "golfmap-bunker-paint-only.json",
+      "recipe": "cesimgolf-Hazeltine_Bunker_Recipe.json",
       "seed": 428,
-      "note": "golfmap-bunker-paint-only (default for bunker)"
+      "note": "cesimgolf-hazeltine (recipe edit)"
     },
     {
       "id": "recipe-1ad",
@@ -374,9 +374,9 @@
       "select": {
         "feature": "543571d4-52d6-40a4-9ef2-aa28cc0c1e1d"
       },
-      "recipe": "golfmap-bunker-paint-only.json",
+      "recipe": "cesimgolf-Hazeltine_Bunker_Recipe.json",
       "seed": 429,
-      "note": "golfmap-bunker-paint-only (default for bunker)"
+      "note": "cesimgolf-hazeltine (recipe edit)"
     },
     {
       "id": "recipe-1b9",
@@ -384,9 +384,9 @@
       "select": {
         "feature": "f092bd7a-8331-451e-a72f-119c76352c11"
       },
-      "recipe": "golfmap-bunker-paint-only.json",
+      "recipe": "cesimgolf-Hazeltine_Bunker_Recipe.json",
       "seed": 441,
-      "note": "golfmap-bunker-paint-only (default for bunker)"
+      "note": "cesimgolf-hazeltine (recipe edit)"
     },
     {
       "id": "recipe-1ba",
@@ -394,9 +394,9 @@
       "select": {
         "feature": "5bc56a63-89f3-4e6e-ab1d-5bcc13b16d0f"
       },
-      "recipe": "golfmap-bunker-paint-only.json",
+      "recipe": "cesimgolf-Hazeltine_Bunker_Recipe.json",
       "seed": 442,
-      "note": "golfmap-bunker-paint-only (default for bunker)"
+      "note": "cesimgolf-hazeltine (recipe edit)"
     },
     {
       "id": "recipe-1bb",
@@ -404,9 +404,9 @@
       "select": {
         "feature": "38476451-0af2-41bf-9d89-876a905831f0"
       },
-      "recipe": "golfmap-bunker-paint-only.json",
+      "recipe": "cesimgolf-Hazeltine_Bunker_Recipe.json",
       "seed": 443,
-      "note": "golfmap-bunker-paint-only (default for bunker)"
+      "note": "cesimgolf-hazeltine (recipe edit)"
     },
     {
       "id": "recipe-1d0",
@@ -414,9 +414,9 @@
       "select": {
         "feature": "a8c10d5d-9d9c-476c-9449-aaac219aba9a"
       },
-      "recipe": "golfmap-bunker-paint-only.json",
+      "recipe": "cesimgolf-Hazeltine_Bunker_Recipe.json",
       "seed": 464,
-      "note": "golfmap-bunker-paint-only (default for bunker)"
+      "note": "cesimgolf-hazeltine (recipe edit)"
     },
     {
       "id": "recipe-1d1",
@@ -424,9 +424,9 @@
       "select": {
         "feature": "a6b9e17c-ef29-45ca-817f-e517b1ec2766"
       },
-      "recipe": "golfmap-bunker-paint-only.json",
+      "recipe": "cesimgolf-Hazeltine_Bunker_Recipe.json",
       "seed": 465,
-      "note": "golfmap-bunker-paint-only (default for bunker)"
+      "note": "cesimgolf-hazeltine (recipe edit)"
     },
     {
       "id": "recipe-1d2",
@@ -434,9 +434,9 @@
       "select": {
         "feature": "2172616a-0cfb-476e-83e1-c60f71e6e8aa"
       },
-      "recipe": "golfmap-bunker-paint-only.json",
+      "recipe": "cesimgolf-Hazeltine_Bunker_Recipe.json",
       "seed": 466,
-      "note": "golfmap-bunker-paint-only (default for bunker)"
+      "note": "cesimgolf-hazeltine (recipe edit)"
     },
     {
       "id": "recipe-1d3",
@@ -444,9 +444,9 @@
       "select": {
         "feature": "c15197fa-eb2a-4511-b642-4d2cf6f7cc16"
       },
-      "recipe": "golfmap-bunker-paint-only.json",
+      "recipe": "cesimgolf-Hazeltine_Bunker_Recipe.json",
       "seed": 467,
-      "note": "golfmap-bunker-paint-only (default for bunker)"
+      "note": "cesimgolf-hazeltine (recipe edit)"
     },
     {
       "id": "recipe-1d4",
@@ -454,9 +454,9 @@
       "select": {
         "feature": "0a067364-5ac6-4a25-98f8-5ed918225908"
       },
-      "recipe": "golfmap-bunker-paint-only.json",
+      "recipe": "cesimgolf-Hazeltine_Bunker_Recipe.json",
       "seed": 468,
-      "note": "golfmap-bunker-paint-only (default for bunker)"
+      "note": "cesimgolf-hazeltine (recipe edit)"
     },
     {
       "id": "recipe-1d5",
@@ -464,9 +464,9 @@
       "select": {
         "feature": "dc3d85d1-84f6-4c34-a67d-99f3985a3bdf"
       },
-      "recipe": "golfmap-bunker-paint-only.json",
+      "recipe": "cesimgolf-Hazeltine_Bunker_Recipe.json",
       "seed": 469,
-      "note": "golfmap-bunker-paint-only (default for bunker)"
+      "note": "cesimgolf-hazeltine (recipe edit)"
     },
     {
       "id": "recipe-1d8",
@@ -474,9 +474,9 @@
       "select": {
         "feature": "deaa9b15-6b5d-4170-943d-3873daf42291"
       },
-      "recipe": "golfmap-bunker-paint-only.json",
+      "recipe": "cesimgolf-Hazeltine_Bunker_Recipe.json",
       "seed": 472,
-      "note": "golfmap-bunker-paint-only (default for bunker)"
+      "note": "cesimgolf-hazeltine (recipe edit)"
     },
     {
       "id": "recipe-1df",
@@ -484,9 +484,9 @@
       "select": {
         "feature": "3cb2e3d6-471f-43d7-8a5e-9f6b868a205b"
       },
-      "recipe": "golfmap-bunker-paint-only.json",
+      "recipe": "cesimgolf-Hazeltine_Bunker_Recipe.json",
       "seed": 479,
-      "note": "golfmap-bunker-paint-only (default for bunker)"
+      "note": "cesimgolf-hazeltine (recipe edit)"
     },
     {
       "id": "recipe-1e0",
@@ -494,9 +494,9 @@
       "select": {
         "feature": "95c5e0b0-e0d8-43e0-969f-b09a20d55c66"
       },
-      "recipe": "golfmap-bunker-paint-only.json",
+      "recipe": "cesimgolf-Hazeltine_Bunker_Recipe.json",
       "seed": 480,
-      "note": "golfmap-bunker-paint-only (default for bunker)"
+      "note": "cesimgolf-hazeltine (recipe edit)"
     },
     {
       "id": "recipe-1e1",
@@ -504,9 +504,9 @@
       "select": {
         "feature": "e1d3c6c2-b939-46cb-a658-2c195987b989"
       },
-      "recipe": "golfmap-bunker-paint-only.json",
+      "recipe": "cesimgolf-Hazeltine_Bunker_Recipe.json",
       "seed": 481,
-      "note": "golfmap-bunker-paint-only (default for bunker)"
+      "note": "cesimgolf-hazeltine (recipe edit)"
     },
     {
       "id": "recipe-1e2",
@@ -514,9 +514,9 @@
       "select": {
         "feature": "aadde49b-3934-425b-b1db-104ab4090356"
       },
-      "recipe": "golfmap-bunker-paint-only.json",
+      "recipe": "cesimgolf-Hazeltine_Bunker_Recipe.json",
       "seed": 482,
-      "note": "golfmap-bunker-paint-only (default for bunker)"
+      "note": "cesimgolf-hazeltine (recipe edit)"
     },
     {
       "id": "recipe-1ee",
@@ -524,9 +524,9 @@
       "select": {
         "feature": "9a666ff1-ce69-43b1-9639-b60288a35dd8"
       },
-      "recipe": "golfmap-bunker-paint-only.json",
+      "recipe": "cesimgolf-Hazeltine_Bunker_Recipe.json",
       "seed": 494,
-      "note": "golfmap-bunker-paint-only (default for bunker)"
+      "note": "cesimgolf-hazeltine (recipe edit)"
     },
     {
       "id": "recipe-1ef",
@@ -534,9 +534,9 @@
       "select": {
         "feature": "c3f69e99-5a4c-4dbc-b942-405fda5d84a0"
       },
-      "recipe": "golfmap-bunker-paint-only.json",
+      "recipe": "cesimgolf-Hazeltine_Bunker_Recipe.json",
       "seed": 495,
-      "note": "golfmap-bunker-paint-only (default for bunker)"
+      "note": "cesimgolf-hazeltine (recipe edit)"
     },
     {
       "id": "recipe-1f0",
@@ -544,9 +544,9 @@
       "select": {
         "feature": "163c37cd-1d0d-4c8b-b07e-4b890ace6765"
       },
-      "recipe": "golfmap-bunker-paint-only.json",
+      "recipe": "cesimgolf-Hazeltine_Bunker_Recipe.json",
       "seed": 496,
-      "note": "golfmap-bunker-paint-only (default for bunker)"
+      "note": "cesimgolf-hazeltine (recipe edit)"
     },
     {
       "id": "recipe-201",
@@ -554,9 +554,9 @@
       "select": {
         "feature": "066397e2-01ee-4c79-a77e-a3447e73f457"
       },
-      "recipe": "golfmap-bunker-paint-only.json",
+      "recipe": "cesimgolf-Hazeltine_Bunker_Recipe.json",
       "seed": 513,
-      "note": "golfmap-bunker-paint-only (default for bunker)"
+      "note": "cesimgolf-hazeltine (recipe edit)"
     },
     {
       "id": "recipe-202",
@@ -564,9 +564,9 @@
       "select": {
         "feature": "f1ee5076-e568-48c0-8d82-c22c9df27e5d"
       },
-      "recipe": "golfmap-bunker-paint-only.json",
+      "recipe": "cesimgolf-Hazeltine_Bunker_Recipe.json",
       "seed": 514,
-      "note": "golfmap-bunker-paint-only (default for bunker)"
+      "note": "cesimgolf-hazeltine (recipe edit)"
     }
   ]
 }
