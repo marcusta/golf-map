@@ -99,6 +99,13 @@ WALLS = [
      "start": (477682.7, 6457395.2), "via": (477652.3, 6457383.8), "end": (477643.7, 6457447.0),
      "note": "Pond between 18 and 1: rounded boulders along the south edge (dark in the 2023 ortho, grey in 2025), "
              "round the south-west corner and up the west side past the bulge to N 6457447."},
+    # The pond behind hole 13's green (shape hole_13_234; Deep Water, 1.3 m, 30 deg, 45 deg above, water 110.38 m):
+    # a ring of rounded boulders round the west, north and east sides (2025 ortho, Marcus's tee photo); the south
+    # side is grass to the water.
+    {"id": "h13-pond-edge", "feature": "ec66ad78-2d56-46b7-92b8-cd35c58745a8",
+     "start": (477670.0, 6456926.3), "via": (477683.1, 6456939.7), "end": (477696.3, 6456928.1),
+     "note": "Pond behind hole 13's green: the stone rim from the south-west corner up the west side, along the "
+             "north edge and down the east side (2025 ortho; boulders 0.5-1 m)."},
     {"id": "p77-north-tip", "feature": "4530bf16-35ec-4c82-b78b-f139db337b9e",
      "start": (477675.8, 6457494.0), "via": (477683.8, 6457497.0), "end": (477694.5, 6457487.4),
      "note": "Pond between 18 and 1: the grey stone rim round the north tip (2025 and 2023 orthos)."},
