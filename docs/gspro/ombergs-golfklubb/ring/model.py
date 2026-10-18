@@ -40,7 +40,8 @@ class Evidence:
         self.osm = {str(f["properties"]["osm_id"]): f for f in json.loads((data / "osm-buildings.json").read_text())}
         self.points = np.load(data / "lidar-crop.npz")["points"]
         self.data = data
-        self.dems = {k: np.load(data / f"dem-{k}.npz") for k in ("inner", "outer")}
+        # Read each npz once: indexing an NpzFile decompresses the array again on every access.
+        self.dems = {k: dict(np.load(data / f"dem-{k}.npz")) for k in ("inner", "outer")}
         self.clusters = self.crop["clusters"]
 
     def ortho(self, cluster):
