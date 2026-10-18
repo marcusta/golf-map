@@ -77,6 +77,40 @@ class JunctionPieces(unittest.TestCase):
         self.assertEqual((R.assignment[0]["surface"], R.assignment[0]["why"]), ("asphalt", "dominant"))
 
 
+class TaperOverTheGravelRoad(unittest.TestCase):
+    """An asphalt road ends at y = 0 and a gravel road carries on from it (reaching 0.5 m back under the asphalt);
+    the junctions tool's width taper runs from the asphalt's 6 m to the gravel's 3.5 m over 4 m, over the gravel."""
+
+    def regions(self):
+        asphalt = piece([rect(-3, -20, 3, 0)], "asphalt", "osm", 1)
+        gravel = piece([rect(-1.75, -0.5, 1.75, 20)], "gravel", "osm", 2)
+        taper = piece([[[-3, -0.5], [3, -0.5], [3, 0], [1.75, 4], [-1.75, 4], [-3, 0], [-3, -0.5]]], None,
+                      ss.JUNCTION_SOURCE, None, (1, 2))
+        return ss.Regions([asphalt, gravel, taper], dominant="asphalt")
+
+    def test_the_taper_is_asphalt_across_the_whole_gravel_road(self):
+        R = self.regions()
+        self.assertEqual(R.assignment[0]["surface"], "asphalt")
+        self.assertEqual(R.dominates, {(2, 1)})
+        for x, y in ((0, 2), (1.5, 3.5), (-1.5, 1), (2.5, 0.5)):
+            self.assertEqual(R.covered(x, y), "asphalt", (x, y))
+        self.assertEqual(R.covered(0, 5), "gravel")
+        # the seam runs across the road at the taper's end (plus the slit's few cm where its side meets the kerb)
+        across = [c for c in R.seams if (c["high"], c["low"]) == ("asphalt", "gravel") and c["length"] > 3]
+        self.assertEqual(len(across), 1)
+        self.assertTrue(all(abs(p[1] - 4) < 1e-6 for p in across[0]["points"]))
+
+    def test_a_fillet_leg_a_junction_of_more_roads_and_an_untagged_road_do_not_dominate(self):
+        R = tee(piece([fillet()], None, ss.JUNCTION_SOURCE, None, (1, 2)))
+        self.assertEqual(R.dominates, set())
+        ring = [[-3, -0.5], [3, -0.5], [3, 0], [1.75, 4], [-1.75, 4], [-3, 0], [-3, -0.5]]
+        for p in (piece([ring], None, ss.JUNCTION_SOURCE, None, (1, 2, 9)), piece([ring], None, "osm", 3)):
+            R = ss.Regions([piece([rect(-3, -20, 3, 0)], "asphalt", "osm", 1),
+                            piece([rect(-1.75, -0.5, 1.75, 20)], "gravel", "osm", 2), p], dominant="asphalt")
+            self.assertEqual(R.dominates, set())
+            self.assertEqual(R.covered(0, 2), "gravel")
+
+
 class Regions(unittest.TestCase):
     def test_the_higher_surface_wins_where_pieces_overlap(self):
         R = tee()

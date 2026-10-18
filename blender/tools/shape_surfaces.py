@@ -20,7 +20,12 @@ separates them into one object per surface. This module is the geometry of that 
   fillet goes to the major road, the higher surface). A derived piece only owns the part of it outside every known
   piece of another surface: its legs inside the other road never become a 0.5 m strip of its surface along that
   road's kerb, only the flare outside both roads does (the brief's "union of its pieces + its junction pieces"
-  would leave such strips).
+  would leave such strips). Except a junction piece made for exactly two roads that covers one of them, of a
+  lower surface, in body (somewhere BODY_M inside both outlines: a width taper running from an asphalt road's end
+  over the gravel road that carries on from it, not a 0.5 m fillet leg): it wins inside that road's piece
+  (`dominates`), so the asphalt ends on the taper's far edge instead of in two wedges beside the gravel. A junction
+  of more roads, or a road piece without a surface, keeps the rule above (Omberg's five-road junction would cut an
+  asphalt wedge into the gravel yard, Vreta's untagged road end would cap the gravel path).
 - **Classifier** (`Regions.covered(x, y)`): the highest-ranked known piece containing the point, else the
   highest-ranked assigned surface of a derived piece containing it, else None (not covered: the merge's closing
   filled a slit there, or it is outside the shape). `Regions.region(x, y)` fills the uncovered points with the
@@ -55,6 +60,9 @@ JUNCTION_SOURCE = "road-junctions"
 RANK = ("asphalt", "concrete", "paving", "wood", "gravel", "dirt")
 SHARP_PAIRS = (frozenset(("asphalt", "concrete")),)  # seams with no paint fade (two hard surfaces, a crisp edge)
 DEFAULT_TIE = 0.15
+BODY_M = 0.35   # a derived piece wins over a lower known piece it overlaps this far inside both outlines (a fillet leg,
+#                 0.5 m wide, reaches 0.25 m at most)
+BODY_STEP = 0.1
 DEFAULT_SLIT = 0.8  # outlines of two surfaces closer than this across uncovered ground: a slit (the SVG merge closes
 #                     gaps up to 2 x ROADS_CLOSE_M = 0.6 m; a little more so the medial line reaches the mesh edge)
 RAGGED_HARD = ("asphalt", "concrete", "paving")
@@ -377,6 +385,8 @@ class Regions:
         self.assigned = {}  # piece position -> surface
         self.assignment = []  # report rows for derived pieces
         self._assign_derived()
+        self.dominates = set()  # (derived piece position, known piece position): the derived one wins there
+        self._dominance()
         self._seams_and_outline()
         self.ragged = max(0.0, float(ragged or 0.0))
         self.ragged_grid = None
@@ -421,18 +431,76 @@ class Regions:
 
     def covered(self, x, y):
         """The point's surface: the highest known piece containing it, else the highest assigned derived piece,
-        else None (not covered by any piece)."""
+        else None (not covered by any piece). A derived piece that dominates the known piece (see _dominance) wins
+        over it when its surface ranks higher."""
         known = derived = None
+        knowns, deriveds = [], []
         for k in self._containing(x, y):
             p = self.pieces[k]
             if not p["derived"]:
+                knowns.append(k)
                 if known is None or rank(p["surface"]) < rank(known):
                     known = p["surface"]
             else:
+                deriveds.append(k)
                 s = self.assigned.get(k)
                 if s and (derived is None or rank(s) < rank(derived)):
                     derived = s
+        if known is not None and self.dominates:
+            for d in deriveds:
+                s = self.assigned.get(d)
+                if s and rank(s) < rank(known) and any((d, j) in self.dominates for j in knowns
+                                                        if self.pieces[j]["surface"] == known):
+                    known = s
         return known if known is not None else derived
+
+    def _dominance(self):
+        """self.dominates: the (junction piece for two roads, one of those roads' pieces) pairs where the junction
+        piece's assigned surface ranks above the road's and they overlap somewhere BODY_M inside both outlines
+        (sampled every BODY_STEP)."""
+        grids = {}
+
+        def outline(k):
+            if k not in grids:
+                g = SegmentGrid(2.0)
+                for r in self.pieces[k]["rings"]:
+                    for a, b in r.segments():
+                        g.add(a, b)
+                grids[k] = g
+            return grids[k]
+
+        for d, pd in enumerate(self.pieces):
+            s = self.assigned.get(d)
+            if not pd["derived"] or not s or pd["source"] != JUNCTION_SOURCE or len(pd["for"]) != 2:
+                continue
+            for j, pj in enumerate(self.pieces):
+                if (pj["derived"] or not pj["surface"] or rank(pj["surface"]) <= rank(s)
+                        or pj["featureNo"] not in pd["for"]):
+                    continue
+                for rd in pd["rings"]:
+                    found = False
+                    for rj in pj["rings"]:
+                        x0, y0 = max(rd.bbox[0], rj.bbox[0]), max(rd.bbox[1], rj.bbox[1])
+                        x1, y1 = min(rd.bbox[2], rj.bbox[2]), min(rd.bbox[3], rj.bbox[3])
+                        if x1 - x0 < 2 * BODY_M or y1 - y0 < 2 * BODY_M:
+                            continue
+                        nx, ny = int((x1 - x0) / BODY_STEP), int((y1 - y0) / BODY_STEP)
+                        for ix in range(nx + 1):
+                            x = x0 + ix * BODY_STEP
+                            for iy in range(ny + 1):
+                                y = y0 + iy * BODY_STEP
+                                if (rd.contains(x, y) and rj.contains(x, y)
+                                        and outline(d).nearest(x, y, BODY_M)[0] >= BODY_M
+                                        and outline(j).nearest(x, y, BODY_M)[0] >= BODY_M):
+                                    found = True
+                                    break
+                            if found:
+                                break
+                        if found:
+                            break
+                    if found:
+                        self.dominates.add((d, j))
+                        break
 
     def region(self, x, y):
         """(surface, filled): the covered surface, or the nearest covered region's (filled = True). Near a ragged

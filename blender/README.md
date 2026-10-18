@@ -631,7 +631,11 @@ on OPCD's meshes: `golfmap.split_surfaces` (`tools/shape_apply.py`; the geometry
   derived piece covering it (a junction piece, `source: road-junctions`, or a piece without a surface): that goes to
   the surface its outline runs inside most (lengths within `junctionTie`, default 15 %, are a tie and the higher
   rank wins, so a T-junction's fillets widen the major road), and owns only its part outside the other roads'
-  pieces (its 0.5 m legs inside the other road never become a strip of its surface along that kerb); else, not
+  pieces (its 0.5 m legs inside the other road never become a strip of its surface along that kerb), except a
+  junction piece made for exactly two roads that covers one of them, of a lower surface, in body (somewhere 0.35 m
+  inside both outlines: a width taper from an asphalt road's end over the gravel road carrying on from it, Omberg
+  features 31/37): it wins there, so the asphalt ends across the gravel road on the taper's far edge instead of in
+  two asphalt wedges beside a gravel tongue (`Regions.dominates`); else, not
   covered (the merge's closing filled it), the nearest region. Seams: the piece outlines cut at their crossings, a
   sub-segment with different surfaces on its two sides (so the higher road's own kerb); plus, where two surfaces
   face each other across uncovered ground narrower than `slitM` (0.8 m; the merge closes gaps up to 0.6 m), the
