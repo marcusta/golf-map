@@ -5133,8 +5133,9 @@ def op_path_kerb(ctx, op):
             hard = [o for o in objs if _edge_fade_surface(ctx, o, doc) in surfaces and not o.get(KERB_PROP)]
             pieces = [o for o in hard if o.get("opcd_kind") != "blend"]
             blends = [o for o in hard if o.get("opcd_kind") == "blend"]
+            loose = [o for o in objs if o.get("opcd_kind") != "blend" and _edge_fade_surface(ctx, o, doc) in kb.LOOSE]
             run = {"feature": unit.id, "targets": list(unit.targets), "result": ["FINISHED"]}
-            if not pieces or not blends:
+            if not pieces or not (blends or loose):
                 return dict(run, note="no %s road in %s" % ("/".join(sorted(surfaces)), unit.id))
             near = [bpy.data.objects[n] for n in sorted(unit.reads()) if n in bpy.data.objects]
             roads = [o for o in near if "Concrete" in o.name and o.get("opcd_kind") != "blend"]
@@ -5142,7 +5143,10 @@ def op_path_kerb(ctx, op):
             t = time.time()
             run.update(kb.kerb_core(pieces, blends, roads, others, depth=float(op.get("depthM", kb.DEPTH_M)),
                                     road_m=float(op.get("roadM", kb.ROAD_M)), cuts=int(op.get("cuts", kb.CUTS)),
-                                    cut=_kerb_cut, seed=zlib.crc32(unit.id.encode()) & 0xFFFF))
+                                    cut=_kerb_cut, seed=zlib.crc32(unit.id.encode()) & 0xFFFF, loose=loose,
+                                    seam_depth=float(op.get("seamDepthM", kb.SEAM_DEPTH_M)),
+                                    seam_road=float(op.get("seamRoadM", kb.SEAM_ROAD_M)),
+                                    seam_loose=float(op.get("seamLooseM", kb.SEAM_LOOSE_M))))
             for o in blends:
                 o[KERB_PROP] = kb.CONVENTION
             run["seconds"] = round(time.time() - t, 2)

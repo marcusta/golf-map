@@ -43,11 +43,24 @@ class Profile(unittest.TestCase):
         self.assertEqual(lines[1][0], (0, 0))
         self.assertEqual(lines[1][-1], (2, 1))
 
+    def test_seam_profile_rolls_the_asphalt_down_and_eases_the_gravel_back(self):
+        self.assertEqual(kb.seam_profile(0, True), 1)
+        self.assertEqual(kb.seam_profile(0, False), 1)
+        self.assertEqual(kb.seam_profile(kb.SEAM_ROAD_M, True), 0)
+        self.assertEqual(kb.seam_profile(kb.SEAM_LOOSE_M, False), 0)
+        road = [kb.seam_profile(d / 100, True) for d in range(0, 21, 2)]
+        grav = [kb.seam_profile(d / 100, False) for d in range(0, 51, 5)]
+        self.assertEqual(road, sorted(road, reverse=True))
+        self.assertEqual(grav, sorted(grav, reverse=True))
+        self.assertLess(kb.seam_profile(0.1, True), 0.2)  # flat until near the seam
+        self.assertGreater(kb.seam_profile(0.25, False), 0.4)
+
     def test_params(self):
         self.assertEqual(kb.validate_params({}), [])
         self.assertEqual(kb.validate_params({"depthM": 0.05, "roadM": 0.2, "cuts": 3, "surfaces": ["asphalt"]}), [])
         self.assertEqual(len(kb.validate_params({"depthM": 0, "cuts": 9, "surfaces": "asphalt"})), 3)
         self.assertEqual(len(kb.validate_params({"depthM": True, "roadM": -1})), 2)
+        self.assertEqual(len(kb.validate_params({"seamDepthM": 1, "seamLooseM": -1})), 2)
 
 
 if __name__ == "__main__":

@@ -19,6 +19,11 @@ and shadow in the angle and grass leaning over it. OPCD's road meets the grass f
    from the inner edge, a dark band (MAHS black: the neighbour's dirt) in the angle of the lip, red = the grass at the
    outer edge reaching a little way up the lip in tufts, so Stix grass grows over the edge.
 
+5. Where a hard piece meets a loose one (gravel, dirt: split_surfaces' seam, ragged), a milder lip: the asphalt
+   rolls down `seamDepthM` (default 2 cm) over its last `seamRoadM` (0.2 m, a line cut there too), the loose piece
+   lies that much lower at the seam and rises back over `seamLooseM` (0.5 m: split_surfaces' fade line has
+   vertices there), so gravel lobes on the asphalt sit in the broken edge, a little below it. No paint.
+
 Objects keep their names and materials; strips get smooth shading with custom normals dropped.
 """
 
@@ -28,6 +33,11 @@ SURFACES = ("asphalt", "concrete", "paving")
 DEPTH_M = 0.045
 ROAD_M = 0.12
 CUTS = 3
+LOOSE = ("gravel", "dirt")
+SEAM_DEPTH_M = 0.02
+SEAM_ROAD_M = 0.2
+SEAM_LOOSE_M = 0.5
+SEAM_SIMPLIFY_M = 0.08  # the ragged seam is smoothed this much before its lip line is offset (no kinks)
 TOL_M = 1e-3
 CONVENTION = "path-kerb-v2"  # the blends' golfmap_kerb: rounded once (a replay starts from the OPCD meshes)
 
@@ -81,6 +91,10 @@ def validate_params(op):
     d = op.get("depthM", DEPTH_M)
     if not isinstance(d, (int, float)) or isinstance(d, bool) or not 0 < d <= 0.2:
         errors.append("depthM must be a number in (0, 0.2]")
+    for key, hi in (("seamDepthM", 0.2), ("seamRoadM", 1), ("seamLooseM", 2)):
+        v = op.get(key, 0.01)
+        if not isinstance(v, (int, float)) or isinstance(v, bool) or not 0 <= v <= hi:
+            errors.append("%s must be a number in [0, %s]" % (key, hi))
     w = op.get("roadM", ROAD_M)
     if not isinstance(w, (int, float)) or isinstance(w, bool) or not 0 <= w <= 1:
         errors.append("roadM must be a number in [0, 1]")
@@ -144,11 +158,21 @@ def offset_away(line, d, far):
     return ss.offset_polyline([(p[0], p[1]) for p in line], d if left else -d, False)
 
 
-def kerb_core(pieces, blends, roads, others, depth=DEPTH_M, road_m=ROAD_M, cuts=CUTS, cut=None, seed=0, tol=TOL_M):
+def seam_profile(d, road_side, seam_road=SEAM_ROAD_M, seam_loose=SEAM_LOOSE_M):
+    """Share (0..1) of the seam drop at distance d from a hard/loose seam: on the road a quarter ellipse over its
+    last seam_road, on the loose side the full drop at the seam easing back to nothing at seam_loose."""
+    if road_side:
+        return profile(1.0 - d / seam_road) if seam_road > 0 and d < seam_road else (1.0 if d <= 0 else 0.0)
+    return 1.0 - _smoothstep(0.0, seam_loose, d) if seam_loose > 0 else (1.0 if d <= 0 else 0.0)
+
+
+def kerb_core(pieces, blends, roads, others, depth=DEPTH_M, road_m=ROAD_M, cuts=CUTS, cut=None, seed=0, tol=TOL_M,
+              loose=(), seam_depth=SEAM_DEPTH_M, seam_road=SEAM_ROAD_M, seam_loose=SEAM_LOOSE_M):
     """Round the strips of `blends` along the boundaries of `pieces` (hard road meshes). `roads`: every road mesh
     near (any surface: an outer vertex on one marks a road-to-road strip); `others`: every other mesh near (their
     vertices at a moved point move with it); `cut(pieces, polylines)`: inserts the lines into the pieces (shape_apply's
-    mesh cut). Mesh space is the course frame for all of them (the course .blend). Returns the run fields."""
+    mesh cut); `loose`: the gravel / dirt pieces whose seams with `pieces` get the milder lip (step 5). Mesh space is
+    the course frame for all of them (the course .blend). Returns the run fields."""
     import bmesh
     import numpy as np
     from mathutils.kdtree import KDTree
@@ -210,33 +234,89 @@ def kerb_core(pieces, blends, roads, others, depth=DEPTH_M, road_m=ROAD_M, cuts=
         strips[o.name] = {"strip": len(strip), "rungs": len(rungs), "outer": len(outer)}
         out["outer"] += len(outer)
     out["blends"].update(strips)
-    if not outer_edges:
+
+    # 5's seams: the hard pieces' boundary edges that a loose piece shares
+    seam_edges = []
+    if loose and seam_depth > 0:
+        loose_pts = []
+        for o in loose:
+            bm = bmesh.new()
+            bm.from_mesh(o.data)
+            loose_pts += [tuple(v.co) for e in bm.edges if e.is_boundary for v in e.verts]
+            bm.free()
+        on_loose = kd_of(loose_pts)
+        for o in pieces:
+            bm = bmesh.new()
+            bm.from_mesh(o.data)
+            seam_edges += [(tuple(e.verts[0].co), tuple(e.verts[1].co)) for e in bm.edges if e.is_boundary
+                           and all(near(on_loose, v.co, len(loose_pts)) for v in e.verts)]
+            bm.free()
+    out["seamEdges"] = len(seam_edges)
+    if not outer_edges and not seam_edges:
         return out
     strip_w = sorted(widths)[len(widths) // 2] if widths else 0.12
     W = strip_w + road_m
-    k_out = kd_of(dense(outer_edges))
-    k_in = kd_of(dense(inner_edges))
+    k_out = kd_of(dense(outer_edges)) if outer_edges else None
+    k_in = kd_of(dense(inner_edges)) if inner_edges else None
+    k_seam = kd_of(dense(seam_edges)) if seam_edges else None
 
     def far(x, y):
-        return k_out.find((x, y, 0.0))[2]
+        return k_out.find((x, y, 0.0))[2] if k_out else float("inf")
 
-    # 2. the line where the lip starts on the asphalt
+    def seam_d(x, y):
+        return k_seam.find((x, y, 0.0))[2] if k_seam else float("inf")
+
+    # 2. the lines where the lips start on the asphalt (the seam's on a smoothed copy of the ragged line)
     lines = [offset_away(line, road_m, far) for line in chains(inner_edges) if len(line) >= 2] if road_m > 0 else []
-    if lines and cut is not None:
-        out["cut"] = cut(pieces, lines)
-    out["lipLines"] = len(lines)
+    seam_lines = []
+    if seam_edges and seam_road > 0:
+        from mathutils.bvhtree import BVHTree
+        import shape_surfaces as ss
+        trees = [BVHTree.FromPolygons([v.co for v in o.data.vertices], [list(p.vertices) for p in o.data.polygons])
+                 for o in pieces]
 
-    # 3. the drop, decided on the pieces and strips, carried to every vertex at the same place
+        def on_hard(x, y):
+            return any(t.ray_cast((x, y, 1e4), (0, 0, -1))[0] is not None for t in trees)
+
+        for line in chains(seam_edges):
+            if len(line) < 2:
+                continue
+            pts = ss.simplify([(p[0], p[1]) for p in line], SEAM_SIMPLIFY_M)
+            if len(pts) < 2:
+                continue
+            i = max(0, len(pts) // 2 - 1)
+            a, b = pts[i], pts[i + 1]
+            L = math.hypot(b[0] - a[0], b[1] - a[1]) or 1.0
+            mx = (a[0] + b[0]) / 2 - (b[1] - a[1]) / L * 0.1
+            my = (a[1] + b[1]) / 2 + (b[0] - a[0]) / L * 0.1
+            seam_lines.append(ss.offset_polyline(pts, seam_road if on_hard(mx, my) else -seam_road, False))
+    if (lines or seam_lines) and cut is not None:
+        out["cut"] = cut(pieces, lines + seam_lines)
+    out["lipLines"], out["seamLines"] = len(lines), len(seam_lines)
+
+    # 3. the drop, decided on the pieces, strips and loose pieces, carried to every vertex at the same place
     moved_pts, moved_dz = [], []
     for o in list(pieces) + [b for b in blends if b.name in strips]:
         for v in o.data.vertices:
             d = far(v.co.x, v.co.y)
-            if d < W:
+            dz = -depth * profile(1.0 - d / W) if d < W else 0.0
+            ds = seam_d(v.co.x, v.co.y)
+            if ds < seam_road or ds <= tol:
+                dz = min(dz, -seam_depth * seam_profile(ds, True, seam_road, seam_loose))
+            if dz < 0:
                 moved_pts.append((v.co.x, v.co.y))
-                moved_dz.append(-depth * profile(1.0 - d / W))
+                moved_dz.append(dz)
+    n_hard = len(moved_pts)
+    for o in loose:
+        for v in o.data.vertices:
+            ds = seam_d(v.co.x, v.co.y)
+            if ds < seam_loose:
+                moved_pts.append((v.co.x, v.co.y))
+                moved_dz.append(-seam_depth * seam_profile(ds, False, seam_road, seam_loose))
+    out["seamLooseVertices"] = len(moved_pts) - n_hard
     kd = kd_of(moved_pts)
     seen = set()
-    for o in list(pieces) + list(blends) + list(roads) + list(others):
+    for o in list(pieces) + list(blends) + list(loose) + list(roads) + list(others):
         if o.name in seen:
             continue
         seen.add(o.name)
@@ -252,7 +332,7 @@ def kerb_core(pieces, blends, roads, others, depth=DEPTH_M, road_m=ROAD_M, cuts=
 
     # 4. the strips' paint
     for o in blends:
-        if o.name not in strips:
+        if o.name not in strips or k_out is None:
             continue
         me = o.data
         attr = me.color_attributes.get("Col")

@@ -946,6 +946,12 @@ in its angle and grass leaning over it; OPCD's road, fringe strip and grass meet
   in from the grass (what r + g leaves: MAHS black, the neighbour's dirt), red = grass at the outer edge reaching
   10-45 % up in tufts. That is the green/red fringe convention: Unity's `golfmap.paths.materials` gives the strip
   "<surface> to <neighbour>" and `golfmap.roughgrass.plant` grows Stix on its red, so grass leans over the edge.
+- **Asphalt to gravel**: where a hard piece shares its boundary with a gravel or dirt piece of the shape
+  (split_surfaces' seam, ragged), a milder lip, no paint: the asphalt rolls down `seamDepthM` (0.02) over its last
+  `seamRoadM` (0.2 m; a line cut there on the seam smoothed by 8 cm, so the ragged teeth leave no kinks), the gravel
+  lies that much lower at the seam and eases back over `seamLooseM` (0.5 m, where split_surfaces' fade line gives it
+  vertices); gravel lobes on the asphalt sit in the broken edge. Omberg `asphalt_4`/`gravel_4`: flat to 0.2 m
+  from the seam, -2.0 cm at it, the gravel -0.9 cm 0.2 m out. Report `seamEdges`, `seamLines`, `seamLooseVertices`.
 - Strip objects get smooth shading, custom normals dropped; names and materials stay. Blends carry `golfmap_kerb`
   = `path-kerb-v2`. Report: per blend `strip`, `rungs`, `outer`, `painted`; `lipLines`, `cut`, `moved` per object.
   The path check counts more steep faces on the cut pieces (Omberg `roads_1f` 29 -> 77, all millimetre slivers
