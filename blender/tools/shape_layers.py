@@ -68,6 +68,14 @@ OPS = {
         "required": {"footprint3006"},
         "noSelect": True,
     },
+    # Gives a creek bed cut out of the ground (golfmap.cut_out, surface WaterBrook) its channel: a flat bottom depthM under
+    # the ground beside it, widthM wide, steep walls (shape_apply "golfmap.creek_channel", shape_creek.py).
+    "golfmap.creek_channel": {
+        "params": {},
+        "keys": {"object", "centerline3006", "widthM", "depthM", "wallM", "rampM", "refBandM"},
+        "required": {"object", "centerline3006"},
+        "noSelect": True,
+    },
     # Cuts an EPSG:3006 outline into every Spline mesh under it and lifts the inside out as one new object
     # Spline_<name>_<surface>_-_Mesh (shape_apply "golfmap.cut_out"): a rock slab that is no drawn feature.
     "golfmap.cut_out": {
@@ -232,6 +240,22 @@ def validate_op(op):
                 isinstance(k, str) and k and (_is_scalar(v) or (isinstance(v, list) and v and all(_is_type(c, float) for c in v)))
                 for k, v in ov.items()):
             errors.append("overrides must be an object of scene.opcdtools prop -> number/bool/string (or list of numbers)")
+    if name == "golfmap.creek_channel":
+        line = op.get("centerline3006")
+        if not (isinstance(line, list) and len(line) >= 2 and all(
+                isinstance(p, list) and len(p) == 2 and all(_is_type(c, float) for c in p) for p in line)):
+            errors.append("centerline3006 must be a list of >= 2 [E, N] pairs")
+        if not (isinstance(op.get("object"), str) and op["object"].startswith("Spline_")):
+            errors.append("object must be the name of the cut-out bed mesh (Spline_<name>_WaterBrook_-_Mesh)")
+        for k, lo in (("widthM", 0.05), ("depthM", 0.05), ("wallM", 0.01)):
+            if k in op and not (_is_type(op[k], float) and op[k] >= lo):
+                errors.append(f"{k} must be a number >= {lo}")
+        if "rampM" in op and not (_is_type(op["rampM"], float) and op["rampM"] >= 0):
+            errors.append("rampM must be a number >= 0")
+        band = op.get("refBandM")
+        if "refBandM" in op and not (isinstance(band, list) and len(band) == 2 and all(_is_type(c, float) for c in band)
+                                     and 0 <= band[0] < band[1]):
+            errors.append("refBandM must be [near, far] metres from the centerline, 0 <= near < far")
     if name == "golfmap.flatten_footprint":
         fp = op.get("footprint3006")
         if not (isinstance(fp, list) and len(fp) >= 3 and all(

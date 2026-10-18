@@ -1,7 +1,7 @@
 {
   "format": "golfmap-shaping-layer-v1",
   "id": "creek-beds",
-  "note": "Hand layer: creek beds. A creek 0.7 m wide and 0.7 m deep cannot live in the course meshes (1.2 m triangles) or the 0.74 m terrain.obj grid, so its corridor is cut out into its own mesh Spline_<name>_WaterBrook_-_Mesh and refined to 0.2 m triangles that follow the dug DEM (rise mode dem, no granite shaping). Unity classes it Water (no grass), paints its middle black (paint.json rule kind object) and gives that channel a pebble bed (golfmap.creekbeds). The outline stops 1.5 m short of the ponds (their meshes are protected).",
+  "note": "Hand layer: creek beds. A creek 0.7 m wide and 0.7 m deep cannot live in the course meshes (1.2 m triangles) or the 0.74 m terrain.obj grid, so its corridor is cut out into its own mesh Spline_<name>_WaterBrook_-_Mesh and refined to 0.2 m triangles that follow the dug DEM (rise mode dem, no granite shaping). Unity classes it Water (no grass), paints its middle black (paint.json rule kind object) and gives that channel a pebble bed (golfmap.creekbeds). The outline stops 1.5 m short of the ponds (their meshes are protected). golfmap.creek_channel then cuts the 0.7 x 0.7 m channel into that mesh (the DEM alone leaves a V).",
   "ops": [
     {
       "id": "brook-h17",
@@ -171,6 +171,126 @@
         "hardEdgeDeg": 0.0
       },
       "note": "Hole 17: the creek hole_17_233 between the two ponds (feature 84b2b23f), corridor = its centerline +-1.2 m minus the ponds + 1.5 m."
+    },
+    {
+      "id": "brook-h17-channel",
+      "op": "golfmap.creek_channel",
+      "object": "Spline_brook_h17_WaterBrook_-_Mesh",
+      "centerline3006": [
+        [
+          477668.24,
+          6457233.04
+        ],
+        [
+          477668.06,
+          6457232.0
+        ],
+        [
+          477667.82,
+          6457231.35
+        ],
+        [
+          477667.79,
+          6457230.59
+        ],
+        [
+          477667.85,
+          6457229.84
+        ],
+        [
+          477667.81,
+          6457229.05
+        ],
+        [
+          477667.94,
+          6457228.03
+        ],
+        [
+          477668.36,
+          6457226.79
+        ],
+        [
+          477669.57,
+          6457225.19
+        ],
+        [
+          477670.24,
+          6457224.23
+        ],
+        [
+          477670.88,
+          6457223.24
+        ],
+        [
+          477671.45,
+          6457222.26
+        ],
+        [
+          477671.87,
+          6457221.49
+        ],
+        [
+          477672.48,
+          6457220.15
+        ],
+        [
+          477672.9,
+          6457219.07
+        ],
+        [
+          477673.07,
+          6457217.95
+        ],
+        [
+          477673.61,
+          6457215.59
+        ],
+        [
+          477674.01,
+          6457212.91
+        ],
+        [
+          477674.62,
+          6457210.16
+        ],
+        [
+          477675.91,
+          6457207.54
+        ],
+        [
+          477676.65,
+          6457205.83
+        ],
+        [
+          477677.19,
+          6457204.27
+        ],
+        [
+          477677.46,
+          6457203.03
+        ],
+        [
+          477677.83,
+          6457201.97
+        ],
+        [
+          477678.63,
+          6457200.63
+        ],
+        [
+          477679.43,
+          6457199.74
+        ]
+      ],
+      "widthM": 0.7,
+      "depthM": 0.7,
+      "wallM": 0.15,
+      "rampM": 1.5,
+      "refBandM": [
+        1.0,
+        1.2
+      ],
+      "note": "The channel itself: flat bottom 0.7 m under the ground beside the creek, 0.7 m wide, walls 0.15 m (the DEM's 0.5 m cells and bank taper leave a V 0.3-0.4 m deep), easing in over 1.5 m from each end of the bed mesh; the mesh border is not moved."
     }
   ]
 }
