@@ -147,6 +147,10 @@ H2_HEAP = [
     # middle tier and the top stone
     ("g", "heap_7", 477849.4, 6457275.0, 35, 2.0, 1.9), ("h", "heap_2", 477848.7, 6457275.9, 120, 1.7, 1.85),
     ("i", "heap_5", 477849.4, 6457276.0, 140, 2.4, 2.7),
+    # the rest of the foot: a wider heap (the photo: 6-8 stones in a row about 5 m long)
+    ("j", "heap_3", 477846.9, 6457275.3, 60, 1.6, 1.0), ("k", "heap_6", 477847.5, 6457277.4, 20, 1.5, 1.1),
+    ("l", "heap_1", 477851.7, 6457275.0, 130, 1.3, 0.85), ("m", "heap_4", 477848.5, 6457273.4, 170, 1.2, 0.75),
+    ("n", "heap_7", 477850.5, 6457277.4, 95, 1.3, 0.9),
 ]
 H2_BOULDERS = [{"id": "h2-tee-stenrose-" + k, "asset": a, "e": e, "n": n, "yawDeg": y, "lengthM": L, "topM": t,
                 "note": "Stenrose NW of hole 2's tee (the heap in the photo from the tee; ortho: pale round stones)."}
@@ -186,7 +190,7 @@ def box_stones():
             near_e = max(0.0, 1 - (e1 - e) / 3.5)
             if rnd.random() > 0.3 + 0.7 * max(near_s, near_e) * dense + (1 - dense) * 0.7:
                 continue
-            if any(math.hypot(e - pe, n - pn) < 0.62 * (L + pl) / 2 + 0.05 for pe, pn, pl in placed):
+            if any(math.hypot(e - pe, n - pn) < 0.5 * (L + pl) / 2 + 0.05 for pe, pn, pl in placed):
                 continue
             placed.append((e, n, L))
             made += 1
@@ -199,12 +203,12 @@ def box_stones():
     # the tall ones first (they claim their places), then the pile inside the frame (bounds are the walls' inner faces
     # less half a stone), then the rubble north of it
     throw(5, BOX_E0 + 1.6, BOX_E0 + 9.9, BOX_N0 + 1.6, BOX_N0 + 9.8, True, 0.5, 0.75, 1.0, "in")
-    throw(44, BOX_E0 + 1.1, BOX_E0 + 10.2, BOX_N0 + 0.95, BOX_N0 + 10.4, False, 0.4, 1.3, 1.0, "in")
+    throw(70, BOX_E0 + 1.1, BOX_E0 + 10.2, BOX_N0 + 0.95, BOX_N0 + 10.4, False, 0.4, 1.3, 1.0, "in")
     throw(14, BOX_E0 + 1.2, BOX_E0 + 10.0, BOX_N0 + 11.0, BOX_N0 + 18.0, False, 0.35, 0.9, 0.0, "out")
     return out
 
 
-BOX_BOULDERS = [{"id": "h3-box-block-" + k, "asset": "boxkerb_%d" % (1 + i % 2), "e": e, "n": n, "yawDeg": y, "lengthM": L, "topM": 0.4,
+BOX_BOULDERS = [{"id": "h3-box-block-" + k, "asset": "boxkerb_%d" % (1 + i % 2), "e": e, "n": n, "yawDeg": y, "lengthM": L, "topM": 0.45,
                  "note": "Hole 3, the stone box behind the tees: a block of the frame."}
                 for i, (k, e, n, y, L) in enumerate(BOX_BLOCKS)]
 BOX_BOULDERS += [{"id": "h3-box-stone-" + k, "asset": a, "e": round(e, 2), "n": round(n, 2), "yawDeg": y, "lengthM": L, "topM": t}
@@ -277,7 +281,7 @@ def stones_spec():
              "flats": HEAP_FLATS, "seg": 32, "rings": 20, "mat": "granite_boulder"}]}
     for i in (1, 2):   # the frame's blocks: 0.25 x 0.42 m once 2.65 m long, sunk 0.35 m more (topM 0.4)
         assets["boxkerb_%d" % i] = {"category": "prop", "collider": "mesh", "parts": [
-            {"kind": "boulder", "sx": 1.0, "sy": 0.1, "sz": 0.3, "seed": 200 + i, "exponent": 8.0, "lumps": 0.1,
+            {"kind": "boulder", "sx": 1.0, "sy": 0.12, "sz": 0.3, "seed": 200 + i, "exponent": 8.0, "lumps": 0.1,
              "seg": 24, "rings": 14, "mat": "granite_plinth"}]}
     for i, (sy, sz, ex, lumps) in enumerate(BOX_FLAT, 1):
         assets["boxstone_%d" % i] = {"category": "prop", "collider": "mesh", "parts": [

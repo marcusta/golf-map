@@ -565,7 +565,7 @@
     {
      "kind": "boulder",
      "sx": 1.0,
-     "sy": 0.1,
+     "sy": 0.12,
      "sz": 0.3,
      "seed": 201,
      "exponent": 8.0,
@@ -583,7 +583,7 @@
     {
      "kind": "boulder",
      "sx": 1.0,
-     "sy": 0.1,
+     "sy": 0.12,
      "sz": 0.3,
      "seed": 202,
      "exponent": 8.0,
