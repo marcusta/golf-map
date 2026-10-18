@@ -84,6 +84,7 @@ WALLS_B = [5.7, 9.75, 13.8, 17.85]
 FRONT_A = -9.5
 SLAB = (-15.3, -0.55, 0.05, 18.0)        # a0, a1, b0, b1: light concrete in the ortho, left edge straight on a = -15.3
 SLAB_CAP = 103.30                        # the terrain bumps up under the heaps (lidar ground = heap): the slab stays level there
+YARD_ASPHALT = False                     # the course meshes pave the yard now (see build)
 SLAB_LIFT = 0.055                        # slab top over the terrain; asphalt is 0.04 so the slab edge reads as a 1.5 cm kerb
 ASPHALT_LIFT = 0.04
 PART_TOP = 104.90                        # wall tops, lidar class 1 (104.85..104.99 on all four partitions)
@@ -649,8 +650,11 @@ def build_vehicles(add, new, ev):
 
 def build(add, new, ev):
     STATS.clear()
-    build_asphalt(add, new, ev, "yard_asphalt_east", PAVE_EAST, ROAD_EDGES_EAST)
-    build_asphalt(add, new, ev, "yard_asphalt_west", PAVE_WEST, ROAD_EDGES_WEST, SINK_EDGES_WEST)
+    # The course's own path meshes pave the whole yard since the svg_95 integration (2026-10-18); these
+    # aprons only lay a second asphalt over them. Kept for a course without that paving: YARD_ASPHALT = True.
+    if YARD_ASPHALT:
+        build_asphalt(add, new, ev, "yard_asphalt_east", PAVE_EAST, ROAD_EDGES_EAST)
+        build_asphalt(add, new, ev, "yard_asphalt_west", PAVE_WEST, ROAD_EDGES_WEST, SINK_EDGES_WEST)
     build_bays(add, new, ev)
     build_stones(add, new, ev, "edge_stones_east", STONES_EAST, True)
     build_stones(add, new, ev, "edge_stones_west", STONES_WEST, False)
