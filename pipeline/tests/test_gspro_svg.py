@@ -975,10 +975,12 @@ def test_creeks_under_a_metre_wide_stay_out(tmp_path, capsys):
     assert "1 creek(s) under 1 m wide left out" in capsys.readouterr().out
 
 
-def test_a_pond_is_cut_out_of_the_creek_under_it(tmp_path, capsys):
+
+def test_a_creek_is_cut_out_of_the_pond_it_runs_into(tmp_path, capsys):
     """Omberg's hole-7 creek with 3 m2 of hole 9's pond over it failed the
-    whole OPCD build and built with that bit cut away: the creek is written
-    flattened without the pond's part, the pond keeps its curves."""
+    whole OPCD build and built without the overlap. The creek keeps the shape
+    it was drawn with; the pond loses the creek's part and is written flattened."""
+    from shapely.geometry import Polygon
     ring = _edge_ring(0.5, 0.5, 20)
     cx, cy = ring["points"][0]["x"], ring["points"][0]["y"]
     feats = [("water_creek", 1, 0, [_band(cx, cy, 40, 3)], "bezier"),
@@ -986,7 +988,9 @@ def test_a_pond_is_cut_out_of_the_creek_under_it(tmp_path, capsys):
     out = _export(tmp_path, feats)
     paths = {p.get("id"): p.get("d") for p in ET.parse(out).getroot().iter(f"{SVG_NS}path")}
     assert set(paths) == {"hole_1_1", "hole_2_2"}
-    xs = [float(x.split(",")[0]) for x in re.findall(r"-?[\d.]+,-?[\d.]+", paths["hole_1_1"])]
-    pond_left = min(float(x.split(",")[0]) for x in re.findall(r"-?[\d.]+,-?[\d.]+", paths["hole_2_2"]))
-    assert max(xs) <= pond_left - 0.01          # the creek stops short of the pond
-    assert "1 creek(s) cut where a lake or pond lies over them" in capsys.readouterr().out
+    shape = lambda d: Polygon([tuple(map(float, x.split(","))) for x in re.findall(r"-?[\d.]+,-?[\d.]+", d)])
+    creek, pond = shape(paths["hole_1_1"]), shape(paths["hole_2_2"])
+    assert abs(creek.area - 40 * 3) < 0.01              # the creek as drawn
+    assert pond.area < 20 * 20 - 10 * 3 + 1            # minus the creek's 10 m x 3 m inside it
+    assert creek.intersection(pond).area < 0.01
+    assert "1 lake(s)/pond(s) cut where a creek runs into them" in capsys.readouterr().out
