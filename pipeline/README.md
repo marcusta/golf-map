@@ -332,7 +332,10 @@ In the app: the terrain tool's **Grade roads** button grades the course's own
 `path` features — the server writes them as a centerlines file: each centerline
 path a LineString (the roads as imported, moved and drawn in the editor), each
 paved polygon (a lot, a yard at a junction) a `road_class: parking` Polygon,
-so it gets a plane; long thin path polygons (old road outlines) are skipped
+so it gets a plane; overlapping (or edge-sharing) polygons are merged into one
+lot first (a lot drawn as several crossing pieces is smoothed as one, named
+after its largest piece), and a merge too thin to be a lot keeps only its
+compact pieces; long thin path polygons (old road outlines) are skipped
 and reported — → road-grades → import, then **Apply to terrain** bakes them.
 A course with no paths of its own falls back to the fetched centerlines
 (fetch-roads first when there are none).

@@ -365,6 +365,48 @@ test('road grades follow the course\'s own paths: lines as corridors, paved area
     expect((area!.geometry.coordinates as number[][][])[0]).toHaveLength(5);
 });
 
+test('road grades merge overlapping paved polygons into one lot; a road outline drawn into a lot is left out', async () => {
+    const lines: string[] = [];
+    const { runner } = recordingRunner();
+    const t = await setup(async (args, cwd) => {
+        if (args[2] === 'road-grades') lines.push(await readFile(args[args.indexOf('--centerlines') + 1], 'utf8'));
+        return runner(args, cwd);
+    });
+    await buildSite(t);
+    const X = 530000, Y = 6487000;
+    const rect = (x0: number, y0: number, w: number, h: number) => ({ crs: 'EPSG:3006', rings: [{ points: [
+        { x: x0, y: y0 }, { x: x0 + w, y: y0 }, { x: x0 + w, y: y0 + h }, { x: x0, y: y0 + h },
+    ] }] });
+    const path_ = (geometry: ReturnType<typeof rect>, surface?: string) =>
+        t.courseFeatures.create({ courseId: TEST_COURSE_ID, type: 'path', geometry, attributes: surface ? { surface } : {} });
+    // Lot A: a 40 x 20 m lot, a 30 x 30 m piece over its east end, and a thin 3 x 80 m aisle across both.
+    const lotA = await path_(rect(X, Y, 40, 20), 'gravel');
+    const eastA = await path_(rect(X + 30, Y - 5, 30, 30), 'asphalt');
+    await path_(rect(X + 20, Y - 30, 3, 80));
+    // Lot B: 30 x 20 m with an old 300 x 5 m road outline drawn through it.
+    const lotB = await path_(rect(X, Y + 200, 30, 20));
+    await path_(rect(X - 135, Y + 208, 300, 5));
+    // Lot C: on its own.
+    const lotC = await path_(rect(X + 500, Y, 20, 20));
+
+    const result = await t.svc.generate(TEST_COURSE_ID, 'road-grades');
+    expect(result.report[0]).toBe('From the course\'s paths: 0 road centerline(s), 3 paved area(s) smoothed (3 overlapping polygon(s) merged); 1 long thin path polygon(s) skipped (draw roads as centerlines to grade them)');
+    const doc = JSON.parse(lines[0]!) as { features: Array<{ properties: Record<string, unknown>; geometry: { coordinates: number[][][] } }> };
+    const byId = new Map(doc.features.map(f => [f.properties.id, f]));
+    expect([...byId.keys()].sort()).toEqual([`feature:${eastA.id}`, `feature:${lotB.id}`, `feature:${lotC.id}`].sort());
+    expect(byId.has(`feature:${lotA.id}`)).toBe(false);
+    // Lot A is one outline taking the largest piece's surface; its extent covers the aisle.
+    const a = byId.get(`feature:${eastA.id}`)!;
+    expect(a.properties.surface).toBe('asphalt');
+    expect(a.geometry.coordinates).toHaveLength(1);
+    const ys = a.geometry.coordinates[0]!.map(q => q[1]!);
+    expect(Math.min(...ys)).toBe(Y - 30);
+    expect(Math.max(...ys)).toBe(Y + 50);
+    // Lot B is only the lot: the road outline is not in it.
+    const xsB = byId.get(`feature:${lotB.id}`)!.geometry.coordinates[0]!.map(q => q[0]!);
+    expect([Math.min(...xsB), Math.max(...xsB)]).toEqual([X, X + 30]);
+});
+
 // --- Digs (no pipeline run: straight from the course's features) ---
 
 const rectRing = (x0: number, y0: number, w: number, h: number) => ({ crs: 'EPSG:3006', rings: [{ points: [

@@ -45,14 +45,15 @@ import {
     type ExportRunner,
 } from './gspro-export.service';
 import { DEFAULT_PIPELINE_DIR } from './pipeline-dir';
-import { flattenCenterline } from '../../shared/features/centerline';
+import type { Pair } from 'polygon-clipping';
+import { flattenCenterline, unionRobust } from '../../shared/features/centerline';
 import { DEFAULT_WATERFALL_SILL_M, WATERFALL_SILL_ATTRIBUTE, WATERFALL_STYLE_ATTRIBUTE, WATERFALL_TYPE } from '../../shared/features/waterfall';
 import {
     BUNKER_DIG, CREEK_DIG_PRESETS, DEFAULT_CREEK_DIG_PRESET, DEFAULT_WATER_DIG_PRESET, WATER_DIG_PRESETS,
     type CreekDigPreset, type WaterDigPreset,
 } from '../../shared/features/dig-presets';
 export { BUNKER_DIG, CREEK_DIG_PRESETS, DEFAULT_CREEK_DIG_PRESET, DEFAULT_WATER_DIG_PRESET, WATER_DIG_PRESETS, type CreekDigPreset, type WaterDigPreset };
-import { pathSurfaceOf } from '../../shared/features/path-surface';
+import { pathSurfaceOf, type PathSurface } from '../../shared/features/path-surface';
 import { flattenRing } from './geo';
 
 /** What a generator writes into `terrain_edits` (its `origin`). */
@@ -474,6 +475,7 @@ export class TerrainGeneratorsService {
                     features: [...own.lines, ...own.areas],
                 }));
                 report.push(`From the course's paths: ${own.lines.length} road centerline(s), ${own.areas.length} paved area(s) smoothed`
+                    + (own.merged ? ` (${own.merged} overlapping polygon(s) merged)` : '')
                     + (own.skipped ? `; ${own.skipped} long thin path polygon(s) skipped (draw roads as centerlines to grade them)` : ''));
             }
             const grades = path.join(work, 'road-grades.geojson');
@@ -493,15 +495,15 @@ export class TerrainGeneratorsService {
      * fillets) in fetch-roads `--centerlines-out` form (EPSG:3006): each
      * centerline path a LineString with its `widthM`, flattened the way the
      * editor draws it; each paved polygon a `road_class: parking` Polygon,
-     * which road-grades smooths. A polygon too long and thin to be an area
-     * (an old road corridor drawn or imported as an outline) is skipped and
-     * counted: a road is graded along its centerline, not smoothed as a lot.
+     * which road-grades smooths. Overlapping polygons are one lot (`pavedLots`).
+     * A polygon too long and thin to be an area (an old road corridor drawn or
+     * imported as an outline) is skipped and counted: a road is graded along
+     * its centerline, not smoothed as a lot.
      */
-    private async featureRoads(courseId: string): Promise<{ lines: object[]; areas: object[]; skipped: number }> {
+    private async featureRoads(courseId: string): Promise<{ lines: object[]; areas: object[]; skipped: number; merged: number }> {
         const features = (await this.courseFeatures.listByCourse(courseId)).filter(f => f.type === 'path' && !f.generated);
         const lines: object[] = [];
-        const areas: object[] = [];
-        let skipped = 0;
+        const pieces: PavedPiece[] = [];
         const r2 = (v: number) => Math.round(v * 100) / 100;
         for (const f of features) {
             if (f.geometry.centerline) {
@@ -517,17 +519,15 @@ export class TerrainGeneratorsService {
             }
             const rings = f.geometry.rings.map(ring => flattenRing(ring, 0.1, f.geometry.curveType));
             if (rings.length === 0 || rings[0].length < 3) continue;
-            if (compactness(rings[0]) < MIN_PLANE_COMPACTNESS) {
-                skipped++;
-                continue;
-            }
-            areas.push({
-                type: 'Feature',
-                properties: { id: FEATURE_ORIGIN_REF + f.id, road_class: 'parking', surface: pathSurfaceOf(f.attributes) },
-                geometry: { type: 'Polygon', coordinates: rings.map(ring => [...ring, ring[0]].map(([x, y]) => [r2(x), r2(y)])) },
-            });
+            pieces.push({ id: f.id, surface: pathSurfaceOf(f.attributes), rings: rings.map(ring => [...ring, ring[0]]) });
         }
-        return { lines, areas, skipped };
+        const { lots, skipped, merged } = pavedLots(pieces);
+        const areas = lots.map(lot => ({
+            type: 'Feature',
+            properties: { id: FEATURE_ORIGIN_REF + lot.id, road_class: 'parking', surface: lot.surface },
+            geometry: { type: 'Polygon', coordinates: lot.rings.map(ring => ring.map(([x, y]) => [r2(x), r2(y)])) },
+        }));
+        return { lines, areas, skipped, merged };
     }
 
     private async importEdits(
@@ -581,6 +581,86 @@ export class TerrainGeneratorsService {
  * lot to smooth.
  */
 const MIN_PLANE_COMPACTNESS = 0.15;
+
+/** A hand-drawn paved polygon: closed rings in EPSG:3006, the first the outline. */
+interface PavedPiece { id: string; surface: PathSurface | null; rings: Pair[][] }
+
+/**
+ * The paved pieces as lots to smooth. A lot is often drawn as several polygons
+ * crossing each other, and smoothed one by one each piece's feather left a step
+ * inside the next, so pieces that overlap (or share an edge) are merged into one
+ * lot. A merged lot takes its largest piece's id (its originRef, so a disabled lot
+ * stays disabled) and surface. A merge too long and thin to be a lot (a road
+ * outline drawn into one) keeps only its compact pieces, merged again; a thin
+ * piece on its own is skipped. A piece on its own keeps its rings, holes too.
+ */
+function pavedLots(pieces: PavedPiece[]): { lots: PavedPiece[]; skipped: number; merged: number } {
+    const lots: PavedPiece[] = [];
+    let skipped = 0, merged = 0;
+    const compact = (p: PavedPiece) => compactness(p.rings[0]) >= MIN_PLANE_COMPACTNESS;
+    const largest = (group: PavedPiece[]) => group.reduce((a, b) => ringArea(b.rings[0]) > ringArea(a.rings[0]) ? b : a);
+    const union = (group: PavedPiece[]): Pair[][][] | null => {
+        try {
+            return unionRobust(group.map(p => p.rings[0]));
+        } catch {
+            return null;
+        }
+    };
+    const emit = (group: PavedPiece[], polygons: Pair[][][] | null = group.length > 1 ? union(group) : null) => {
+        if (group.length === 1) { lots.push(group[0]); return; }
+        if (!polygons) { lots.push(...group); return; } // the union failed: smoothed piece by piece, as before
+        const { id, surface } = largest(group);
+        merged += group.length;
+        for (const rings of polygons) lots.push({ id, surface, rings });
+    };
+    for (const group of overlapGroups(pieces, union)) {
+        if (group.length === 1) {
+            if (compact(group[0])) emit(group); else skipped++;
+            continue;
+        }
+        const polygons = union(group);
+        if (polygons?.length === 1 && compactness(polygons[0][0]) >= MIN_PLANE_COMPACTNESS) {
+            emit(group, polygons);
+            continue;
+        }
+        const kept = group.filter(compact);
+        skipped += group.length - kept.length;
+        for (const sub of overlapGroups(kept, union)) emit(sub);
+    }
+    return { lots, skipped, merged };
+}
+
+/** The pieces in groups whose members overlap or share an edge, chained (their union is one polygon). */
+function overlapGroups(pieces: PavedPiece[], union: (group: PavedPiece[]) => Pair[][][] | null): PavedPiece[][] {
+    const parent = pieces.map((_, i) => i);
+    const find = (i: number): number => parent[i] === i ? i : (parent[i] = find(parent[i]));
+    const boxes = pieces.map(p => {
+        const xs = p.rings[0].map(q => q[0]), ys = p.rings[0].map(q => q[1]);
+        return { x0: Math.min(...xs), y0: Math.min(...ys), x1: Math.max(...xs), y1: Math.max(...ys) };
+    });
+    for (let i = 0; i < pieces.length; i++) {
+        for (let j = i + 1; j < pieces.length; j++) {
+            const a = boxes[i], b = boxes[j];
+            if (a.x0 > b.x1 || b.x0 > a.x1 || a.y0 > b.y1 || b.y0 > a.y1 || find(i) === find(j)) continue;
+            if (union([pieces[i], pieces[j]])?.length === 1) parent[find(j)] = find(i);
+        }
+    }
+    const groups = new Map<number, PavedPiece[]>();
+    pieces.forEach((p, i) => {
+        const root = find(i);
+        groups.set(root, [...(groups.get(root) ?? []), p]);
+    });
+    return [...groups.values()];
+}
+
+function ringArea(ring: Array<[number, number]>): number {
+    let area = 0;
+    for (let i = 0; i < ring.length; i++) {
+        const [x1, y1] = ring[i], [x2, y2] = ring[(i + 1) % ring.length];
+        area += x1 * y2 - x2 * y1;
+    }
+    return Math.abs(area / 2);
+}
 
 /** Area centroid of a feature's outer ring (EPSG:3006), null when degenerate. */
 function featureCentroid(f: { geometry: { rings: Parameters<typeof flattenRing>[0][]; curveType?: Parameters<typeof flattenRing>[2] } }): { x: number; y: number } | null {

@@ -1,7 +1,7 @@
 # Course mesh shaping in Blender - plan
 
-Status: agreed 2026-09-28, being implemented. Replaces the DEM-edit round trip for everything the course
-meshes cover, and the Unity-side mesh reshaping.
+Status: agreed 2026-09-28, being implemented. Replaces the Unity-side mesh reshaping and the crisp
+detail the DEM cannot carry; the coarse shape stays in the DEM ("Coarse in the DEM, crisp in Blender").
 
 ## Why
 
@@ -12,6 +12,32 @@ cutting/smoothing and tee flattening - including edits that ripple across neighb
 any `Spline*` mesh moves by a function of its XY distance only, so shared seam vertices stay welded).
 We drive those tools from data kept outside the `.blend`, so every regenerated `.blend` gets the same work
 replayed in seconds to minutes.
+
+## Coarse in the DEM, crisp in Blender (2026-10-18)
+
+The rule for where a piece of terrain work goes. The DEM round trip is no longer slow (terrain.obj is
+written from the exported heightmap in ~6 s, the grid conform takes ~20 s for a whole course), so the
+first half of "Why" no longer holds; the second half - the meshes see the DEM only through the conform,
+sampled at OPCD's ~1.2 m vertices - still does, but only for detail sharper than that.
+
+| In the DEM (terrain edits, Apply to terrain) | In Blender (shaping layers) |
+|---|---|
+| Road profiles along the centerline, lidar bumps out (`road-grades` corridors) | The cut edge where a path meets grass (`afrod.cutcartpaths`), kerbs, surface splits, edge fade |
+| Parking lots and yards smoothed (`road-grades` smooth, overlapping pieces merged into one lot) | |
+| Building pads (`building-pads`) | |
+| Pond beds, creek beds, bunker bowls, the bank down to the water (`water-digs`, `creek-digs`, `bunker-digs`) | Bunker lips, banks and edges at decimetre scale, rock slabs (`golfmap.cut_out`) |
+
+Get the DEM side as right as possible - smooth roads and lots, beds and banks at the right levels - so the
+Blender side is only the crisp work: every op it saves is replay and cache churn saved on each later sync,
+and that time goes to the work that needs the precision. The DEM is also the only place that shapes the
+ground outside the course meshes (buildings, lots and roads off the course), and it sits upstream: a
+regenerated `.blend` gets it through the conform with no op that can go cold.
+
+Order for a new course: draw the water (with Find falls) and the roads (as centerlines) and lots first, run
+the generators and Apply to terrain, pin the DEM height range (the heightmap sidecar's `minM` is in every op key: a
+dig that moves it makes every op key cold), and only then the big SVG / OPCD build. A local DEM edit later is
+not a disaster (grid conform, the slabs' DEM windows and the region entries keep the rest warm), a moved
+`minM` is.
 
 ## The loop
 
@@ -126,8 +152,8 @@ slivers. Also the list of changed places (object, hole, centre, bounds) that Uni
   `roads_124_<surface>[_<n>]`) and paints a 0.5 m red -> black fade on the lower surface's side, so Unity can
   give each its own material (Unity side: read the surface token from the name; not done here).
 - `gspro.py shaping-global` writes `00-global.gen.json` from the course DB.
-- Later: DEM edits under meshes are dropped from the heightmap export (the terrain only carries edits
-  outside the meshes).
+- ~~Later: DEM edits under meshes are dropped from the heightmap export.~~ Dropped 2026-10-18: the DEM
+  keeps the coarse shape under the meshes too ("Coarse in the DEM, crisp in Blender").
 - **Done 2026-10-14:** the base `terrain.obj` is written from the exported inner heightmap instead of
   Unity's manual Terrain › Export To OBJ — `bun run py ../blender/tools/terrain_obj.py --sidecar <inner
   .tif.json> --out terrain.obj` (5.7 s on Vreta). Byte-identical to Unity's export apart from the heights,
@@ -225,7 +251,8 @@ with max |dz|, sub-centimetre ripple moves left out.
    path stretch, one bunker (Conway recipe); headless, run twice, identical output. Unity: terrain match,
    refresh (dry run), Review window. golf-map: stable road names, `shaping-global`.
 2. Full Vreta global layer; per-hole bunkers/creeks/ponds with Marcus; first full refresh into Unity.
-3. Retire the DEM edits under meshes and the Unity mesh reshaping (`GolfMapWallGround`) where Blender does it.
+3. Retire the Unity mesh reshaping (`GolfMapWallGround`) where Blender does it. DEM edits under the meshes
+   stay for the coarse shape ("Coarse in the DEM, crisp in Blender").
 
 ## Open questions
 
