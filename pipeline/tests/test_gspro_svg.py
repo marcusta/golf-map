@@ -917,3 +917,26 @@ def test_a_rock_slab_is_no_opcd_shape_and_changes_nothing_in_the_svg(tmp_path, c
     assert gspro.path_surfaces_file(with_slab).read_bytes() == gspro.path_surfaces_file(plain).read_bytes()
     assert "rock slabs left out" in report and "1 feature(s)" in report
     assert "no OPCD surface" not in report and "--map" not in report
+
+
+
+def _band(x0, y0, length, width):
+    return {"points": [{"x": x0, "y": y0}, {"x": x0 + length, "y": y0},
+                       {"x": x0 + length, "y": y0 + width}, {"x": x0, "y": y0 + width}]}
+
+
+def test_creeks_under_a_metre_wide_stay_out(tmp_path, capsys):
+    """Omberg's hole-17 creek, a 0.7 m wide centerline, failed the whole OPCD
+    build; its bed is dug in the DEM anyway and R.A.M. puts the water on in
+    Unity. A creek nowhere a metre wide is left out and named; a wider one
+    (Vreta's narrowest are about a metre) goes as before, and so does every
+    other shape, with the names it always had."""
+    ring = _edge_ring(0.5, 0.5, 20)
+    cx, cy = ring["points"][0]["x"], ring["points"][0]["y"]
+    feats = [("water_creek", None, 0, [_band(cx, cy, 40, 0.7)], "bezier"),
+             ("water_creek", None, 0, [_band(cx, cy + 20, 40, 1.2)], "bezier"),
+             ("green", 1, 0, [_edge_ring(0.6, 0.5, 10)], "bspline")]
+    out = _export(tmp_path, feats)
+    ids = [p.get("id") for p in ET.parse(out).getroot().iter(f"{SVG_NS}path")]
+    assert ids == ["others_2", "hole_1_3"]
+    assert "1 creek(s) under 1 m wide left out" in capsys.readouterr().out

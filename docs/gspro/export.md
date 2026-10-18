@@ -323,18 +323,23 @@ the next 10 m (`SIDE_STEP_M`) so a hand-typed area is never a decimal-metre terr
   deck outlines kept only so vegetation zones clear them; with their kerb fillets) and any drawn,
   non-road shape under `MIN_SHAPE_AREA_M2` (1 m²: a click or drag that collapsed while drawing -
   Vreta's 0 m² bunker broke the Blender build). Both are named in the report.
-  **What OPCD will see** (warnings at the end of the report, from the shapes in paint order,
-  topmost wins): `warning: green <name> meets more than fairway/semi rough at its edge (rough 35.4 m2)`
-  - a 0.5 m band round each green that shows anything but fairway or semi rough
-  (`_green_border_problems`; Omberg 2026-10-17: hole 13's green and two bunkers straight in rough
-  failed the whole OPCD build silently, fairway + semi round the green fixed it); and
+  **Narrow creeks** stay out: a `water_creek` nowhere `CREEK_MIN_WIDTH_M` (1 m) wide is left out of
+  the SVG and named in the report (`N creek(s) under 1 m wide left out …: hole_17_233`). Omberg's
+  hole-17 creek, a 0.7 m wide centerline, failed the whole OPCD build on its own (2026-10-18); its
+  bed is dug in the DEM anyway (`creek-digs`) and R.A.M. puts the water on in Unity. Other shapes keep
+  their names, and `shaping-global` writes no creek recipe for it (no mesh to shape). Vreta's
+  narrowest creeks are about a metre and go as before.
+  **What OPCD will see** (end of the report, from the shapes in paint order, topmost wins):
   `warning: <name> is covered by the shapes above it (...)` - a shape hidden under higher layers
   gets no mesh (`_hidden_shapes`; Omberg's hole 10 tees under hole 1; a fairway unioned across
-  holes lands in one hole's layer and hides the other holes' greens and bunkers); and
-  `warning: fairway <name> has 1 spike(s) under 25° (sharpest 19° at SVG 926,565)` - an outline
-  corner sharper than `SHARP_CORNER_DEG`, measured `SHARP_CORNER_REACH_M` (0.5 m) along the edge
-  each side so dense curve sampling does not count (`_sharp_corners`; Omberg's driving-range
-  fairway, grown by the road-edge fill, failed OPCD with exactly such a spike).
+  holes lands in one hole's layer and hides the other holes' greens and bunkers). Two notes for
+  tidying, not build faults: `note: green <name> meets more than fairway/semi rough at its edge
+  (rough 35.4 m2)` - a 0.5 m band round each green as painted (`_green_border_problems`; Vreta's
+  hole 8 green meets 53 m2 of rough and builds), and `note: fairway <name> has 1 spike(s) under 25°
+  (sharpest 19° at SVG 926,565)` - an outline corner sharper than `SHARP_CORNER_DEG`, measured
+  `SHARP_CORNER_REACH_M` (0.5 m) along the edge each side so dense curve sampling does not count
+  (`_sharp_corners`; Vreta builds with 7-10° rough spikes, and Omberg's driving-range fairway failed
+  even redrawn without its 19° spikes).
   **Road-edge slivers** (`_road_edge_fills`): a gap under 1 m between a road and a rough/semi/deep/
   fairway/trees surface goes to that surface, written flattened. A "gap" thinner than 1 cm on average
   is closing noise along the kerb and is not filled (filled plus the 2 cm overlap it became a 16 m

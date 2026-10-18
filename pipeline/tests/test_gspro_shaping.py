@@ -757,3 +757,16 @@ def test_regenerating_with_slabs_is_byte_identical_whatever_the_row_order(tmp_pa
     gspro.cmd_shaping_global(tmp_path / "a.sqlite", "Testbana", tmp_path / "a.json")
     gspro.cmd_shaping_global(tmp_path / "b.sqlite", "Testbana", tmp_path / "b.json")
     assert (tmp_path / "a.json").read_bytes() == (tmp_path / "b.json").read_bytes()
+
+
+
+def test_a_creek_left_out_of_the_svg_gets_no_recipe(tmp_path):
+    """A creek under a metre wide is left out of the SVG, so it has no OPCD
+    mesh to shape; a wide one and the pond keep their defaults."""
+    lib = LIBRARY[:2] + [dict(LIBRARY[2], default=["lake", "creek"])] + LIBRARY[3:]
+    feats = RECIPE_FEATURES + [_feature("brook", "water_creek", [_rect(0, 100, 100, 100.7)], 0x22)]
+    doc, stats, _ = _features_layer(tmp_path, library=lib, features=feats)
+    ops = _ops(doc)
+    assert "recipe-21" in ops and "recipe-20" in ops   # the 3 m creek and the pond
+    assert "recipe-22" not in ops                        # the 0.7 m brook
+    assert stats["creeks_left_out"] == 1

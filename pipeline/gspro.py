@@ -1694,6 +1694,22 @@ def _open_course_db(path: Path) -> sqlite3.Connection:
     return conn
 
 
+# A creek narrower than this nowhere is left out of the SVG: Omberg's hole-17
+# creek, a 0.7 m wide centerline, failed the whole OPCD build (2026-10-18),
+# and its bed is dug in the DEM anyway (creek-digs) with R.A.M. water on it
+# in Unity. Vreta's narrowest creeks are about a metre and build.
+CREEK_TYPE = "water_creek"
+CREEK_MIN_WIDTH_M = 1.0
+
+
+def _is_narrow_creek(row, tol: float) -> bool:
+    """A creek that is nowhere CREEK_MIN_WIDTH_M wide (or has no shape)."""
+    if row["type"] != CREEK_TYPE:
+        return False
+    shape = _row_shape(row, tol)
+    return shape is None or shape.buffer(-CREEK_MIN_WIDTH_M / 2 + 0.01).is_empty
+
+
 def _resolve_course(conn: sqlite3.Connection, ident: str) -> sqlite3.Row:
     """Accept a course id or a case-insensitive name substring."""
     row = conn.execute("SELECT id, name FROM courses WHERE id = ? COLLATE NOCASE", (ident,)).fetchone()
@@ -3191,10 +3207,10 @@ def _road_names(roads: list[MergedRoad], rows_oldest_first: list, shape_ids: dic
     return names  # type: ignore[return-value]
 
 
-# A green's edge must meet fairway or semi rough: OPCD builds a blend mesh
-# between a green and what surrounds it, and Omberg's hole 13 (green and two
-# bunkers lying straight in rough, 2-3 m apart) failed the whole build without
-# a word, where each of the three alone built. The band is what lies just
+# A note, not a fault: a green whose edge meets anything but fairway or semi
+# rough. Suspected when Omberg's hole 13 (green and two bunkers straight in
+# rough) failed beside other broken jobs, but Vreta's hole 8 green meets 53 m2
+# of rough and builds - OPCD only blends it straight into that. The band is what lies just
 # outside the green as painted (the topmost shape there); bits under
 # GREEN_BORDER_MIN_M2 are snapping noise along a shared edge.
 GREEN_BORDER_BAND_M = 0.5
@@ -3208,8 +3224,9 @@ HIDDEN_VISIBLE_SHARE = 0.01
 
 
 # A corner sharper than this is a spike, not a drawn bend: a lumpy union, a
-# road-edge fill's wedge (Omberg's driving-range fairway failed OPCD with two
-# 19° spikes and 2 cm steps). Measured between the outline points at least
+# road-edge fill's wedge. A note for tidying outlines, not a build fault:
+# Vreta builds with 7-10° rough spikes, and Omberg's driving-range fairway
+# (19° spikes) failed OPCD even redrawn without them. Measured between the outline points at least
 # SHARP_CORNER_REACH_M along the edge on each side, so a densely flattened
 # curve reads as the bend it is, not as its tiny segments.
 SHARP_CORNER_DEG = 25.0
@@ -3353,6 +3370,11 @@ def cmd_svg(bbox, out: Path, db_path: Path, course_ident: str,
     # A hair of slack: shapes drawn to the edge and snapped there are inside.
     square = box(e0, n0, e1, n1).buffer(SQUARE_EDGE_SLACK_M, join_style="mitre")
     tol = flatten if flatten is not None else ROADS_FLATTEN_M
+    # Creeks under a metre wide stay out (dug in the DEM; R.A.M. water in Unity).
+    narrow_creeks = [r for r in rows if _is_narrow_creek(r, tol)]
+    if narrow_creeks:
+        narrow_ids = {r["id"] for r in narrow_creeks}
+        rows = [r for r in rows if r["id"] not in narrow_ids]
     tiny = _tiny_rows(rows, tol, fills)
     tiny_ids = {r["id"] for r in tiny}
     rows = [r for r in rows if r["id"] not in tiny_ids]
@@ -3546,6 +3568,11 @@ def cmd_svg(bbox, out: Path, db_path: Path, course_ident: str,
         listed = ", ".join(f"{r['type']} {r['id']}" + (f" (hole {r['hole_number']})" if r["hole_number"] is not None else "")
                            for r in tiny)
         print(f"  warning: {len(tiny)} shape(s) under {MIN_SHAPE_AREA_M2:g} m2 left out (drawn by mistake? delete them): {listed}")
+    if narrow_creeks:
+        names = ", ".join(("others" if r["hole_number"] is None else f"hole_{r['hole_number']}") + f"_{shape_ids[r['id']]}"
+                          for r in narrow_creeks)
+        print(f"  {len(narrow_creeks)} creek(s) under {CREEK_MIN_WIDTH_M:g} m wide left out (OPCD fails on them; "
+              f"dug in the DEM by creek-digs, R.A.M. water in Unity): {names}")
     if excluded:
         detail = ", ".join(f"{k} {v}" for k, v in sorted(excluded.items(), key=lambda kv: -kv[1]))
         print(f"  excluded on request: {sum(excluded.values())} feature(s) - {detail}")
@@ -3568,15 +3595,15 @@ def cmd_svg(bbox, out: Path, db_path: Path, course_ident: str,
     paint = [(layer, name, kind, shape) for layer in order for name, kind, shape in painted.get(layer, [])]
     for name, meets in _green_border_problems(paint):
         detail = ", ".join(f"{k} {a:.1f} m2" for k, a in sorted(meets.items(), key=lambda kv: -kv[1]))
-        print(f"  warning: green {name} meets more than fairway/semi rough at its edge ({detail}): "
-              f"OPCD's green blend can fail the whole build - surround it with fairway or semi rough")
+        print(f"  note: green {name} meets more than fairway/semi rough at its edge ({detail}): "
+              f"OPCD blends it straight into that")
     for _, name, kind, shape in paint:
         spikes = _sharp_corners(shape) if shape is not None else []
         if spikes:
             x, y, angle = min(spikes, key=lambda s: s[2])
             sx, sy = to_svg((x, y))
-            print(f"  warning: {kind} {name} has {len(spikes)} spike(s) under {SHARP_CORNER_DEG:g}° "
-                  f"(sharpest {angle:.0f}° at SVG {sx:.0f},{sy:.0f}): a lumpy union or a fill artefact? smooth it")
+            print(f"  note: {kind} {name} has {len(spikes)} spike(s) under {SHARP_CORNER_DEG:g}° "
+                  f"(sharpest {angle:.0f}° at SVG {sx:.0f},{sy:.0f}): a lumpy union or a fill artefact?")
     for name, above in _hidden_shapes(paint):
         listed = ", ".join(above[:3]) + (" …" if len(above) > 3 else "")
         print(f"  warning: {name} is covered by the shapes above it ({listed}): OPCD makes no mesh for it")
@@ -4069,7 +4096,9 @@ def cmd_shaping_global(db_path: Path, course_ident: str, out: Path | None = None
     print(f"Wrote {features_out}")
     print(f"  {len(features_doc['ops'])} recipe op(s): {fstats['edits']} from recipe edits, "
           f"{sum(fstats['defaults'].values())} course default(s) ({defaults})"
-          + (f", {fstats['opted_out']} feature(s) with recipe none" if fstats["opted_out"] else ""))
+          + (f", {fstats['opted_out']} feature(s) with recipe none" if fstats["opted_out"] else "")
+          + (f", {fstats['creeks_left_out']} creek(s) not shaped (left out of the SVG)"
+             if fstats.get("creeks_left_out") else ""))
     for line in warnings:
         print(f"  warning: {line}")
     return out
@@ -4214,10 +4243,15 @@ def shaping_features(db_path: Path, course_ident: str, library: Path | None = No
         edits[fid] = params if isinstance(params, dict) else {}
 
     mode, known_params = _recipe_override_support(engine)
+    # A creek the SVG leaves out (under a metre wide) has no OPCD mesh to shape.
+    stats["creeks_left_out"] = 0
     ops = []
     for r in rows:
         surface = SHAPING_RECIPE_SURFACE.get(r["type"])
         if surface is None or r["id"] not in shape_ids or _is_bridge_deck(r):
+            continue
+        if _is_narrow_creek(r, ROADS_FLATTEN_M):
+            stats["creeks_left_out"] += 1
             continue
         name = shape_ids[r["id"]]
         params = edits.get(r["id"])
