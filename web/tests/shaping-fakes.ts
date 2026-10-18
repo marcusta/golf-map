@@ -28,7 +28,8 @@ export function phases(upTo: ShapingPhase['id'] | null, opts: {
 
 export function shapingJob(overrides: Partial<ShapingJob> = {}): ShapingJob {
     return {
-        id: 'j1', courseId: 'course-1', status: 'running', phase: 'blender', step: 'Blender sync — re-shaping what changed (1 s)',
+        id: 'j1', courseId: 'course-1', runId: 'r1', queued: false, note: null, slice: null,
+        status: 'running', phase: 'blender', step: 'Blender sync — re-shaping what changed (1 s)',
         phases: phases('blender'), dryRun: false,
         startedAt: '2026-09-28T10:00:00Z', finishedAt: null, seconds: 3, result: null, error: null,
         ...overrides,

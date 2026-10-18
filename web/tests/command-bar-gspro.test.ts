@@ -371,7 +371,7 @@ test('Update meshes (this feature) runs the shaping job for the selection and re
     btn.click();
     await tick(20);
 
-    expect(shapingApi.calls.apply).toEqual([{ courseId: COURSE_ID }]);
+    expect(shapingApi.calls.apply).toEqual([{ courseId: COURSE_ID, featureIds: ['b1', 'b2'] }]);
     // The panel shows the phases under the selection it was started for.
     expect(shaping.jobScope.get()).toBe('b1,b2');
     expect(confirm.shown[0].title).toBe('Meshes updated');

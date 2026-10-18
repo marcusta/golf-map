@@ -21,6 +21,10 @@ const ApplyInput = Type.Object({
     skipUnity: Type.Optional(Type.Boolean()),
     /** The Draw mode's "Update paths": the paths' surfaces too (surfaces file before, path materials after). */
     paths: Type.Optional(Type.Boolean()),
+    /** One line: what was changed (a bead id). Shown to the other requests the same run serves. */
+    note: Type.Optional(Type.String({ maxLength: 200 })),
+    /** The features changed: the job's `slice` is what the run did to them. */
+    featureIds: Type.Optional(Type.Array(Type.String(), { maxItems: 200 })),
 });
 
 const JobInput = Type.Object({
@@ -45,11 +49,13 @@ export function createShapingApi(svc: ShapingService) {
             schema: RecipesInput,
             middleware: mw,
         },
-        /** Start an apply job (returns at once, `status: running`); 409 while one runs. Poll `status` or `job`. */
+        /** Ask for an apply (returns at once, `status: running`, `queued` while it waits; docs/shaping-queue.md). Poll `status` or `job`. */
         apply: {
             method: 'POST' as const,
             path: '/courses/:courseId/shaping/apply',
-            fn: (input: Static<typeof ApplyInput>) => svc.apply(input.courseId, { dryRun: input.dryRun, skipUnity: input.skipUnity, paths: input.paths }),
+            fn: (input: Static<typeof ApplyInput>) => svc.apply(input.courseId, {
+                dryRun: input.dryRun, skipUnity: input.skipUnity, paths: input.paths, note: input.note, featureIds: input.featureIds,
+            }),
             schema: ApplyInput,
             middleware: mw,
         },

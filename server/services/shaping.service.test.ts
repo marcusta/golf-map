@@ -119,7 +119,7 @@ function fakeEditor(exportFolder: string, opts: { rejectOnly?: boolean; refreshM
 async function setup(opts: {
     worker?: FakeShapingWorker; workerUrl?: string; workerLauncher?: string[]; unity?: 'ours' | 'none' | 'reject-only';
     library?: unknown; runner?: ExportRunner; editor?: { refreshMs?: number; steps?: object[]; failSurfaces?: boolean };
-    plantFails?: boolean; token?: string; timeouts?: Partial<ShapingTimeouts>;
+    plantFails?: boolean; token?: string; timeouts?: Partial<ShapingTimeouts>; queueDir?: string;
 } = {}) {
     const ctx = await createTestDb(seedCourse);
     const exportDir = await tmp('shaping-export-');
@@ -150,8 +150,8 @@ async function setup(opts: {
         courses: ctx.coursesService, exportSettings: exporter, dataDir,
         pipelineDir: '/pipeline', runner: opts.runner ?? layers.runner, unityBridge: defaultUnityBridge(discovery),
         workerUrl: opts.worker?.url ?? opts.workerUrl ?? 'http://127.0.0.1:9', workerLauncher: opts.workerLauncher,
-        token: opts.token, layersRoot, recipeLibrary, dbPath: '/data/app.sqlite',
-        timeouts: { pollMs: 25, startMs: 20_000, loadMs: 20_000, syncMs: 20_000, unitySec: 30, ...opts.timeouts },
+        token: opts.token, layersRoot, recipeLibrary, dbPath: '/data/app.sqlite', queueDir: opts.queueDir,
+        timeouts: { pollMs: 25, startMs: 20_000, loadMs: 20_000, syncMs: 20_000, unitySec: 30, heartbeatMs: 50, ...opts.timeouts },
     });
     cleanup.push(() => svc.stopWorker());
     return { ctx, svc, exportDir, project, layersRoot, recipeLibrary, layers, editor, dataDir, events };
@@ -594,7 +594,7 @@ test('with Unity closed: a loaded worker still syncs and the refresh is reported
     expect(job.result!.warnings.some(w => w.startsWith('Unity not refreshed: no open Unity editor imports from'))).toBe(true);
 });
 
-test('one apply at a time; a pipeline failure fails the job with its last words; no .blend is a clear failure', async () => {
+test('applies while a run is going queue, and ONE next run serves them all; a pipeline failure fails the job with its last words; no .blend is a clear failure', async () => {
     const worker = startFakeShapingWorker();
     cleanup.push(() => worker.stop());
     let release!: () => void;
@@ -603,12 +603,24 @@ test('one apply at a time; a pipeline failure fails the job with its last words;
     const t = await setup({ worker, runner: async (args, cwd) => { await gate; return inner.runner(args, cwd); } });
     await blends(t.exportDir);
 
-    const first = await t.svc.apply(TEST_COURSE_ID);
-    await expect(t.svc.apply(TEST_COURSE_ID)).rejects.toBeInstanceOf(ConflictError);
-    expect((await t.svc.status(TEST_COURSE_ID)).job!.status).toBe('running');
+    const first = await t.svc.apply(TEST_COURSE_ID, { note: 'bd-1' });
+    expect(first.queued).toBe(false);
+    expect(first.phases[0]!.status).toBe('running');
+    const second = await t.svc.apply(TEST_COURSE_ID, { note: 'bd-2' });
+    const third = await t.svc.apply(TEST_COURSE_ID, { note: 'bd-3' });
+    expect(second).toMatchObject({ queued: true, status: 'running', runId: null, note: 'bd-2' });
+    expect(second.step).toMatch(/^queued behind the run for /);
+    expect(third.queued).toBe(true);
+    expect((await t.svc.status(TEST_COURSE_ID)).job!.id).toBe(first.id);
     release();
     await t.svc.whenIdle();
     expect(t.svc.job(first.id).status).toBe('succeeded');
+    const [s2, s3] = [t.svc.job(second.id), t.svc.job(third.id)];
+    expect(s2.status).toBe('succeeded');
+    expect(s2.runId).not.toBe(t.svc.job(first.id).runId);
+    expect(s3.runId).toBe(s2.runId);
+    expect(worker.calls.filter(c => c.route === '/sync')).toHaveLength(2);
+    expect(s2.slice!.whole).toBe(true);
 
     inner.failWith('course Linkan has no features');
     const failed = await run(t.svc);
@@ -621,6 +633,56 @@ test('one apply at a time; a pipeline failure fails the job with its last words;
     expect(noBlend.error).toMatch(/No \.blend in the export folder/);
     await expect(t.svc.apply('no-such-course')).rejects.toBeInstanceOf(NotFoundError);
     expect(() => t.svc.job('nope')).toThrow(NotFoundError);
+});
+
+test('two processes share the queue: the one holding the lease serves the other\'s request, which follows it from the files', async () => {
+    const worker = startFakeShapingWorker();
+    cleanup.push(() => worker.stop());
+    let release!: () => void;
+    const gate = new Promise<void>(r => { release = r; });
+    const inner = layersRunner({ global: [TEES], features: [recipe('10')] });
+    const a = await setup({ worker, runner: async (args, cwd) => { await gate; return inner.runner(args, cwd); } });
+    await blends(a.exportDir);
+    const queueDir = path.join(a.dataDir, 'shaping-queue');
+    const bRuns: string[][] = [];
+    const b = await setup({ worker, queueDir, runner: async (args) => { bRuns.push(args); return { code: 0, stdout: '', stderr: '' }; } });
+
+    const mine = await a.svc.apply(TEST_COURSE_ID, { note: 'bd-1' });
+    const theirs = await b.svc.apply(TEST_COURSE_ID, { note: 'bd-2 tee', region: [530000, 6487000, 530050, 6487050] });
+    expect(theirs.queued).toBe(true);
+    release();
+    await a.svc.whenIdle();
+    await b.svc.whenIdle();
+
+    const served = b.svc.job(theirs.id);
+    expect(served.status).toBe('succeeded');
+    expect(served.runId).not.toBe(a.svc.job(mine.id).runId);
+    expect(served.result!.changedObjects).toEqual([]);   // the first run already re-shaped what changed
+    expect(served.slice).toMatchObject({ whole: false, changedObjects: [] });
+    expect(bRuns).toEqual([]);   // B never ran a layer generation: A served it
+    expect(worker.calls.filter(c => c.route === '/sync')).toHaveLength(2);
+});
+
+test('a lease left by a process that died is taken over, and the request it was running is served again', async () => {
+    const worker = startFakeShapingWorker();
+    cleanup.push(() => worker.stop());
+    const t = await setup({ worker });
+    await blends(t.exportDir);
+    const dir = path.join(t.dataDir, 'shaping-queue');
+    await mkdir(path.join(dir, 'requests'), { recursive: true });
+    const orphan = {
+        id: 'orphan-1', courseId: TEST_COURSE_ID, note: 'left behind', region: null, featureIds: [],
+        flags: { dryRun: false, paths: false, save: false, skipUnity: false },
+        createdAt: new Date(Date.now() - 60_000).toISOString(), pid: 999_999, state: 'running', runId: 'gone', ok: null, error: null,
+    };
+    await writeFile(path.join(dir, 'requests', 'orphan-1.json'), JSON.stringify(orphan));
+    await writeFile(path.join(dir, 'lease.json'), JSON.stringify({ token: 'dead', pid: 999_999, since: orphan.createdAt, heartbeat: Date.now() - 600_000 }));
+
+    const job = await run(t.svc);
+    expect(job.status).toBe('succeeded');
+    const left = JSON.parse(await Bun.file(path.join(dir, 'requests', 'orphan-1.json')).text());
+    expect(left).toMatchObject({ state: 'done', ok: true, runId: job.runId });
+    expect(await Bun.file(path.join(dir, 'lease.json')).exists()).toBe(false);
 });
 
 test('recipes: the library for a surface with its default; [] while there is no library', async () => {

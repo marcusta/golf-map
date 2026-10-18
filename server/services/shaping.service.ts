@@ -79,12 +79,17 @@ import {
     defaultRecipeLibraryPath, loadRecipeLibrary, recipesFor, type RecipeSurface, type ShapingRecipe,
 } from './shaping-recipes';
 import { JobPhases, secs, type JobPhase, type JobPhaseStatus } from './job-phases';
+import {
+    ShapingQueue, batchFlags, sliceFor, type QueueLease, type QueueRequest, type QueueRun, type Region3006, type RequestSlice,
+} from './shaping-queue';
 
 export const DEFAULT_SHAPING_URL = 'http://127.0.0.1:8766';
 /** The pointer file in `<data>/shaping-worker/` naming the log of the worker running now. */
 export const LATEST_LOG = 'latest.json';
 /** How long a worker log is kept (pruned on the next spawn). */
 export const LOG_KEEP_DAYS = 14;
+/** Finished requests per course a process keeps in memory for `job(id)`. */
+const KEEP_DONE = 20;
 const REPO_DIR = path.resolve(import.meta.dir, '..', '..');
 /** Blender 4.5 LTS's default install (blender/AGENTS.md). */
 const WINDOWS_BLENDER = 'C:\\Program Files\\Blender Foundation\\Blender 4.5\\blender.exe';
@@ -186,8 +191,17 @@ export type ShapingPhaseStatus = JobPhaseStatus;
 export type ShapingPhase = JobPhase<ShapingPhaseId>;
 
 export interface ShapingJob {
+    /** The request's id (what `apply` returned; `job` follows it), else the run's. */
     id: string;
     courseId: string;
+    /** The run that serves the request; null while it waits in the queue. */
+    runId: string | null;
+    /** Waiting in the queue for the worker (`status` is `running` meanwhile, `phase` null). */
+    queued: boolean;
+    /** The request's note, when it gave one. */
+    note: string | null;
+    /** The request's part of the run's result (docs/shaping-queue.md); null until the run is done. */
+    slice: RequestSlice | null;
     status: ShapingJobStatus;
     /** The running phase (the failed one when failed); null before the first and once done. */
     phase: ShapingPhaseId | null;
@@ -225,6 +239,12 @@ export interface ShapingApplyOptions {
      * scene is left dirty for the operator, as before.
      */
     save?: boolean;
+    /** One line: what the caller changed (a bead id, "hole 7 tee"). Shown to the other requests of the run. */
+    note?: string;
+    /** Where the caller changed something (EPSG:3006 box): its slice of the result is what lies there. */
+    region?: Region3006;
+    /** The features the caller changed: their places are in its slice too. */
+    featureIds?: string[];
 }
 
 export interface ShapingTimeouts {
@@ -246,11 +266,13 @@ export interface ShapingTimeouts {
      * network under it): a blip must not end a sync that is still going.
      */
     unreachableMs: number;
+    /** How often the queue's lease holder writes its heartbeat and its run's progress. */
+    heartbeatMs: number;
 }
 
 export const DEFAULT_SHAPING_TIMEOUTS: ShapingTimeouts = {
     startMs: 120_000, loadMs: 60 * 60_000, syncMs: 30 * 60_000, unitySec: 1800, pollMs: 1000,
-    unreachableMs: 60_000,
+    unreachableMs: 60_000, heartbeatMs: 1000,
 };
 
 export interface ShapingDeps {
@@ -277,6 +299,10 @@ export interface ShapingDeps {
     blend?: string;
     fbxFolder?: string;
     timeouts?: Partial<ShapingTimeouts>;
+    /** The queue's folder, shared with every process that shapes on this machine (default `<dataDir>/shaping-queue`). */
+    queueDir?: string;
+    /** A queue lease with no heartbeat for this long is taken over (default 2 min). */
+    queueStaleMs?: number;
 }
 
 interface WorkerTarget {
@@ -312,8 +338,15 @@ export class ShapingService {
     private readonly blend: string | undefined;
     private readonly fbxFolder: string | undefined;
     private readonly timeouts: ShapingTimeouts;
+    /** The runs this process ran, by run id. */
     private readonly jobs = new Map<string, JobRecord>();
-    private running: { rec: JobRecord; done: Promise<void> } | null = null;
+    /** The run this process is running now. */
+    private running: { rec: JobRecord } | null = null;
+    private readonly queue: ShapingQueue;
+    /** The requests made in this process, by request id, with what is known of the run that serves them. */
+    private readonly local = new Map<string, LocalRequest>();
+    /** The loop that waits for this process's requests: runs batches while it holds the lease, else follows the files. */
+    private driving: Promise<void> | null = null;
     private worker: { proc: ReturnType<typeof Bun.spawn>; exitCode: number | null; log: string } | null = null;
 
     constructor(deps: ShapingDeps) {
@@ -335,6 +368,7 @@ export class ShapingService {
         this.blend = deps.blend ?? process.env.GOLFMAP_SHAPING_BLEND;
         this.fbxFolder = deps.fbxFolder ?? process.env.GOLFMAP_SHAPING_FBX_FOLDER;
         this.timeouts = { ...DEFAULT_SHAPING_TIMEOUTS, ...deps.timeouts };
+        this.queue = new ShapingQueue(deps.queueDir ?? path.join(this.dataDir, 'shaping-queue'), { staleMs: deps.queueStaleMs });
     }
 
     /** The recipe library for one surface (all without one); [] while there is no library file. */
@@ -350,62 +384,51 @@ export class ShapingService {
     }
 
     /**
-     * Start an apply job and return it at once (`status: running`). 409 while
-     * any apply runs (one worker for the machine; the message names it), 404
-     * for an unknown course. Poll `job(id)` or `status(courseId)`.
+     * Ask for an apply and return its job at once (`status: running`; `queued`
+     * while it waits). Requests QUEUE (docs/shaping-queue.md): the files are
+     * shared with every process that shapes on this machine, and one run
+     * serves every request of a course that came in before it started, since
+     * the run regenerates the layers from the database. A dry run is served
+     * apart from real ones. Whichever process holds the queue's lease runs the
+     * batches; the others follow their request's file. 404 for an unknown
+     * course. Poll `job(id)` or `status(courseId)`.
      */
     async apply(courseId: string, opts: ShapingApplyOptions = {}): Promise<ShapingJob> {
         await this.courses.get(courseId);
-        if (this.running) {
-            const r = snapshot(this.running.rec);
-            throw new ConflictError(`A shaping run is already going (course ${r.courseId}, job ${r.id}: ${r.step}): wait for it to finish`);
-        }
-        for (const [id, rec] of this.jobs) {
-            if (rec.job.courseId === courseId) this.jobs.delete(id);
-        }
-        const rec: JobRecord = {
-            job: {
-                id: crypto.randomUUID(), courseId, status: 'running',
-                dryRun: opts.dryRun === true, startedAt: new Date().toISOString(), finishedAt: null, result: null, error: null,
-            },
-            phases: new JobPhases(SHAPING_PHASES),
-            t0: Date.now(),
-            t1: null,
-        };
-        this.jobs.set(rec.job.id, rec);
-        const done = this.perform(rec, opts).then(
-            (result) => {
-                rec.job.status = 'succeeded';
-                rec.job.result = result;
-                rec.phases.current = null;
-            },
-            (err) => {
-                rec.job.status = 'failed';
-                rec.job.error = err instanceof Error ? err.message : String(err);
-                rec.phases.failCurrent(rec.job.error);
-            },
-        ).finally(() => {
-            rec.t1 = Date.now();
-            rec.job.finishedAt = new Date().toISOString();
-            if (this.running?.rec === rec) this.running = null;
+        this.forgetDone(courseId);
+        const req = await this.queue.submit({
+            courseId,
+            note: opts.note?.trim() || null,
+            region: opts.region ?? null,
+            featureIds: opts.featureIds ?? [],
+            flags: { dryRun: opts.dryRun === true, paths: opts.paths === true, save: opts.save === true, skipUnity: opts.skipUnity === true },
         });
-        this.running = { rec, done };
-        return snapshot(rec);
+        let settled!: () => void;
+        const ready = new Promise<void>(r => { settled = r; });
+        const l: LocalRequest = { req, run: null, foreign: null, slice: null, t0: Date.now(), settled };
+        this.local.set(req.id, l);
+        // This process's loop is going already (running a batch, or waiting for the lease): the request waits.
+        if (this.driving) settled();
+        this.kick();
+        // Until its run has begun, or it is clear that it waits: a free worker shows the run going at once.
+        await ready;
+        return this.view(l);
     }
 
-    /** A job by id; 404 when this process never ran it. */
+    /** A request (or a run) by id; 404 when this process never made it. */
     job(jobId: string): ShapingJob {
+        const local = this.local.get(jobId);
+        if (local) return this.view(local);
         const rec = this.jobs.get(jobId);
         if (!rec) throw new NotFoundError(`No shaping job ${jobId} (the server may have restarted)`);
         return snapshot(rec);
     }
 
     /**
-     * The apply running on this machine, whatever course it belongs to, else
-     * null. One worker per machine means one apply at a time across courses
-     * (`apply` 409s for the rest), so a caller that has to QUEUE behind it —
-     * the GSPro status board's `meshes` chain — needs to see another course's
-     * run, not only its own.
+     * The run this process is running, whatever course it belongs to, else
+     * null. One worker per machine means one run at a time across courses, so
+     * a caller that has to wait for it — the GSPro status board's `meshes`
+     * chain — needs to see another course's run, not only its own.
      */
     runningAnywhere(): ShapingJob | null {
         return this.running ? snapshot(this.running.rec) : null;
@@ -416,15 +439,22 @@ export class ShapingService {
         return { ...this.timeouts };
     }
 
-    /** The course's running or last job, else null. */
+    /**
+     * The course's request whose run is going, else its newest request, else
+     * its newest run in this process, else null.
+     */
     current(courseId: string): ShapingJob | null {
-        let latest: JobRecord | null = null;
+        const mine = [...this.local.values()].filter(l => l.req.courseId === courseId).sort((a, b) => a.t0 - b.t0);
+        const going = mine.find(l => l.run?.job.status === 'running' || (l.foreign !== null && l.foreign.finishedAt === null));
+        const latest = going ?? mine.at(-1);
+        if (latest) return this.view(latest);
+        let last: JobRecord | null = null;
         for (const rec of this.jobs.values()) {
             if (rec.job.courseId !== courseId) continue;
             if (rec.job.status === 'running') return snapshot(rec);
-            if (!latest || rec.t0 > latest.t0) latest = rec;
+            if (!last || rec.t0 > last.t0) last = rec;
         }
-        return latest ? snapshot(latest) : null;
+        return last ? snapshot(last) : null;
     }
 
     /** The worker and the course's last job. */
@@ -433,9 +463,180 @@ export class ShapingService {
         return { worker: await this.workerStatus(), job: this.current(courseId) };
     }
 
-    /** Resolves when no apply is running (tests, shutdown). */
+    /** Resolves when every request made in this process is done (tests, shutdown, the CLI). */
     async whenIdle(): Promise<void> {
-        await this.running?.done;
+        while (this.driving) await this.driving;
+    }
+
+    // --- The queue ---
+
+    /** Start the loop that waits for this process's requests, unless it runs already. */
+    private kick(): void {
+        if (this.driving) return;
+        this.driving = this.drive().finally(() => {
+            this.driving = null;
+            this.settleAll();
+            // A request made just as the loop ended: go on for it.
+            if (this.pending()) this.kick();
+        });
+    }
+
+    /** Every request made here stops waiting to be shown (its run began, or it is queued behind another). */
+    private settleAll(): void {
+        for (const l of this.local.values()) l.settled();
+    }
+
+    private pending(): boolean {
+        return [...this.local.values()].some(l => l.req.state !== 'done');
+    }
+
+    /**
+     * Until every request made here is done: take the lease and run batches
+     * (anyone's, ours among them), or, while another process holds it, follow
+     * our requests' files. The lease is tried on every round, so a holder that
+     * dies is taken over.
+     */
+    private async drive(): Promise<void> {
+        for (;;) {
+            await this.follow();
+            if (!this.pending()) return;
+            const lease = await this.queue.tryLease();
+            if (lease) {
+                await this.runBatches(lease);
+                continue;
+            }
+            this.settleAll();
+            await Bun.sleep(this.timeouts.pollMs);
+        }
+    }
+
+    /** Our requests as their files have them, and the run another process serves them with. */
+    private async follow(): Promise<void> {
+        for (const l of this.local.values()) {
+            if (l.req.state === 'done' && (l.run || l.foreign?.finishedAt)) continue;
+            const req = await this.queue.get(l.req.id);
+            if (req) l.req = req;
+            if (l.req.runId && l.run?.job.id !== l.req.runId) {
+                l.foreign = await this.queue.readRun<ShapingJob, ShapingApplyResult>(l.req.runId) ?? l.foreign;
+            }
+        }
+    }
+
+    private async runBatches(lease: QueueLease): Promise<void> {
+        let lost = false;
+        // The beat in flight: awaited before the release, which it would otherwise undo.
+        let beating: Promise<void> = Promise.resolve();
+        const beat = setInterval(() => {
+            beating = this.queue.beat(lease).then(ok => { if (!ok) lost = true; }, () => undefined);
+        }, this.timeouts.heartbeatMs);
+        let prefer: string | null = null;
+        try {
+            while (!lost) {
+                const batch = await this.queue.takeBatch(lease, prefer);
+                if (!batch) break;
+                prefer = batch.requests[0]!.courseId;
+                await this.runBatch(batch.runId, batch.requests);
+            }
+        } finally {
+            clearInterval(beat);
+            await beating;
+            await this.queue.release(lease);
+        }
+    }
+
+    /** One run for a batch: `perform` with the batch's flags, then each request's slice, all into the files. */
+    private async runBatch(runId: string, requests: QueueRequest[]): Promise<void> {
+        const courseId = requests[0]!.courseId;
+        const flags = batchFlags(requests);
+        const rec: JobRecord = {
+            job: {
+                id: runId, courseId, status: 'running', runId, queued: false, note: null, slice: null,
+                dryRun: flags.dryRun, startedAt: new Date().toISOString(), finishedAt: null, result: null, error: null,
+            },
+            phases: new JobPhases(SHAPING_PHASES),
+            t0: Date.now(),
+            t1: null,
+        };
+        this.jobs.set(runId, rec);
+        this.running = { rec };
+        for (const r of requests) {
+            const l = this.local.get(r.id);
+            if (l) Object.assign(l, { req: r, run: rec, foreign: null });
+        }
+        const run: QueueRun<ShapingJob, ShapingApplyResult> = {
+            id: runId, courseId, requestIds: requests.map(r => r.id), startedAt: rec.job.startedAt,
+            finishedAt: null, job: snapshot(rec), result: null, error: null, slices: {},
+        };
+        await this.queue.writeRun(run);
+        // The progress write in flight: awaited before the final one, which it would otherwise overwrite.
+        let writing: Promise<void> = Promise.resolve();
+        const progress = setInterval(() => {
+            writing = this.queue.writeRun({ ...run, job: snapshot(rec) }).catch(() => undefined);
+        }, this.timeouts.heartbeatMs);
+        try {
+            const performing = this.perform(rec, flags);
+            this.settleAll();
+            const result = await performing;
+            rec.job.status = 'succeeded';
+            rec.job.result = result;
+            rec.phases.current = null;
+            run.result = result;
+            run.slices = Object.fromEntries(requests.map(r => [r.id, sliceFor(r, result, requests)]));
+        } catch (err) {
+            rec.job.status = 'failed';
+            rec.job.error = err instanceof Error ? err.message : String(err);
+            rec.phases.failCurrent(rec.job.error);
+            run.error = rec.job.error;
+        } finally {
+            clearInterval(progress);
+            rec.t1 = Date.now();
+            rec.job.finishedAt = new Date().toISOString();
+        }
+        await writing;
+        run.finishedAt = rec.job.finishedAt;
+        run.job = snapshot(rec);
+        const ok = rec.job.status === 'succeeded';
+        try {
+            await this.queue.writeRun(run);
+            await this.queue.finish(requests, ok, rec.job.error);
+        } finally {
+            for (const r of requests) {
+                const l = this.local.get(r.id);
+                if (l) {
+                    l.req = { ...r, state: 'done', ok, error: rec.job.error };
+                    l.slice = run.slices[r.id] ?? null;
+                }
+            }
+            if (this.running?.rec === rec) this.running = null;
+        }
+    }
+
+    /** A request as a job: its run's (ours, or another process's as its file has it), or a queued one. */
+    private view(l: LocalRequest): ShapingJob {
+        const own = { id: l.req.id, courseId: l.req.courseId, note: l.req.note };
+        if (l.run) {
+            return { ...snapshot(l.run), ...own, runId: l.run.job.id, queued: false, slice: l.slice };
+        }
+        const run = l.foreign;
+        if (run) {
+            const done = run.finishedAt !== null;
+            return {
+                ...run.job, ...own, runId: run.id, queued: false,
+                // The file's job is a snapshot: done only once the run is.
+                status: done ? (run.error ? 'failed' : 'succeeded') : 'running',
+                result: done ? run.result : null, error: done ? run.error : null,
+                slice: run.slices[l.req.id] ?? null,
+            };
+        }
+        const others = [...this.local.values()].filter(o => o !== l && o.req.state === 'queued').length;
+        return {
+            ...own, runId: null, queued: true, status: 'running', phase: null,
+            phases: new JobPhases(SHAPING_PHASES).snapshot(),
+            step: this.running ? `queued behind the run for ${this.running.rec.job.courseId} (${snapshot(this.running.rec).step})`
+                : others ? `queued with ${others} other request(s)` : 'queued: waiting for the Blender worker',
+            dryRun: l.req.flags.dryRun, startedAt: l.req.createdAt, finishedAt: null,
+            seconds: secs(Date.now() - l.t0), result: null, error: null, slice: null,
+        };
     }
 
     /** Stop the worker this server started, if any (tests; the worker otherwise outlives the server on purpose). */
@@ -447,9 +648,23 @@ export class ShapingService {
         this.worker = null;
     }
 
+    /**
+     * Keep the course's newest KEEP_DONE finished requests in memory (the files
+     * keep the rest), and only the runs those, or a running request, still show.
+     */
+    private forgetDone(courseId: string): void {
+        const done = [...this.local.entries()].filter(([, l]) => l.req.courseId === courseId && l.req.state === 'done')
+            .sort(([, a], [, b]) => b.t0 - a.t0);
+        for (const [id] of done.slice(KEEP_DONE)) this.local.delete(id);
+        const shown = new Set([...this.local.values()].map(l => l.run?.job.id).filter(Boolean));
+        for (const [id, rec] of this.jobs) {
+            if (rec.job.courseId === courseId && rec.job.status !== 'running' && !shown.has(id)) this.jobs.delete(id);
+        }
+    }
+
     // --- The job ---
 
-    private async perform(rec: JobRecord, opts: ShapingApplyOptions): Promise<ShapingApplyResult> {
+    private async perform(rec: JobRecord, opts: Pick<ShapingApplyOptions, 'dryRun' | 'skipUnity' | 'paths' | 'save'>): Promise<ShapingApplyResult> {
         const t0 = Date.now();
         const warnings: string[] = [];
         const dryRun = opts.dryRun === true;
@@ -937,6 +1152,20 @@ export function blenderExecutable(): string {
 }
 
 // --- The job's phases ---
+
+/** A request made in this process, with what is known of the run that serves it. */
+interface LocalRequest {
+    req: QueueRequest;
+    /** The run, when this process runs it. */
+    run: JobRecord | null;
+    /** The run as another process wrote it, when that one runs it. */
+    foreign: QueueRun<ShapingJob, ShapingApplyResult> | null;
+    /** Its slice, once this process's run of it is done. */
+    slice: RequestSlice | null;
+    t0: number;
+    /** Lets `apply` return: the run began, or the request waits behind another. */
+    settled: () => void;
+}
 
 /** A job as this process keeps it: the public job without its phases, plus them and the clocks. */
 interface JobRecord {

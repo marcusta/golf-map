@@ -15,6 +15,10 @@ export interface ShapingRecipe {
 export interface ShapingJob {
     id: string;
     courseId: string;
+    runId: null | string;
+    queued: boolean;
+    note: null | string;
+    slice: null | RequestSlice;
     status: 'running' | 'succeeded' | 'failed';
     phase: null | 'vegetation' | 'layers' | 'worker' | 'blender' | 'unity';
     step: string;
@@ -40,6 +44,14 @@ export interface RecipeParam {
     max: number;
     step?: number;
     default: number;
+}
+
+export interface RequestSlice {
+    whole: boolean;
+    changedObjects: string[];
+    places: unknown[];
+    warnings: string[];
+    overlaps: string[];
 }
 
 export interface ShapingPhase {
@@ -106,7 +118,7 @@ export interface ShapingWorkerJob {
 
 export interface ShapingApi {
     recipes(input: { surface?: 'bunker' | 'lake' | 'creek' | 'path' }): Promise<ShapingRecipe[]>;
-    apply(input: { dryRun?: boolean; skipUnity?: boolean; paths?: boolean; courseId: string }): Promise<ShapingJob>;
+    apply(input: { dryRun?: boolean; note?: string; skipUnity?: boolean; paths?: boolean; featureIds?: string[]; courseId: string }): Promise<ShapingJob>;
     status(input: { courseId: string }): Promise<ShapingStatus>;
     job(input: { jobId: string }): Promise<ShapingJob>;
 }

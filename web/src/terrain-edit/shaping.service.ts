@@ -170,7 +170,12 @@ export class ShapingService {
         this.jobScope.set(scope);
         let job: ShapingJob;
         try {
-            job = await this.client.apply(opts.paths ? { courseId, paths: true } : { courseId });
+            job = await this.client.apply({
+                courseId,
+                ...(opts.paths ? { paths: true } : {}),
+                // The selection: the job's slice is what the run did to it.
+                ...(scope ? { featureIds: scope.split(',') } : {}),
+            });
         } catch (e) {
             const current = await this.client.status({ courseId }).then(s => s.job, () => null);
             if (current?.status !== 'running') {

@@ -2159,6 +2159,7 @@ export class CommandBarComponent extends Component<{ mode: CommandBarMode }> {
     /** The running shaping job's phase, for the buttons that run one ("Blender sync…"). */
     private shapingStep(fallback: string): string {
         const job = this.shaping.job.get();
+        if (job?.queued) return 'Waiting for Blender…';
         const phase = job?.phases.find(p => p.id === job.phase);
         return `${phase?.label ?? fallback}…`;
     }

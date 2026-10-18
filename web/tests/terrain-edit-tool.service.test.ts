@@ -1088,7 +1088,7 @@ describe('shape in Blender', () => {
         h.shaping.polls = [shapingJob(), doneJob(['Spline_hole_3_1c_Bunker_-_Mesh'])];
         expect(await h.svc.applyToMeshes('b1')).toBe(true);
         // The server runs the course (only changed ops re-run); the outcome shows in the feature's section.
-        expect(h.shaping.calls.apply).toEqual([{ courseId: 'course-1' }]);
+        expect(h.shaping.calls.apply).toEqual([{ courseId: 'course-1', featureIds: ['b1'] }]);
         expect(h.svc.shaping.jobScope.get()).toBe('b1');
         expect(h.svc.shaping.job.get()?.result?.changedObjects).toEqual(['Spline_hole_3_1c_Bunker_-_Mesh']);
 

@@ -89,7 +89,7 @@ describe('apply job', () => {
         expect(await svc.apply('course-1')).toBeNull();
         finish();
         expect((await first)?.error).toBe('worker down');
-        expect(client.calls.apply).toEqual([{ courseId: 'course-1' }]); // the server runs the whole course
+        expect(client.calls.apply).toEqual([{ courseId: 'course-1', featureIds: ['b1'] }]); // the server runs the whole course; the selection is the job's slice
     });
 
     test('a refused start (409) follows the job already running for the course, else reports why', async () => {
