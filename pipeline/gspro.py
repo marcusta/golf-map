@@ -1709,11 +1709,11 @@ CREEK_MIN_WIDTH_M = 1.0
 # surfaces on one spot add nothing, and Omberg's hole-7 creek with 3 m2 of
 # hole 9's pond over it failed the whole OPCD build, built with that bit cut
 # away (2026-10-18). The pond keeps its shape; a creek piece left under
-# MIN_SHAPE_AREA_M2 by the cut is dropped. The gap keeps a hair of overlap
-# off the pond's edge.
-CREEK_WATER_GAP_M = 0.02
+# MIN_SHAPE_AREA_M2 by the cut is dropped. The creek stops this far short of
+# the pond (Marcus' margin): whatever lies under fills the strip between them.
+CREEK_WATER_GAP_M = 0.25
 # The cut edge is simplified this much (under the gap, so it never reaches the pond).
-CREEK_CUT_SIMPLIFY_M = 0.01
+CREEK_CUT_SIMPLIFY_M = 0.05
 
 
 def _cut_creeks_by_water(rows: list, tol: float, grown: dict) -> list[tuple[str, float]]:

@@ -341,7 +341,9 @@ the next 10 m (`SIDE_STEP_M`) so a hand-typed area is never a decimal-metre terr
   **A pond over a creek** is cut out of the creek (`_cut_creeks_by_water`, the creek written
   flattened; report: `N creek(s) cut where a lake or pond lies over them: hole_7_23f (3.0 m2)`):
   Omberg's hole-7 creek with 3 m2 of hole 9's pond over it failed the whole build on its own and
-  built with that bit cut away (2026-10-18). The pond keeps its shape.
+  built with that bit cut away (2026-10-18). The pond keeps its shape; the creek stops
+  `CREEK_WATER_GAP_M` (25 cm) short of it, the cut edge mitred and simplified (a round buffer's
+  millimetre sawtooth failed hole 18's creek).
   **What OPCD will see** (end of the report, from the shapes in paint order, topmost wins):
   `warning: <name> is covered by the shapes above it (...)` - a shape hidden under higher layers
   gets no mesh (`_hidden_shapes`; Omberg's hole 10 tees under hole 1; a fairway unioned across
