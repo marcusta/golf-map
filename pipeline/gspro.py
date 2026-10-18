@@ -6768,6 +6768,7 @@ CREEK_MIN_LENGTH_M = 2.0
 CREEK_FALL_NEAR_M = 2.0
 CREEK_BELOW_FALL_M = 0.5
 CREEK_FALL_RUN_M = 0.4
+CREEK_FALL_WIDTH_PAD_M = 0.4
 
 
 def _load_creeks(db_path: Path, course_ident: str) -> tuple[sqlite3.Row, list[sqlite3.Row]]:
@@ -6899,23 +6900,29 @@ def cmd_creeks(bbox, db_path: Path, course_ident: str, dem_path: Path, sidecar_p
             mid = lip.interpolate(0.5, normalized=True)
             sb = float(prof.s[int(np.argmin(np.hypot(prof.x - mid.x, prof.y - mid.y)))])
             if any(abs(sb - b) < 1e-6 for b in prof.break_s):
-                falls_here.append((sb, sill))
+                falls_here.append((sb, sill, lip.length))
         pts_s = list(s_ctrl)
         pts_xy = [tuple(p) for p in control]
         pts_z = list(z)
-        for sb, sill in sorted(falls_here):
+        pts_w = [width] * len(pts_s)
+        for sb, sill, lip_len in sorted(falls_here):
             top = float(np.interp(sb - max(sill, 0.5) - 0.5, prof.s, prof.z))
             bottom = float(np.interp(sb + CREEK_BELOW_FALL_M + 1.0, prof.s, prof.z))
             keep = [i for i, sv in enumerate(pts_s) if not (sb - sill - 0.5 < sv < sb + CREEK_FALL_RUN_M + 1.0)]
             pts_s = [pts_s[i] for i in keep]; pts_xy = [pts_xy[i] for i in keep]; pts_z = [pts_z[i] for i in keep]
+            pts_w = [pts_w[i] for i in keep]
+            # Over the sill the water is as wide as the lip (a weir in a narrow neck of a wide pond).
+            fall_w = min(width, lip_len + CREEK_FALL_WIDTH_PAD_M)
             for sv, h in ((sb - sill, top), (sb - 0.05, top - 0.02), (sb + CREEK_FALL_RUN_M, bottom + 0.02),
                           (sb + CREEK_FALL_RUN_M + 1.0, bottom)):
                 pts_s.append(sv)
                 pts_xy.append((float(np.interp(sv, prof.s, prof.x)), float(np.interp(sv, prof.s, prof.y))))
                 pts_z.append(h)
+                pts_w.append(fall_w)
         order = np.argsort(pts_s)
         c_xy = [pts_xy[i] for i in order]
         c_z = [pts_z[i] for i in order]
+        c_w = [pts_w[i] for i in order]
         creeks.append({
             "id": f"feature:{r['id']}",
             "profile": str(attrs.get("ramProfile") or DEFAULT_RAM_PROFILE),
@@ -6926,9 +6933,9 @@ def cmd_creeks(bbox, db_path: Path, course_ident: str, dem_path: Path, sidecar_p
             "source": source,
             **({"falls": len(falls_here),
                 "fallsAt": [[round(float(np.interp(sb, prof.s, prof.x)) - e0, 3), round(float(np.interp(sb, prof.s, prof.y)) - n0, 3)]
-                            for sb, _ in sorted(falls_here)]} if falls_here else {}),
-            "points": [[round(float(x - e0), 3), round(float(h - min_m + surface_offset_m), 3), round(float(y - n0), 3), round(width, 2)]
-                       for (x, y), h in zip(c_xy, c_z)],
+                            for sb, *_ in sorted(falls_here)]} if falls_here else {}),
+            "points": [[round(float(x - e0), 3), round(float(h - min_m + surface_offset_m), 3), round(float(y - n0), 3), round(w, 2)]
+                       for (x, y), h, w in zip(c_xy, c_z, c_w)],
         })
     doc = {
         "format": UNITY_CREEKS_FORMAT,
@@ -6960,7 +6967,9 @@ def cmd_creeks(bbox, db_path: Path, course_ident: str, dem_path: Path, sidecar_p
 # is not) at a low percentile. The higher side is upstream.
 
 UNITY_WATERFALLS_FORMAT = "unity-waterfalls-v1"
-WATERFALL_STYLES = ("sill", "outlet")
+WATERFALL_STYLES = ("sill", "outlet", "cascade", "fountain")
+WATERFALL_CASCADE_WIDTH_M = 1.2   # shared/features/waterfall.ts: a cascade's stream
+WATERFALL_FOUNTAIN_HEIGHT_M = 1.5  # ... a fountain's jet
 WATERFALL_DEFAULT_STYLE = "sill"
 WATERFALL_DEFAULT_SILL_M = 1.0
 WATERFALL_SIDE_NEAR_M = 1.5
@@ -6971,6 +6980,60 @@ WATERFALL_MIN_FLAT_CELLS = 3        # fewer flat cells than this: every cell in 
 WATERFALL_LEVEL_PERCENTILE = 25
 WATERFALL_MIN_DROP_M = 0.2          # a fall whose two sides differ by less gets a warning
 WATERFALL_MIN_LIP_M = 0.2
+
+
+def _water_level_near(band: _DemBand, x: float, y: float, radius: float = 2.0) -> "float | None":
+    """The water level at (x, y): the 25th percentile of the DEM within `radius` (the lidar's flat water sheet)."""
+    t = band.transform
+    a, e = float(t.a), float(t.e)
+    c0, c1 = max(0, int((x - radius - t.c) / a)), min(band.values.shape[1], int((x + radius - t.c) / a) + 1)
+    r0, r1 = max(0, int((y + radius - t.f) / e)), min(band.values.shape[0], int((y - radius - t.f) / e) + 1)
+    if c1 <= c0 or r1 <= r0:
+        return None
+    win = band.values[r0:r1, c0:c1][band.valid[r0:r1, c0:c1]]
+    return float(np.percentile(win, 25)) if win.size else None
+
+
+def _waterfall_along(name, r, style, attrs, line, top, bottom, band, e0, n0, min_m, skipped) -> "dict | None":
+    """A cascade (its line runs down the flow, upstream to downstream: the stream's path) or a fountain (the jet at
+    its line's middle): levels from the feature, else the lidar's water at the ends / the middle."""
+    from_lidar: list[str] = []
+    (ax, ay), (bx, by) = line.coords[0][:2], line.coords[-1][:2]
+    if style == "fountain":
+        mid = line.interpolate(0.5, normalized=True)
+        level = top if top is not None else _water_level_near(band, mid.x, mid.y)
+        if level is None:
+            skipped.append(f"{name}: no lidar under the fountain (set topM)")
+            return None
+        if top is None:
+            from_lidar.append("topM")
+        height = _waterfall_number(attrs, "heightM") or WATERFALL_FOUNTAIN_HEIGHT_M
+        return {"id": name, "featureId": str(r["id"]), "style": style,
+                "lip": [[round(float(x - e0), 3), round(float(y - n0), 3)] for x, y, *_ in line.coords],
+                "at": [round(mid.x - e0, 3), round(mid.y - n0, 3)],
+                "topY": round(level - min_m, 3), "bottomY": round(level - min_m, 3),
+                "topM": round(level, 3), "bottomM": round(level, 3),
+                "flow": [0.0, 0.0], "flowBearingDeg": 0.0, "widthM": round(line.length, 2), "heightM": round(height, 2), "sillM": 0.0,
+                "fromLidar": from_lidar}
+    if top is None:
+        top = _water_level_near(band, ax, ay)
+        from_lidar.append("topM")
+    if bottom is None:
+        bottom = _water_level_near(band, bx, by)
+        from_lidar.append("bottomM")
+    if top is None or bottom is None:
+        skipped.append(f"{name}: no lidar at the cascade's ends (set topM and bottomM)")
+        return None
+    chord = math.hypot(bx - ax, by - ay) or 1.0
+    fx, fy = (bx - ax) / chord, (by - ay) / chord
+    width = _waterfall_number(attrs, "widthM") or WATERFALL_CASCADE_WIDTH_M
+    return {"id": name, "featureId": str(r["id"]), "style": style,
+            "lip": [[round(float(x - e0), 3), round(float(y - n0), 3)] for x, y, *_ in line.coords],
+            "path": True,
+            "topY": round(top - min_m, 3), "bottomY": round(bottom - min_m, 3),
+            "topM": round(top, 3), "bottomM": round(bottom, 3),
+            "flow": [round(fx, 4), round(fy, 4)], "flowBearingDeg": round(math.degrees(math.atan2(fx, fy)) % 360.0, 1),
+            "widthM": round(width, 2), "sillM": 0.0, "fromLidar": from_lidar}
 
 
 def _waterfall_side_levels(band: _DemBand, line) -> tuple["float | None", "float | None"]:
@@ -7087,6 +7150,11 @@ def cmd_waterfalls(bbox, db_path: Path, course_ident: str, dem_path: Path, sidec
             continue
         style = attrs.get("style") if attrs.get("style") in WATERFALL_STYLES else WATERFALL_DEFAULT_STYLE
         top, bottom = _waterfall_number(attrs, "topM"), _waterfall_number(attrs, "bottomM")
+        if style in ("cascade", "fountain"):
+            entry = _waterfall_along(name, r, style, attrs, lip, top, bottom, band, e0, n0, min_m, skipped)
+            if entry is not None:
+                falls.append(entry)
+            continue
         bearing = _waterfall_number(attrs, "flowBearingDeg")
         sill = _waterfall_number(attrs, "sillM")
         from_lidar: list[str] = []

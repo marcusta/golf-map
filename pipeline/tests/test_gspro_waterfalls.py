@@ -146,3 +146,30 @@ def test_waterfalls_command_line(tmp_path, capsys):
     doc = json.loads(out.read_text())
     assert [f["id"] for f in doc["waterfalls"]] == ["hole_3_1a", "others_1b", "others_1c", "others_1d"]
     assert "4 waterfall(s) for Fallbana" in capsys.readouterr().out
+
+
+def test_a_cascade_runs_down_its_line_and_a_fountain_stands_in_its_pond(tmp_path, capsys):
+    dem = _dem(tmp_path / "dem.tif")
+    db = _db(tmp_path / "app.sqlite")
+    conn = sqlite3.connect(db)
+    # A cascade drawn down the slope, east (upper pond) to west (lower), and a fountain in the lower pond.
+    conn.execute("INSERT INTO course_features VALUES ('c1', ?, NULL, 'waterfall', ?, 20, ?, '2026-10-19 10:00:00', 40)",
+                 (COURSE, json.dumps(_line((106, 60), (100, 61), (94, 60))), json.dumps({"style": "cascade", "widthM": 0.8})))
+    conn.execute("INSERT INTO course_features VALUES ('q1', ?, NULL, 'waterfall', ?, 21, ?, '2026-10-19 10:01:00', 41)",
+                 (COURSE, json.dumps(_line((50, 70), (52, 70))), json.dumps({"style": "fountain", "heightM": 2})))
+    conn.commit()
+    conn.close()
+    sidecar = tmp_path / "inner.tif.json"
+    sidecar.write_text(json.dumps({"terrain": "inner", "square3006": list(EXTENT), "minM": MIN_M, "maxM": 30.0}))
+    out = tmp_path / "waterfalls.json"
+    gspro.cmd_waterfalls(None, db, COURSE, dem, sidecar, out, extent=EXTENT)
+    by = {f["featureId"]: f for f in json.loads(out.read_text())["waterfalls"]}
+    c = by["c1"]
+    assert c["style"] == "cascade" and c["path"] is True and c["widthM"] == 0.8
+    assert c["topM"] == pytest.approx(12.0, abs=0.05) and c["bottomM"] == pytest.approx(10.0, abs=0.05)
+    assert c["flow"][0] < -0.99                                          # west, first point to last
+    assert len(c["lip"]) >= 3 and c["lip"][0][0] == pytest.approx(106.0, abs=0.01)
+    q = by["q1"]
+    assert q["style"] == "fountain" and q["heightM"] == 2
+    assert q["at"] == [pytest.approx(51.0, abs=0.01), pytest.approx(70.0, abs=0.01)]
+    assert q["topM"] == pytest.approx(10.0, abs=0.05)
