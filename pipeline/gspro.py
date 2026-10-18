@@ -1712,6 +1712,8 @@ CREEK_MIN_WIDTH_M = 1.0
 # MIN_SHAPE_AREA_M2 by the cut is dropped. The gap keeps a hair of overlap
 # off the pond's edge.
 CREEK_WATER_GAP_M = 0.02
+# The cut edge is simplified this much (under the gap, so it never reaches the pond).
+CREEK_CUT_SIMPLIFY_M = 0.01
 
 
 def _cut_creeks_by_water(rows: list, tol: float, grown: dict) -> list[tuple[str, float]]:
@@ -1734,7 +1736,10 @@ def _cut_creeks_by_water(rows: list, tol: float, grown: dict) -> list[tuple[str,
         over = [water[int(i)] for i in tree.query(shape) if water[int(i)].intersection(shape).area > 0.01]
         if not over:
             continue
-        cut = shape.difference(unary_union(over).buffer(CREEK_WATER_GAP_M))
+        # Mitre, not round: a round buffer's arcs left the cut edge a sawtooth of
+        # 1-2 mm edges, and hole 18's creek cut that way failed the build again.
+        cut = (shape.difference(unary_union(over).buffer(CREEK_WATER_GAP_M, join_style="mitre"))
+               .simplify(CREEK_CUT_SIMPLIFY_M))
         kept = [p for p in _polygons(cut) if p.area >= MIN_SHAPE_AREA_M2]
         grown[r["id"]] = kept[0] if len(kept) == 1 else MultiPolygon(kept)
         cuts.append((r["id"], shape.area - sum(p.area for p in kept)))
