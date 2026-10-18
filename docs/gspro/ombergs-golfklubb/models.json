@@ -527,6 +527,20 @@
         "brightness": 0.03
       },
       "note": "Hole 18's big dead oak (Marcus 2026-10-18): Arborist's leafless Amur cork tree in the weathered grey of dead oak with a little brown in it. Tried in Arborist Ultra: bleached white (#ece9e2, brightness 0.15) read too white close up, brown-grey #c2b6a4 / saturation 0.25 too brown; this is his 'more grey than brown, a slight brown tone in the grey'. Placed only by tree edit: disabled in the palette, species without a weight."
+    },
+    {
+      "id": "arborist:CE_Plants_buckthorn-bush",
+      "species": "bush",
+      "renderer": "arborist",
+      "heightM": 2.58643,
+      "crownWidthM": 2.83132,
+      "kind": "broadleaf",
+      "form": "shrub",
+      "look": {
+        "tint": "#4f5e44",
+        "saturation": 0.6
+      },
+      "note": "Hole 14's round bush in front of the big pine right of the fairway (Marcus 2026-10-18: a wide bush, not a willow; NatureManufacture's hazel was a sparse sapling). CESimgolf's buckthorn, the densest round bush in Arborist's catalogue, lightened ('nr 2, något ljusare och större'). Placed only by tree edit; disabled in the palette."
     }
   ]
 }

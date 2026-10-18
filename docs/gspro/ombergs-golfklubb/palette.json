@@ -189,6 +189,10 @@
     {
       "model": "arborist:S7_AmurCork_Winter",
       "enabled": false
+    },
+    {
+      "model": "arborist:CE_Plants_buckthorn-bush",
+      "enabled": false
     }
   ],
   "species": {
