@@ -462,16 +462,16 @@ function assertValidBankVegAttributes(attributes: FeatureAttributes | null | und
     if (problem) throw new InvalidFeatureError(problem);
 }
 
-/**
- * `rock_slab` attributes: `marginM` (0..5) and `uvM` (> 0), when present
- * (shared/features/rock-slab.ts). Every other key is free.
- */
-/** `waterfall` attributes (shared/features/waterfall.ts): style, levels, flow bearing, sill width, when present. */
+/** `waterfall` attributes (shared/features/waterfall.ts): style, levels, flow bearing, sill, cascade width, fountain height, when present. */
 function assertValidWaterfallAttributes(attributes: FeatureAttributes | null | undefined): void {
     const problem = waterfallProblem(attributes as Record<string, unknown> | null | undefined);
     if (problem) throw new InvalidFeatureError(problem);
 }
 
+/**
+ * `rock_slab` attributes: `marginM` (0..5) and `uvM` (> 0), when present
+ * (shared/features/rock-slab.ts). Every other key is free.
+ */
 function assertValidRockSlabAttributes(attributes: FeatureAttributes | null | undefined): void {
     const problem = rockSlabProblem(attributes);
     if (problem) throw new InvalidFeatureError(problem);

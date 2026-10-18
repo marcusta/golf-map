@@ -260,14 +260,14 @@ export const WATER_STEPS_FEATURE_TYPES: readonly string[] = ['water', 'water_cre
 /**
  * "Find falls": the proposal on the map (WaterStepsService), what it was made
  * from (the features, the cuts and skips clicked on the water) and the outlet
- * falls taken out of it here (an outlet joins two bodies: no re-proposal).
+ * and cascade falls taken out of it here (they join two bodies: no re-proposal).
  */
 export interface WaterStepsReview {
     proposal: WaterStepsProposal;
     featureIds: string[];
     cuts: { x: number; y: number }[];
     skips: { x: number; y: number }[];
-    /** Outlet falls left out, keyed `from>to` (body ids). */
+    /** Outlet and cascade falls left out, keyed `from>to` (body ids; one such fall per pair). */
     droppedOutlets: string[];
 }
 
@@ -824,7 +824,7 @@ export class TerrainEditToolService {
             .filter(x => x.d <= FALL_PICK_M)
             .sort((a, b) => a.d - b.d)[0]?.f;
         if (fall) {
-            if (fall.style === 'outlet') {
+            if (fall.style === 'outlet' || fall.style === 'cascade') {
                 this.waterSteps.set({ ...review, droppedOutlets: [...review.droppedOutlets, outletKey(fall)] });
                 return true;
             }
@@ -858,13 +858,18 @@ export class TerrainEditToolService {
             inputs.push({ id: f.id, type: f.type, holeId: f.holeId, layer: f.layer ?? null, version: f.version,
                 geometry: f.geometry as WaterStepsFeatureInput['geometry'], attributes: f.attributes as Record<string, unknown> | null });
         }
-        const proposal = { ...review.proposal, falls: review.proposal.falls.filter(f => !review.droppedOutlets.includes(outletKey(f))) };
+        const proposal = { ...review.proposal, falls: shownFalls(review) };
         let plan: ReturnType<typeof planWaterSteps>;
         try {
             plan = planWaterSteps(proposal, inputs, { split: this.stepsSplit.peek() });
         } catch (e) {
             this.notice.set(`Find falls: ${message(e)}`);
             return false;
+        }
+        if (plan.updates.length === 0 && plan.creates.length === 0) {
+            this.notice.set(plan.existing > 0 ? 'Every fall found is drawn already: nothing to add.' : 'Nothing to store.');
+            this.waterSteps.set(null);
+            return true;
         }
         this.saving.set(true);
         try {
@@ -1707,9 +1712,14 @@ function featureRings(feature: CourseFeature | null): Array<Array<{ x: number; y
         flattenRing(ring, 0.25, feature.geometry.curveType).map(([x, y]) => ({ x, y })));
 }
 
-/** An outlet fall's key in WaterStepsReview.droppedOutlets. */
+/** An outlet or cascade fall's key in WaterStepsReview.droppedOutlets ('' for a sill, never dropped this way). */
 function outletKey(f: { style: string; fromBodyId: string; toBodyId: string }): string {
-    return f.style === 'outlet' ? `${f.fromBodyId}>${f.toBodyId}` : '';
+    return f.style === 'outlet' || f.style === 'cascade' ? `${f.fromBodyId}>${f.toBodyId}` : '';
+}
+
+/** The proposal's falls less the outlets and cascades taken out on the map. */
+export function shownFalls(review: WaterStepsReview): WaterStepsProposal['falls'] {
+    return review.proposal.falls.filter(f => !review.droppedOutlets.includes(outletKey(f)));
 }
 
 /** Distance (m) from p to an open polyline. */
@@ -1726,13 +1736,15 @@ function distToLine(p: { x: number; y: number }, line: ReadonlyArray<{ x: number
     return best;
 }
 
-/** "6 pieces, 5 falls". */
+/** "6 pieces, 5 falls", "6 pieces, 5 falls (2 exist)" when the course has some of them already. */
 export function stepsSummary(proposal: Pick<WaterStepsProposal, 'pieces' | 'falls'>): string {
     const n = (k: number, one: string, many: string) => `${k} ${k === 1 ? one : many}`;
-    return `${n(proposal.pieces.length, 'piece', 'pieces')}, ${n(proposal.falls.length, 'fall', 'falls')}`;
+    const existing = proposal.falls.filter(f => f.exists).length;
+    return `${n(proposal.pieces.length, 'piece', 'pieces')}, ${n(proposal.falls.length, 'fall', 'falls')}`
+        + (existing > 0 ? ` (${existing} ${existing === 1 ? 'exists' : 'exist'})` : '');
 }
 
-/** The map's pieces (labelled with their level: `109.61`, a creek `104.50›103.48`) and falls (their drop). */
+/** The map's pieces (labelled with their level: `109.61`, a creek `104.50›103.48`) and falls (their drop, style, exists). */
 function waterStepsMarkOf(review: WaterStepsReview): WaterStepsMark {
     const centre = (ring: ReadonlyArray<{ x: number; y: number }>) => ({
         x: ring.reduce((s, p) => s + p.x, 0) / Math.max(ring.length, 1),
@@ -1744,8 +1756,10 @@ function waterStepsMarkOf(review: WaterStepsReview): WaterStepsMark {
             ring: p.ring, kind: p.kind, at: centre(p.ring),
             label: p.kind === 'pond' ? m(p.levelM) : `${m(p.topM)}›${m(p.bottomM)}`,
         })),
-        falls: review.proposal.falls.filter(f => !review.droppedOutlets.includes(outletKey(f))).map(f => ({
-            line: f.line, at: f.at, label: `${f.dropM.toFixed(2)} m${f.style === 'outlet' ? ' outlet' : ''}`,
+        // A cascade's line runs along its path down; the label sits at its middle like a lip's.
+        falls: shownFalls(review).map(f => ({
+            line: f.line, at: f.at,
+            label: `${f.dropM.toFixed(2)} m${f.style === 'sill' ? '' : ` ${f.style}`}${f.exists ? ' (exists)' : ''}`,
         })),
     };
 }

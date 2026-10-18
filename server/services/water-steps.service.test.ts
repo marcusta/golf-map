@@ -115,6 +115,40 @@ test.skipIf(MISSING)('a cut where the lidar shows no step is kept (forced), a sk
     expect(p.pieces.filter((x) => x.kind === 'pond').length).toBeGreaterThanOrEqual(2);
 }, 60_000);
 
+test.skipIf(MISSING)('a fall the course already has a waterfall for is marked exists, with its id; one further off is not', async () => {
+    const t = await setup();
+    const creek = await t.features.create({ courseId: TEST_COURSE_ID, holeId: TEST_HOLE_1_ID, type: 'water_creek', geometry: box(0, 120, 3) });
+    const first = await t.svc.propose(TEST_COURSE_ID, [creek.id]);
+    expect(first.falls.every((f) => !f.exists && f.existingId === null)).toBe(true);
+    const sill = first.falls.find((f) => f.style === 'sill')!;
+    // Drawn by hand across the lip, its midpoint 2 m off the found one; another 10 m off.
+    const near = await t.features.create({ courseId: TEST_COURSE_ID, type: 'waterfall', geometry: { crs: 'EPSG:3006', rings: [],
+        centerline: { points: [{ x: sill.at.x + 2, y: sill.at.y - 3 }, { x: sill.at.x + 2, y: sill.at.y + 3 }], widthM: 2 } }, attributes: { style: 'sill' } });
+    await t.features.create({ courseId: TEST_COURSE_ID, type: 'waterfall', geometry: { crs: 'EPSG:3006', rings: [],
+        centerline: { points: [{ x: sill.at.x + 10, y: sill.at.y - 3 }, { x: sill.at.x + 10, y: sill.at.y + 3 }], widthM: 2 } } });
+
+    const again = await t.svc.propose(TEST_COURSE_ID, [creek.id]);
+    const same = again.falls.find((f) => Math.hypot(f.at.x - sill.at.x, f.at.y - sill.at.y) < 0.5)!;
+    expect(same.exists).toBe(true);
+    expect(same.existingId).toBe(near.id);
+    expect(again.falls.filter((f) => f.exists)).toHaveLength(1);
+}, 60_000);
+
+test.skipIf(MISSING)('two waters further apart than gapM: a cascade along the ground between them, its line along the flow', async () => {
+    const t = await setup();
+    const creek = await t.features.create({ courseId: TEST_COURSE_ID, holeId: TEST_HOLE_1_ID, type: 'water_creek', geometry: box(0, 120, 3) });
+    const pond = await t.features.create({ courseId: TEST_COURSE_ID, type: 'water', geometry: box(125, 138, 6) });
+    const p = await t.svc.propose(TEST_COURSE_ID, [creek.id, pond.id], { gapM: 3 });
+    expect(p.falls.some((f) => f.style === 'outlet')).toBe(false);
+    const cascade = p.falls.find((f) => f.style === 'cascade')!;
+    expect([cascade.fromBodyId, cascade.toBodyId]).toEqual([creek.id, pond.id]);
+    expect(cascade.line.length).toBeGreaterThanOrEqual(2);
+    expect(cascade.line[0]!.x).toBeLessThan(cascade.line.at(-1)!.x);    // upstream (the creek, west) first
+    expect(cascade.widthM).toBeGreaterThan(0);
+    expect(cascade.gapM).toBeGreaterThan(3);
+    expect(cascade.exists).toBe(false);
+}, 60_000);
+
 test('refuses what is not water, and features of another course', async () => {
     const t = await setup();
     const bunker = await t.features.create({ courseId: TEST_COURSE_ID, type: 'bunker', geometry: box(0, 5, 2) });

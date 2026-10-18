@@ -18,6 +18,7 @@ import {
     DEFAULT_FEATHER_M,
     DEFAULT_RADIUS_M,
     paramsSummary,
+    stepsSummary,
     RECIPE_COLORS,
     RECIPE_COLOR_OTHER,
     type TerrainEditRenderer,
@@ -1559,8 +1560,8 @@ describe('Find falls', () => {
             { bodyId: 'p1', shape: 'others_23c', index: 0, kind: 'pond', ring: box(70, 90, 8), levelM: 107.5, topM: 107.5, bottomM: 107.5, areaM2: 320, digLevelOffsetM: 0 },
         ],
         falls: [
-            { style: 'sill', fromBodyId: 'c1', toBodyId: 'c1', fromPiece: 0, toPiece: 1, line: [at(30.5, -3), at(30.5, 3)], at: at(30.5), flow: { x: 1, y: 0 }, topM: 109.61, bottomM: 109.12, dropM: 0.49, widthM: 6, sillM: 1, forced: false, gapM: null },
-            { style: 'outlet', fromBodyId: 'c1', toBodyId: 'p1', fromPiece: 1, toPiece: 0, line: [at(70, -0.75), at(70, 0.75)], at: at(70), flow: { x: 1, y: 0 }, topM: 109.12, bottomM: 107.5, dropM: 1.62, widthM: 1.5, sillM: null, forced: false, gapM: 10 },
+            { style: 'sill', fromBodyId: 'c1', toBodyId: 'c1', fromPiece: 0, toPiece: 1, line: [at(30.5, -3), at(30.5, 3)], at: at(30.5), flow: { x: 1, y: 0 }, topM: 109.61, bottomM: 109.12, dropM: 0.49, widthM: 6, sillM: 1, forced: false, gapM: null, exists: false, existingId: null },
+            { style: 'outlet', fromBodyId: 'c1', toBodyId: 'p1', fromPiece: 1, toPiece: 0, line: [at(70, -0.75), at(70, 0.75)], at: at(70), flow: { x: 1, y: 0 }, topM: 109.12, bottomM: 107.5, dropM: 1.62, widthM: 1.5, sillM: null, forced: false, gapM: 10, exists: false, existingId: null },
         ],
         cuts: [], skips: [], image: null,
     });
@@ -1651,6 +1652,39 @@ describe('Find falls', () => {
         expect(back.type).toBe('water_creek');
         expect(back.attributes).toEqual({ bankVegPalette: 'reeds' });
         expect(h.svc.stepsUndo.get()).toBeNull();
+    });
+
+    test('a fall the course has already is counted and labelled, and Accept adds none for it; a cascade is taken out like an outlet', async () => {
+        const path = [at(60), at(63, 0.5), at(66, 0.3), at(70)];
+        const proposed = (): WaterStepsProposal => {
+            const p = answer();
+            p.falls[0] = { ...p.falls[0]!, exists: true, existingId: 'w9' };
+            p.falls[1] = { ...p.falls[1]!, style: 'cascade', line: path, at: path[1]!, widthM: 1.2 };
+            return p;
+        };
+        const calls: unknown[] = [];
+        const h = await harness({ features: water(), waterSteps: { propose: async (input) => { calls.push(input); return proposed(); } }, history: new EditHistory() });
+        h.svc.selectFeature('c1');
+        h.svc.toggleFeature('p1');
+        await h.svc.proposeSteps();
+        expect(stepsSummary(h.svc.waterSteps.get()!.proposal)).toBe('3 pieces, 2 falls (1 exists)');
+        const mark = h.svc.view.get().waterSteps!;
+        expect(mark.falls.map(f => f.label)).toEqual(['0.49 m (exists)', '1.62 m cascade']);
+        expect(mark.falls[1]!.line).toEqual(path);                         // drawn along its path down
+
+        expect(await h.svc.acceptSteps()).toBe(true);
+        expect(h.features.creates.flat().map(c => c.attributes)).toEqual([
+            { style: 'cascade', flowBearingDeg: 90, topM: 109.12, bottomM: 107.5, widthM: 1.2 },
+        ]);
+
+        await h.svc.proposeSteps();
+        click(h, lngLat(64.5, 0.4).lng, lngLat(64.5, 0.4).lat);           // on the cascade: left out, no new proposal
+        await tick();
+        expect(calls).toHaveLength(2);
+        expect(h.svc.view.get().waterSteps!.falls.map(f => f.label)).toEqual(['0.49 m (exists)']);
+        expect(await h.svc.acceptSteps()).toBe(true);                       // only the existing one left: nothing stored
+        expect(h.features.creates).toHaveLength(1);
+        expect(h.svc.notice.get()).toContain('drawn already');
     });
 
     test('a feature changed since the proposal is not stored', async () => {

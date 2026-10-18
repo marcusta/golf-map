@@ -32,6 +32,7 @@ export interface TerrainEditParams {
     rimM?: number;
     bankAboveDeg?: number;
     levelOffsetM?: number;
+    steps?: { line: { x: number; y: number }[]; sillM: number }[];
     variation?: number;
     seed?: number;
     levelM?: number;

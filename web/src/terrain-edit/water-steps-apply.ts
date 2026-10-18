@@ -7,7 +7,9 @@
 //   level found: the bank above the water at 45° (the outline is the water's edge, so the dig's level is the water
 //   plane Unity puts there) and `digLevelOffsetM` (what the dig needs on top of its rim percentile); a creek piece is a
 //   `water_creek` with the original's attributes, without the pond dig keys;
-// - each fall is a new `waterfall` feature: a centerline along its lip, with its style, levels, flow bearing and sill;
+// - each fall is a new `waterfall` feature: a centerline along its lip (a cascade's: along its path down, upstream
+//   first), with its style, levels, flow bearing and sill (a cascade: its stream width); a fall the course already
+//   has a waterfall for (`exists`, WaterStepsService) gets none;
 // - every outline is stored as a smooth closed B-spline (drawn features are B-splines), the lip's straight edge kept
 //   within a few decimetres.
 //
@@ -19,8 +21,8 @@
 import { fitClosedBspline } from '../geo/spline-fit';
 import { centerlineGeometry, type FeatureCenterline } from '../../../shared/features/centerline';
 import {
-    DEFAULT_WATERFALL_WIDTH_M, WATERFALL_BOTTOM_ATTRIBUTE, WATERFALL_FLOW_ATTRIBUTE, WATERFALL_SILL_ATTRIBUTE,
-    WATERFALL_STYLE_ATTRIBUTE, WATERFALL_TOP_ATTRIBUTE, WATERFALL_TYPE,
+    CASCADE_WIDTH_RANGE_M, DEFAULT_CASCADE_WIDTH_M, DEFAULT_WATERFALL_WIDTH_M, WATERFALL_BOTTOM_ATTRIBUTE, WATERFALL_FLOW_ATTRIBUTE,
+    WATERFALL_SILL_ATTRIBUTE, WATERFALL_STYLE_ATTRIBUTE, WATERFALL_TOP_ATTRIBUTE, WATERFALL_TYPE, WATERFALL_WIDTH_ATTRIBUTE,
 } from '../../../shared/features/waterfall';
 import { CREEK_DIG_PRESETS, DEFAULT_WATER_DIG_PRESET, WATER_DIG_PRESETS } from '../../../shared/features/dig-presets';
 
@@ -44,8 +46,12 @@ export interface WaterStepsProposalInput {
         levelM: number | null; topM: number | null; bottomM: number | null; areaM2: number; digLevelOffsetM: number | null;
     }[];
     falls: {
-        style: 'sill' | 'outlet'; fromBodyId: string; toBodyId: string; fromPiece: number | null; toPiece: number | null;
+        style: 'sill' | 'outlet' | 'cascade'; fromBodyId: string; toBodyId: string; fromPiece: number | null; toPiece: number | null;
         line: Pt[]; at: Pt; flow: Pt; topM: number; bottomM: number; dropM: number; sillM: number | null; forced: boolean;
+        /** A cascade's stream width (m). */
+        widthM?: number;
+        /** The course already has a waterfall here: none is made for it. */
+        exists?: boolean;
     }[];
 }
 
@@ -87,6 +93,8 @@ export interface WaterStepsPlan {
     maxDeviationM: number;
     /** What the plan could not carry over (a fall without a drop keeps no levels, ...). */
     warnings: string[];
+    /** The falls the course already has a waterfall for (no new feature). */
+    existing: number;
 }
 
 /** The fit follows the piece's outline this closely (m), one control per this many metres, more at the lip's corners. */
@@ -163,14 +171,16 @@ export function planWaterSteps(proposal: WaterStepsProposalInput, features: read
     }
 
     const shapeOf = new Map(proposal.bodies.map((b) => [b.featureId, b.shape]));
+    let existing = 0;
     for (const fall of proposal.falls) {
+        if (fall.exists) { existing++; continue; }
         const up = byId.get(fall.fromBodyId);
         if (!up) continue;
         const from = `${shapeOf.get(fall.fromBodyId) ?? '?'}·${fall.fromPiece ?? '?'}`;
         const to = fall.toBodyId === fall.fromBodyId ? `${fall.toPiece ?? '?'}` : `${shapeOf.get(fall.toBodyId) ?? '?'}·${fall.toPiece ?? '?'}`;
-        const label = `fall ${from}→${to}`;
+        const label = `${fall.style === 'cascade' ? 'cascade' : 'fall'} ${from}→${to}`;
         const geometry = centerlineGeometry(up.geometry.crs, { points: fall.line.map((p) => ({ x: p.x, y: p.y })), widthM: DEFAULT_WATERFALL_WIDTH_M });
-        if (!geometry) { warnings.push(`${label}: its lip is too short for a line, left out`); continue; }
+        if (!geometry) { warnings.push(`${label}: its ${fall.style === 'cascade' ? 'path' : 'lip'} is too short for a line, left out`); continue; }
         const attributes: WaterStepsAttributes = {
             [WATERFALL_STYLE_ATTRIBUTE]: fall.style,
             [WATERFALL_FLOW_ATTRIBUTE]: flowBearingDeg(fall.flow),
@@ -182,12 +192,16 @@ export function planWaterSteps(proposal: WaterStepsProposalInput, features: read
             warnings.push(`${label}: no drop on the lidar (${fall.topM} -> ${fall.bottomM} m), its levels are read from the ponds at export`);
         }
         if (fall.style === 'sill' && fall.sillM !== null) attributes[WATERFALL_SILL_ATTRIBUTE] = fall.sillM;
+        if (fall.style === 'cascade') {
+            const width = Number.isFinite(fall.widthM) ? fall.widthM! : DEFAULT_CASCADE_WIDTH_M;
+            attributes[WATERFALL_WIDTH_ATTRIBUTE] = Math.round(Math.min(CASCADE_WIDTH_RANGE_M.max, Math.max(CASCADE_WIDTH_RANGE_M.min, width)) * 100) / 100;
+        }
         creates.push({
             label, type: WATERFALL_TYPE, holeId: up.holeId, layer: null,
             geometry: geometry as WaterStepsGeometry, attributes,
         });
     }
-    return { updates, creates, maxDeviationM: Math.round(maxDeviationM * 1000) / 1000, warnings };
+    return { updates, creates, maxDeviationM: Math.round(maxDeviationM * 1000) / 1000, warnings, existing };
 }
 
 /** A piece's attributes: the original's scalars, with the pond's dig settings or without them for a creek. */

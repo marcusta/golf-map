@@ -2,7 +2,10 @@
 // (pipeline/golfpipe/water_steps.py), and how to split the water there. Each selected body (a `water_creek` polygon or
 // centerline's corridor, or a `water` polygon) is read along its line; a flat run is a pond at its level, a falling
 // run a creek, and each step between them is a `sill` fall (a strip `sillM` wide left out as the weir's crest). Two
-// bodies drawn apart within `gapM` at levels far enough apart get an `outlet` fall (water out from under a crossing).
+// bodies drawn apart within `gapM` at levels far enough apart get an `outlet` fall (water out from under a crossing),
+// further apart (some metres) a `cascade` (water running down over rocks along the lowest ground between them). A fall
+// the course already has a `waterfall` for (its line midpoint within WATERFALL_SAME_M) is marked `exists`: Accept
+// adds none for it.
 //
 // One implementation for both ways in: the terrain editor's "Find falls" (the web shows the pieces and falls on the
 // map, re-proposes with the cuts and skips clicked there, and Accept turns the proposal into feature edits with the
@@ -20,6 +23,7 @@ import { defaultRunner, failure, venvPython, type ExportRunner } from './gspro-e
 import { DEFAULT_PIPELINE_DIR } from './pipeline-dir';
 import { flattenRing } from './geo';
 import { featureShapeName, pondEdgeOrthos } from './pond-edge.service';
+import { WATERFALL_SAME_M, WATERFALL_TYPE, lineMidpoint, waterfallStyleOf } from '../../shared/features/waterfall';
 
 /** The feature types Find falls reads. */
 export const WATER_STEPS_TYPES: readonly string[] = ['water', 'water_creek'];
@@ -60,14 +64,17 @@ export interface WaterStepsPiece {
     digLevelOffsetM: number | null;
 }
 
+/** The styles Find falls proposes (shared/features/waterfall.ts WATERFALL_STYLES, without the hand-placed fountain). */
+export type WaterStepsFallStyle = 'sill' | 'outlet' | 'cascade';
+
 /** Where the water drops from one piece to the next. */
 export interface WaterStepsFall {
-    style: 'sill' | 'outlet';
+    style: WaterStepsFallStyle;
     fromBodyId: string;
     toBodyId: string;
     fromPiece: number | null;
     toPiece: number | null;
-    /** The lip, EPSG:3006 (the downstream edge of a sill; across an outlet's spout). */
+    /** The lip, EPSG:3006 (the downstream edge of a sill; across an outlet's spout); a cascade's path along the flow, upstream first. */
     line: WaterStepsPoint[];
     /** Its middle. */
     at: WaterStepsPoint;
@@ -76,13 +83,18 @@ export interface WaterStepsFall {
     topM: number;
     bottomM: number;
     dropM: number;
+    /** How wide the water goes over (m); a cascade's stream width. */
     widthM: number;
     /** Sills: the crest's width upstream of the lip (m). */
     sillM: number | null;
     /** A cut asked for where the lidar shows no sharp step. */
     forced: boolean;
-    /** Outlets: how far apart the two waters are drawn (m). */
+    /** Outlets and cascades: how far apart the two waters are drawn (m). */
     gapM: number | null;
+    /** The course already has a waterfall here (its line midpoint within WATERFALL_SAME_M m of `at`, a cascade's line midpoint). */
+    exists: boolean;
+    /** That waterfall's feature id, null when none. */
+    existingId: string | null;
 }
 
 export interface WaterStepsProposal {
@@ -192,6 +204,21 @@ export class WaterStepsService {
             const pts = (xs: Pair[]) => xs.map(([x, y]) => ({ x, y }));
             const pt = ([x, y]: Pair) => ({ x, y });
             const byId = new Map(features.map((f, i) => [f.id, { f, shape: shapes[i] }]));
+            // The waterfalls the course has (a fountain is none): a fall found where one is already drawn is that one.
+            const drawn = [...all.values()].filter((f) => f.type === WATERFALL_TYPE
+                && waterfallStyleOf(f.attributes as Record<string, unknown> | null) !== 'fountain').flatMap((f) => {
+                const mid = lineMidpoint(f.geometry.centerline?.points ?? f.geometry.rings[0]?.points ?? []);
+                return mid ? [{ id: f.id, mid }] : [];
+            });
+            const existing = (style: string, line: Pair[], at: Pair): string | null => {
+                const p = style === 'cascade' ? lineMidpoint(pts(line)) ?? pt(at) : pt(at);
+                let best: { id: string; d: number } | null = null;
+                for (const w of drawn) {
+                    const d = Math.hypot(w.mid.x - p.x, w.mid.y - p.y);
+                    if (d <= WATERFALL_SAME_M && (!best || d < best.d)) best = { id: w.id, d };
+                }
+                return best?.id ?? null;
+            };
             return {
                 courseId,
                 bodies: r.bodies.map((b) => ({
@@ -202,11 +229,15 @@ export class WaterStepsService {
                     bodyId: p.bodyId, shape: byId.get(p.bodyId)!.shape, index: p.index, kind: p.kind, ring: pts(p.ring),
                     levelM: p.levelM, topM: p.topM, bottomM: p.bottomM, areaM2: p.areaM2, digLevelOffsetM: p.digLevelOffsetM,
                 })),
-                falls: r.falls.map((f) => ({
-                    style: f.style, fromBodyId: f.fromBodyId, toBodyId: f.toBodyId, fromPiece: f.fromPiece, toPiece: f.toPiece,
-                    line: pts(f.line), at: pt(f.at), flow: pt(f.flow), topM: f.topM, bottomM: f.bottomM, dropM: f.dropM,
-                    widthM: f.widthM, sillM: f.sillM ?? null, forced: f.forced === true, gapM: f.gapM ?? null,
-                })),
+                falls: r.falls.map((f) => {
+                    const existingId = existing(f.style, f.line, f.at);
+                    return {
+                        style: f.style, fromBodyId: f.fromBodyId, toBodyId: f.toBodyId, fromPiece: f.fromPiece, toPiece: f.toPiece,
+                        line: pts(f.line), at: pt(f.at), flow: pt(f.flow), topM: f.topM, bottomM: f.bottomM, dropM: f.dropM,
+                        widthM: f.widthM, sillM: f.sillM ?? null, forced: f.forced === true, gapM: f.gapM ?? null,
+                        exists: existingId !== null, existingId,
+                    };
+                }),
                 cuts: opts.cuts ?? [],
                 skips: opts.skips ?? [],
                 image: r.image,
@@ -222,7 +253,7 @@ interface RawAnswer {
     bodies: { id: string; line: Pair[] | null; profile: { s: number[]; z: number[] } | null; steps: number }[];
     pieces: { bodyId: string; index: number; kind: 'pond' | 'creek'; ring: Pair[]; levelM: number | null; topM: number | null; bottomM: number | null; areaM2: number; digLevelOffsetM: number | null }[];
     falls: {
-        style: 'sill' | 'outlet'; fromBodyId: string; toBodyId: string; fromPiece: number | null; toPiece: number | null;
+        style: WaterStepsFallStyle; fromBodyId: string; toBodyId: string; fromPiece: number | null; toPiece: number | null;
         line: Pair[]; at: Pair; flow: Pair; topM: number; bottomM: number; dropM: number; widthM: number;
         sillM?: number; forced?: boolean; gapM?: number;
     }[];

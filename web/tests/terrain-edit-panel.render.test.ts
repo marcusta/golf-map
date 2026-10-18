@@ -452,7 +452,7 @@ test('Find falls: one line for the selected ponds and creeks, Find shows the cou
             courseId: 'course-1', cuts: [], skips: [], image: null,
             bodies: [{ featureId: 'w1', shape: 'hole_3_23e', type: 'water', version: 1, line: null, profile: null, steps: 1 }],
             pieces: [0, 1].map(index => ({ bodyId: 'w1', shape: 'hole_3_23e', index, kind: 'pond' as const, ring: [pt, pt, pt], levelM: 109 - index, topM: 109, bottomM: 109, areaM2: 10, digLevelOffsetM: 0 })),
-            falls: [{ style: 'sill' as const, fromBodyId: 'w1', toBodyId: 'w1', fromPiece: 0, toPiece: 1, line: [pt, pt], at: pt, flow: { x: 1, y: 0 }, topM: 109, bottomM: 108, dropM: 1, widthM: 4, sillM: 1, forced: false, gapM: null }],
+            falls: [{ style: 'sill' as const, fromBodyId: 'w1', toBodyId: 'w1', fromPiece: 0, toPiece: 1, line: [pt, pt], at: pt, flow: { x: 1, y: 0 }, topM: 109, bottomM: 108, dropM: 1, widthM: 4, sillM: 1, forced: false, gapM: null, exists: false, existingId: null }],
         }),
     };
     const { tool, q } = mount({ features: [B1, pond, creek], waterSteps });

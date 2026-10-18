@@ -1,7 +1,9 @@
 // Find falls: where a creek or a chain of ponds drops from one level to the next, found on the raw lidar
 // (WaterStepsService -> pipeline/golfpipe/water_steps.py), and the water split there: each run a pond at its level
 // (a `water` feature dug to hold it) or a creek, each step a `waterfall` feature along its lip. The same service and
-// the same planner (web/src/terrain-edit/water-steps-apply.ts) as the terrain editor's "Find falls".
+// the same planner (web/src/terrain-edit/water-steps-apply.ts) as the terrain editor's "Find falls". Waters further
+// apart than an outlet's gap get a `cascade` (water running down over rocks between them); a fall the course already
+// has a waterfall for prints "(exists)" and is not added again.
 //
 //   bun run water:steps -- <course> --feature <shape|number|id> [--feature ...] [--dry-run]
 //        --cut e,n | lat,lon   a step here though the lidar shows none sharply (a sill under water plants); repeatable
@@ -83,6 +85,7 @@ function findFeature(features: CourseFeature[], arg: string): CourseFeature {
 
 const m = (v: number | null) => (v === null ? '?' : `${v.toFixed(2)} m`);
 const at = (p: WaterStepsPoint) => `${p.x.toFixed(1)}, ${p.y.toFixed(1)}`;
+const pathLength = (line: WaterStepsPoint[]) => line.slice(1).reduce((sum, p, i) => sum + Math.hypot(p.x - line[i].x, p.y - line[i].y), 0);
 
 const dataDir = process.env.DATA_DIR ?? path.join(ROOT, 'data');
 const db = createDb<Database>(process.env.DB_PATH ?? path.join(dataDir, 'app.sqlite'));
@@ -115,7 +118,9 @@ try {
         const from = `${shapeOf.get(f.fromBodyId)}·${f.fromPiece ?? '?'}`;
         const to = `${shapeOf.get(f.toBodyId)}·${f.toPiece ?? '?'}`;
         const extra = [f.forced ? 'cut asked' : '', f.gapM !== null ? `${f.gapM.toFixed(1)} m apart` : ''].filter(Boolean).join(', ');
-        console.log(`fall ${f.style.padEnd(6)} ${f.dropM.toFixed(2)} m  ${from} -> ${to}  at ${at(f.at)}  ${f.widthM.toFixed(1)} m wide${extra ? ` (${extra})` : ''}`);
+        const along = f.style === 'cascade' ? `  ${pathLength(f.line).toFixed(1)} m long` : '';
+        console.log(`fall ${f.style.padEnd(7)} ${f.dropM.toFixed(2)} m  ${from} -> ${to}  at ${at(f.at)}  ${f.widthM.toFixed(1)} m wide${along}`
+            + `${extra ? ` (${extra})` : ''}${f.exists ? ' (exists)' : ''}`);
     }
     if (p.image) console.log(`check picture: ${p.image}`);
 
@@ -125,7 +130,8 @@ try {
         geometry: f.geometry as WaterStepsFeatureInput['geometry'], attributes: f.attributes as Record<string, unknown> | null,
     })), { split: flags['split'] === true });
     console.log(`plan: ${plan.updates.length} feature(s) kept and changed, ${plan.creates.filter((c) => c.type !== 'waterfall').length} new piece(s), `
-        + `${plan.creates.filter((c) => c.type === 'waterfall').length} waterfall(s); B-spline max deviation ${plan.maxDeviationM.toFixed(2)} m`);
+        + `${plan.creates.filter((c) => c.type === 'waterfall').length} waterfall(s)${plan.existing ? ` (${plan.existing} exist already)` : ''}; `
+        + `B-spline max deviation ${plan.maxDeviationM.toFixed(2)} m`);
     for (const w of plan.warnings) console.log(`  note: ${w}`);
 
     if (dryRun) {

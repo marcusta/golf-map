@@ -1488,12 +1488,24 @@ export class DrawToolService {
      * (drag commits build their entries from the drag's start snapshot).
      */
     commitAttributes(id: string, attributes: FeatureAttributesPatch | null): void {
+        this.commitAttributesMany([{ id, attributes }]);
+    }
+
+    /** Commit attribute changes to several features as ONE history entry (a picker applied to the whole selection). */
+    commitAttributesMany(changes: ReadonlyArray<{ id: string; attributes: FeatureAttributesPatch | null }>): void {
         const features = this.features;
-        const current = features?.store.items.peek().find(f => f.id === id);
-        if (!current) return;
-        this.record([{ featureId: id, before: { ...snapshotOf(current), attributes: attributesPatchOf(current.attributes) },
-            after: { ...snapshotOf(current), attributes }, beforeVersion: current.version }]);
-        void features!.updateMany([{id, patch: {attributes}}], {local: true});
+        if (!features) return;
+        const items = features.store.items.peek();
+        const found = changes.flatMap(c => {
+            const current = items.find(f => f.id === c.id);
+            return current ? [{ current, attributes: c.attributes }] : [];
+        });
+        if (found.length === 0) return;
+        this.record(found.map(({ current, attributes }) => ({
+            featureId: current.id, before: { ...snapshotOf(current), attributes: attributesPatchOf(current.attributes) },
+            after: { ...snapshotOf(current), attributes }, beforeVersion: current.version,
+        })));
+        void features.updateMany(found.map(({ current, attributes }) => ({ id: current.id, patch: { attributes } })), { local: true });
     }
 
     private commitGeometry(id: string, geometry: FeatureGeometry): void {

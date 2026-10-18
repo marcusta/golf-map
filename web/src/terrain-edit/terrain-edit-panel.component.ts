@@ -20,6 +20,7 @@ import {
     type PondEdgeReview,
     type WaterStepsReview,
     stepsSummary,
+    shownFalls,
     type PondProgress,
     type EditGroup,
     type TerrainEditOp,
@@ -608,7 +609,7 @@ export class TerrainEditPanelComponent extends Component {
                 textContent: () => {
                     if (this.tool.proposingSteps.get()) return 'Reading the lidar…';
                     const review = this.tool.waterSteps.get();
-                    if (review) return stepsSummary({ pieces: review.proposal.pieces, falls: review.proposal.falls.filter(f => f.style !== 'outlet' || !review.droppedOutlets.includes(`${f.fromBodyId}>${f.toBodyId}`)) });
+                    if (review) return stepsSummary({ pieces: review.proposal.pieces, falls: shownFalls(review) });
                     const n = this.tool.waterSelection.get().length;
                     return `${n} ${n === 1 ? 'pond or creek' : 'ponds and creeks'} selected`;
                 },
@@ -1245,9 +1246,8 @@ export class TerrainEditPanelComponent extends Component {
 function stepsDetails(review: WaterStepsReview): string {
     const m = (v: number | null) => (v === null ? '?' : `${v.toFixed(2)} m`);
     const pieces = review.proposal.pieces.map(p => `${p.shape}·${p.index} ${p.kind} ${p.kind === 'pond' ? m(p.levelM) : `${m(p.topM)} → ${m(p.bottomM)}`}`);
-    const falls = review.proposal.falls
-        .filter(f => f.style !== 'outlet' || !review.droppedOutlets.includes(`${f.fromBodyId}>${f.toBodyId}`))
-        .map(f => `${f.style} ${f.dropM.toFixed(2)} m${f.forced ? ' (cut)' : ''}`);
+    const falls = shownFalls(review)
+        .map(f => `${f.style} ${f.dropM.toFixed(2)} m${f.forced ? ' (cut)' : ''}${f.exists ? ' (exists: not added again)' : ''}`);
     return [...pieces, ...falls, 'Click the water: a cut there. Click a fall: take it out.'].join('\n');
 }
 

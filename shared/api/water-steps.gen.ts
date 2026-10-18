@@ -35,7 +35,7 @@ export interface WaterStepsPiece {
 }
 
 export interface WaterStepsFall {
-    style: 'sill' | 'outlet';
+    style: 'cascade' | 'sill' | 'outlet';
     fromBodyId: string;
     toBodyId: string;
     fromPiece: null | number;
@@ -50,6 +50,8 @@ export interface WaterStepsFall {
     sillM: null | number;
     forced: boolean;
     gapM: null | number;
+    exists: boolean;
+    existingId: null | string;
 }
 
 export interface WaterStepsPoint {

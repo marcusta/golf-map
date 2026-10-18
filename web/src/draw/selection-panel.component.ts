@@ -47,12 +47,20 @@ import { svgShapeName } from '../export/svg-exclusions';
 import {
     ROCK_SLAB_MARGIN_ATTRIBUTE, ROCK_SLAB_MARGIN_RANGE_M, ROCK_SLAB_TILE_ATTRIBUTE, ROCK_SLAB_TYPE, rockSlabMarginOf, rockSlabTileOf,
 } from '../../../shared/features/rock-slab';
+import {
+    CASCADE_WIDTH_RANGE_M, DEFAULT_CASCADE_WIDTH_M, DEFAULT_FOUNTAIN_HEIGHT_M, FOUNTAIN_HEIGHT_RANGE_M, WATERFALL_HEIGHT_ATTRIBUTE,
+    WATERFALL_STYLE_ATTRIBUTE, WATERFALL_STYLES, WATERFALL_TYPE, WATERFALL_WIDTH_ATTRIBUTE, waterfallStyleOf, type WaterfallStyle,
+} from '../../../shared/features/waterfall';
 
 /** The `<datalist>` of species suggestions the mix rows' inputs share (one per page). */
 const TREE_SPECIES_LIST_ID = 'tree-area-species-options';
 
 /** The surface picker's value for a selection whose paths disagree. */
 const MIXED_SURFACE = '__mixed';
+/** The waterfall style picker's value for waterfalls that disagree. */
+const MIXED_WATERFALL = '__mixed';
+const WATERFALL_STYLE_LABELS: Record<WaterfallStyle, string> = { sill: 'Sill', outlet: 'Outlet', cascade: 'Cascade', fountain: 'Fountain' };
+
 /** The bank palette picker's value for creeks that disagree. */
 const MIXED_PALETTE = '__mixed';
 
@@ -182,6 +190,17 @@ const tpl = template(`
                 <input bind="rockTile" type="number" min="0.5" step="0.5" data-testid="rock-slab-tile" />
             </label>
             <div class="tree-area-hint">Not in the SVG: <b>Update meshes</b> in the command bar cuts it out of the course meshes in Blender.</div>
+        </div>
+        <div bind="waterfallSection" class="zone-section" data-testid="waterfall-section">
+            <label class="zone-field" title="Sill: over a weir's crest; the line along the lip.&#10;Outlet: a spout from under a crossing (a dam's pipe, a culvert); the line along the lip.&#10;Cascade: down over rocks between two waters; the line along the flow.&#10;Fountain: a jet in a pond, at the line's middle.">Waterfall
+                <select bind="waterfallStyle" data-testid="waterfall-style-select"></select>
+            </label>
+            <label bind="waterfallWidthField" class="zone-field waterfall-number-field" title="How wide the stream runs down over the rocks, metres">Stream width (m)
+                <input bind="waterfallWidth" type="number" min="${CASCADE_WIDTH_RANGE_M.min}" max="${CASCADE_WIDTH_RANGE_M.max}" step="0.1" data-testid="waterfall-width" />
+            </label>
+            <label bind="waterfallHeightField" class="zone-field waterfall-number-field" title="How high the jet stands above the pond, metres">Jet height (m)
+                <input bind="waterfallHeight" type="number" min="${FOUNTAIN_HEIGHT_RANGE_M.min}" max="${FOUNTAIN_HEIGHT_RANGE_M.max}" step="0.1" data-testid="waterfall-height" />
+            </label>
         </div>
         <div bind="creekSection" class="zone-section" data-testid="creek-bank-section">
             <h4 bind="creekTitle" class="section-title"></h4>
@@ -422,7 +441,7 @@ export class SelectionPanelComponent extends Component {
                     ${btn(t('radius-sm'))}
                 }
             }
-            & .zone-variant-field, & .path-width-field, & .creek-cover-field {
+            & .zone-variant-field, & .path-width-field, & .creek-cover-field, & .waterfall-number-field {
                 display: none;
                 &.show { display: flex; }
             }
@@ -675,6 +694,28 @@ export class SelectionPanelComponent extends Component {
                 value: () => this.sharedRockNumber(rockSlabTileOf),
                 onchange: (e: Event) => this.saveRockNumber(e, ROCK_SLAB_TILE_ATTRIBUTE, 0.5, Infinity),
             },
+            // Waterfall (shared/features/waterfall.ts): its style, and a
+            // cascade's stream width or a fountain's jet height - every
+            // selected waterfall at once, one undo step.
+            waterfallSection: {
+                className: () => this.waterfallSelection().length > 0 ? 'zone-section show' : 'zone-section',
+            },
+            waterfallWidthField: {
+                className: () => this.waterfallStyleValue() === 'cascade'
+                    ? 'zone-field waterfall-number-field show' : 'zone-field waterfall-number-field',
+            },
+            waterfallWidth: {
+                value: () => this.sharedWaterfallNumber(WATERFALL_WIDTH_ATTRIBUTE, DEFAULT_CASCADE_WIDTH_M),
+                onchange: (e: Event) => this.saveWaterfallNumber(e, WATERFALL_WIDTH_ATTRIBUTE, CASCADE_WIDTH_RANGE_M),
+            },
+            waterfallHeightField: {
+                className: () => this.waterfallStyleValue() === 'fountain'
+                    ? 'zone-field waterfall-number-field show' : 'zone-field waterfall-number-field',
+            },
+            waterfallHeight: {
+                value: () => this.sharedWaterfallNumber(WATERFALL_HEIGHT_ATTRIBUTE, DEFAULT_FOUNTAIN_HEIGHT_M),
+                onchange: (e: Event) => this.saveWaterfallNumber(e, WATERFALL_HEIGHT_ATTRIBUTE, FOUNTAIN_HEIGHT_RANGE_M),
+            },
             // Creek bank vegetation (shared/features/creek-vegetation.ts):
             // which creek_bank palette plants the banks, and how much of the
             // water it covers — every selected creek and water at once.
@@ -859,6 +900,18 @@ export class SelectionPanelComponent extends Component {
             options.push(['', 'Unknown']);
             for (const surface of PATH_SURFACES) options.push([surface, PATH_SURFACE_LABELS[surface]]);
             syncOptions(surfaceSelect, options, current);
+        }));
+
+        // Waterfall style picker: the four styles; Mixed only while the selected waterfalls disagree.
+        const waterfallSelect = this.ref(frag, 'waterfallStyle') as HTMLSelectElement;
+        waterfallSelect.addEventListener('change', () => {
+            if (waterfallSelect.value !== MIXED_WATERFALL) this.saveWaterfalls({ [WATERFALL_STYLE_ATTRIBUTE]: waterfallSelect.value });
+        });
+        this.track(effect(() => {
+            const current = this.waterfallStyleValue();
+            const options: [string, string][] = current === MIXED_WATERFALL ? [[MIXED_WATERFALL, 'Mixed']] : [];
+            for (const style of WATERFALL_STYLES) options.push([style, WATERFALL_STYLE_LABELS[style]]);
+            syncOptions(waterfallSelect, options, current);
         }));
 
         // Creek palette picker: None, the creek_bank type's Default mix when it
@@ -1399,6 +1452,53 @@ export class SelectionPanelComponent extends Component {
             if (JSON.stringify(attributes) === JSON.stringify(f.attributes ?? {})) continue;
             void this.features.update(f.id, { attributes: Object.keys(attributes).length > 0 ? attributes : null });
         }
+    }
+
+    /** The editable waterfalls in the selection (others in a mixed selection are left alone). */
+    private waterfallSelection(): CourseFeature[] {
+        return this.features.editableSelectedFeatures.get().filter(f => f.type === WATERFALL_TYPE);
+    }
+
+    /** The selected waterfalls' shared style (absent = sill), MIXED_WATERFALL while they differ. */
+    private waterfallStyleValue(): string {
+        const styles = new Set(this.waterfallSelection().map(f => waterfallStyleOf(f.attributes as Record<string, unknown> | null)));
+        return styles.size > 1 ? MIXED_WATERFALL : styles.values().next().value ?? '';
+    }
+
+    /** The selected waterfalls' shared value of a number key, the default when unset ('' while they differ). */
+    private sharedWaterfallNumber(key: string, fallback: number): string {
+        const values = new Set(this.waterfallSelection().map(f => {
+            const v = (f.attributes as Record<string, unknown> | null)?.[key];
+            return typeof v === 'number' ? v : fallback;
+        }));
+        return values.size === 1 ? String([...values][0]) : '';
+    }
+
+    /** A waterfall number from its input: clamped to the range; cleared drops the key (the default). */
+    private saveWaterfallNumber(e: Event, key: string, range: { min: number; max: number }): void {
+        const raw = (e.target as HTMLInputElement).value.trim();
+        const value = raw === '' ? null : Number(raw);
+        if (value !== null && !Number.isFinite(value)) return;
+        this.saveWaterfalls({ [key]: value === null ? null : Math.min(range.max, Math.max(range.min, value)) });
+    }
+
+    /**
+     * Set keys on every selected waterfall (`null` removes one) as ONE undo
+     * step; a waterfall already so is not written. `attributes` replaces the
+     * whole object server-side, so the levels and flow go along unchanged.
+     */
+    private saveWaterfalls(patch: Record<string, string | number | null>): void {
+        const changes: { id: string; attributes: Record<string, number | string | boolean> | null }[] = [];
+        for (const f of this.waterfallSelection()) {
+            const attributes: Record<string, number | string | boolean> = { ...(f.attributes ?? {}) };
+            for (const [key, value] of Object.entries(patch)) {
+                if (value === null) delete attributes[key];
+                else attributes[key] = value;
+            }
+            if (JSON.stringify(attributes) === JSON.stringify(f.attributes ?? {})) continue;
+            changes.push({ id: f.id, attributes: Object.keys(attributes).length > 0 ? attributes : null });
+        }
+        if (changes.length > 0) this.tool.commitAttributesMany(changes);
     }
 
     /**

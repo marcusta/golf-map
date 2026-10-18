@@ -1921,3 +1921,42 @@ describe('CourseFeaturesService — power_line', () => {
         expect(widened.geometry.centerline?.widthM).toBe(12);
     });
 });
+
+describe('CourseFeaturesService — waterfall styles', () => {
+    const X = 500000, Y = 6500000;
+    const line = (points: { x: number; y: number }[]) => ({ crs: 'EPSG:3006' as const, rings: [], centerline: { points, widthM: 2 } });
+
+    test('a cascade (its line along the flow) and a fountain are stored with their width and jet height', async () => {
+        const { db } = await createTestDb(seedCourse);
+        const svc = new CourseFeaturesService(db);
+        const cascade = await svc.create({
+            courseId: TEST_COURSE_ID, holeId: null, type: 'waterfall',
+            geometry: line([{ x: X, y: Y }, { x: X + 4, y: Y - 1 }, { x: X + 9, y: Y - 1.5 }]),
+            attributes: { style: 'cascade', topM: 104.2, bottomM: 101.9, flowBearingDeg: 100, widthM: 1.2 },
+        });
+        expect(cascade.attributes).toEqual({ style: 'cascade', topM: 104.2, bottomM: 101.9, flowBearingDeg: 100, widthM: 1.2 });
+        const fountain = await svc.create({
+            courseId: TEST_COURSE_ID, holeId: null, type: 'waterfall',
+            geometry: line([{ x: X + 30, y: Y }, { x: X + 31, y: Y }]), attributes: { style: 'fountain', heightM: 2.5 },
+        });
+        expect(fountain.attributes).toEqual({ style: 'fountain', heightM: 2.5 });
+        const higher = await svc.update(fountain.id, fountain.version, { attributes: { style: 'fountain', heightM: 6 } });
+        expect(higher.attributes).toEqual({ style: 'fountain', heightM: 6 });
+    });
+
+    test('refuses a cascade width outside 0.2..5 m, a jet height outside 0.2..6 m and an unknown style', async () => {
+        const { db } = await createTestDb(seedCourse);
+        const svc = new CourseFeaturesService(db);
+        const make = (attributes: Record<string, unknown>) => svc.create({
+            courseId: TEST_COURSE_ID, holeId: null, type: 'waterfall',
+            geometry: line([{ x: X, y: Y }, { x: X + 6, y: Y }]), attributes: attributes as never,
+        });
+        await expect(make({ style: 'cascade', widthM: 0.1 })).rejects.toThrow(/widthM must be 0.2..5 m/);
+        await expect(make({ style: 'cascade', widthM: 8 })).rejects.toThrow(/widthM/);
+        await expect(make({ style: 'fountain', heightM: 7 })).rejects.toThrow(/heightM must be 0.2..6 m/);
+        await expect(make({ style: 'fountain', heightM: 'tall' })).rejects.toThrow(/heightM/);
+        await expect(make({ style: 'geyser' })).rejects.toThrow(/sill, outlet, cascade, fountain/);
+        const ok = await make({ style: 'cascade' });
+        await expect(svc.update(ok.id, ok.version, { attributes: { style: 'cascade', widthM: 6 } })).rejects.toBeInstanceOf(InvalidFeatureError);
+    });
+});

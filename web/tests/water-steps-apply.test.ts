@@ -99,6 +99,27 @@ describe('planWaterSteps', () => {
         expect(falls[2]!.holeId).toBe('h3');                                       // the upstream body's hole
     });
 
+    test('a cascade is a waterfall along its path down, upstream first, with its stream width; an existing fall gets none', () => {
+        const p = proposal();
+        const path = [{ x: E + 120, y: N }, { x: E + 121.5, y: N + 0.4 }, { x: E + 123.2, y: N + 0.2 }, { x: E + 125, y: N }];
+        p.falls = [
+            { ...p.falls[0]!, exists: true },
+            p.falls[1]!,
+            { ...p.falls[2]!, style: 'cascade', line: path, at: path[1]!, widthM: 1.2, exists: false },
+        ];
+        const plan = planWaterSteps(p, [creek, pond]);
+        expect(plan.existing).toBe(1);
+        const falls = plan.creates.filter((c) => c.type === 'waterfall');
+        expect(falls.map((f) => f.label)).toEqual(['fall hole_3_23e·1→2', 'cascade hole_3_23e·2→others_23c·0']);
+        expect(falls[1]!.attributes).toEqual({ style: 'cascade', flowBearingDeg: 90, topM: 7, bottomM: 6, widthM: 1.2 });
+        expect(falls[1]!.geometry.centerline!.points.map((q) => [q.x, q.y])).toEqual(path.map((q) => [q.x, q.y]));
+        // A width out of range is clamped; none given is the default stream.
+        p.falls = [{ ...p.falls[2]!, widthM: 9 }];
+        expect(planWaterSteps(p, [creek, pond]).creates[0]!.attributes.widthM).toBe(5);
+        p.falls = [{ ...p.falls[0]!, widthM: undefined }];
+        expect(planWaterSteps(p, [creek, pond]).creates[0]!.attributes.widthM).toBe(1.2);
+    });
+
     test('a body that is not given is an error', () => {
         expect(() => planWaterSteps(proposal(), [creek], { split: true })).toThrow(/others_23c is not loaded/);
     });
