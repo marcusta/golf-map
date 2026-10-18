@@ -1185,6 +1185,8 @@ def _move_stems_off_paths(trees: list[dict], paths: list, e0: float, n0: float,
 #   the shore rock, its mesh the course DEM) keeps every stem: the scrub and low wind-shaped trees the
 #   lidar sees on a cliff stand in its cracks and on its ledges (Omberg's 14th, along Vättern).
 POWER_LINE_FEATURE_TYPE = "power_line"
+# A waterfall (shared/features/waterfall.ts): a centerline along a fall's lip; no surface, only the waterfalls export reads it.
+WATERFALL_FEATURE_TYPE = "waterfall"
 # The corridor is drawn about as wide as the wires hang (8 m by default); the keep-out reaches this far
 # beyond it on both sides, so no crown is planted into the outer wires.
 TREE_POWER_LINE_CLEARANCE_M = TREE_RULES["power-line-clearance"]
@@ -3498,6 +3500,8 @@ def cmd_svg(bbox, out: Path, db_path: Path, course_ident: str,
             if kind == ROCK_SLAB_TYPE:   # no OPCD surface by design: shaping-global cuts it out of the meshes
                 slabs += 1
             elif kind == POWER_LINE_FEATURE_TYPE:   # overhead, no surface: only the trees export reads it
+                pass
+            elif kind == WATERFALL_FEATURE_TYPE:   # a line between two waters: only the waterfalls export reads it
                 pass
             else:
                 skipped[kind] = skipped.get(kind, 0) + 1

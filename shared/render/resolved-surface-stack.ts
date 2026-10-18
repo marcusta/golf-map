@@ -56,7 +56,7 @@ export const surfaceStackStats = { resolves: 0, clips: 0 };
  * course-level shape stacked over every hole — hides the line the Furniture
  * tool edits, and the area would cut the water it marks out from under it.
  */
-const OVERLAY_TYPES = new Set(['vegetation_zone', 'tree_area', 'oob', 'penalty_yellow', 'penalty_red', 'power_line']);
+const OVERLAY_TYPES = new Set(['vegetation_zone', 'tree_area', 'oob', 'penalty_yellow', 'penalty_red', 'power_line', 'waterfall']);
 
 /**
  * Remove every pixel covered by a higher stack entry from each lower entry.

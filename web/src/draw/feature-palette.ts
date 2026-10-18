@@ -36,6 +36,9 @@ export const FEATURE_TYPES = [
     // centerline, one point per pole. No surface; the trees export clears the
     // survey stems (the wires, read as trees) out of its corridor.
     'power_line',
+    // Waterfall (shared/features/waterfall.ts): a centerline along a fall's
+    // lip between two waters. No surface; Unity builds the falling water.
+    'waterfall',
 ] as const;
 
 export type FeatureType = (typeof FEATURE_TYPES)[number];
@@ -135,6 +138,7 @@ export const FEATURE_STYLES: Record<FeatureType, FeatureStyle> = {
     rock_slab: { label: 'Rock slab', fill: '#a69b8c', draw: '#b3a898', outline: '#6f6558' },
     // Signal violet: nothing on a course is this colour, and it reads on grass and on trees.
     power_line: { label: 'Power line', fill: '#b06ad6', draw: '#bd7fe0', outline: '#6f3a94' },
+    waterfall: { label: 'Waterfall', fill: '#e8f6ff', draw: '#ffffff', outline: '#1f6fae' },
 };
 
 /**
@@ -194,6 +198,7 @@ export const TYPE_Z_ORDER: readonly FeatureType[] = [
     'oob',
     'path',
     'power_line',
+    'waterfall',
 ];
 
 /** MapLibre expression: feature `type` property → z-order sort key. */
@@ -230,6 +235,7 @@ export const SURROUND_PAIRINGS: Record<FeatureType, { targetType: FeatureType; e
     tree_area: null, // an overlay over whatever surface is there
     rock_slab: null, // a patch of bare rock: nothing implied around it
     power_line: null, // overhead: no surface of its own, none around it
+    waterfall: null, // a line between two waters: nothing around it
 };
 
 /**

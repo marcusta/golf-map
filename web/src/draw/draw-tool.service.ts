@@ -16,6 +16,7 @@ import { UNION_ERRORS, unionShapes } from './shape-union';
 import { PATH_SURFACE_ATTRIBUTE, isPathSurface, type PathSurface } from '../../../shared/features/path-surface';
 import { TREE_AREA_SPECIES_ATTRIBUTE, TREE_AREA_TYPE, hasSpeciesMix } from '../../../shared/features/tree-areas';
 import { DEFAULT_POWER_LINE_WIDTH_M, POWER_LINE_TYPE } from '../../../shared/features/power-line';
+import { DEFAULT_WATERFALL_WIDTH_M, WATERFALL_TYPE } from '../../../shared/features/waterfall';
 import {
     DrawState,
     MIN_RING_POINTS,
@@ -397,7 +398,7 @@ export class DrawToolService {
      */
     armPath(): void {
         const type = this.drawType.peek();
-        if (type !== 'water_creek' && type !== POWER_LINE_TYPE) this.drawType.set('path');
+        if (type !== 'water_creek' && type !== POWER_LINE_TYPE && type !== WATERFALL_TYPE) this.drawType.set('path');
         this.pathMode.set(true);
         this.state.arm();
     }
@@ -948,8 +949,9 @@ export class DrawToolService {
     commitCenterline(points: AnchorPoint[], widthM: number): boolean {
         if (this.state.mode.peek() !== 'draw' || !this.features) return false;
         const type = this.drawType.peek();
-        // A power line's corridor is its own width, not the last road's.
-        const geometry = draftCenterlineGeometry(points, type === POWER_LINE_TYPE ? DEFAULT_POWER_LINE_WIDTH_M : widthM, type);
+        // A power line's or a waterfall's corridor is its own width, not the last road's.
+        const ownWidth = type === POWER_LINE_TYPE ? DEFAULT_POWER_LINE_WIDTH_M : type === WATERFALL_TYPE ? DEFAULT_WATERFALL_WIDTH_M : null;
+        const geometry = draftCenterlineGeometry(points, ownWidth ?? widthM, type);
         if (!geometry) return false;
         this.cursor.set(null);
         this.state.disarm();

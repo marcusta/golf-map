@@ -14,6 +14,7 @@ import { ZONE_BLENDS, ZONE_BLEND_ATTRIBUTE, ZONE_EXTRA_PALETTES_ATTRIBUTE, parse
 import { zoneHeightProblem } from '../../shared/features/zone-height';
 import { TREE_AREA_TYPE, treeAreaProblem } from '../../shared/features/tree-areas';
 import { ROCK_SLAB_TYPE, rockSlabProblem } from '../../shared/features/rock-slab';
+import { WATERFALL_TYPE, waterfallProblem } from '../../shared/features/waterfall';
 import { KERB_FILLETS_ATTRIBUTE, ROAD_JUNCTIONS_SOURCE, junctionFillets, kerbFilletsOn } from '../../shared/features/road-junctions';
 import type { FeatureCollection } from 'geojson';
 
@@ -49,6 +50,9 @@ export const FEATURE_TYPES = [
     // Power line (shared/features/power-line.ts): a centerline with a corridor;
     // no surface. The trees export leaves out the survey stems inside it.
     'power_line',
+    // Waterfall (shared/features/waterfall.ts): a centerline along a fall's lip
+    // between two waters; no surface. Unity builds the falling water along it.
+    'waterfall',
 ] as const;
 
 export type FeatureType = (typeof FEATURE_TYPES)[number];
@@ -89,6 +93,7 @@ const TYPE_Z_ORDER: readonly string[] = [
     'oob',
     'path',
     'power_line',
+    'waterfall',
 ];
 
 function typeRank(type: string): number {
@@ -461,6 +466,12 @@ function assertValidBankVegAttributes(attributes: FeatureAttributes | null | und
  * `rock_slab` attributes: `marginM` (0..5) and `uvM` (> 0), when present
  * (shared/features/rock-slab.ts). Every other key is free.
  */
+/** `waterfall` attributes (shared/features/waterfall.ts): style, levels, flow bearing, sill width, when present. */
+function assertValidWaterfallAttributes(attributes: FeatureAttributes | null | undefined): void {
+    const problem = waterfallProblem(attributes as Record<string, unknown> | null | undefined);
+    if (problem) throw new InvalidFeatureError(problem);
+}
+
 function assertValidRockSlabAttributes(attributes: FeatureAttributes | null | undefined): void {
     const problem = rockSlabProblem(attributes);
     if (problem) throw new InvalidFeatureError(problem);
@@ -690,6 +701,7 @@ function assertValidCreate(input: CreateFeatureInput): void {
     if (input.type === TREE_AREA_TYPE) assertValidTreeAreaAttributes(input.attributes);
     if (input.type === 'path') assertValidPathAttributes(input.attributes);
     if (input.type === ROCK_SLAB_TYPE) assertValidRockSlabAttributes(input.attributes);
+    if (input.type === WATERFALL_TYPE) assertValidWaterfallAttributes(input.attributes);
     if (takesBankVeg(input.type)) assertValidBankVegAttributes(input.attributes);
     assertValidLayer(input.layer ?? null, input.holeId ?? null, input.type);
 }
@@ -1030,6 +1042,7 @@ export class CourseFeaturesService {
         if (nextType === TREE_AREA_TYPE && input.attributes !== undefined) assertValidTreeAreaAttributes(input.attributes);
         if (nextType === 'path' && input.attributes !== undefined) assertValidPathAttributes(input.attributes);
         if (nextType === ROCK_SLAB_TYPE && input.attributes !== undefined) assertValidRockSlabAttributes(input.attributes);
+        if (nextType === WATERFALL_TYPE && input.attributes !== undefined) assertValidWaterfallAttributes(input.attributes);
         if (takesBankVeg(nextType) && input.attributes !== undefined) assertValidBankVegAttributes(input.attributes);
         if (movingGroups) {
             dbInput.hole_id = nextHoleId;

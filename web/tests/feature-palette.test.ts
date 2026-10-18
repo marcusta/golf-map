@@ -122,7 +122,7 @@ describe('TYPE_Z_ORDER', () => {
         expect(TYPE_Z_ORDER).toEqual([
             'outside', 'deep_rough', 'rough', 'semi_rough', 'fairway',
             'tee', 'green', 'rock_slab', 'vegetation_zone', 'tree_area', 'trees', 'bunker', 'water', 'water_creek',
-            'penalty_yellow', 'penalty_red', 'oob', 'path', 'power_line',
+            'penalty_yellow', 'penalty_red', 'oob', 'path', 'power_line', 'waterfall',
         ]);
     });
 
