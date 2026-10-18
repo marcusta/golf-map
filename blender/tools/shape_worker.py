@@ -508,6 +508,7 @@ class Worker:
         for name in ("shape_edgefade", "shape_transition"):
             if name in sys.modules:
                 importlib.reload(sys.modules[name])
+        app.runner.reload_code(["shape_edgefade", "shape_transition"])  # their text is in the op cache's code keys
         new = self.op_list(self.status["layersDir"])
         d = self.diff(old, new)
         base = {"changedOps": [new[j]["key"] for j in d["changedNew"]],

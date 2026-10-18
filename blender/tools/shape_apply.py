@@ -36,6 +36,15 @@ if HERE not in sys.path:
 import shape_coords  # noqa: E402
 import shape_layers as sl  # noqa: E402
 import shape_recipes as sr  # noqa: E402
+import shape_region as sreg  # noqa: E402  (region entries of the op cache)
+import shape_opkey  # noqa: E402
+import shape_creek  # noqa: E402
+
+# This file's source as imported: the op cache's code keys (shape_opkey) are taken from the code that runs, not
+# from a file someone edits while a worker is up.
+with open(os.path.abspath(__file__), "r", encoding="utf-8") as _f:
+    OWN_SOURCE = _f.read()
+del _f
 
 REPO = os.path.dirname(os.path.dirname(HERE))
 REPORT_FORMAT = "golfmap-shaping-report-v1"
@@ -1253,12 +1262,13 @@ def _set_vertex_groups(obj, meta, arrays):
             obj.vertex_groups[gi].add(vs[m][ws[m] == w].tolist(), float(w), "REPLACE")
 
 
-def apply_state(name, meta, arrays):
+def apply_state(name, meta, arrays, cur=None):
     """Make object `name` hold exactly this state: in place when the topology is unchanged (only differing
-    arrays written), else a rebuilt mesh swapped in. Creates the object (scene collection) when missing."""
+    arrays written), else a rebuilt mesh swapped in. Creates the object (scene collection) when missing.
+    `cur`: the object's current (meta, arrays) when the caller has just captured it."""
     obj = bpy.data.objects.get(name)
     if obj is not None and obj.type == "MESH":
-        cur_meta, cur = capture_state(obj)
+        cur_meta, cur = cur if cur is not None else capture_state(obj)
         if _topology_same(meta, arrays, cur_meta, cur):
             me = obj.data
             _set_attributes(me, arrays, skip=TOPOLOGY_ATTRS, cur=cur)
@@ -1328,15 +1338,27 @@ def _file_sha(path):
 
 
 def env_key():
-    """What besides an op and its input meshes decides its result: engine and shims (this file), Blender,
-    the Afrod / Edit Mesh Tools sources. (Recipe units add their recipe file, shape_paint and the library.)"""
+    """What besides an op, its code and its input meshes decides its result: the engine version, Blender, the
+    Afrod / Edit Mesh Tools sources. The code is the op kind's code key (op_code_key: the closure of what that
+    op runs, framework included); recipe units add their recipe file, shape_paint and the library."""
     parts = [ENGINE_VERSION, bpy.app.version_string]
-    for p in (os.path.abspath(__file__), os.path.join(HERE, "shape_layers.py")):
-        parts.append(os.path.basename(p) + ":" + str(_file_sha(p)))
     for mod in (AFROD_MODULE, EMT_OFFSET_MODULE):
         m = sys.modules.get(mod)
         parts.append(mod + ":" + str(_file_sha(getattr(m, "__file__", "") or "") if m else None))
     return hashlib.sha1("|".join(parts).encode()).hexdigest()
+
+
+def op_code_key(kind):
+    """The code an op kind runs, as shape_opkey's closure record ({key, functions, lines, modules, wholeFile,
+    ...}): every function, class and constant of this file and its sibling modules that the op's runner and
+    the cache framework reach, by source text. Computed once per process from the source as imported."""
+    return shape_opkey.code_key(os.path.abspath(__file__), kind, source=OWN_SOURCE)
+
+
+def all_op_code_keys():
+    """op_code_key of every kind in the dispatch table (read from the source, so this code does not name it:
+    naming RUNNERS here would put every op's code into every key)."""
+    return dict(shape_opkey.code_keys(os.path.abspath(__file__), source=OWN_SOURCE))
 
 
 class OpCache:
@@ -1421,6 +1443,9 @@ class Unit:
         self._reads = reads
         self.extra = extra
         self.current = None  # the reads resolved right before it runs
+        # XY box (blend) outside which the unit changes nothing: such a unit is also cached by the part of each mesh
+        # around it (region entries, shape_region; README "Region entries")
+        self.region = None
         self.cut_paint = None
 
     def reads(self, margin=0.0):
@@ -1535,15 +1560,23 @@ class History:
 
 
 class UnitRunner:
-    """Runs each op unit: resolves what it reads, keys the op-result cache on the op, the unit and the
-    state hashes of everything it reads, replays a hit (verified against the stored result hashes) or
-    computes and stores; records every unit's reads/writes (the worker's footprints) and, with a History,
-    the state of each changed object before the op."""
+    """Runs each op unit: resolves what it reads, keys the op-result cache on the op, the code that op runs, the
+    unit and the state hashes of everything it reads, replays a hit (verified against the stored result hashes)
+    or computes and stores; records every unit's reads/writes (the worker's footprints) and, with a History,
+    the state of each changed object before the op.
+
+    Hash memo: the state hash of every mesh the runner captured is kept with a guard (object and mesh pointers,
+    element counts) until something may have changed it: a unit's writes, created and removed objects get the
+    hash of their new state (a replay verifies it, a compute captures it), an escape, an exception, an outside
+    ctx.refresh()/forget() (the worker's restore) or Applier.apply_op's error path drop the whole memo. A read
+    whose memo holds is neither captured nor hashed; GOLFMAP_SHAPE_VERIFY_HASH_MEMO=1 recomputes every one and
+    raises on a mismatch."""
 
     def __init__(self, cache=None, history=None):
         self.cache = cache
         self.history = history
         self.env = env_key()
+        self.code_keys = all_op_code_keys()  # op kind -> shape_opkey closure record
         self.filter = None
         self.op_index = None
         self.op_key = None
@@ -1551,8 +1584,16 @@ class UnitRunner:
         self.op_units = []
         self.op_stored = []
         self.escapes = []  # (op key, names) written outside every unit's reads
+        self.memo = {}  # object name -> (state hash, guard) as last captured
+        self.verify_memo = os.environ.get("GOLFMAP_SHAPE_VERIFY_HASH_MEMO") == "1"
+        self.use_memo = os.environ.get("GOLFMAP_SHAPE_NO_HASH_MEMO") != "1"  # off: every read captured and hashed
         self.stats = {"hits": 0, "misses": 0, "stored": 0, "invalid": 0, "uncacheable": 0,
-                      "keySeconds": 0.0, "replaySeconds": 0.0, "computeSeconds": 0.0, "savedSeconds": 0.0}
+                      "keySeconds": 0.0, "replaySeconds": 0.0, "computeSeconds": 0.0, "savedSeconds": 0.0,
+                      # keySeconds split: resolving the reads, capturing / hashing the inputs, the worker's history
+                      # copies; the cache entry's read from disk (not in keySeconds nor replaySeconds)
+                      "keyReadsSeconds": 0.0, "keyCaptureSeconds": 0.0, "keyHashSeconds": 0.0,
+                      "keyHistorySeconds": 0.0, "loadSeconds": 0.0,
+                      "memoHits": 0, "memoMisses": 0, "memoVerified": 0, "memoDropped": 0}
 
     def begin_op(self, index, key, unit_filter=None):
         self.op_index, self.op_key, self.filter = index, key, unit_filter
@@ -1564,13 +1605,14 @@ class UnitRunner:
 
     def end_op(self, changed_names):
         """changed_names: objects the op-level diff saw change. Any not written by a unit escaped the reads
-        prediction: the op's cache entries are dropped and the history marked."""
+        prediction: the op's cache entries are dropped, the history marked and the hash memo dropped."""
         written = set()
         for uid in self.op_units:
             r = self.records[self.op_key][uid]
             written |= set(r["writes"]) | set(r["removed"])
         escaped = sorted(set(changed_names) - written)
         if escaped:
+            self.invalidate()
             self.escapes.append((self.op_key, escaped))
             for key in self.op_stored:
                 self.cache.delete(key)
@@ -1582,14 +1624,84 @@ class UnitRunner:
                 self.history.broken.append(f"{self.op_key} changed {escaped[:5]} outside its predicted reads")
         return escaped
 
+    def code_key(self, kind):
+        if kind not in self.code_keys:
+            self.code_keys[kind] = op_code_key(kind)
+        return self.code_keys[kind]["key"]
+
+    def reload_code(self, modules):
+        """Sibling modules were reloaded (the worker's sync): their source is read again and every op kind's
+        code key recomputed."""
+        shape_opkey.forget(os.path.abspath(__file__), modules)
+        self.code_keys = all_op_code_keys()
+
     def key(self, ctx, op, unit, hashes):
         h = hashlib.sha256()
         h.update(self.env.encode())
+        h.update(self.code_key(op["op"]).encode())
         h.update(op_canonical(op, NON_GEOMETRY_KEYS).encode())
         h.update(json.dumps([unit.id, unit.seed, unit.extra, ctx.frame], sort_keys=True, default=str).encode())
         for n in sorted(hashes):
             h.update(("%s=%s;" % (n, hashes[n])).encode())
         return h.hexdigest()
+
+    # ------------------------------------------------------------ hash memo
+
+    @staticmethod
+    def _guard(obj):
+        me = obj.data
+        return (obj.as_pointer(), me.as_pointer(), len(me.vertices), len(me.edges), len(me.polygons), len(me.loops),
+                len(me.attributes))
+
+    def invalidate(self, names=None):
+        """Forget memoised hashes: of these objects, or (None) all of them."""
+        if names is None:
+            self.stats["memoDropped"] += len(self.memo)
+            self.memo.clear()
+        else:
+            for n in names:
+                self.memo.pop(n, None)
+
+    def remember(self, name, h):
+        obj = bpy.data.objects.get(name)
+        if obj is None or obj.type != "MESH":
+            self.memo.pop(name, None)
+        else:
+            self.memo[name] = (h, self._guard(obj))
+
+    def _capture(self, name, before):
+        t = time.time()
+        before[name] = capture_state(bpy.data.objects[name])
+        self.stats["keyCaptureSeconds"] += time.time() - t
+
+    def input_hashes(self, reads, before):
+        """State hash of each read: the memo's while its guard holds, else captured (into `before`) and hashed."""
+        hashes = {}
+        for n in reads:
+            obj = bpy.data.objects[n]
+            m = self.memo.get(n) if self.use_memo else None
+            if m is not None and obj.type == "MESH" and m[1] == self._guard(obj):
+                hashes[n] = m[0]
+                self.stats["memoHits"] += 1
+                if self.verify_memo:
+                    self._capture(n, before)
+                    t = time.time()
+                    fresh = state_hash(*before[n])
+                    self.stats["keyHashSeconds"] += time.time() - t
+                    self.stats["memoVerified"] += 1
+                    if fresh != m[0]:
+                        raise RuntimeError(f"[shape_apply] hash memo stale for {n} at {self.op_key}: "
+                                           f"memo {m[0][:12]}, state {fresh[:12]}")
+                continue
+            self.stats["memoMisses"] += 1
+            self._capture(n, before)
+            t = time.time()
+            hashes[n] = state_hash(*before[n])
+            self.stats["keyHashSeconds"] += time.time() - t
+            self.remember(n, hashes[n])
+        return hashes
+
+    # ------------------------------------------------------------ a unit
 
     def run(self, ctx, op, unit, compute):
         if self.filter is not None and unit.id not in self.filter:
@@ -1599,23 +1711,73 @@ class UnitRunner:
         reads = sorted(n for n in unit.reads(0.0) if n in bpy.data.objects)
         unit.current = set(reads)
         names_before = {o.name for o in spline_meshes()}
-        before = {n: capture_state(bpy.data.objects[n]) for n in reads}
-        hashes = {n: state_hash(*before[n]) for n in reads}
+        self.stats["keyReadsSeconds"] += time.time() - t0
+        before = {}
+        try:
+            hashes = self.input_hashes(reads, before)
+        except BaseException:
+            self.invalidate()
+            raise
         key = self.key(ctx, op, unit, hashes)
-        pre = {n: self.history.copy(n) for n in reads} if self.history is not None else {}
-        self.stats["keySeconds"] += time.time() - t0
+        t = time.time()
+        entry = self.cache.load(key) if self.cache is not None else None
+        # what the worker's history must copy and the replay needs captured: a hit's writes and removals, else
+        # everything the unit reads
+        need = reads
+        if entry is not None:
+            touched = {w["name"] for w in entry[0]["writes"]} | set(entry[0]["removed"])
+            need = [n for n in reads if n in touched]
+        load_s = time.time() - t
+        self.stats["loadSeconds"] += load_s
+        for n in need:
+            if n not in before:
+                self._capture(n, before)
+        th = time.time()
+        pre = {n: self.history.copy(n) for n in need} if self.history is not None else {}
+        self.stats["keyHistorySeconds"] += time.time() - th
+        self.stats["keySeconds"] += time.time() - t0 - load_s
         run, writes, removed, created = None, None, [], []
-        if self.cache is not None:
-            got = self.replay(key, before)
+        if entry is not None:
+            try:
+                got = self.replay(key, before, entry)
+            except BaseException:
+                self.invalidate()
+                raise
+            if got is not None:
+                run, writes, removed, created = got
+            elif self.history is not None:  # the inputs are back: compute, with all of them copied
+                th = time.time()
+                pre.update({n: self.history.copy(n) for n in reads if n not in pre})
+                self.stats["keyHistorySeconds"] += time.time() - th
+                self.stats["keySeconds"] += time.time() - th
+        region = None
+        if run is None and self.cache is not None and unit.region is not None:
+            # the exact entry missed (some read mesh changed somewhere): the region entry, keyed on the part of each
+            # mesh around the unit
+            for n in reads:
+                if n not in before:
+                    self._capture(n, before)
+            try:
+                region = self.region_plan(ctx, op, unit, before)
+            except Exception as e:   # a region entry is an extra: never let it break the op
+                print(f"[shape_apply] {self.op_key}: no region key: {type(e).__name__}: {e}")
+                region = None
+            got = self.replay_region(region, before, key) if region is not None else None
             if got is not None:
                 run, writes, removed, created = got
         if run is None:
+            tc = time.time()
+            for n in reads:  # store() keeps what a write left as it was; unit_dz measures against these
+                if n not in before:
+                    self._capture(n, before)
+            self.stats["keySeconds"] += time.time() - tc
             t = time.time()
             try:
                 run = compute()
             except Exception:
                 # It may have changed any of its reads half-way: count them all as written (the worker can then
                 # restore them) and let the op report the error.
+                self.invalidate()
                 object_mode()
                 names_after = {o.name for o in spline_meshes()}
                 created = sorted(names_after - names_before)
@@ -1634,6 +1796,9 @@ class UnitRunner:
                             self.history.record(n, self.op_index, [None, None] if n in created else pre.pop(n, [None, None]))
                     self.history.free([s[0] for s in pre.values()])
                 raise
+            except BaseException:
+                self.invalidate()
+                raise
             object_mode()
             names_after = {o.name for o in spline_meshes()}
             created = sorted(names_after - names_before)
@@ -1644,20 +1809,24 @@ class UnitRunner:
                     continue
                 st = capture_state(bpy.data.objects[n])
                 hs = state_hash(*st)
+                self.remember(n, hs)
                 if n in created or hs != hashes.get(n):
                     writes.append(n)
                     post[n] = (st, hs)
+            self.invalidate(removed)
             elapsed = time.time() - t
             self.stats["computeSeconds"] += elapsed
             if self.cache is not None:
                 self.stats["misses"] += 1
                 if set(removed) <= set(reads):
                     self.store(key, run, writes, post, removed, created, before, elapsed)
+                    if region is not None:
+                        self.store_region(region, run, writes, post, removed, created, before, elapsed)
                 else:
                     self.stats["uncacheable"] += 1
         ctx.forget(set(writes) | set(removed))
         if set(created) | set(removed):
-            ctx.refresh()
+            ctx.refresh(keep_memo=True)
         rec = {"reads": reads, "writes": writes, "removed": removed, "created": created, "targets": list(unit.targets),
                "cached": bool(run.get("cached")), "seconds": round(time.time() - t0, 3),
                "dz": unit_dz(writes, before)}
@@ -1696,10 +1865,9 @@ class UnitRunner:
         self.op_stored.append(key)
         self.stats["stored"] += 1
 
-    def replay(self, key, before):
-        got = self.cache.load(key)
-        if got is None:
-            return None
+    def replay(self, key, before, got):
+        """Apply a loaded cache entry (meta, arrays). `before` holds the captured input state of every object
+        the entry writes or removes. On success the written objects' memo holds their verified hashes."""
         meta, arrays = got
         t = time.time()
         writes = [w["name"] for w in meta["writes"]]
@@ -1709,7 +1877,7 @@ class UnitRunner:
                 arr = {k: arrays["o%d_%d" % (i, j)] for j, k in enumerate(w["stored"])}
                 for k in w["keep"]:
                     arr[k] = before[w["name"]][1][k]
-                apply_state(w["name"], w["meta"], arr)
+                apply_state(w["name"], w["meta"], arr, cur=before.get(w["name"]))
             for n in meta["removed"]:
                 remove_object(n)
             for w in meta["writes"]:
@@ -1729,9 +1897,13 @@ class UnitRunner:
             for n in meta["removed"]:
                 if n in before:
                     apply_state(n, *before[n])
+            self.invalidate(set(writes) | set(meta["removed"]))
             self.cache.delete(key)
             self.stats["invalid"] += 1
             return None
+        for w in meta["writes"]:
+            self.remember(w["name"], w["hash"])
+        self.invalidate(meta["removed"])
         elapsed = time.time() - t
         self.stats["hits"] += 1
         self.stats["replaySeconds"] += elapsed
@@ -1739,8 +1911,317 @@ class UnitRunner:
         run = dict(meta["run"], cached=True, seconds=round(elapsed, 3))
         return run, writes, meta["removed"], meta["created"]
 
+    # ---- region entries (shape_region): a unit with a `region` keyed on the part of each mesh around it
+
+    def region_plan(self, ctx, op, unit, before):
+        """The region key of a unit: its K box (region + REGION_KEY_M), the read meshes with a face in it (name
+        order) and their K parts' signatures."""
+        t = time.time()
+        for k_ in ("regionHits", "regionMisses", "regionStored", "regionInvalid"):
+            self.stats.setdefault(k_, 0)
+        for k_ in ("regionKeySeconds", "regionReplaySeconds", "regionStoreSeconds"):
+            self.stats.setdefault(k_, 0.0)
+        self.stats.setdefault("regionNotLocal", {})
+        box_k = _pad_box(unit.region, REGION_KEY_M)
+        box_r = _pad_box(unit.region, REGION_CHANGE_M)
+        names, sigs = [], []
+        for n in sorted(before):
+            obj = bpy.data.objects.get(n)
+            if obj is None:
+                continue
+            sig = sreg.signature(*before[n], box_k, region_class(ctx, obj, before[n][0]))
+            if sig is not None:
+                names.append(n)
+                sigs.append(sig)
+        h = hashlib.sha256()
+        h.update(REGION_FORMAT.encode())
+        h.update(self.env.encode())
+        if hasattr(self, "code_key"):
+            h.update(self.code_key(op["op"]).encode())
+        h.update(op_canonical(op, NON_GEOMETRY_KEYS).encode())
+        h.update(json.dumps([unit.id, unit.seed, unit.extra, ctx.frame, box_k], sort_keys=True, default=str).encode())
+        for s_ in sigs:
+            h.update(s_.encode())
+        self.stats["regionKeySeconds"] += time.time() - t
+        return {"key": h.hexdigest(), "names": names, "boxK": box_k, "boxR": box_r}
+
+    def store_region(self, region, run, writes, post, removed, created, before, elapsed):
+        t = time.time()
+        try:
+            if removed:
+                raise sreg.NotLocal("it removed objects")
+            names = region["names"]
+            ordinal = {n: i for i, n in enumerate(names)}
+            mapping = {n: REGION_NAME % i for i, n in enumerate(names)}
+            pieces, created_out, arrays = [], [], {}
+            for n in writes:
+                if n in created:
+                    continue
+                st_out = post[n][0]
+                base = before[n]
+                try:
+                    pmeta, parr = sreg.extract(base, st_out, region["boxK"], region["boxR"])
+                except sreg.NotLocal:
+                    # a rise's refinement (_refine) and _triangles triangulate every n-gon of the mesh (the welds of
+                    # earlier ops leave some far away): with that done to the input first, is the rest local?
+                    if not _has_ngons(base) or "dv_vert" in base[1]:
+                        raise
+                    base = _triangulated_state(base)
+                    pmeta, parr = sreg.extract(base, st_out, region["boxK"], region["boxR"])
+                    pmeta["triangulate"] = True
+                if n not in ordinal:
+                    # nothing of it in K: fine when all the op did to it is selection flags (Edit Mode), which a
+                    # replay leaves as the mesh has them
+                    if any(pmeta["counts"]) or pmeta["renormal"] or set(pmeta["fills"]) - set(sreg.SELECTION):
+                        raise sreg.NotLocal("it changed a mesh with nothing in K")
+                    continue
+                # the replay itself, on a copy of the input, must give the computed result (order-free, custom
+                # normals included; for custom normals rewritten everywhere, find how many re-encodings did it)
+                pmeta["steps"], off = _region_rebuilds(before[n], st_out, pmeta, parr, region["boxK"])
+                if off:
+                    raise sreg.NotLocal(off)
+                j = len(pieces)
+                keys = sorted(parr)
+                pieces.append({"ord": ordinal[n], "meta": pmeta, "keys": keys})
+                for i, k in enumerate(keys):
+                    arrays["p%d_%d" % (j, i)] = parr[k]
+            for n in created:
+                (m, arr), hs = post[n]
+                j = len(created_out)
+                keys = sorted(arr)
+                created_out.append({"name": n, "meta": dict(m, props=_map_names(m["props"], mapping)), "keys": keys})
+                for i, k in enumerate(keys):
+                    arrays["c%d_%d" % (j, i)] = arr[k]
+            meta = {"format": REGION_FORMAT, "computeSeconds": round(elapsed, 3), "names": len(names),
+                    "run": _map_names({k: v for k, v in run.items() if k != "seconds"}, mapping),
+                    "pieces": pieces, "created": created_out}
+            self.cache.store(region["key"], meta, arrays)
+            self.op_stored.append(region["key"])   # an escape drops it with the exact entry
+            self.stats["regionStored"] += 1
+        except Exception as e:   # a region entry is an extra: never let it break the op
+            if not isinstance(e, sreg.NotLocal):
+                import traceback
+                traceback.print_exc()
+                e = sreg.NotLocal("%s: %s" % (type(e).__name__, e))
+            why = str(e).split(" (")[0]
+            self.stats["regionNotLocal"][why] = self.stats["regionNotLocal"].get(why, 0) + 1
+            print(f"[shape_apply] {self.op_key}: no region entry: {e}")
+        self.stats["regionStoreSeconds"] += time.time() - t
+
+    def replay_region(self, region, before, key):
+        got = self.cache.load(region["key"])
+        if got is None:
+            self.stats["regionMisses"] += 1
+            return None
+        meta, arrays = got
+        t = time.time()
+        names = region["names"]
+        back = {REGION_NAME % i: n for i, n in enumerate(names)}
+        written, made = [], []
+        try:
+            if meta.get("format") != REGION_FORMAT or meta.get("names") != len(names):
+                raise sreg.NotLocal("entry format")
+            for j, p in enumerate(meta["pieces"]):
+                n = names[p["ord"]]
+                parr = {k: arrays["p%d_%d" % (j, i)] for i, k in enumerate(p["keys"])}
+                written.append(n)
+                _region_replay_mesh(bpy.data.objects[n], before[n], p["meta"], parr, region["boxK"], p["meta"]["steps"])
+            for j, c in enumerate(meta["created"]):
+                arr = {k: arrays["c%d_%d" % (j, i)] for i, k in enumerate(c["keys"])}
+                made.append(c["name"])
+                apply_state(c["name"], dict(c["meta"], props=_map_names(c["meta"]["props"], back)), arr)
+            seams = slab_seam_check([bpy.data.objects[n] for n in written + made])
+            if seams["open"]:
+                raise sreg.NotLocal("%d open seam point(s) after the replay" % seams["open"])
+        except Exception as e:
+            print(f"[shape_apply] region entry {region['key'][:12]} not used: {type(e).__name__}: {e}")
+            for n in written:
+                apply_state(n, *before[n])
+            for n in made:
+                remove_object(n)
+            if hasattr(self, "invalidate"):   # the hash memo
+                self.invalidate(set(written) | set(made))
+            self.cache.delete(region["key"])
+            self.stats["regionInvalid"] += 1
+            return None
+        elapsed = time.time() - t
+        self.stats["regionHits"] += 1
+        self.stats["regionReplaySeconds"] += elapsed
+        self.stats["savedSeconds"] += max(0.0, meta.get("computeSeconds", 0.0) - elapsed)
+        run = dict(_map_names(meta["run"], back), cached=True, region=True, seconds=round(elapsed, 3))
+        writes = sorted(set(written) | set(made))
+        # also under the exact key, so a rerun of this build replays bit for bit
+        post = {}
+        for n in writes:
+            st = capture_state(bpy.data.objects[n])
+            post[n] = (st, state_hash(*st))
+        self.store(key, run, writes, post, [], made, before, meta.get("computeSeconds", 0.0))
+        if hasattr(self, "remember"):   # the hash memo
+            for n in writes:
+                self.remember(n, post[n][1])
+        self.stats["stored"] -= 1   # counted as a region hit, not a store
+        return run, writes, [], made
+
     def summary(self):
-        return {k: round(v, 2) if isinstance(v, float) else v for k, v in self.stats.items()}
+        out = {k: round(v, 2) if isinstance(v, float) else v for k, v in self.stats.items()}
+        out["codeKeys"] = {k: {"key": c["key"][:16], "functions": c["functions"], "lines": c["lines"],
+                               "modules": c["modules"], "wholeFile": c["wholeFile"]}
+                           for k, c in sorted(self.code_keys.items())}
+        return out
+
+
+REGION_FORMAT = "golfmap-region-entry-v1"
+REGION_KEY_M = 3.0      # K = the unit's region + this: what the key covers (the op reads ~a ring of faces past its changes)
+REGION_CHANGE_M = 1.0   # what the op may change: its region + this (slack for the welds' 1 mm and a refined ring)
+REGION_NAME = "\x00m%d"  # a read mesh's name in a region entry: its place in the key's name order
+
+
+def _pad_box(box, pad):
+    return (box[0] - pad, box[1] - pad, box[2] + pad, box[3] + pad)
+
+
+def region_class(ctx, obj, meta):
+    """What, besides its K part, a mesh brings to a region key: no names (a renumbered OPCD piece still hits), the
+    index's type and kind, materials, vertex groups, matrix, visibility, collections and the props that are no ids."""
+    rec = ctx.by_name.get(obj.name) or {}
+    return {"type": rec.get("type"), "kind": rec.get("kind"), "materials": meta["materials"], "vgroups": meta["vgroups"],
+            "matrix": meta["matrix"], "activeColor": meta["activeColor"], "renderColor": meta["renderColor"],
+            "props": {k: v for k, v in meta["props"].items() if k not in sreg.NAME_PROPS},
+            "visible": obj.visible_get(), "hidden": obj.hide_get(), "hideRender": obj.hide_render,
+            "collections": sorted(c.name for c in obj.users_collection)}
+
+
+def _map_names(x, mapping):
+    """`x` (a run record, props) with every name in `mapping` replaced, also inside comma-joined lists and keys."""
+    if isinstance(x, str):
+        if x in mapping:
+            return mapping[x]
+        if "," in x:
+            parts = x.split(",")
+            if all(p in mapping for p in parts):
+                return ",".join(mapping[p] for p in parts)
+        return x
+    if isinstance(x, dict):
+        return {_map_names(k, mapping): _map_names(v, mapping) for k, v in x.items()}
+    if isinstance(x, (list, tuple)):
+        return [_map_names(v, mapping) for v in x]
+    return x
+
+
+def _smooth_vertex_normals(obj):
+    """Each vertex's smooth normal (mean of its corner normals), as _store_vertex_normals stores it for the cut."""
+    me = obj.data
+    cn = np.empty(len(me.loops) * 3, dtype=np.float32)
+    me.corner_normals.foreach_get("vector", cn)
+    cn = cn.reshape(-1, 3).astype(np.float64)
+    cv = np.empty(len(me.loops), dtype=np.int64)
+    me.loops.foreach_get("vertex_index", cv)
+    acc = np.zeros((len(me.vertices), 3))
+    np.add.at(acc, cv, cn)
+    acc /= np.maximum(np.linalg.norm(acc, axis=1), 1e-12)[:, None]
+    return acc.astype(np.float32)
+
+
+def _has_ngons(state):
+    ps = state[1]["poly_start"]
+    return bool(len(ps)) and bool((np.diff(np.append(ps, state[0]["counts"][3])) > 3).any())
+
+
+def _triangulate_ngons(me):
+    """Every face with more than 3 corners triangulated, as _refine and _triangles do it."""
+    import bmesh
+    bm = bmesh.new()
+    bm.from_mesh(me)
+    bmesh.ops.triangulate(bm, faces=[f for f in bm.faces if len(f.verts) > 3])
+    bm.to_mesh(me)
+    bm.free()
+    me.update()
+
+
+def _triangulated_state(state):
+    """A captured state with its n-gons triangulated (a temporary mesh; meta as the state's, counts the new ones)."""
+    me = _build_mesh("gmregion.tri", *state)
+    obj = bpy.data.objects.new("gmregion.tri", me)
+    try:
+        _triangulate_ngons(me)
+        meta, arrays = capture_state(obj)
+    finally:
+        bpy.data.objects.remove(obj)
+        bpy.data.meshes.remove(me)
+    return dict(state[0], counts=meta["counts"]), arrays
+
+
+def _region_steps(pmeta):
+    """The orders in which an op may have done its whole-mesh effects to a mesh, to try at store time: `p1` custom
+    normals rewritten from each vertex's smooth normal (the cut's _drop_cut_attrs), `tri` n-gons triangulated (a
+    rise's _refine, _triangles), `re` one re-encoding of the custom normals (a rise's _rise_set_z: the normalised
+    sum of a vertex's decoded corner normals; each moves the int16 values a step)."""
+    renormal, tri = pmeta["renormal"] == "rewritten", bool(pmeta.get("triangulate"))
+    if not renormal:
+        return [["tri"]] if tri else [[]]
+    out = []
+    for k in range(RENORMAL_PASSES):
+        out += [["p1", "tri"] + ["re"] * k, ["tri", "p1"] + ["re"] * k] if tri else [["p1"] + ["re"] * k]
+    return out
+
+
+def _region_replay_mesh(obj, state_in, pmeta, parr, box_k, steps):
+    """Put a region entry's piece into mesh `obj`, which holds `state_in`, after doing to the mesh what the op did to
+    all of it (`steps`, see _region_steps, in the order the store found). Done on the mesh as it was, they give the
+    corners outside K what the op gave them (those see only faces it left alone); the piece then brings K."""
+    me = obj.data
+    for step in steps:
+        if step == "p1":
+            vn = _smooth_vertex_normals(obj).astype(np.float64)
+            vn[np.linalg.norm(vn, axis=1) < 1e-6] = (0.0, 0.0, 1.0)
+            me.normals_split_custom_set_from_vertices([tuple(v) for v in vn.tolist()])
+        elif step == "tri":
+            _triangulate_ngons(me)
+        elif step == "re":
+            cn = np.empty(len(me.loops) * 3, dtype=np.float32)
+            me.corner_normals.foreach_get("vector", cn)
+            cv = np.empty(len(me.loops), dtype=np.int64)
+            me.loops.foreach_get("vertex_index", cv)
+            acc = np.zeros((len(me.vertices), 3))
+            np.add.at(acc, cv, cn.reshape(-1, 3))
+            acc = acc / np.maximum(np.linalg.norm(acc, axis=1, keepdims=True), 1e-9)
+            me.normals_split_custom_set_from_vertices([tuple(v) for v in acc.tolist()])
+        me.update()
+    base = state_in
+    if steps:
+        st = capture_state(obj)
+        base = (dict(state_in[0], counts=st[0]["counts"]), st[1])
+    tm, ta, _ = sreg.transplant(base, box_k, (pmeta, parr))
+    return apply_state(obj.name, tm, ta)
+
+
+RENORMAL_PASSES = 4     # re-encodings tried (a cut and up to three rises on one mesh)
+
+
+def _region_rebuilds(state_in, state_out, pmeta, parr, box_k):
+    """Does the replay (_region_replay_mesh) on a copy of the input give the computed result, order-free with custom
+    normals, selection flags outside K apart? (steps, '') with the first order of whole-mesh effects that does, or
+    (None, why)."""
+    skip = tuple(sreg.SELECTION)
+    want = sreg.canonical_hash(*state_out, skip=skip)
+    want_geo = sreg.canonical_hash(*state_out, skip=skip + (sreg.CUSTOM_NORMAL_KEY,))
+    geo_ok = False
+    for steps in _region_steps(pmeta):
+        obj = bpy.data.objects.new("gmregion.check", _build_mesh("gmregion.check", *state_in))
+        try:
+            if state_in[0].get("vgroups"):
+                _set_vertex_groups(obj, *state_in)
+            obj = _region_replay_mesh(obj, state_in, pmeta, parr, box_k, steps)
+            st = capture_state(obj)
+            if sreg.canonical_hash(*st, skip=skip) == want:
+                return steps, ""
+            geo_ok = geo_ok or sreg.canonical_hash(*st, skip=skip + (sreg.CUSTOM_NORMAL_KEY,)) == want_geo
+        finally:
+            m = obj.data
+            bpy.data.objects.remove(obj)
+            if m.users == 0:
+                bpy.data.meshes.remove(m)
+    return None, "custom normals outside K differ" if geo_ok else "the piece does not rebuild the result"
 
 
 # ---------------------------------------------------------------- ops
@@ -1756,10 +2237,14 @@ class Ctx:
         self.runner = UnitRunner()
         self._boxes = {}
 
-    def refresh(self):
-        """Rebuild the object index after objects were created, removed or renamed."""
+    def refresh(self, keep_memo=False):
+        """Rebuild the object index after objects were created, removed or renamed. Unless the caller kept
+        the books on what changed (keep_memo: the unit runner, an op without escapes), the runner's hash memo
+        is dropped too."""
         self.index = sl.build_index(_index_objects(), self.svg_paths)
         self.by_name = {r["name"]: r for r in self.index}
+        if not keep_memo:
+            self.runner.invalidate()
 
     def box(self, name):
         """XY bounding box of an object, cached until forget() (every unit forgets what it wrote)."""
@@ -1769,8 +2254,11 @@ class Ctx:
         return self._boxes[name]
 
     def forget(self, names=None):
+        """Drop cached boxes: of these objects (a unit wrote them), or all of them, which also drops the runner's
+        hash memo (something outside the runner changed the scene: the worker's restore)."""
         if names is None:
             self._boxes.clear()
+            self.runner.invalidate()
         else:
             for n in names:
                 self._boxes.pop(n, None)
@@ -1830,130 +2318,208 @@ def _rna_default(ctx, prop):
 
 def plan_units(ctx, op):
     """The op's units in run order (one per feature group; "*" for the whole-op ops) and selector problems.
-    Each unit's reads(margin) is what it may read or change: the worker's footprints and the cache key."""
-    kind = op["op"]
-    if kind == "golfmap.flatten_footprint":
-        box = footprint_guard_box(ctx, op)
-        return [Unit("*", [], None, lambda margin=0.0: {
-            o.name for o in spline_meshes() if o.visible_get() and ctx.box(o.name)
-            and sl.bbox_distance(box, ctx.box(o.name)) <= margin})], []
-    if kind == "golfmap.split_surfaces":
-        # select picks shapes; every object OPCD built from a picked shape (meshes, split pieces, blends) is split
-        import shape_surfaces as ss
-        recs, problems = sl.select(dict(op["select"], kind="any"), ctx.index)
-        path = _split_sidecar(ctx, op)
-        docs = ctx.__dict__.setdefault("_sidecars", {})
-        if path not in docs:
-            try:
-                docs[path] = ss.load_sidecar(path)
-            except (OSError, ValueError):
-                docs[path] = None
-        doc = docs[path]
-        src = _file_sha(os.path.join(HERE, "shape_surfaces.py"))
-        units = []
-        for shape in sorted({r["svgId"] for r in recs if r["svgId"]}):
-            names = sorted(r["name"] for r in ctx.index if r["svgId"] == shape)
-            extra = json.dumps([ss.shape_key(doc, shape) if doc else None, src], sort_keys=True)
-            units.append(Unit(shape, names, None, (lambda names: lambda margin=0.0: split_reads(ctx, names, margin))(names),
-                              extra=extra))
-        return units, problems
-    if kind == "golfmap.cut_out":
-        # one unit, named by the op; reads = every Spline mesh the cut can reach (the outline's box + 1 m; with
-        # `rise`, + its apron, which it refines and moves) and every mesh within 1 m of their boxes: the welds run on
-        # the whole boundary of those meshes and split their neighbours' edges (Omberg hall-58: a lake bed and a
-        # gravel path 20 m off the apron). With rise mode dem, the DEM window it samples keys the cache too (only
-        # that window: a DEM edit elsewhere keeps the slab's entry); a window that cannot be read keys on the file.
-        poly = cut_out_poly(ctx, op)
-        box = sl.polygon_bbox(poly)
-        reach = 1.0 + (rise_params(op["rise"])["apronM"] if op.get("rise") else 0.0)
-        extra = ""
-        if (op.get("rise") or {}).get("mode") == "dem":
-            try:
-                extra = json.dumps({"demWindow": dem_window_sha(ctx, sl.polygon_bbox(poly, reach))})
-            except (ValueError, KeyError) as e:   # cut_out reports it and cuts nothing
-                extra = json.dumps({"dem": course_dem_sha(ctx), "error": str(e)})
-            except OSError as e:
-                extra = json.dumps({"dem": None, "error": str(e)})
-        return [Unit(op["name"], [], None, lambda margin=0.0: near_boxes(ctx, [
-            o.name for o in spline_meshes() if ctx.box(o.name)
-            and sl.bbox_distance(box, ctx.box(o.name)) <= reach + margin], 1.0 + margin), extra=extra)], []
-    if kind == "golfmap.weld_tjunctions":
-        recs, problems = sl.select(op["select"], ctx.index)
-        names = [r["name"] for r in recs]
-        return [Unit("*", names, None, lambda margin=0.0: near_boxes(ctx, names, 1.0 + margin))], problems
-    if kind == "golfmap.path_transition":
-        import shape_surfaces as ss
-        recs, problems = sl.select(dict(op["select"], kind="any"), ctx.index)
-        doc = ss.load_sidecar(_split_sidecar(ctx, op))
-        units = []
-        for svg_id, group in sl.group_by_feature(recs):
-            entries = [e for e in doc.get("transitions", []) if e.get("shape") == svg_id]
-            if not entries:
-                continue
-            names = sorted(r["name"] for r in ctx.index if r["svgId"] == svg_id)
-            extra = json.dumps([entries, _file_sha(os.path.join(HERE, "shape_transition.py")),
-                               _file_sha(os.path.join(HERE, "shape_edgefade.py"))], sort_keys=True)
-            units.append(Unit(svg_id, names, None,
-                              (lambda names: lambda margin=0.0: set(names))(names), extra=extra))
-        return units, problems
-    if kind == "golfmap.path_kerb":
-        # one unit per road shape (its hard pieces' strips); reads = the shape's objects + the meshes beside them,
-        # whose vertices on a strip's outer edge drop with it (their boxes + 1 m)
-        recs, problems = sl.select(dict(op["select"], kind="any"), ctx.index)
-        src = _file_sha(os.path.join(HERE, "shape_kerb.py"))
-        units = []
-        for svg_id, group in sl.group_by_feature(recs):
-            names = [r["name"] for r in group]
-            units.append(Unit(svg_id, names, None,
-                              (lambda names: lambda margin=0.0: near_boxes(ctx, names, 1.0 + margin))(names), extra=src))
-        return units, problems
-    if kind == "golfmap.path_edge_fade":
-        # one unit per road shape: its path pieces and every blend object (the strips of several pieces share one);
-        # reads = the shape's objects + what the weld afterwards can reach (their boxes + 1 m)
-        recs, problems = sl.select(dict(op["select"], kind="any"), ctx.index)
-        src = _file_sha(os.path.join(HERE, "shape_edgefade.py"))
-        units = []
-        for svg_id, group in sl.group_by_feature(recs):
-            names = [r["name"] for r in group]
-            units.append(Unit(svg_id, names, group_seed(ctx, op, svg_id),
-                              (lambda names: lambda margin=0.0: near_boxes(ctx, names, 1.0 + margin))(names), extra=src))
-        return units, problems
+    Each unit's reads(margin) is what it may read or change: the worker's footprints and the cache key.
+    One planner per op kind (PLANNERS): the op cache's code key of a kind takes only that kind's planner."""
+    planner = PLANNERS.get(op["op"])
+    if planner is None:
+        return _plan_unknown(ctx, op)
+    return planner(ctx, op)
+
+
+def _plan_unknown(ctx, op):
     groups, problems = feature_groups(ctx, op)
-    weld = op.get("weld", True) is not False
-    radius = None
-    if kind == "afrod.smoothcartpaths":
-        radius = op.get("params", {}).get("smooth_path_distance", _rna_default(ctx, "smooth_path_distance"))
+    if groups:
+        raise RuntimeError(f"no planner for {op['op']}")
+    return [], problems
+
+
+def plan_flatten_footprint(ctx, op):
+    box = footprint_guard_box(ctx, op)
+    return [Unit("*", [], None, lambda margin=0.0: {
+        o.name for o in spline_meshes() if o.visible_get() and ctx.box(o.name)
+        and sl.bbox_distance(box, ctx.box(o.name)) <= margin})], []
+
+
+def plan_split_surfaces(ctx, op):
+    # select picks shapes; every object OPCD built from a picked shape (meshes, split pieces, blends) is split
+    import shape_surfaces as ss
+    recs, problems = sl.select(dict(op["select"], kind="any"), ctx.index)
+    path = _split_sidecar(ctx, op)
+    docs = ctx.__dict__.setdefault("_sidecars", {})
+    if path not in docs:
+        try:
+            docs[path] = ss.load_sidecar(path)
+        except (OSError, ValueError):
+            docs[path] = None
+    doc = docs[path]
+    src = _file_sha(os.path.join(HERE, "shape_surfaces.py"))
+    units = []
+    for shape in sorted({r["svgId"] for r in recs if r["svgId"]}):
+        names = sorted(r["name"] for r in ctx.index if r["svgId"] == shape)
+        extra = json.dumps([ss.shape_key(doc, shape) if doc else None, src], sort_keys=True)
+        units.append(Unit(shape, names, None, (lambda names: lambda margin=0.0: split_reads(ctx, names, margin))(names),
+                          extra=extra))
+    return units, problems
+
+
+def plan_cut_out(ctx, op):
+    # one unit, named by the op; reads = every Spline mesh the cut can reach (the outline's box + 1 m; with
+    # `rise`, + its apron, which it refines and moves) and every mesh within 1 m of their boxes: the welds run on
+    # the whole boundary of those meshes and split their neighbours' edges (Omberg hall-58: a lake bed and a
+    # gravel path 20 m off the apron). With rise mode dem, the DEM window it samples keys the cache too (only
+    # that window: a DEM edit elsewhere keeps the slab's entry); a window that cannot be read keys on the file.
+    poly = cut_out_poly(ctx, op)
+    box = sl.polygon_bbox(poly)
+    reach = 1.0 + (rise_params(op["rise"])["apronM"] if op.get("rise") else 0.0)
+    extra = ""
+    if (op.get("rise") or {}).get("mode") == "dem":
+        try:
+            extra = json.dumps({"demWindow": dem_window_sha(ctx, sl.polygon_bbox(poly, reach))})
+        except (ValueError, KeyError) as e:   # cut_out reports it and cuts nothing
+            extra = json.dumps({"dem": course_dem_sha(ctx), "error": str(e)})
+        except OSError as e:
+            extra = json.dumps({"dem": None, "error": str(e)})
+    unit = Unit(op["name"], [], None, lambda margin=0.0: near_boxes(ctx, [
+        o.name for o in spline_meshes() if ctx.box(o.name)
+        and sl.bbox_distance(box, ctx.box(o.name)) <= reach + margin], 1.0 + margin), extra=extra)
+    # region entries: what it changes lies within its reach of the outline (a water slab's lake join: + 12 m)
+    sink = RISE_SINK_REACH_M if (op.get("rise") or {}).get("waterM") is not None else 0.0
+    unit.region = sl.polygon_bbox(poly, reach + sink + 0.5)
+    return [unit], []
+
+
+def plan_weld_tjunctions(ctx, op):
+    recs, problems = sl.select(op["select"], ctx.index)
+    names = [r["name"] for r in recs]
+    return [Unit("*", names, None, lambda margin=0.0: near_boxes(ctx, names, 1.0 + margin))], problems
+
+
+def plan_path_transition(ctx, op):
+    import shape_surfaces as ss
+    recs, problems = sl.select(dict(op["select"], kind="any"), ctx.index)
+    doc = ss.load_sidecar(_split_sidecar(ctx, op))
+    units = []
+    for svg_id, group in sl.group_by_feature(recs):
+        entries = [e for e in doc.get("transitions", []) if e.get("shape") == svg_id]
+        if not entries:
+            continue
+        names = sorted(r["name"] for r in ctx.index if r["svgId"] == svg_id)
+        extra = json.dumps([entries, _file_sha(os.path.join(HERE, "shape_transition.py")),
+                           _file_sha(os.path.join(HERE, "shape_edgefade.py"))], sort_keys=True)
+        units.append(Unit(svg_id, names, None,
+                          (lambda names: lambda margin=0.0: set(names))(names), extra=extra))
+    return units, problems
+
+
+def plan_path_kerb(ctx, op):
+    # one unit per road shape (its hard pieces' strips); reads = the shape's objects + the meshes beside them,
+    # whose vertices on a strip's outer edge drop with it (their boxes + 1 m)
+    recs, problems = sl.select(dict(op["select"], kind="any"), ctx.index)
+    src = _file_sha(os.path.join(HERE, "shape_kerb.py"))
+    units = []
+    for svg_id, group in sl.group_by_feature(recs):
+        names = [r["name"] for r in group]
+        units.append(Unit(svg_id, names, None,
+                          (lambda names: lambda margin=0.0: near_boxes(ctx, names, 1.0 + margin))(names), extra=src))
+    return units, problems
+
+
+def plan_path_edge_fade(ctx, op):
+    # one unit per road shape: its path pieces and every blend object (the strips of several pieces share one);
+    # reads = the shape's objects + what the weld afterwards can reach (their boxes + 1 m)
+    recs, problems = sl.select(dict(op["select"], kind="any"), ctx.index)
+    src = _file_sha(os.path.join(HERE, "shape_edgefade.py"))
+    units = []
+    for svg_id, group in sl.group_by_feature(recs):
+        names = [r["name"] for r in group]
+        units.append(Unit(svg_id, names, group_seed(ctx, op, svg_id),
+                          (lambda names: lambda margin=0.0: near_boxes(ctx, names, 1.0 + margin))(names), extra=src))
+    return units, problems
+
+
+def _plan_feature_units(ctx, op, make):
+    """Afrod ops and recipes: one unit per feature group; make(names, recs, svg_id, seed) -> Unit, or None to skip."""
+    groups, problems = feature_groups(ctx, op)
     units = []
     for svg_id, recs in groups:
-        names = [r["name"] for r in recs]
-        seed = group_seed(ctx, op, svg_id)
-        extra = ""
-        if kind == "afrod.flattentees":
-            reads = (lambda names: lambda margin=0.0: tee_reads(ctx, op, names, margin))(names)
-        elif kind == "afrod.cutcartpaths":
-            # the weld after the cut looks 0.5 m around each cut mesh
-            reads = (lambda names: lambda margin=0.0: near_boxes(ctx, names, 1.0 + margin) if weld else set(names))(names)
-            cut_paint = cut_paint_mode(ctx, op, svg_id)
-            extra = json.dumps(cut_paint, sort_keys=True)
-        elif kind == "afrod.smoothcartpaths":
-            # smooth_outside moves every Spline vertex within the radius of the path's boundary
-            reads = (lambda names: lambda margin=0.0: near_boxes(ctx, names, radius + 0.5 + margin))(names)
-        elif kind == "afrod.recipe":
-            names = [r["name"] for r in recs if r["kind"] == "mesh"]
-            if not names:
-                continue
-            reads = (lambda names: lambda margin=0.0: recipe_reads(names))(names)
-            plan = recipe_plan(ctx, op)
-            if plan["seed"] is not None:
-                seed = plan["seed"]
-            extra = plan["key"]
-        else:
-            raise RuntimeError(f"no planner for {kind}")
-        unit = Unit(svg_id, names, seed, reads, extra=extra)
-        if kind == "afrod.cutcartpaths":
-            unit.cut_paint = cut_paint
-        units.append(unit)
+        unit = make([r["name"] for r in recs], recs, svg_id, group_seed(ctx, op, svg_id))
+        if unit is not None:
+            units.append(unit)
     return units, problems
+
+
+def tee_region(ctx, op, names):
+    """A tee flatten's region entries box: the proportional resize reaches (tee half-size + outset + FOCUS_MARGIN)
+    around the tee; None without focus (then every visible mesh enters Edit Mode)."""
+    if op.get("focus", True) is False:
+        return None
+    boxes = [b for b in (ctx.box(n) for n in names) if b]
+    if not boxes:
+        return None
+    tb = (min(b[0] for b in boxes), min(b[1] for b in boxes), max(b[2] for b in boxes), max(b[3] for b in boxes))
+    outset = op.get("params", {}).get("tees_flat_outset", 0.0)
+    return _pad_box(tb, max(tb[2] - tb[0], tb[3] - tb[1]) / 2 + outset + FOCUS_MARGIN)
+
+
+def plan_flattentees(ctx, op):
+    def make(names, recs, svg_id, seed):
+        unit = Unit(svg_id, names, seed, lambda margin=0.0: tee_reads(ctx, op, names, margin))
+        unit.region = tee_region(ctx, op, names)
+        return unit
+    return _plan_feature_units(ctx, op, make)
+
+
+def plan_cutcartpaths(ctx, op):
+    weld = op.get("weld", True) is not False
+
+    def make(names, recs, svg_id, seed):
+        # the weld after the cut looks 0.5 m around each cut mesh
+        cut_paint = cut_paint_mode(ctx, op, svg_id)
+        unit = Unit(svg_id, names, seed, lambda margin=0.0: near_boxes(ctx, names, 1.0 + margin) if weld else set(names),
+                    extra=json.dumps(cut_paint, sort_keys=True))
+        unit.cut_paint = cut_paint
+        return unit
+    return _plan_feature_units(ctx, op, make)
+
+
+def plan_smoothcartpaths(ctx, op):
+    # smooth_outside moves every Spline vertex within the radius of the path's boundary
+    radius = op.get("params", {}).get("smooth_path_distance", _rna_default(ctx, "smooth_path_distance"))
+    return _plan_feature_units(ctx, op, lambda names, recs, svg_id, seed: Unit(
+        svg_id, names, seed, lambda margin=0.0: near_boxes(ctx, names, radius + 0.5 + margin)))
+
+
+def plan_recipe(ctx, op):
+    def make(names, recs, svg_id, seed):
+        names = [r["name"] for r in recs if r["kind"] == "mesh"]
+        if not names:
+            return None
+        plan = recipe_plan(ctx, op)
+        return Unit(svg_id, names, plan["seed"] if plan["seed"] is not None else seed,
+                    lambda margin=0.0: recipe_reads(names), extra=plan["key"])
+    return _plan_feature_units(ctx, op, make)
+
+
+def plan_creek_channel(ctx, op):
+    # one unit: the bed mesh the op names (it exists once the cut_out before it has run); nothing else is read or changed
+    name = op["object"]
+    return [Unit(name, [name], None, lambda margin=0.0: set())], []
+
+
+PLANNERS = {
+    "golfmap.creek_channel": plan_creek_channel,
+    "golfmap.flatten_footprint": plan_flatten_footprint,
+    "golfmap.split_surfaces": plan_split_surfaces,
+    "golfmap.cut_out": plan_cut_out,
+    "golfmap.weld_tjunctions": plan_weld_tjunctions,
+    "golfmap.path_transition": plan_path_transition,
+    "golfmap.path_kerb": plan_path_kerb,
+    "golfmap.path_edge_fade": plan_path_edge_fade,
+    "afrod.flattentees": plan_flattentees,
+    "afrod.cutcartpaths": plan_cutcartpaths,
+    "afrod.smoothcartpaths": plan_smoothcartpaths,
+    "afrod.recipe": plan_recipe,
+}
 
 
 def run_afrod(ctx, op, operator, extra=None, focus=False, post=None, pre=None):
@@ -5521,7 +6087,54 @@ def edge_fade_core(pieces, blends, width, max_edge, amplitude, seed, weld=True, 
     return out
 
 
+def op_creek_channel(ctx, op):
+    units, _ = plan_units(ctx, op)
+    runs = []
+    for unit in units:
+        run = ctx.runner.run(ctx, op, unit, lambda: creek_channel(ctx, op))
+        if run is not None:
+            runs.append(run)
+    return runs, []
+
+
+def creek_channel(ctx, op):
+    """The creek bed `op["object"]` gets its channel (shape_creek.channel_heights) along `centerline3006`: flat bottom
+    `depthM` (0.7) under the ground beside it, `widthM` (0.7) wide, walls `wallM` (0.15), easing in over `rampM` (1.5) from
+    each end. The mesh border keeps its heights (shared with the meshes around it)."""
+    name = op["object"]
+    run = {"feature": name, "targets": [name], "seed": None}
+    ob = bpy.data.objects.get(name)
+    if ob is None:
+        return dict(run, result=["CANCELLED"], error=f"{name} does not exist (the cut_out before this op did not make it)")
+    t = time.time()
+    co = positions(ob).astype(np.float64)
+    line = np.array([shape_coords.to_blend(e, n, ctx.frame) for e, n in op["centerline3006"]], dtype=np.float64)
+    me = ob.data
+    li = np.empty(len(me.loops), dtype=np.int64)
+    me.loops.foreach_get("edge_index", li)
+    uses = np.bincount(li, minlength=len(me.edges))
+    ev = np.empty(len(me.edges) * 2, dtype=np.int64)
+    me.edges.foreach_get("vertices", ev)
+    ev = ev.reshape(-1, 2)
+    pinned = np.zeros(len(co), dtype=bool)
+    pinned[ev[uses == 1].reshape(-1)] = True
+    try:
+        new_z, info = shape_creek.channel_heights(
+            co[:, :2], co[:, 2], line, width=float(op.get("widthM", 0.7)), depth=float(op.get("depthM", 0.7)),
+            wall=float(op.get("wallM", 0.15)), ramp=float(op.get("rampM", 1.5)),
+            band=tuple(float(v) for v in op.get("refBandM", (1.0, 1.2))), pinned=pinned)
+    except ValueError as e:
+        return dict(run, result=["CANCELLED"], error=str(e))
+    moved = np.abs(new_z - co[:, 2]) > 1e-9
+    _rise_set_z(ob, co, new_z, moved, ob)
+    run.update(result=["FINISHED"], channel=info, pinnedVertices=int(pinned.sum()), seconds=round(time.time() - t, 2))
+    print(f"[shape_apply] creek_channel {name}: {info['moved']} of {info['vertices']} vertices lowered, max {info['maxDropM']} m, "
+          f"bed {info['bedM'][0]}-{info['bedM'][1]} m, {run['seconds']} s")
+    return run
+
+
 RUNNERS = {
+    "golfmap.creek_channel": op_creek_channel,
     "golfmap.split_surfaces": op_split_surfaces,
     "golfmap.cut_out": op_cut_out,
     "golfmap.path_edge_fade": op_path_edge_fade,
@@ -5867,6 +6480,7 @@ class Applier:
             color, exaggerate, tag = render_style(op)
             self.renders[key] = {"targets": entry["targets"], "style": [color, exaggerate], "before": render_targets(
                 entry["targets"], os.path.join(self.render, f"{layer['id']}-{op['id']}-before{tag}.png"), color, exaggerate)}
+            self.runner.invalidate()  # the render exaggerates and puts back: outside the runner's books
         t0 = time.time()
         before = snapshot()
         self.spent["snapshot"] += time.time() - t0
@@ -5893,6 +6507,7 @@ class Applier:
             entry["status"] = "error"
             entry["error"] = f"{type(e).__name__}: {e}"
             object_mode()
+            self.runner.invalidate()
         entry["seconds"] = round(time.time() - t, 2)
         entry["cache"] = {"hits": self.runner.stats["hits"] - hits0, "misses": self.runner.stats["misses"] - misses0}
         t0 = time.time()
@@ -5908,7 +6523,7 @@ class Applier:
                                              "(not cached; the worker re-applies everything on the next sync)"})
         ctx.forget(d)
         if set(before) != set(after):
-            ctx.refresh()
+            ctx.refresh(keep_memo=not escaped)  # without escapes every unit kept the books on what it created
         entry["objectsChanged"] = sorted(d)
         entry["vertsMoved"] = sum(v.get("vertsMoved") or 0 for v in d.values())
         entry["maxAbsDz"] = round(max([v.get("maxAbsDz", 0.0) for v in d.values()] or [0.0]), 4)
@@ -6107,6 +6722,8 @@ def main(argv):
                     help="warn about ops moving a vertex more than this (m; an op's maxDzWarnM overrides)")
     ap.add_argument("--no-cache", action="store_true", help="compute every op (no op-result cache reads or writes)")
     ap.add_argument("--cache-dir", help="op-result cache folder (default <blend folder>/shaping-staging/cache)")
+    ap.add_argument("--history", action="store_true", help="keep the worker's per-op snapshots (shape_worker's "
+                    "History) as its /load does: times a worker load with the CLI")
     args = ap.parse_args(argv)
 
     started = time.time()
@@ -6130,7 +6747,8 @@ def main(argv):
     if stale:
         print("[shape_apply] WARNING " + stale["message"])
     app = Applier(svg=args.svg, sidecar=args.sidecar, cache=not args.no_cache and not args.dry_run,
-                  cache_dir=args.cache_dir, max_dz_warn=args.max_dz_warn, render=args.render)
+                  cache_dir=args.cache_dir, max_dz_warn=args.max_dz_warn, render=args.render,
+                  history=History() if args.history else None)
     report["svg"] = app.svg_report()
     report["frame"] = app.frame
     print(f"[shape_apply] {len(layers)} layer(s), SVG {os.path.basename(app.svg_path)} ({app.score['resolved']}/{app.score['shapes']} shapes, "
@@ -6220,7 +6838,9 @@ def main(argv):
             c = report["cache"]
             print(f"[shape_apply] op cache: {c['hits']} hits ({c['replaySeconds']} s replay, ~{c['savedSeconds']} s saved), "
                   f"{c['misses']} misses ({c['computeSeconds']} s), {c['stored']} stored, {c['invalid']} invalid, "
-                  f"{c['uncacheable']} uncacheable; keys {c['keySeconds']} s")
+                  f"{c['uncacheable']} uncacheable; keys {c['keySeconds']} s (reads {c['keyReadsSeconds']} s, capture "
+                  f"{c['keyCaptureSeconds']} s, hash {c['keyHashSeconds']} s, history {c['keyHistorySeconds']} s; memo "
+                  f"{c['memoHits']} hit / {c['memoMisses']} miss), entry loads {c['loadSeconds']} s")
     if app.unresolved:
         print(f"[shape_apply] {len(app.unresolved)} unresolved selector(s)")
     for w in report["warnings"]:

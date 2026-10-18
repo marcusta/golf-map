@@ -507,7 +507,8 @@ next to the `.blend` whose path ids explain most `opcd_shape_id`s), `--sidecar`,
 `<blend folder>/shaping-staging/fbx`; refuses a Unity project; the FBX and manifest entries of objects the run
 removed, e.g. the originals `golfmap.split_surfaces` replaced, are deleted: report `export.removed`), `--render <folder>` (Workbench before/after PNG
 per op: paint for recipes, grey at 5x relief for the rest), `--no-cache`, `--cache-dir` (default
-`<blend folder>/shaping-staging/cache`).
+`<blend folder>/shaping-staging/cache`), `--history` (keep the worker's per-op snapshots as its `/load` does, to
+time a worker load with the CLI).
 
 - **Selectors** (`feature`, `type`, `hole`, `kind` mesh/blend/any, `object`) resolve by feature id through the
   SVG (`data-feature-id`, `data-type`, hole from `hole_<n>_` or the `Hole<n>` layer) and the objects'
@@ -624,7 +625,8 @@ per op: paint for recipes, grey at 5x relief for the rest), `--no-cache`, `--cac
   feature group; `"*"` for footprint and weld ops). A unit's reads are its targets plus every Spline mesh within
   its reach (tee flatten: its proportional radius; cut: 1 m, the weld looks 0.5 m around; smooth: the smooth
   distance + 0.5 m; recipe: the feature's mesh and its blends; footprint: meshes whose box meets the footprint +
-  falloff + protect band). Key = this file + shape_layers + Blender + Afrod/Edit Mesh Tools sources, the op's
+  falloff + protect band). Key = the engine version, Blender, the Afrod/Edit Mesh Tools sources, the op kind's
+  **code key** (the source of exactly the code that op runs, next bullet), the op's
   JSON (without id/note/provenance), the unit, seed, frame, for recipes the recipe file + shape_paint + library,
   for a `rise.mode` dem cut-out the DEM window it samples (not the whole DEM; "rise.mode dem" below),
   and the full state hash (every attribute incl. selection, custom normals, byte colours, vertex groups,
@@ -638,6 +640,52 @@ per op: paint for recipes, grey at 5x relief for the rest), `--no-cache`, `--cac
   own work, `phases` `checks` 400 s of it: `path_surface_check` and `tjunction_check` over the path meshes the
   transitions refine to 2.4 M vertices. `neighbour_planes`' `np.add.at` is the single biggest line there; a
   stable sort by vertex plus `np.add.reduceat` would sum in the same order for the same result.
+- **Code key per op kind** (`tools/shape_opkey.py`, 2026-10-18). The key used to hold the sha of all of
+  shape_apply.py and shape_layers.py, so every edit to the road or kerb code made all ~320 Omberg units miss,
+  the 143 rock-slab cut-outs (~45 min of compute) included. Now each op kind keys on the source text of the
+  closure of what it runs: from its entry in `RUNNERS`, plus the cache framework (`OpCache`, `UnitRunner`,
+  `Unit`, `History`, `Ctx`, `capture_state`, `state_hash`, `apply_state`, `plan_units` ... and shape_opkey
+  itself), every module-level function, class and assignment it names, transitively, into the sibling modules
+  (`sl.select` reaches shape_layers.select and what that names; shape_layers' layer validation, which imports
+  shape_kerb, is not reached by a cut-out). `plan_units` dispatches through `PLANNERS` (one planner per kind),
+  so a kind takes only its own planner. Rules (conservative, a missing edge would be a stale result in the
+  scene): names in bodies, nested functions, lambdas, decorators, default arguments and class bodies; a
+  statement that mutates a module-level name (`X.update(...)`) and every function that rebinds it (`global`)
+  or mutates it in place belong to that name; `obj.attr` on a non-module follows every class of that module
+  defining `attr` (except the driver `Applier`); a sibling module object used other than as `mod.attr` takes
+  that whole module. An unresolved name, `eval`/`exec`/`globals()`/`vars()`/`__import__`/`importlib`, a
+  computed `getattr` on something of the module, `sys.modules[__name__]` or a reached `import shape_apply`
+  makes the kind's key the whole file plus all siblings (logged `[shape_opkey] <kind>: whole-file code key`);
+  none does today. Comments and blank lines inside a reached function count (text, not bytecode).
+  `python blender/tools/shape_opkey.py` prints each kind's closure; tests: `python
+  blender/tools/shape_opkey_test.py` (a kerb-only function, constant, planner or shape_kerb function leaves
+  `golfmap.cut_out`'s key alone; the weld, rise code, `CUT_OUT_WELD_M`, `RISE_DEM_DEFAULTS.update(...)` change
+  it; OpCache / Unit / capture_state / state_hash change every kind; the fallbacks). The source is the one
+  imported (`OWN_SOURCE`, siblings read once per process); the worker's sync reloads shape_edgefade and
+  shape_transition and re-reads them for the keys (`UnitRunner.reload_code`). Data files ops read (recipes,
+  sidecars, the DEM window) stay in the unit's `extra` as before. The report's `cache.codeKeys` has each kind's
+  key, functions, lines and modules.
+- **Hash memo** (`UnitRunner.memo`). Each unit hashed the whole state of every mesh it reads, from scratch;
+  the big `Outer_Deep_Sat` fill pieces and the deep rough are read by 100+ cut-outs, so a fully warm Omberg load
+  spent 570-720 s in `keySeconds` against 40-50 s of replay. The runner now keeps the state hash of every mesh it
+  captured with a guard (object and mesh pointers, element counts) and only captures and hashes a read whose memo
+  is gone: a unit's writes and created objects get the hash of their new state (verified by the replay, captured
+  by the compute), removed ones are dropped, and the whole memo goes on an escape, an exception, `ctx.forget()` /
+  `ctx.refresh()` from outside the runner (the worker's restore in `/sync`), an op's error and a render; a load
+  starts a new runner. A hit captures only the meshes it writes (the replay keeps their unchanged arrays) and the
+  worker's history copies only those; a miss captures and copies every read as before. Keys are bit-identical to
+  the un-memoised ones: `GOLFMAP_SHAPE_VERIFY_HASH_MEMO=1` captures and hashes every memoised read again and
+  raises on a mismatch, `GOLFMAP_SHAPE_NO_HASH_MEMO=1` turns the memo off. The report's `cache` splits
+  `keySeconds` into `keyReadsSeconds` / `keyCaptureSeconds` / `keyHashSeconds` / `keyHistorySeconds`, with
+  `loadSeconds` (reading the entries) and `memoHits` / `memoMisses`. Test (headless):
+  `blender.exe -b --factory-startup --python-exit-code 1 --python blender/tools/shape_hashmemo_test.py`.
+  **Omberg svg_109, CLI with `--history` (2026-10-18)**: cold with the memo off, 323 units, 127 790 mesh reads:
+  `keySeconds` 756 s = capture 449 s + hash 274 s + history copies 18 s + reads 6 s (total 4417 s, compute
+  2969 s). Fully warm with the memo (325 hits): `keySeconds` 19.6 s (capture 11 s, of only what the hits write;
+  hash 1 s; 128 856 of 129 645 reads from the memo), replay 31 s, the ops 86 s. The run total is 681 s, 484 s of
+  them the CLI's own report checks, which a worker load does not run (worker baseline, svg_105/108: 569-719 s of
+  keys in a 695-916 s load). The same warm run with `GOLFMAP_SHAPE_VERIFY_HASH_MEMO=1` re-verified all 128 856
+  memoised hashes with no mismatch and left all-mesh position, colour and FBX hashes equal to the computed run.
 - Pure-Python parts (layer validation, SVG parsing, selectors, seeds, footprint maths) are in
   `tools/shape_layers.py`; tests: `python blender/tools/shape_layers_test.py`.
 
