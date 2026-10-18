@@ -156,6 +156,9 @@ namespace GolfMap.Editor
             public List<string[]> sharpPairs = new List<string[]>();
             public Color transitionDirtTint = new Color(89f / 255, 83f / 255, 72f / 255, 1);
             public double transitionPathStrength = 3, transitionDirtStrength = 1;
+            // Hand tweaks kept across runs: material name (Surfaces/<name>.mat) -> shader property -> a number, or
+            // [r, g, b(, a)] for a colour. Applied last, over what the run computed.
+            public GolfMapJsonObject materialOverrides;
             public bool Sharp(string a, string b)
             {
                 return a == b || sharpPairs.Any(p => (p[0] == a && p[1] == b) || (p[0] == b && p[1] == a));
@@ -312,7 +315,10 @@ namespace GolfMap.Editor
                 if (dryRun) continue;
                 Material m;
                 if (!built.TryGetValue(p.target, out m))
+                {
                     m = built[p.target] = BuildMaterial(p, spec, slices, folder, built, problems);
+                    if (m != null) ApplyOverrides(m, spec, problems);
+                }
                 if (m == null) continue;
                 Assign(p.r, m);
                 if (!IsBlend(p.r.name)) SetPhysic(p.r, spec.looks[p.surface].physicMaterial, problems);
@@ -1140,7 +1146,7 @@ namespace GolfMap.Editor
             var text = GolfMapJson.Serialize(new Dictionary<string, object>
             {
                 { "format", SpecFormat },
-                { "note", "golfmap.paths.materials look=surface: how each path surface is drawn, on OPCD's MAHS shader (satellite off). Keys = the Draw panel's path surfaces (shared/features/path-surface.ts); grass tracks are rough meshes and not listed. albedo/normal/occlusion/height = asset paths (occlusion and height optional: occlusion goes into the MAHS map's AO, height is the channel's Height Texture, which with the vertex paint and fringeBlendStrength decides where stones show through the grass across a fringe strip), tileM = metres one repeat covers (Detail Tiling), tint = #rrggbb (Detail Color Tint; OPCD's arrays are sampled as stored bytes, brighter than a Standard material shows the same file, so tints run dark), smoothness 0-1, nearNRMStrength/farNRMStrength/farNRMTilingM = the normal map near and beyond detailDistanceM, aoBrightness multiplies the AO, detailOpacity 0-1 = how much of the texture shows over the surface's mean colour (the base, which also takes over beyond detailDistanceM so it does not tile), fringeBlendStrength = the path channel's Blend Strength on fringe strips (higher = the path reaches further across), physicMaterial = the path mesh collider's (GSPro reads bounce and roll off it), tracks = optional worn look of the surface (wheel tracks, a trodden middle: where the Blender wear paint took the path's green out; same keys, what it leaves out is the surface's own, blendStrength = how hard it takes over). unknownSurface = the look of a path mesh no road shape of the export names. sharpPairs = road-to-road strips that keep a hard edge. baseMaterial = what the surface materials are copied from. Edit and run again." },
+                { "note", "golfmap.paths.materials look=surface: how each path surface is drawn, on OPCD's MAHS shader (satellite off). Keys = the Draw panel's path surfaces (shared/features/path-surface.ts); grass tracks are rough meshes and not listed. albedo/normal/occlusion/height = asset paths (occlusion and height optional: occlusion goes into the MAHS map's AO, height is the channel's Height Texture, which with the vertex paint and fringeBlendStrength decides where stones show through the grass across a fringe strip), tileM = metres one repeat covers (Detail Tiling), tint = #rrggbb (Detail Color Tint; OPCD's arrays are sampled as stored bytes, brighter than a Standard material shows the same file, so tints run dark), smoothness 0-1, nearNRMStrength/farNRMStrength/farNRMTilingM = the normal map near and beyond detailDistanceM, aoBrightness multiplies the AO, detailOpacity 0-1 = how much of the texture shows over the surface's mean colour (the base, which also takes over beyond detailDistanceM so it does not tile), fringeBlendStrength = the path channel's Blend Strength on fringe strips (higher = the path reaches further across), physicMaterial = the path mesh collider's (GSPro reads bounce and roll off it), tracks = optional worn look of the surface (wheel tracks, a trodden middle: where the Blender wear paint took the path's green out; same keys, what it leaves out is the surface's own, blendStrength = how hard it takes over). unknownSurface = the look of a path mesh no road shape of the export names. sharpPairs = road-to-road strips that keep a hard edge. materialOverrides = hand tweaks kept across runs: {\"<material name>\": {\"<shader property>\": number or [r, g, b(, a)]}}, applied last. baseMaterial = what the surface materials are copied from. Edit and run again." },
                 { "unknownSurface", "asphalt" },
                 { "baseMaterial", DefaultBase },
                 { "sharpPairs", new List<object> { new List<object> { "asphalt", "concrete" } } },
@@ -1187,6 +1193,27 @@ namespace GolfMap.Editor
 
         static Dictionary<string, object> With(Dictionary<string, object> d, string key, object value) { d[key] = value; return d; }
 
+        // The spec's materialOverrides for this material, over what the run wrote (e.g. a fringe's _GreenBaseColorTint
+        // set by hand in the inspector, so a rerun keeps it).
+        static void ApplyOverrides(Material m, Spec spec, List<string> problems)
+        {
+            var o = spec.materialOverrides == null ? null : spec.materialOverrides.Object(m.name);
+            if (o == null) return;
+            foreach (var prop in o.keys)
+            {
+                if (!m.HasProperty(prop)) { problems.Add(m.name + ": override " + prop + " is no property of " + m.shader.name); continue; }
+                var arr = o.Array(prop);
+                if (arr != null)
+                {
+                    var v = arr.OfType<GolfMapJsonNumber>().Select(n => (float)n.Value).ToArray();
+                    if (v.Length < 3) { problems.Add(m.name + ": override " + prop + " needs [r, g, b(, a)]"); continue; }
+                    m.SetColor(prop, new Color(v[0], v[1], v[2], v.Length > 3 ? v[3] : 1));
+                }
+                else m.SetFloat(prop, (float)o.Number(prop));
+            }
+            EditorUtility.SetDirty(m);
+        }
+
         static Spec ReadSpec(string path, string courseFolder, bool dryRun, Dictionary<string, object> result)
         {
             GolfMapJsonObject root = File.Exists(path) ? GolfMapJsonDoc.ParseObject(File.ReadAllText(path)) : null;
@@ -1229,6 +1256,7 @@ namespace GolfMap.Editor
                     || double.IsNaN(spec.transitionDirtStrength) || double.IsInfinity(spec.transitionDirtStrength) || spec.transitionDirtStrength <= 0)
                     throw new BridgeError("Transition blend strengths must be finite and positive in " + path);
             }
+            spec.materialOverrides = root.Object("materialOverrides");
             var pairs = root.Array("sharpPairs");
             if (pairs != null)
                 foreach (var pr in pairs.OfType<List<object>>())

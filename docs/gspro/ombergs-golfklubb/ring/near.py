@@ -173,7 +173,8 @@ def flat_roof(g, x0, x1, y0, y1, zf, thick, top, edge, under, hang=None):
 # ---------------------------------------------------------------------------------------------
 # Driving-range bay shelter
 # ---------------------------------------------------------------------------------------------
-SH = dict(e=477841.1, n=6457553.55, yaw=160.5, ground=110.37)
+# Marcus moved it 1.21 m west in Unity (2026-10-18) from the lidar fit's E 477841.10 N 6457553.55.
+SH = dict(e=477839.89, n=6457553.53, yaw=160.5, ground=110.37)
 SLAB_X, SLAB_Y, SLAB_TOP = 11.25, 2.1, 0.2
 ARCH = dict(y0=2.09, z0=114.295 - SH["ground"], R=11.2)           # lidar fit of the roof's top surface
 ROOF_X, ROOF_Y0, ROOF_Y1 = 11.05, -2.2, 2.8
