@@ -20,6 +20,7 @@ OUT = ROOT / 'data/omberg-ring'
 # name: (west, south, east, north); "near" clusters lie within 1 km of the clubhouse
 CLUSTERS = {
     'near_range': (477815, 6457530, 477870, 6457580),     # driving-range bay shelter
+    'range': (477770, 6457480, 478140, 6457720),          # the whole driving range: shelter, lane, targets, nets
     'near_north': (477610, 6458600, 477655, 6458640),     # small hut north of the course
     'c1_east': (479040, 6457630, 479140, 6457770),
     'c2_east_south': (478950, 6456980, 479080, 6457100),
@@ -42,6 +43,13 @@ def main():
             a = src.read([1, 2, 3], window=win); t = src.window_transform(win)
             Image.fromarray(np.moveaxis(a, 0, -1)).save(OUT / f'ortho-{name}.png')
             crop['clusters'][name] = dict(bounds=b, ortho=dict(file=f'ortho-{name}.png', topLeftE=t.c, topLeftN=t.f, pixelM=t.a))
+    # The inner 2023 ortho (leaf-off) for the range, where it reaches.
+    with rasterio.open(SOURCE / 'ortho-orto-l2-2023.tif') as src:
+        b = CLUSTERS['range']
+        win = from_bounds(*b, transform=src.transform).round_offsets().round_lengths()
+        a = src.read([1, 2, 3], window=win); t = src.window_transform(win)
+        Image.fromarray(np.moveaxis(a, 0, -1)).save(OUT / 'ortho-range-2023.png')
+        crop['clusters']['range']['ortho2023'] = dict(file='ortho-range-2023.png', topLeftE=t.c, topLeftN=t.f, pixelM=t.a)
     bb = (min(b[0] for b in CLUSTERS.values()) - 20, min(b[1] for b in CLUSTERS.values()) - 20,
           max(b[2] for b in CLUSTERS.values()) + 20, max(b[3] for b in CLUSTERS.values()) + 20)
     crop['bounds'] = bb
