@@ -145,7 +145,13 @@ namespace GolfMap.Editor
                     var holder = new GameObject(NamePrefix + f.id);
                     holder.transform.SetParent(root.transform, false);
                     Undo.RegisterCreatedObjectUndo(holder, "Build waterfalls");
-                    if (f.style == "fountain") Fountain(holder, f, foam, splash, along);
+                    if (f.style == "fountain")
+                    {
+                        // Its foot on the water that is there (a plane's lift puts it over the lidar's).
+                        var level = o.snap ? WaterAt(Mid(f.lip), f.topY, old, creeks) : null;
+                        if (level != null) { f.topY = level.Value; along["levelFrom"] = "water"; }
+                        Fountain(holder, f, foam, splash, along);
+                    }
                     else Cascade(holder, f, splineType, profile, profileType, material, splash, o, along);
                     continue;
                 }
@@ -495,6 +501,8 @@ namespace GolfMap.Editor
         const float CreekReachM = 6f;
         // ... and within this of the export's level: two creeks a fall apart are both near its lip.
         const float CreekLevelM = 0.4f;
+        // ... and a water plane the same way (its lift puts it a few decimetres over the lidar's water).
+        const float PlaneLevelM = 0.5f;
         static float? CreekAt(Vector2 p, float near, List<List<Vector3>> creeks)
         {
             float best = CreekReachM;
@@ -529,7 +537,7 @@ namespace GolfMap.Editor
                 var t = h.collider.transform;
                 if (ignore != null && t.IsChildOf(ignore.transform)) continue;
                 bool water = GolfMapWaterplanes.IsWaterPlane(t.name) || (t.parent != null && t.parent.name == "GolfMap Creeks");
-                if (!water || Mathf.Abs(h.point.y - near) > 1.5f) continue;
+                if (!water || Mathf.Abs(h.point.y - near) > PlaneLevelM) continue;
                 if (best == null || h.point.y > best.Value) best = h.point.y;
             }
             return best;
