@@ -8,7 +8,7 @@ survive. The DEM (0.5 m, `creek-digs`) holds the groove; Blender cuts it into a 
 
 1. `creek-digs`: `bun run terrain:generate -- "Ombergs Golfklubb" creek-digs --feature hole_17_233 --depth 0.7 --bank 40`
    (DEM: 0.55-0.73 m under the ground 3 m aside, about 1 m wide at half depth).
-2. Blender: [shaping/20-creek-beds.json](shaping/20-creek-beds.json), one `golfmap.cut_out` per creek: the corridor (the
+2. Blender: [shaping-pending/20-creek-beds.json](shaping-pending/20-creek-beds.json) (parked outside shaping/ until the worker is restarted and Marcus decides; move it back to shaping/ to apply), one `golfmap.cut_out` per creek: the corridor (the
    centerline +-1.2 m minus the ponds + 1.5 m: their meshes are protected) is cut out as
    `Spline_brook_h17_WaterBrook_-_Mesh`, refined to 0.2 m triangles and set to the edited DEM (`rise` mode `dem`, apron
    1 m, the granite shaping off). `WaterBrook` is the one surface a cut-out may give that holds a golf word (shape_layers
