@@ -9,7 +9,15 @@
   ],
   "assetPrefix": "omberg_far_",
   "groundAssets": [],
-  "osm": {},
+  "osm": {
+    "omberg_far_a_long": "1431576952",
+    "omberg_far_b_barn": "1109741288",
+    "omberg_far_b_house_dark": "1109741287",
+    "omberg_far_b_house_cross": "1109741286",
+    "omberg_far_b_house_s": "1109741285",
+    "omberg_far_b_small_n": "1109741289",
+    "omberg_far_b_shed": "1109741290"
+  },
   "footprints": "../../../../data/omberg-far/osm-buildings.json",
   "categories": [
     "building"
