@@ -404,13 +404,13 @@ namespace GolfMap.Editor
         }
 
         // Where a stem stands: on the course's meshes where the probe hits one, else on the terrain, then
-        // its tree edit's ground offset (dy). Counts the mesh and terrain hits.
+        // its tree edit's ground offset (dy), or the edit's absolute height (ySet). Counts the mesh and terrain hits.
         Vector3 GroundPosition(GolfMapTree tree, GroundProbe probe, ref int meshHits, ref int terrainHits)
         {
             var pos = WorldPos(tree);
             bool meshHit; pos.y = probe.Height(pos, out meshHit);
             if (meshHit) meshHits++; else terrainHits++;
-            GolfMapTreeEdit edit; if (treeEdits.TryGetValue(tree, out edit)) pos.y += edit.dy;
+            GolfMapTreeEdit edit; if (treeEdits.TryGetValue(tree, out edit)) pos.y = edit.ySet ? edit.y : pos.y + edit.dy;
             return pos;
         }
 

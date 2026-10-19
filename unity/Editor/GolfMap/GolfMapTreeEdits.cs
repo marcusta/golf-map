@@ -35,6 +35,8 @@ namespace GolfMap.Editor
         public float rotation;        // degrees, used when rotationSet
         public bool rotationSet;
         public float dy;              // vertical offset from the ground, metres (sink a tree to lower its branches)
+        public float y;               // absolute world height, metres, used when ySet (instead of ground + dy): a plant on the water, where Unity's ground is the pond bed
+        public bool ySet;
 
         public GolfMapTreeEdit Clone() { return (GolfMapTreeEdit)MemberwiseClone(); }
     }

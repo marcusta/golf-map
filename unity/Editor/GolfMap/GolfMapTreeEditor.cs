@@ -338,11 +338,11 @@ namespace GolfMap.Editor
             bool meshHit; return editProbe.Height(WorldPos(t), out meshHit);
         }
 
-        // Ground plus the record's vertical offset.
+        // Ground plus the record's vertical offset, or the record's absolute height (ySet).
         Vector3 GroundedPosition(GolfMapTree t)
         {
             var pos = WorldPos(t); pos.y = GroundHeight(t);
-            GolfMapTreeEdit edit; if (treeEdits.TryGetValue(t, out edit)) pos.y += edit.dy;
+            GolfMapTreeEdit edit; if (treeEdits.TryGetValue(t, out edit)) pos.y = edit.ySet ? edit.y : pos.y + edit.dy;
             return pos;
         }
 
@@ -377,7 +377,7 @@ namespace GolfMap.Editor
                 edit.species = fieldSpecies ?? ""; edit.guid = fieldGuid ?? "";
                 if (!string.IsNullOrEmpty(edit.guid)) { var a = biome.assets.First(x => x.MatchKey == edit.guid); edit.species = a.species; }
                 if (!string.IsNullOrEmpty(edit.species)) et.tree.k = GolfMapBiome.StemKind(biome.assets.Where(a => a.enabled && a.species == edit.species));
-                edit.rotation = fieldRot; edit.rotationSet = true; edit.dy = fieldDy;
+                edit.rotation = fieldRot; edit.rotationSet = true; edit.dy = fieldDy; edit.ySet = false;
                 CommitTree(et);
                 LoadFields(et);
             });
@@ -645,7 +645,7 @@ namespace GolfMap.Editor
                     foreach (var t in trees)
                     {
                         var edit = RecordFor(t);
-                        if (move) { t.tree.x = t.position.x - terrain.transform.position.x; t.tree.z = t.position.z - terrain.transform.position.z; edit.dy = t.position.y - GroundHeight(t.tree); }
+                        if (move) { t.tree.x = t.position.x - terrain.transform.position.x; t.tree.z = t.position.z - terrain.transform.position.z; edit.dy = t.position.y - GroundHeight(t.tree); edit.ySet = false; }
                         if (rotate) { edit.rotation = Mathf.Repeat(t.yaw, 360); edit.rotationSet = true; }
                         if (scale) { t.tree.h *= fh; t.tree.r *= forceBillboards ? fh : fw; }
                         CommitTree(t);

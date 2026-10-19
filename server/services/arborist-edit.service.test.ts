@@ -236,9 +236,15 @@ t('yM puts an added or moved tree at that world height and does not ask Arborist
     await f.svc.edit(f.course, { id }, { op: 'move', by: [1, 0], yM: 13.4 });
     expect(f.calls.filter(c => c.command === 'ground')).toEqual([]);
     expect((await f.read()).placements.find(p => p.id === id)).toMatchObject({ x: -39, y: 13.4 });
+    // The tree edit carries the height too: Unity's ground under a lily is the pond bed, so a replant needs it.
+    expect((await f.read()).edits.find(e => e.id === id)).toMatchObject({ y: 13.4, ySet: true });
+    await f.svc.edit(f.course, { id }, { op: 'resize', factor: 1.2 });
+    expect((await f.read()).edits.find(e => e.id === id)).toMatchObject({ y: 13.4, ySet: true });
     await f.svc.edit(f.course, { id }, { op: 'move', by: [1, 0] });
     expect(f.calls.filter(c => c.command === 'ground')).toHaveLength(1);
     expect((await f.read()).placements.find(p => p.id === id)!.y).toBe(12.5);
+    const back = (await f.read()).edits.find(e => e.id === id);
+    expect([back.y, back.ySet]).toEqual([undefined, undefined]);
 }, 60_000);
 
 t('an added tree stands on Arborist\'s ground with an id of its own; a dry run and a VSP tree change nothing', async () => {

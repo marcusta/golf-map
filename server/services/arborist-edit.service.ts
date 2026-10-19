@@ -118,6 +118,9 @@ export interface TreeEditRecord {
     rotation: number;
     rotationSet: boolean;
     dy: number;
+    /** Absolute world y, used by Unity instead of ground + dy when `ySet` (`--y`: a lily on the water; Unity's ground is the pond bed). */
+    y?: number;
+    ySet?: boolean;
 }
 
 export interface TreeView {
@@ -294,6 +297,7 @@ export function changedPlacement(p: Placement | null, change: TreeChange, models
 export function editRecord(
     existing: TreeEditRecord | null, survey: { x: number; z: number; k: number; bush: boolean } | null,
     after: Placement | null, before: Placement | null, origin: { x: number; z: number }, model: TreeModel | null, turned: boolean,
+    absoluteY?: number | null,
 ): TreeEditRecord | null {
     const id = (after ?? before)!.id;
     if (!after) {
@@ -303,7 +307,10 @@ export function editRecord(
     }
     const kind = model?.kind === 'broadleaf' ? 0 : model?.kind === 'conifer' ? 1 : 2;
     const x = r3(after.x - origin.x), z = r3(after.z - origin.z);
-    const base = existing ?? (before ? blank(id, 'modify', survey?.x ?? before.x - origin.x, survey?.z ?? before.z - origin.z, survey) : blank(id, 'add', x, z, null));
+    const found = existing ?? (before ? blank(id, 'modify', survey?.x ?? before.x - origin.x, survey?.z ?? before.z - origin.z, survey) : blank(id, 'add', x, z, null));
+    // absoluteY: a number sets the height (`--y`), null drops it (moved onto the ground again), undefined keeps it.
+    const { y: _y, ySet: _ySet, ...unset } = found;
+    const base = absoluteY === null ? unset : typeof absoluteY === 'number' ? { ...found, y: r3(absoluteY), ySet: true } : found;
     return {
         ...base,
         op: base.op === 'add' ? 'add' : 'modify',
@@ -421,7 +428,8 @@ export class ArboristEditService {
         const t1 = Date.now();
         await this.locked(ctx.dat, async () => {
             // An added tree's yaw is chosen here, so Unity must take it too (it would hash one of its own).
-            result.saved.push(...await this.save(ctx, before, after, item, afterItem, change.op === 'rotate' || change.op === 'add'));
+            result.saved.push(...await this.save(ctx, before, after, item, afterItem, change.op === 'rotate' || change.op === 'add',
+                change.op === 'move' || change.op === 'add' ? change.yM ?? null : undefined));
         });
         result.saveSeconds = secondsSince(t1);
 
@@ -512,7 +520,7 @@ export class ArboristEditService {
     }
 
     /** The four files, in order; each line says what was written. */
-    private async save(ctx: Context, before: Placement | null, after: Placement | null, item: string | null, afterItem: string | null, turned: boolean): Promise<string[]> {
+    private async save(ctx: Context, before: Placement | null, after: Placement | null, item: string | null, afterItem: string | null, turned: boolean, absoluteY?: number | null): Promise<string[]> {
         const lines: string[] = [];
         const terrain = before ? terrainOf(ctx, before.id) : 'inner';
 
@@ -575,7 +583,7 @@ export class ArboristEditService {
         const survey = await surveyTree(path.join(ctx.course.exportDir, treesExportFileName(ctx.course.name, doc.terrain)), id);
         const origin = await terrainOrigin(ctx.course.exportDir, ctx.slug, doc.terrain);
         const existing = edits.edits.find(e => e.id === id) ?? null;
-        const record = editRecord(existing, survey, after, before, origin, after ? ctx.models.get(after.model) ?? null : null, turned);
+        const record = editRecord(existing, survey, after, before, origin, after ? ctx.models.get(after.model) ?? null : null, turned, absoluteY);
         const where = edits.edits.findIndex(e => e.id === id);
         if (record) { if (where >= 0) edits.edits[where] = record; else edits.edits.push(record); }
         else if (where >= 0) edits.edits.splice(where, 1);
