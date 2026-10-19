@@ -757,6 +757,33 @@
       "crownWidthM": 3.4976058,
       "kind": "broadleaf",
       "form": "tree"
+    },
+    {
+      "id": "arborist:MeadowEnv_bush_grey_willow_01",
+      "species": "grey_willow",
+      "renderer": "arborist",
+      "heightM": 2.068771,
+      "crownWidthM": 2.13620615,
+      "kind": "broadleaf",
+      "form": "shrub"
+    },
+    {
+      "id": "arborist:Forest_fern_01_1",
+      "species": "fern",
+      "renderer": "arborist",
+      "heightM": 0.318662763,
+      "crownWidthM": 1.07065821,
+      "kind": "broadleaf",
+      "form": "shrub"
+    },
+    {
+      "id": "arborist:Forest_fern_01_3",
+      "species": "fern",
+      "renderer": "arborist",
+      "heightM": 0.414004445,
+      "crownWidthM": 1.19113564,
+      "kind": "broadleaf",
+      "form": "shrub"
     }
   ]
 }
