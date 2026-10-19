@@ -51,7 +51,7 @@
      "height": 1.8,
      "seed": 51,
      "colorKey": "h3c",
-     "darkness": 1.0,
+     "darkness": 0.85,
      "tint": [
       1.06,
       0.98,
@@ -139,7 +139,7 @@
    "n": 6457780.0,
    "yawDeg": 52.0,
    "ground": "median",
-   "dz": -0.1
+   "dz": -0.5
   },
   {
    "asset": "omberg_stone_bridge_h9c",

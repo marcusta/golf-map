@@ -40,7 +40,7 @@ SITES = {
     # hole 3's long bridge over the pond arm east of the green (Google photo; ortho 2025: a pale deck about 16 x 2.6 m on bearing 52, lidar
     # points 0.9 m over the ground; no waterfall feature there). Three arches over piers. Centre by eye at 40 px/m.
     "omberg_stone_bridge_h3c": dict(hole=3, e=477955.0, n=6457780.0, yawDeg=52.0, style="arch", length=16.0, width=2.6, height=1.8, seed=51, active=True,
-                                    opening=6.5, openingHeight=1.3, hump=5.0, depth=1.6,
+                                    opening=6.5, openingHeight=1.3, hump=5.0, depth=1.6, dz=-0.5,   # Marcus: 0.5 m lower
                                     note="pond 572, the pale bridge SE of the green; Marcus's Street View photo: ONE wide shallow arch, long solid abutments, a flat coping"),
     # candidates: ask Marcus first
     "omberg_stone_bridge_h9c": dict(hole=9, e=477635.0, n=6457827.0, yawDeg=27.0, style="arch", length=6.5, width=2.6, height=1.2, seed=31, active=True,
