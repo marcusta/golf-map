@@ -29,3 +29,10 @@ it imports `shape_layers` once) -> `golfmap.meshes.sync` / refresh -> `golfmap.p
 
 **Another creek**: add its corridor as another op in the same layer (a new name `brook_<something>`), `--feature <shape>` the dig.
 **Tune**: bed width = the corridor buffer; depth = `--depth`; pebbles/tint in `paint.json`, then `golfmap.paint.apply`.
+
+**The water in it** (2026-10-19): the brook wears its own copy of R.A.M.'s water material, `Creek water (hole 17).mat` in the
+course's Creeks folder (a copy of `Creek water (Small Stream Profile).mat`; colours `_DeepColor` 0.045/0.05/0.065 and `_ShalowColor`
+0.07/0.075/0.09, `_Foam` 0.5, `_FoamCascade` 4, `_WaterSpeed` 0.3, `_Reflection` 0.45: the ponds' dark navy-grey, little white water). It is set on the feature,
+so every `creeks.import` keeps it: `ramWaterMaterial` (asset path) and `ramAboveBedM` 0.25 (the water 0.25 m over the bed, +0.10 m on the
+import's 0.15) -> the creeks export (`waterMaterial`, `aboveBedM`) -> `GolfMapCreeks`. The black paint stops 0.1 m under the grass level (paint.json
+`belowM` 0.1, `softM` 0.08), so a grass lip stands at the top of the bank.

@@ -106,6 +106,10 @@ namespace GolfMap.Editor
             public string id, match, channel;
             public Color target;
             public float strength, fadeM;
+            // belowM > 0: paint by depth instead of by distance from the border. The grass level is the height of the mesh's
+            // nearest border vertex (within reachM); vertices less than belowM under it keep their colour, so a grass lip
+            // stands at the top, and the paint is full from belowM + softM down.
+            public float belowM = -1f, softM = 0.08f, reachM = 1.5f;
             public string albedo, normal;     // material: asset paths, null = keep the material
             public float tileM = 1f;
             public Color tint = Color.white;
@@ -131,7 +135,11 @@ namespace GolfMap.Editor
                     channel = (o.String("channel") ?? "black").ToLowerInvariant(),
                     strength = Mathf.Clamp01((float)o.Number("strength", 1)),
                     fadeM = (float)o.Number("fadeM", 0.5),
+                    belowM = (float)o.Number("belowM", -1),
+                    softM = (float)o.Number("softM", 0.08),
+                    reachM = (float)o.Number("reachM", 1.5),
                 };
+                if (r.belowM > 0 && (r.softM <= 0 || r.reachM <= 0)) throw new InvalidOperationException(where + ": softM and reachM must be > 0.");
                 if (string.IsNullOrEmpty(r.match)) throw new InvalidOperationException(where + ": an object rule needs match (a name substring).");
                 if (r.fadeM <= 0) throw new InvalidOperationException(where + ": fadeM must be > 0.");
                 r.target = ChannelColor(r.channel, where);
@@ -422,7 +430,7 @@ namespace GolfMap.Editor
                 PointGrid ownEdge = null;
                 if (mine.Count > 0)
                 {
-                    ownEdge = new PointGrid(mine.Max(r => r.fadeM));
+                    ownEdge = new PointGrid(mine.Max(r => r.belowM > 0 ? r.reachM : r.fadeM));
                     foreach (var q in BoundaryPoints(f)) ownEdge.Add(q);
                 }
                 for (int i = 0; i < local.Length; i++)
@@ -431,8 +439,19 @@ namespace GolfMap.Editor
                     var p = f.transform.TransformPoint(local[i]);
                     foreach (var r in mine)
                     {
-                        float d = ownEdge.NearestXZ(p, r.fadeM);
-                        float w = r.strength * (d == float.MaxValue ? 1f : Smooth(0, r.fadeM, d));
+                        float w;
+                        if (r.belowM > 0)
+                        {
+                            Vector3 top;
+                            // no border vertex in reach: far from any edge, fully inside
+                            float depth = ownEdge.NearestXZ(p, r.reachM, out top) == float.MaxValue ? float.MaxValue : top.y - p.y;
+                            w = r.strength * Smooth(r.belowM, r.belowM + r.softM, depth);
+                        }
+                        else
+                        {
+                            float d = ownEdge.NearestXZ(p, r.fadeM);
+                            w = r.strength * (d == float.MaxValue ? 1f : Smooth(0, r.fadeM, d));
+                        }
                         if (w <= 0.001f) continue;
                         var t = r.target; t.a = c.a; c = Color.Lerp(c, t, w);
                     }
@@ -993,8 +1012,11 @@ namespace GolfMap.Editor
             }
             // Distance on the XZ plane to the nearest point, or float.MaxValue beyond r
             // (r must not exceed the cell size).
-            public float NearestXZ(Vector3 p, float r)
+            public float NearestXZ(Vector3 p, float r) { Vector3 hit; return NearestXZ(p, r, out hit); }
+
+            public float NearestXZ(Vector3 p, float r, out Vector3 hit)
             {
+                hit = Vector3.zero;
                 float best = r * r;
                 bool found = false;
                 int cx = Mathf.FloorToInt(p.x / cell), cz = Mathf.FloorToInt(p.z / cell);
@@ -1002,7 +1024,7 @@ namespace GolfMap.Editor
                     for (int dz = -1; dz <= 1; dz++)
                     {
                         List<Vector3> l; if (!cells.TryGetValue(Key(cx + dx, cz + dz), out l)) continue;
-                        foreach (var q in l) { float x = q.x - p.x, z = q.z - p.z, d2 = x * x + z * z; if (d2 <= best) { best = d2; found = true; } }
+                        foreach (var q in l) { float x = q.x - p.x, z = q.z - p.z, d2 = x * x + z * z; if (d2 <= best) { best = d2; found = true; hit = q; } }
                     }
                 return found ? Mathf.Sqrt(best) : float.MaxValue;
             }

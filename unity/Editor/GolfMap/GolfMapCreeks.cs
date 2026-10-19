@@ -85,6 +85,11 @@ namespace GolfMap.Editor
             public List<Vector2> fallsAt = new List<Vector2>();
             // The look for this creek alone (the feature's ramWater: lake|profile), else the import's.
             public string water;
+            // An asset path of a material this creek alone wears (the feature's ramWaterMaterial), over `water`: Omberg's hole 17
+            // brook, a course copy of R.A.M.'s water tuned to blend with the ponds beside it.
+            public string waterMaterial;
+            // The water's height over this creek's lowest ground, instead of the import's aboveBedM (the feature's ramAboveBedM).
+            public float aboveBedM = float.NaN;
             public List<Vector4> points = new List<Vector4>();
         }
 
@@ -154,6 +159,7 @@ namespace GolfMap.Editor
             var rows = new List<object>();
             var imported = new List<GameObject>();
             var perCreek = new Dictionary<GameObject, string>();
+            var ownMaterial = new Dictionary<GameObject, string>();
             int created = 0, updated = 0;
 
             if (!dryRun)
@@ -220,6 +226,7 @@ namespace GolfMap.Editor
                 EditorUtility.SetDirty(spline);
                 imported.Add(go);
                 if (c.water == "lake" || c.water == "profile") perCreek[go] = c.water;
+                if (!string.IsNullOrEmpty(c.waterMaterial)) ownMaterial[go] = c.waterMaterial;
             }
 
             // Creeks no longer in the export (not when only some were refitted).
@@ -228,7 +235,7 @@ namespace GolfMap.Editor
             Dictionary<string, object> water = null;
             if (!dryRun)
             {
-                water = Wear(imported, fit.water, course, splineType, profileType, perCreek);
+                water = Wear(imported, fit.water, course, splineType, profileType, perCreek, ownMaterial);
                 foreach (var go in existing.Values) Undo.DestroyObjectImmediate(go);
                 Undo.CollapseUndoOperations(undoGroup);
                 EditorSceneManager.MarkSceneDirty(scene);
@@ -262,7 +269,8 @@ namespace GolfMap.Editor
                     id = o.String("id"), profile = o.String("profile") ?? "Small Stream Profile", source = o.String("source") ?? "",
                     widthM = (float)o.Number("widthM", 2), lengthM = (float)o.Number("lengthM"), fallM = (float)o.Number("fallM"),
                     held = o.Number("stretches", 0) > 1 || o.Number("falls", 0) > 0,
-                    water = o.String("water"),
+                    water = o.String("water"), waterMaterial = o.String("waterMaterial"),
+                    aboveBedM = (float)o.Number("aboveBedM", float.NaN),
                 };
                 foreach (var q in (o.Array("fallsAt") ?? new List<object>()).OfType<List<object>>())
                 {
@@ -337,9 +345,10 @@ namespace GolfMap.Editor
         // material, reflecting the nearest lake's probe) or each spline's profile
         // material. The parts R.A.M. splits a long spline into follow the parent.
         static Dictionary<string, object> Wear(List<GameObject> creeks, string water, GolfMapCourse course, Type splineType, Type profileType,
-            Dictionary<GameObject, string> perCreek = null)
+            Dictionary<GameObject, string> perCreek = null, Dictionary<GameObject, string> ownMaterial = null)
         {
             perCreek = perCreek ?? new Dictionary<GameObject, string>();
+            ownMaterial = ownMaterial ?? new Dictionary<GameObject, string>();
             Func<GameObject, string> waterOf = go => { string w; return perCreek.TryGetValue(go, out w) ? w : water; };
             var result = new Dictionary<string, object> { { "water", water }, { "creeks", creeks.Count } };
             if (perCreek.Count > 0) result["ownWater"] = perCreek.ToDictionary(kv => kv.Key.name, kv => (object)kv.Value);
@@ -372,6 +381,13 @@ namespace GolfMap.Editor
                     // A creek with its own R.A.M. look wears the course's copy of the profile's material (made once,
                     // then kept: its cascade and foam are tuned there, the package's material is left alone).
                     if (perCreek.ContainsKey(go) && material != null) material = ProfileLook(course, material);
+                }
+                string ownPath;
+                if (ownMaterial.TryGetValue(go, out ownPath))
+                {
+                    var own = AssetDatabase.LoadAssetAtPath<Material>(ownPath);
+                    if (own != null) material = own;
+                    else result["missingWaterMaterial"] = ownPath;
                 }
                 var centre = go.GetComponent<Renderer>() != null ? go.GetComponent<Renderer>().bounds.center : go.transform.position;
                 var probe = probes.OrderBy(p => (p.transform.position - centre).sqrMagnitude).FirstOrDefault();
@@ -537,13 +553,14 @@ namespace GolfMap.Editor
 
             // Heights: over the highest bed each point stands for.
             var y = new float[n];
+            float above = float.IsNaN(c.aboveBedM) ? o.aboveBedM : c.aboveBedM;
             for (int i = 0; i < n; i++)
             {
                 float highest = float.NegativeInfinity;
                 for (int k = 0; k < ns; k++)
                     if (stations[k].owner == i && !float.IsNaN(bed[k])) highest = Mathf.Max(highest, bed[k]);
                 y[i] = float.IsNegativeInfinity(highest) ? pts[i].y
-                    : c.held ? Mathf.Max(pts[i].y, highest + o.aboveBedM) : highest + o.aboveBedM;
+                    : c.held ? Mathf.Max(pts[i].y, highest + above) : highest + above;
             }
             // Not forced to fall: held up to the next bump downstream, the water
             // would stand above its banks behind it. Climbs are reported.
