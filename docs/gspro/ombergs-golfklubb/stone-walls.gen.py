@@ -131,6 +131,31 @@ STYLES = {
         "capM": 0.0,
         "minTopCourseM": 0.12,
     },
+    # A pond's edge laid as a dry-stone wall: hole 14 (Marcus's photo, 2026-10-19: "more like the walls on 9 than round
+    # stones"): two courses of flat-faced grey blocks 0.5-1 m long from the water up to the grass, near vertical, the
+    # top flush with the bank. No terrain edit: the dug bank is raised into the face, so the edge's height is near the lip.
+    "pondwall": {
+        "style": "wall",
+        "stoneSet": "wall",
+        "faceDeg": 78,
+        "baseInM": 0.05,
+        "beyondM": 0.4,
+        "baseCourseM": [0.35, 0.45],
+        "courseM": [0.28, 0.38],
+        "stoneHeightVar": [1.05, 1.2],
+        "bedJitterM": 0.04,
+        "lengthRatio": [1.5, 2.5],
+        "maxStoneM": 1.1,
+        "depthM": [0.4, 0.6],
+        "faceProudM": 0.1,
+        "faceJitterM": 0.03,
+        "spinDeg": 3,
+        "gapM": -0.2,
+        "sinkM": 0.1,
+        "topMarginM": 0.1,
+        "capM": 0.0,
+        "minTopCourseM": 0.15,
+    },
     # A rough revetment: one or two courses of rounded boulders, packed, from under the water over the edge.
     "rose": {
         "stoneSet": "rose",
@@ -155,7 +180,7 @@ STYLES = {
 # (EPSG:3006), its water on the left of the line's direction; the foot LINE_TOE_OUT_M out from it (the terrain edit's
 # face, `bun run terrain:wall`), the top edge LINE_LIP_IN_M back on the plateau.
 WALLS = [
-    {"id": "h14-pond-edge", "feature": "b2388429-8a29-41d6-9396-559dcfd5f18c",
+    {"id": "h14-pond-edge", "style": "pondwall", "feature": "b2388429-8a29-41d6-9396-559dcfd5f18c",
      "start": (477339.0, 6457146.5), "via": (477336.6, 6457150.5), "end": (477358.0, 6457157.5),
      "note": "Hole 14 pond: the rough stone edge towards the green, round the west tip (the creek's outlet) and "
              "along the north edge to E 477358 (2025 and 2023 orthos)."},

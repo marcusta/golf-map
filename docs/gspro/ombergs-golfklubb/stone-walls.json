@@ -185,6 +185,43 @@
    "capM": 0.0,
    "minTopCourseM": 0.12
   },
+  "pondwall": {
+   "style": "wall",
+   "stoneSet": "wall",
+   "faceDeg": 78,
+   "baseInM": 0.05,
+   "beyondM": 0.4,
+   "baseCourseM": [
+    0.35,
+    0.45
+   ],
+   "courseM": [
+    0.28,
+    0.38
+   ],
+   "stoneHeightVar": [
+    1.05,
+    1.2
+   ],
+   "bedJitterM": 0.04,
+   "lengthRatio": [
+    1.5,
+    2.5
+   ],
+   "maxStoneM": 1.1,
+   "depthM": [
+    0.4,
+    0.6
+   ],
+   "faceProudM": 0.1,
+   "faceJitterM": 0.03,
+   "spinDeg": 3,
+   "gapM": -0.2,
+   "sinkM": 0.1,
+   "topMarginM": 0.1,
+   "capM": 0.0,
+   "minTopCourseM": 0.15
+  },
   "rose": {
    "stoneSet": "rose",
    "baseStoneM": [
@@ -611,7 +648,8 @@
      477357.71,
      6457158.26
     ]
-   ]
+   ],
+   "style": "pondwall"
   },
   {
    "id": "p77-south-west",
