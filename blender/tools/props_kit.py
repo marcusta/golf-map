@@ -635,8 +635,22 @@ CUTOUT = set()
 FADE = {"net"}  # translucent: cords up close, a soft dark veil at distance (mipmapped alpha); cutout aliased
 
 
+VARIANTS = {}  # "<material>@<key>" -> (base material, [r, g, b] colour multiplier): same textures, a colour of its own (per prop)
+
+
+def variant(base, key, darkness=1.0, tint=(1.0, 1.0, 1.0)):
+    """A per-prop copy of a material that only differs in its colour multiplier (Unity's _Color on the same albedo):
+    darkness scales all channels, tint each one. Returns the material's name."""
+    name = base + "@" + key
+    VARIANTS[name] = (base, [round(darkness * t, 4) for t in tint])
+    return name
+
+
 def material_table(bank, names=None):
     """Build the textures of the named materials (default: all); returns {name: dict} for the Unity manifest."""
+    wanted = names
+    if names is not None:
+        names = set(names) | {VARIANTS[n][0] for n in names if n in VARIANTS}
     out = {}
     for name, (tex, tile, flat, smooth, metal) in MATERIALS.items():
         if names is not None and name not in names:
@@ -661,6 +675,9 @@ def material_table(bank, names=None):
         else:
             d["color"] = [round(c / 255.0, 4) for c in flat]
         out[name] = d
+    for name, (base, col) in VARIANTS.items():
+        if (wanted is None or name in wanted) and base in out:
+            out[name] = dict(out[base], color=col)
     return out
 
 
@@ -1837,6 +1854,11 @@ def stone_bridge(g, s):
     mats = s.get("mats", ["fieldstone_grey", "fieldstone_dark", "fieldstone_brown"] if arch else ["sandstone_ochre", "sandstone_rust", "sandstone_dark"])
     core = s.get("core", "fieldstone_dark" if arch else "sandstone_core")
     deck = s.get("deck", "turf_mat")
+    key = s.get("colorKey")  # a colour of this bridge's own: `darkness` (all channels) and `tint` (r, g, b) multiply the stones' albedo
+    if key:
+        dk, tint = s.get("darkness", 1.0), s.get("tint", (1.0, 1.0, 1.0))
+        mats = [variant(m, key, dk, tint) for m in mats]
+        core = variant(core, key, dk, tint)
     rnd = random.Random(s.get("seed", 1))
     if ow > 0:
         H = max(H, oh + 0.42)
