@@ -105,6 +105,28 @@ STYLES = {
         "capM": 0.0,                 # flush with the top: the grass hangs over it
         "minTopCourseM": 0.15,
     },
+    # The wall round a raised tee: hole 9's north tee (Marcus's photo, 2026-10-19): near vertical, steeper than Vreta's
+    # hole 13 tee walls and of smaller stones, five or six courses in 1-1.7 m.
+    "teewall": {
+        "stoneSet": "wall",
+        "faceDeg": 86,
+        "baseInM": 0.05,
+        "baseCourseM": [0.3, 0.4],
+        "courseM": [0.2, 0.3],
+        "stoneHeightVar": [0.8, 1.08],
+        "bedJitterM": 0.04,
+        "lengthRatio": [1.3, 2.4],
+        "maxStoneM": 0.7,
+        "depthM": [0.35, 0.55],
+        "faceProudM": 0.02,
+        "faceJitterM": 0.025,
+        "spinDeg": 3,
+        "gapM": -0.02,
+        "sinkM": 0.08,
+        "topMarginM": 0.08,
+        "capM": 0.0,
+        "minTopCourseM": 0.12,
+    },
     # A rough revetment: one or two courses of rounded boulders, packed, from under the water over the edge.
     "rose": {
         "stoneSet": "rose",
@@ -159,6 +181,15 @@ WALLS = [
               (477738.1, 6457794.0), (477740.6, 6457792.15), (477742.15, 6457790.35)],
      "note": "Hole 9: the dry-stone wall along the green's north side, on Marcus's line (photos from the drone and "
              "the bridge, 2026-10-19)."},
+    # Hole 9's north tee (tee 392): the wall round its west end and north side, on Marcus's line (2026-10-19). The
+    # ground is shaped by the terrain edit wall:hole9-north-tee (the same line): 1.3-1.7 m north, about 1 m west.
+    {"id": "h9-north-tee-wall", "style": "teewall",
+     "line": [(477592.42, 6457801.12), (477592.63, 6457804.61), (477592.92, 6457808.23), (477593.49, 6457809.83),
+              (477594.49, 6457810.7), (477597.2, 6457810.85), (477601.49, 6457810.55), (477607.2, 6457810.12),
+              (477611.49, 6457809.68), (477614.35, 6457808.96), (477616.85, 6457807.87), (477618.78, 6457806.2),
+              (477620.99, 6457803.3)],
+     "note": "Hole 9's north tee: the near-vertical dry-stone wall round its west end and north side, on Marcus's "
+             "line (photo, 2026-10-19)."},
     {"id": "p77-north-tip", "feature": "4530bf16-35ec-4c82-b78b-f139db337b9e",
      "start": (477675.8, 6457494.0), "via": (477683.8, 6457497.0), "end": (477694.5, 6457487.4),
      "note": "Pond between 18 and 1: the grey stone rim round the north tip (2025 and 2023 orthos)."},
