@@ -404,6 +404,63 @@ H2_BOULDERS = [{"id": "h2-tee-stenrose-%02d" % (i + 1), "asset": a, "e": round(e
                for i, (layer, a, e, n, y, L, t) in enumerate(h2_heap())]
 
 
+def h9_outlet_f_heap():
+    """The small stenrose at fall E's neighbour, outlet F (waterfall 604, hole 9): the east tip of pond 569, where pond
+    573's water drops 1.3 m into the channel. Both orthos (2023, 2025) show a grey lumpy heap of stones 3.5 m x 4 m
+    round the tip (E 477672.2-477675.5, N 6457812-6457816) with a straight pale edge on its east side. Smaller and lower
+    than hole 2's heap: stones 0.4-1.1 m in a low heap on each bank of the inlet, the foot stones half in the water at
+    the channel's tip, tops at most 1 m over the ground. The stream stays free: a corridor 0.9 m either side of the line
+    along the fall's flow bearing (u along the flow, v across it, v > 0 the NNE bank) has no stone in it."""
+    rnd = random.Random(604)
+    lip_e, lip_n = 477672.846, 6457814.164       # the lip's middle (the waterfall feature's centerline)
+    ang = math.radians(293.9)                     # the flow bearing, WNW: down the channel towards pond 569
+    fx, fy = math.sin(ang), math.cos(ang)
+    nx, ny = fy, -fx                              # across the flow, to the NNE bank
+    path = _poly_from_db(375)
+    placed, out = [], []
+
+    def at(u, v):
+        return lip_e + u * fx + v * nx, lip_n + u * fy + v * ny
+
+    def lobe(sign, layer, count, vc, vh, ua, ub, lo, hi, top_fn, factor):
+        made, tries = 0, 0
+        while made < count and tries < 4000:
+            tries += 1
+            u, v = rnd.uniform(ua, ub), sign * rnd.uniform(vc - vh, vc + vh)
+            L = lo + (hi - lo) * rnd.random() ** 1.3
+            if abs(v) - L / 2 < 0.85:             # the stream corridor
+                continue
+            e, n = at(u, v)
+            if any(math.hypot(e - pe, n - pn) < factor * (L + pl) / 2 for pe, pn, pl in placed):
+                continue
+            if path is not None:
+                from shapely.geometry import Point
+                if path.distance(Point(e, n)) < 0.4 + 0.4 * L:
+                    continue
+            # the heap's height profile: highest near the lip, falling to the ends along the bank and outwards
+            p = max(0.0, 1.0 - (u / 2.6) ** 2 * 0.55 - ((abs(v) - 1.7) / 1.3) ** 2 * 0.6)
+            placed.append((e, n, L))
+            made += 1
+            out.append((layer, "hgrey_%d" % (1 + rnd.randrange(len(HEAP_STONES))), e, n, rnd.randrange(360), round(L, 2),
+                        round(min(1.0, top_fn(L, p, rnd)), 2)))
+    for sign in (1, -1):
+        # the foot: the channel's banks, from the grass slope above the lip down to the tip (u < 0 = upstream, east)
+        lobe(sign, 0, 12, 1.8, 0.45, -2.3, 2.4, 0.7, 1.1, lambda L, p, r: 0.38 + 0.2 * p + 0.1 * r.random(), 0.4)
+        # the middle: smaller stones on the foot stones, nearer the lip
+        lobe(sign, 1, 6, 1.95, 0.4, -1.8, 1.8, 0.5, 0.8, lambda L, p, r: 0.62 + 0.28 * p + 0.08 * r.random(), 0.36)
+    # the lip's two shoulders: a stone each side of the fall, the water running between
+    for sign, du in ((1, 0.2), (-1, -0.3)):
+        e, n = at(du, sign * 1.55)
+        out.append((2, "hgrey_%d" % (1 + rnd.randrange(len(HEAP_STONES))), e, n, rnd.randrange(360), 0.8, 0.62))
+    return out
+
+
+H9_OUTLET_F_BOULDERS = [{"id": "h9-outlet-f-stenrose-%02d" % (i + 1), "asset": a, "e": round(e, 2), "n": round(n, 2),
+                         "yawDeg": y, "lengthM": L, "topM": t,
+                         "note": "Stenrose at outlet F, the east tip of pond 569 (layer %d)." % layer}
+                        for i, (layer, a, e, n, y, L, t) in enumerate(h9_outlet_f_heap())]
+
+
 # The stone box behind hole 3's tees (Marcus's video frame, 2026-10-18; the 2025 and 2023 orthos show it at
 # E 478240.3-478250.6, N 6457621.0-6457640: a frame of grey blocks, the south wall 10.4 m and the west wall 10.5 m
 # visible, the east side open, filled with a loose pile of pale granite stones 0.4-1.3 m. Round 2: all the stones
@@ -564,7 +621,7 @@ def main():
                       **{k: v for k, v in w.items() if k not in ("id", "note", "feature", "start", "via", "end", "line")}})  # style and any setting
     spec = {"format": "golfmap-walls-v1", "source": "docs/gspro/ombergs-golfklubb/stone-walls.gen.py", "stonesFolder": STONES_FOLDER,
             "physicMaterial": PHYSIC_MATERIAL, "stoneSets": STONE_SETS, "defaults": DEFAULTS, "styles": STYLES,
-            "walls": walls, "boulders": H1_BOULDERS + H2_BOULDERS + BOX_BOULDERS + BIRCH_BOULDERS, "placedColors": {}}
+            "walls": walls, "boulders": H1_BOULDERS + H2_BOULDERS + H9_OUTLET_F_BOULDERS + BOX_BOULDERS + BIRCH_BOULDERS, "placedColors": {}}
     outs = [(os.path.join(HERE, "stone-walls.json"), spec), (os.path.join(HERE, "wall-stones.json"), stones_spec())]
     if a.out:
         outs.append((os.path.join(a.out, "stone-walls.json"), spec))

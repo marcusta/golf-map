@@ -6689,6 +6689,386 @@
    "note": "Stenrose NW of hole 2's tee (layer 3)."
   },
   {
+   "id": "h9-outlet-f-stenrose-01",
+   "asset": "hgrey_6",
+   "e": 477675.55,
+   "n": 6457815.34,
+   "yawDeg": 351,
+   "lengthM": 0.98,
+   "topM": 0.59,
+   "note": "Stenrose at outlet F, the east tip of pond 569 (layer 0)."
+  },
+  {
+   "id": "h9-outlet-f-stenrose-02",
+   "asset": "hgrey_9",
+   "e": 477674.13,
+   "n": 6457815.46,
+   "yawDeg": 97,
+   "lengthM": 0.85,
+   "topM": 0.66,
+   "note": "Stenrose at outlet F, the east tip of pond 569 (layer 0)."
+  },
+  {
+   "id": "h9-outlet-f-stenrose-03",
+   "asset": "hgrey_6",
+   "e": 477673.47,
+   "n": 6457815.86,
+   "yawDeg": 331,
+   "lengthM": 0.8,
+   "topM": 0.62,
+   "note": "Stenrose at outlet F, the east tip of pond 569 (layer 0)."
+  },
+  {
+   "id": "h9-outlet-f-stenrose-04",
+   "asset": "hgrey_9",
+   "e": 477675.53,
+   "n": 6457814.92,
+   "yawDeg": 235,
+   "lengthM": 0.75,
+   "topM": 0.55,
+   "note": "Stenrose at outlet F, the east tip of pond 569 (layer 0)."
+  },
+  {
+   "id": "h9-outlet-f-stenrose-05",
+   "asset": "hgrey_7",
+   "e": 477673.74,
+   "n": 6457816.13,
+   "yawDeg": 357,
+   "lengthM": 1.06,
+   "topM": 0.57,
+   "note": "Stenrose at outlet F, the east tip of pond 569 (layer 0)."
+  },
+  {
+   "id": "h9-outlet-f-stenrose-06",
+   "asset": "hgrey_5",
+   "e": 477673.12,
+   "n": 6457815.92,
+   "yawDeg": 184,
+   "lengthM": 0.85,
+   "topM": 0.63,
+   "note": "Stenrose at outlet F, the east tip of pond 569 (layer 0)."
+  },
+  {
+   "id": "h9-outlet-f-stenrose-07",
+   "asset": "hgrey_9",
+   "e": 477672.59,
+   "n": 6457816.06,
+   "yawDeg": 20,
+   "lengthM": 0.95,
+   "topM": 0.6,
+   "note": "Stenrose at outlet F, the east tip of pond 569 (layer 0)."
+  },
+  {
+   "id": "h9-outlet-f-stenrose-08",
+   "asset": "hgrey_5",
+   "e": 477674.75,
+   "n": 6457815.64,
+   "yawDeg": 258,
+   "lengthM": 1.08,
+   "topM": 0.63,
+   "note": "Stenrose at outlet F, the east tip of pond 569 (layer 0)."
+  },
+  {
+   "id": "h9-outlet-f-stenrose-09",
+   "asset": "hgrey_8",
+   "e": 477673.01,
+   "n": 6457815.58,
+   "yawDeg": 346,
+   "lengthM": 0.8,
+   "topM": 0.6,
+   "note": "Stenrose at outlet F, the east tip of pond 569 (layer 0)."
+  },
+  {
+   "id": "h9-outlet-f-stenrose-10",
+   "asset": "hgrey_5",
+   "e": 477674.58,
+   "n": 6457815.24,
+   "yawDeg": 23,
+   "lengthM": 1.04,
+   "topM": 0.57,
+   "note": "Stenrose at outlet F, the east tip of pond 569 (layer 0)."
+  },
+  {
+   "id": "h9-outlet-f-stenrose-11",
+   "asset": "hgrey_7",
+   "e": 477673.75,
+   "n": 6457815.52,
+   "yawDeg": 207,
+   "lengthM": 0.9,
+   "topM": 0.59,
+   "note": "Stenrose at outlet F, the east tip of pond 569 (layer 0)."
+  },
+  {
+   "id": "h9-outlet-f-stenrose-12",
+   "asset": "hgrey_8",
+   "e": 477671.52,
+   "n": 6457816.89,
+   "yawDeg": 11,
+   "lengthM": 0.78,
+   "topM": 0.56,
+   "note": "Stenrose at outlet F, the east tip of pond 569 (layer 0)."
+  },
+  {
+   "id": "h9-outlet-f-stenrose-13",
+   "asset": "hgrey_1",
+   "e": 477674.93,
+   "n": 6457815.38,
+   "yawDeg": 100,
+   "lengthM": 0.51,
+   "topM": 0.89,
+   "note": "Stenrose at outlet F, the east tip of pond 569 (layer 1)."
+  },
+  {
+   "id": "h9-outlet-f-stenrose-14",
+   "asset": "hgrey_2",
+   "e": 477672.34,
+   "n": 6457816.46,
+   "yawDeg": 205,
+   "lengthM": 0.75,
+   "topM": 0.93,
+   "note": "Stenrose at outlet F, the east tip of pond 569 (layer 1)."
+  },
+  {
+   "id": "h9-outlet-f-stenrose-15",
+   "asset": "hgrey_9",
+   "e": 477672.78,
+   "n": 6457816.64,
+   "yawDeg": 3,
+   "lengthM": 0.75,
+   "topM": 0.88,
+   "note": "Stenrose at outlet F, the east tip of pond 569 (layer 1)."
+  },
+  {
+   "id": "h9-outlet-f-stenrose-16",
+   "asset": "hgrey_4",
+   "e": 477674.89,
+   "n": 6457815.07,
+   "yawDeg": 90,
+   "lengthM": 0.5,
+   "topM": 0.88,
+   "note": "Stenrose at outlet F, the east tip of pond 569 (layer 1)."
+  },
+  {
+   "id": "h9-outlet-f-stenrose-17",
+   "asset": "hgrey_9",
+   "e": 477672.28,
+   "n": 6457816.18,
+   "yawDeg": 36,
+   "lengthM": 0.73,
+   "topM": 0.9,
+   "note": "Stenrose at outlet F, the east tip of pond 569 (layer 1)."
+  },
+  {
+   "id": "h9-outlet-f-stenrose-18",
+   "asset": "hgrey_1",
+   "e": 477672.84,
+   "n": 6457816.26,
+   "yawDeg": 52,
+   "lengthM": 0.62,
+   "topM": 0.88,
+   "note": "Stenrose at outlet F, the east tip of pond 569 (layer 1)."
+  },
+  {
+   "id": "h9-outlet-f-stenrose-19",
+   "asset": "hgrey_8",
+   "e": 477671.34,
+   "n": 6457812.86,
+   "yawDeg": 235,
+   "lengthM": 0.86,
+   "topM": 0.61,
+   "note": "Stenrose at outlet F, the east tip of pond 569 (layer 0)."
+  },
+  {
+   "id": "h9-outlet-f-stenrose-20",
+   "asset": "hgrey_1",
+   "e": 477673.38,
+   "n": 6457812.31,
+   "yawDeg": 286,
+   "lengthM": 0.72,
+   "topM": 0.56,
+   "note": "Stenrose at outlet F, the east tip of pond 569 (layer 0)."
+  },
+  {
+   "id": "h9-outlet-f-stenrose-21",
+   "asset": "hgrey_4",
+   "e": 477670.32,
+   "n": 6457813.5,
+   "yawDeg": 123,
+   "lengthM": 0.98,
+   "topM": 0.6,
+   "note": "Stenrose at outlet F, the east tip of pond 569 (layer 0)."
+  },
+  {
+   "id": "h9-outlet-f-stenrose-22",
+   "asset": "hgrey_7",
+   "e": 477670.69,
+   "n": 6457812.92,
+   "yawDeg": 118,
+   "lengthM": 0.9,
+   "topM": 0.55,
+   "note": "Stenrose at outlet F, the east tip of pond 569 (layer 0)."
+  },
+  {
+   "id": "h9-outlet-f-stenrose-23",
+   "asset": "hgrey_5",
+   "e": 477670.72,
+   "n": 6457813.34,
+   "yawDeg": 13,
+   "lengthM": 0.72,
+   "topM": 0.57,
+   "note": "Stenrose at outlet F, the east tip of pond 569 (layer 0)."
+  },
+  {
+   "id": "h9-outlet-f-stenrose-24",
+   "asset": "hgrey_9",
+   "e": 477673.06,
+   "n": 6457812.59,
+   "yawDeg": 31,
+   "lengthM": 0.94,
+   "topM": 0.59,
+   "note": "Stenrose at outlet F, the east tip of pond 569 (layer 0)."
+  },
+  {
+   "id": "h9-outlet-f-stenrose-25",
+   "asset": "hgrey_1",
+   "e": 477672.24,
+   "n": 6457812.84,
+   "yawDeg": 16,
+   "lengthM": 0.85,
+   "topM": 0.67,
+   "note": "Stenrose at outlet F, the east tip of pond 569 (layer 0)."
+  },
+  {
+   "id": "h9-outlet-f-stenrose-26",
+   "asset": "hgrey_2",
+   "e": 477672.49,
+   "n": 6457812.06,
+   "yawDeg": 82,
+   "lengthM": 1.06,
+   "topM": 0.64,
+   "note": "Stenrose at outlet F, the east tip of pond 569 (layer 0)."
+  },
+  {
+   "id": "h9-outlet-f-stenrose-27",
+   "asset": "hgrey_9",
+   "e": 477672.94,
+   "n": 6457811.85,
+   "yawDeg": 46,
+   "lengthM": 0.83,
+   "topM": 0.65,
+   "note": "Stenrose at outlet F, the east tip of pond 569 (layer 0)."
+  },
+  {
+   "id": "h9-outlet-f-stenrose-28",
+   "asset": "hgrey_5",
+   "e": 477674.29,
+   "n": 6457812.01,
+   "yawDeg": 153,
+   "lengthM": 0.92,
+   "topM": 0.54,
+   "note": "Stenrose at outlet F, the east tip of pond 569 (layer 0)."
+  },
+  {
+   "id": "h9-outlet-f-stenrose-29",
+   "asset": "hgrey_5",
+   "e": 477671.98,
+   "n": 6457812.26,
+   "yawDeg": 142,
+   "lengthM": 0.99,
+   "topM": 0.62,
+   "note": "Stenrose at outlet F, the east tip of pond 569 (layer 0)."
+  },
+  {
+   "id": "h9-outlet-f-stenrose-30",
+   "asset": "hgrey_1",
+   "e": 477671.49,
+   "n": 6457812.44,
+   "yawDeg": 131,
+   "lengthM": 0.76,
+   "topM": 0.66,
+   "note": "Stenrose at outlet F, the east tip of pond 569 (layer 0)."
+  },
+  {
+   "id": "h9-outlet-f-stenrose-31",
+   "asset": "hgrey_9",
+   "e": 477672.96,
+   "n": 6457812.13,
+   "yawDeg": 332,
+   "lengthM": 0.5,
+   "topM": 0.92,
+   "note": "Stenrose at outlet F, the east tip of pond 569 (layer 1)."
+  },
+  {
+   "id": "h9-outlet-f-stenrose-32",
+   "asset": "hgrey_9",
+   "e": 477673.62,
+   "n": 6457811.54,
+   "yawDeg": 26,
+   "lengthM": 0.66,
+   "topM": 0.85,
+   "note": "Stenrose at outlet F, the east tip of pond 569 (layer 1)."
+  },
+  {
+   "id": "h9-outlet-f-stenrose-33",
+   "asset": "hgrey_4",
+   "e": 477670.39,
+   "n": 6457812.98,
+   "yawDeg": 80,
+   "lengthM": 0.71,
+   "topM": 0.85,
+   "note": "Stenrose at outlet F, the east tip of pond 569 (layer 1)."
+  },
+  {
+   "id": "h9-outlet-f-stenrose-34",
+   "asset": "hgrey_9",
+   "e": 477671.51,
+   "n": 6457812.19,
+   "yawDeg": 311,
+   "lengthM": 0.63,
+   "topM": 0.87,
+   "note": "Stenrose at outlet F, the east tip of pond 569 (layer 1)."
+  },
+  {
+   "id": "h9-outlet-f-stenrose-35",
+   "asset": "hgrey_5",
+   "e": 477673.18,
+   "n": 6457811.95,
+   "yawDeg": 269,
+   "lengthM": 0.5,
+   "topM": 0.91,
+   "note": "Stenrose at outlet F, the east tip of pond 569 (layer 1)."
+  },
+  {
+   "id": "h9-outlet-f-stenrose-36",
+   "asset": "hgrey_7",
+   "e": 477672.09,
+   "n": 6457811.95,
+   "yawDeg": 306,
+   "lengthM": 0.6,
+   "topM": 0.86,
+   "note": "Stenrose at outlet F, the east tip of pond 569 (layer 1)."
+  },
+  {
+   "id": "h9-outlet-f-stenrose-37",
+   "asset": "hgrey_2",
+   "e": 477673.29,
+   "n": 6457815.66,
+   "yawDeg": 186,
+   "lengthM": 0.8,
+   "topM": 0.62,
+   "note": "Stenrose at outlet F, the east tip of pond 569 (layer 2)."
+  },
+  {
+   "id": "h9-outlet-f-stenrose-38",
+   "asset": "hgrey_2",
+   "e": 477672.49,
+   "n": 6457812.63,
+   "yawDeg": 124,
+   "lengthM": 0.8,
+   "topM": 0.62,
+   "note": "Stenrose at outlet F, the east tip of pond 569 (layer 2)."
+  },
+  {
    "id": "h3-box-block-s0",
    "asset": "boxkerb_1",
    "e": 478241.91,
