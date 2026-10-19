@@ -1762,6 +1762,24 @@ def boulder(g, s):
             g.poly(p, m, uv=("uv", [uvs[a][b] for a, b in q]))
 
 
+def _parapet(g, rnd, mats, L, yp, t, zd, sc=1.0):
+    """A stone parapet ("reling") along y = yp: a course and a rounded coping of field stones following the deck line
+    zd(x), thickness t, from the deck up ~0.5 m. sc scales the stones."""
+    for lift, hh, ex in ((0.13 * sc, 0.27 * sc, 2.8), (0.38 * sc, 0.28 * sc, 2.2)):
+        x = -L / 2 + 0.1
+        while x < L / 2 - 0.1:
+            cw = rnd.uniform(0.5, 0.85) * sc
+            xc = min(x + cw / 2, L / 2 - 0.1)
+            slope = (zd(xc + 0.2) - zd(xc - 0.2)) / 0.4
+            spec = {"sx": cw * 1.1, "sy": t * (1.15 if lift > 0.3 * sc else 1.0), "sz": hh * 1.15, "exponent": ex, "lumps": 0.6,
+                    "seed": rnd.randint(1, 10 ** 6), "seg": 10, "rings": 6, "mat": mats[0] if rnd.random() < 0.5 else rnd.choice(mats)}
+            g.push(Matrix.Translation((xc, yp + rnd.uniform(-0.02, 0.02), zd(xc) + lift)) @ Matrix.Rotation(-math.atan(slope), 4, "Y")
+                   @ Matrix.Rotation(rnd.uniform(-0.04, 0.04), 4, "Z"))
+            boulder(g, spec)
+            g.pop()
+            x += cw * rnd.uniform(0.92, 1.0)
+
+
 def _arch_masonry(g, rnd, mats, L, W, ow, oh, depth, zd, roof):
     """The old arch bridge's stonework (Omberg holes 7 and 9): both faces laid as rough strips of field stone stacked
     down from the deck line (so the courses follow the hump and the joints stagger), a ring of larger stones round the
@@ -1801,17 +1819,7 @@ def _arch_masonry(g, rnd, mats, L, W, ow, oh, depth, zd, roof):
             a = math.pi * k / nv
             xa, za = -math.cos(a) * (ow / 2 + 0.2), math.sin(a) * (oh + 0.2)
             stone((xa, yf, za), (0.46, 0.5, 0.38), roty=a - math.pi / 2, face=sgn, exponent=2.8)
-        # the parapet: a course and a coping, following the deck
-        yp = sgn * (W / 2 - t / 2)
-        for lift, hh, ww, ex in ((0.13, 0.27, 0.45, 2.8), (0.38, 0.28, 0.4, 2.2)):
-            x = -L / 2 + 0.1
-            while x < L / 2 - 0.1:
-                cw = rnd.uniform(0.5, 0.85)
-                xc = min(x + cw / 2, L / 2 - 0.1)
-                slope = (zd(xc + 0.2) - zd(xc - 0.2)) / 0.4
-                stone((xc, yp + rnd.uniform(-0.02, 0.02), zd(xc) + lift), (cw * 1.1, t * (1.15 if lift > 0.3 else 1.0), hh * 1.15),
-                      rnd.uniform(-0.04, 0.04), -math.atan(slope), exponent=ex, lumps=0.6)
-                x += cw * rnd.uniform(0.92, 1.0)
+        _parapet(g, rnd, mats, L, sgn * (W / 2 - t / 2), t, zd)
 
 
 def stone_bridge(g, s):
@@ -1843,8 +1851,8 @@ def stone_bridge(g, s):
         u = min(1.0, abs(2 * x / L))
         if arch:  # a hump bridge: the deck line, level across, vertical flanks
             return H * (1 - u ** 2.6)
-        hx = smooth((1 - u) / 0.5) ** 0.9 * (1 - 0.12 * u * u)  # flat, gently domed, the ends feathering out
-        cy = (1 - min(1.0, abs(2 * y / W)) ** 2.4) ** 0.5
+        hx = smooth((1 - u) / 0.5) ** 0.9 * (1 - 0.28 * u * u)  # gently domed (the Swilcan bridge's hump), the ends feathering out
+        cy = (1 - min(1.0, abs(2 * y / W)) ** 5.0) ** 0.5  # flat top, steep shoulders
         z = H * hx * cy
         if ow > 0:  # the headwall over the culvert: a lip that stands to the mouth, then falls steeply
             hw = (oh + 0.42) * (1 - smooth((abs(x) - ow / 2 - 0.15) / 0.55))
@@ -1973,6 +1981,28 @@ def stone_bridge(g, s):
     if arch:
         _arch_masonry(g, rnd, mats, L, W, ow, oh, depth, lambda x: surf(x, 0.0), roof)
         return
+    # the flanks (steep: the passes above sample from above and leave them thin) and the parapet along both edges
+    for _ in range(int(L * 260 * stone)):
+        x, sgn, zt = rnd.uniform(-L / 2, L / 2), rnd.choice((-1, 1)), rnd.uniform(0.0, 1.0)
+        top_z = surf(x, 0.0)
+        if top_z < 0.1:
+            continue
+        zq = zt * top_z
+        lo, hi = 0.0, W / 2
+        for _i in range(18):  # the y on the flank where the surface is zq
+            mid = (lo + hi) / 2
+            lo, hi = (mid, hi) if surf(x, mid) > zq else (lo, mid)
+        y = sgn * hi
+        r = stone * rnd.uniform(0.8, 1.2) * (0.6 + 0.4 * min(1.0, zq / 0.3))
+        if in_mouth(x, y, r) or not free(x, y, zq, r * 0.6, 0.85):
+            continue
+        n = normal(x, y)
+        placed.setdefault((int(x // 0.5), int(y // 0.5)), []).append((x, y, zq, r * 0.6))
+        lay(x, y, zq - r * 0.12, r, n, True)
+    if not arch:
+        yp, tp = W / 2 - 0.42, 0.44
+        for sgn in (-1, 1):
+            _parapet(g, rnd, mats, L, sgn * yp, tp, lambda x: surf(x, yp), sc=0.8)
     # dressed stones on the headwalls (the vertical faces y = +-W/2 beside and over the culvert) and round the mouth
     if ow > 0:
         for sgn in (-1, 1):

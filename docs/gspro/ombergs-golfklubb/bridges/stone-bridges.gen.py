@@ -22,9 +22,9 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 
 SITES = {
     # hole 6's creek (feature 575), the two old bridges on the way to the single-bunker green; the first one of the reference photo
-    "omberg_stone_bridge_h6a": dict(hole=6, e=477447.4, n=6457784.8, yawDeg=154.0, style="mound", length=7.5, width=2.8, height=0.6, seed=11, active=True,
+    "omberg_stone_bridge_h6a": dict(hole=6, e=477447.4, n=6457784.8, yawDeg=154.0, style="mound", length=9.0, width=3.2, height=1.3, seed=11, active=True,
                                     note="creek 575, deck 6.5 x 3.5 m in the ortho, creek WSW-ENE"),
-    "omberg_stone_bridge_h6b": dict(hole=6, e=477521.1, n=6457810.1, yawDeg=180.0, style="mound", length=8.0, width=2.8, height=0.65, seed=23, active=True,
+    "omberg_stone_bridge_h6b": dict(hole=6, e=477521.1, n=6457810.1, yawDeg=180.0, style="mound", length=9.5, width=3.2, height=1.4, seed=23, active=True,
                                     note="creek 575, deck 6.7 x 3.3 m, creek W-E, a parapet strip on the east side"),
     # candidates: ask Marcus first
     "omberg_stone_bridge_h9c": dict(hole=9, e=477635.0, n=6457827.0, yawDeg=130.0, style="arch", length=5.5, width=2.4, height=1.1, seed=31, active=False,
@@ -41,8 +41,9 @@ def spec(all_sites=False):
             continue
         part = {"kind": "stone_bridge", "style": s["style"], "length": s["length"], "width": s["width"], "height": s["height"], "seed": s["seed"]}
         if s["style"] == "mound":
-            part["stone"] = s.get("stone", 0.17)
-            part["openingHeight"] = s.get("openingHeight", 0.1)
+            part["stone"] = s.get("stone", 0.22)
+            part["opening"] = s.get("opening", 1.8)
+            part["openingHeight"] = s.get("openingHeight", 0.5)
         if "opening" in s:
             part["opening"] = s["opening"]
         assets[name] = {"category": "structure", "collider": "mesh", "parts": [part]}
