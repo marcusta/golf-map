@@ -1222,10 +1222,24 @@ built course as the ball meets it - the course meshes (`Spline_*`, `Gap_Issue_*`
   running on under the edge, and a step or crack under a wall's stones or a prop (`*-hidden`).
 - **Ray grid** (`cell`, 0.5 m) over the area: misses not joined to the area's edge are **gaps** (error; what is under
   them is named, the terrain or nothing); two meshes within 2 cm of each other over 1 m2 or more are an **overlap**
-  (z-fighting; single rays are blend edges lying over their neighbour, info).
+  (z-fighting; single rays are blend edges lying over their neighbour, info); an enabled TerrainCollider more than
+  2 cm over the course mesh is **terrain-above** (error: its collider is what the ball meets, drawn or not;
+  `golfmap.terrain.conform` puts the terrain under the meshes).
+- Steps are info, not errors, where they are covered: a bunker's sand under its ring (`step-lip`), a rock slab's own
+  ledges (`step-ledge`), a wall's stone or a prop standing on the edge or being the first thing just outside it
+  (`step-hidden`). Each finding carries its `worst` point and the edge's outward `dir`; Review frames the worst point.
+- `golfmap.course.probe x= z= [dir step count top]`: every collider a ray meets along a short line across a spot,
+  height, normal, ground or not - what a finding is made of.
 - Findings cluster within 1.5 m, rank error > warn > info, and go to `<export folder>/course-check.json`
   (`golfmap-course-check-v1`, with `changedPlaces` for Review). `without=<mesh,...>` checks as if those meshes were
   gone: the proof that it finds a hole. Upside-down faces under 0.01 m2 in one place (a cut's slivers) are a warning.
+
+Omberg, the eleven errors looked at one by one (2026-10-19, before terrain-above, wall cover and ledges were added):
+a 4-5 cm crack between hole 9's lake blend and the rough 0.3 m above the water (real, short); 10-26 cm slits along
+hole 9's creek wall and hole 14's pond wall (under or beside the stones; a thin dark line by the pond, the ball meets
+the stones); hall_58's ledges and two small upside-down faces at the Vättern shore (rock, out of play). Adding
+terrain-above then found the hidden inner terrain's collider over the meshes on ~64 000 m2 (up to 1.46 m, mostly round
+rock slabs, digs and Outer_Deep): not conformed since the shaping.
 
 Omberg 2026-10-19 (943 meshes, OOB + 50 m = 0.88 km2, 3.5 M rays, 0.86 M seam probes, 20-27 s): no gaps; 11 errors (open
 steps up to 26 cm along the rough by hole 9's creek and in hole 14's lake mesh, upside-down faces on a rock slab, a 5 cm
@@ -1268,7 +1282,13 @@ The Blender half: `blender/tools/course_check.py` (blender/README.md "Course che
     moved across to centre the water between its two sides, so the edges sit inside the banks with no gap
     under them.
   - *ends*: both ends run on along the line into the bank the same way.
-  - A side or end that never meets a bank (flat ground, a creek into a pond or another creek) keeps the
+  - *into a lake*: an end with a water plane under it or within 1 m past it runs on `pondFadeM` (2 m) past the
+    lake's shore instead, and the creek's water fades out over the lake there: R.A.M.'s vertex colour alpha
+    (its vertex colour water shaders multiply their alpha by it) eases from 1 at the shore to 0 `pondFadeM`
+    inside it. So a creek whose own colour differs from the lake's has no hard edge on the lake. The report's
+    `endsM` says `lake <m>` (how far the end was moved on; negative: it already ran far enough in) and
+    `lakeFadeVertices` how many vertices are see-through at all. `pondFadeM=0` turns it off (every vertex opaque).
+  - A side or end that never meets a bank (flat ground, a creek into another creek) keeps the
     export's width or end. It is counted as `open`, and the report's `check` list gives its plot x, z. Where the
     ground beside a creek is not below the water, dig the creek deeper in golf-map.
 - **Refit after a remodel**: the fit reads the scene, so rebuild the scene first, then run both steps again. The

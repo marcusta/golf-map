@@ -44,6 +44,7 @@ namespace GolfMap.Editor
         const float OverlapM = 0.02f;      // two meshes this close at one point overlap
         const float ClusterM = 1.5f;
         const float SliverM2 = 0.01f;
+        const float TerrainOverM = 0.02f;  // the Unity terrain this far over the course mesh is what the ball meets
         static readonly System.Globalization.CultureInfo Inv = System.Globalization.CultureInfo.InvariantCulture;      // upside-down faces under this much area in one place are a warning
         static readonly float[] CrackSteps = { 0.05f, 0.1f, 0.2f, 0.5f, 1f };
         static readonly Regex HoleRe = new Regex("^Spline_hole_(\\d+)_", RegexOptions.Compiled);
@@ -63,6 +64,7 @@ namespace GolfMap.Editor
             public Vector3 p;
             public int a, b;        // object indices (b = -1: none)
             public float metric;    // step dz, crack width, gap/overlap cell count ...
+            public float dir;       // seams: the edge's outward direction, degrees from +x toward +z
         }
 
         sealed class Finding
@@ -72,6 +74,8 @@ namespace GolfMap.Editor
             public Vector3 min = Vector3.positiveInfinity, max = Vector3.negativeInfinity;
             public int count;
             public double metric;
+            public Vector3? worst;     // the point with the largest metric (where to look first)
+            public float worstDir;
             // a point with no height (a gap cell no mesh borders) widens only the plan
             public void Add(Vector3 p)
             {
@@ -100,6 +104,35 @@ namespace GolfMap.Editor
             var steps = Run(Mathf.Clamp((float)a.Number("cell", 0.5), 0.1f, 5f), a.String("hole"), a.Bool("seams", true), a.Bool("grid", true), a.Bool("write", true),
                 (float)a.Number("marginM", 50), boundary, (int)a.Number("limit", 60), a.Strings("without").SelectMany(x => x.Split(',')).Select(x => x.Trim()).Where(x => x.Length > 0).ToList());
             while (steps.MoveNext()) yield return steps.Current;
+        }
+
+        [BridgeCommand("golfmap.course.probe", "Read-only: what a ray straight down meets at (x, z) and at points every `step` m along `dir` (degrees from +x toward +z) - every collider (course mesh or not, back faces too) with its height, normal and whether it faces up. To see what a course check finding is made of.",
+            args = "x, z (Unity world), dir=0, step=0.05, count=9 (points, centred on x/z), top (ray start height; default 2 m over the highest hit)")]
+        static object Probe(BridgeArgs a)
+        {
+            float x = (float)a.Number("x", double.NaN), z = (float)a.Number("z", double.NaN);
+            if (float.IsNaN(x) || float.IsNaN(z)) throw new BridgeError("x and z are needed.");
+            float dir = (float)a.Number("dir", 0) * Mathf.Deg2Rad, step = (float)a.Number("step", 0.05);
+            int count = Mathf.Clamp(a.Int("count", 9), 1, 101);
+            float from = (float)a.Number("top", 10000);
+            bool backfaces = Physics.queriesHitBackfaces;
+            var rows = new List<object>();
+            try
+            {
+                Physics.queriesHitBackfaces = true;
+                for (int i = 0; i < count; i++)
+                {
+                    float o = (i - (count - 1) / 2f) * step;
+                    float px = x + Mathf.Cos(dir) * o, pz = z + Mathf.Sin(dir) * o;
+                    var hits = Physics.RaycastAll(new Vector3(px, from, pz), Vector3.down, from + 1000f, ~0, QueryTriggerInteraction.Ignore)
+                        .OrderByDescending(h => h.point.y).Take(8)
+                        .Select(h => (object)(h.collider.name + " y " + h.point.y.ToString("0.000", Inv) + (h.normal.y >= 0 ? " up" : " DOWN") + " n.y " + h.normal.y.ToString("0.00", Inv)
+                            + (GolfMapSurfaces.IsCourseMesh(h.collider.name) ? "" : " (not ground)"))).ToList();
+                    rows.Add(new Dictionary<string, object> { { "at", new List<object> { Math.Round(px, 3), Math.Round(pz, 3) } }, { "offsetM", Math.Round(o, 3) }, { "hits", hits } });
+                }
+            }
+            finally { Physics.queriesHitBackfaces = backfaces; }
+            return new Dictionary<string, object> { { "points", rows } };
         }
 
         // <export folder>/<prefix>-oob.json when it exists
@@ -322,8 +355,8 @@ namespace GolfMap.Editor
                 for (int i = 0; i < n; i++) { int j; if (colliderIndex.TryGetValue(buf[i].collider.GetInstanceID(), out j) && j == o) return true; }
                 return false;
             };
-            // a collider that is not ground (a wall's stones, a prop) standing on the edge, just inside or just outside it
-            Func<Vector3, Vector2, bool> hiddenBy = (p, outward) =>
+            // a collider that is not ground (a wall's stone, a prop) standing on the edge, 5 cm either side of it
+            Func<Vector3, Vector2, bool> standsOn = (p, outward) =>
             {
                 foreach (float off in new[] { -0.05f, 0.05f })
                 {
@@ -333,6 +366,21 @@ namespace GolfMap.Editor
                             && !(buf[i].collider is TerrainCollider) && buf[i].point.y > p.y - 0.05f) return true;
                 }
                 return false;
+            };
+            // the edge is covered: just outside it (2 and 5 cm) the first thing a ball from above meets is a collider that is
+            // not ground - a wall's stones, a prop - so the slit under it is neither seen nor reached
+            Func<Vector3, Vector2, bool> hiddenBy = (p, outward) =>
+            {
+                foreach (float off in new[] { ProbeOutM, 0.05f })
+                {
+                    int n = Physics.RaycastNonAlloc(new Vector3(p.x + outward.x * off, p.y + 3f, p.z + outward.y * off), Vector3.down, buf, 4f, ~0, QueryTriggerInteraction.Ignore);
+                    int best = -1;
+                    for (int i = 0; i < n; i++) if (best < 0 || buf[i].point.y > buf[best].point.y) best = i;
+                    if (best < 0) return false;
+                    var c = buf[best].collider;
+                    if (colliderIndex.ContainsKey(c.GetInstanceID()) || GolfMapSurfaces.IsCourseMesh(c.name) || c is TerrainCollider) return standsOn(p, outward);
+                }
+                return true;
             };
 
             // upside-down faces that are the top surface where they lie
@@ -367,6 +415,7 @@ namespace GolfMap.Editor
                 if ((long)nx * nz > 40000000L) throw new BridgeError("The grid would be " + nx + " x " + nz + " cells: raise cell or pass hole.");
                 cellObj = new int[nx * nz];
                 var overlapWith = new Dictionary<int, int>();
+                var terrainOver = new Dictionary<int, float>();
                 const float jitter = 0.0137f;   // keeps the rays off whole-metre seams and vertices
                 for (int iz = 0; iz < nz; iz++)
                 {
@@ -387,6 +436,9 @@ namespace GolfMap.Editor
                         }
                         cellObj[iz * nx + ix] = bestObj;
                         if (bestObj < 0) continue;
+                        // an enabled terrain collider over the course mesh: the ball meets the terrain, not the course
+                        for (int i = 0; i < n; i++)
+                            if (buf[i].collider is TerrainCollider && buf[i].point.y - bestY > TerrainOverM) { terrainOver[iz * nx + ix] = buf[i].point.y - bestY; break; }
                         for (int i = 0; i < n; i++)
                         {
                             int o;
@@ -432,6 +484,13 @@ namespace GolfMap.Editor
                         if (g != null) p.y = g.Value.point.y;
                     }
                     hits.Add(new Hit { type = "gap", p = p, a = nb, b = -1, metric = cell * cell });
+                }
+                foreach (var kv in terrainOver)
+                {
+                    var p = cellPoint(kv.Key);
+                    var g = ground(p.x, p.z, float.NaN, top, depth);
+                    if (g != null) p.y = g.Value.point.y;
+                    hits.Add(new Hit { type = "terrain-above", p = p, a = cellObj[kv.Key], b = -1, metric = kv.Value });
                 }
                 foreach (var kv in overlapWith)
                 {
@@ -526,9 +585,11 @@ namespace GolfMap.Editor
                                     // blend), so nothing opens; or a wall's / prop's stones stand on it and hide it
                                     // a bunker's sand meets its blend ring a few cm lower all round (Bunker Studio / OPCD): a lip
                                     bool bunkerLip = o != k && Mathf.Abs(dz) <= BunkerLipM && IsBunkerPair(mm.name, meshes[o].name);
-                                    string type = bunkerLip ? "step-lip" : hiddenBy(sp, outward) ? "step-hidden"
+                                    // a rock slab's own ledges (golfmap.cut_out's steps in one slab mesh) are the rock's shape
+                                    bool ledge = o == k && GolfMapSurfaces.Classify(mm.name) == GolfMapSurfaces.Surface.Slab;
+                                    string type = bunkerLip ? "step-lip" : ledge ? "step-ledge" : hiddenBy(sp, outward) ? "step-hidden"
                                         : o != k && reaches(sp.x - outward.x * ProbeOutM, sp.z - outward.y * ProbeOutM, sp.y, o) ? "step-lip" : "step";
-                                    hits.Add(new Hit { type = type, p = sp, a = k, b = o, metric = Mathf.Abs(dz) });
+                                    hits.Add(new Hit { type = type, p = sp, a = k, b = o, metric = Mathf.Abs(dz), dir = Mathf.Atan2(outward.y, outward.x) * Mathf.Rad2Deg });
                                 }
                                 continue;
                             }
@@ -542,7 +603,7 @@ namespace GolfMap.Editor
                                 if (g2 != null) { width = step; colliderIndex.TryGetValue(g2.Value.collider.GetInstanceID(), out other); break; }
                             }
                             if (width < 0 && isOutside(new Vector3(sp.x + outward.x * 1.5f, 0f, sp.z + outward.y * 1.5f))) continue;
-                            hits.Add(new Hit { type = "crack", p = sp, a = k, b = other, metric = width < 0 ? 9f : width });
+                            hits.Add(new Hit { type = "crack", p = sp, a = k, b = other, metric = width < 0 ? 9f : width, dir = Mathf.Atan2(outward.y, outward.x) * Mathf.Rad2Deg });
                         }
                     }
                     if (k % 20 == 0) yield return null;
@@ -565,6 +626,11 @@ namespace GolfMap.Editor
                     { "objects", f.objects.OrderBy(x => x, StringComparer.Ordinal).Take(6).Cast<object>().ToList() }, { "points", f.count },
                     { "unity", new List<object> { Math.Round(c.x, 2), Math.Round(c.y, 2), Math.Round(c.z, 2) } },
                 };
+                if (f.worst.HasValue)
+                {
+                    var w = f.worst.Value;
+                    d["worst"] = new Dictionary<string, object> { { "unity", new List<object> { Math.Round(w.x, 3), Math.Round(w.y, 3), Math.Round(w.z, 3) } }, { "dir", Math.Round(f.worstDir) } };
+                }
                 var e = epsgOf(c);
                 if (e != null) d["epsg3006"] = e;
                 return d;
@@ -587,7 +653,7 @@ namespace GolfMap.Editor
                 // GolfMap > Review reads these (format golfmap-shaping-report-v1's changedPlaces)
                 file["changedPlaces"] = findings.Where(f => f.severity != "info").Select(f =>
                 {
-                    var c = f.Centre;
+                    var c = f.worst ?? f.Centre;   // Review frames the worst point
                     var place = new Dictionary<string, object>
                     {
                         { "type", f.severity + " " + f.type }, { "hole", f.hole }, { "note", f.note },
@@ -609,7 +675,7 @@ namespace GolfMap.Editor
         static List<Finding> Cluster(List<Hit> hits, List<Mesh3> meshes)
         {
             var parent = Enumerable.Range(0, hits.Count).ToArray();
-            bool flat = hits.Count > 0 && (hits[0].type == "gap" || hits[0].type == "overlap");   // grid cells: joined in plan only
+            bool flat = hits.Count > 0 && (hits[0].type == "gap" || hits[0].type == "overlap" || hits[0].type == "terrain-above");   // grid cells: joined in plan only
             Func<int, int> find = null;
             find = i => { while (parent[i] != i) { parent[i] = parent[parent[i]]; i = parent[i]; } return i; };
             var grid = new Dictionary<Vector2Int, List<int>>();
@@ -639,6 +705,8 @@ namespace GolfMap.Editor
                 var list = g.Select(i => hits[i]).ToList();
                 string type = list[0].type;
                 var f = new Finding { type = type };
+                var top1 = list.OrderByDescending(h => h.metric).First();
+                if (!float.IsNaN(top1.p.y)) { f.worst = top1.p; f.worstDir = top1.dir; }
                 foreach (var h in list)
                 {
                     f.Add(h.p);
@@ -672,9 +740,18 @@ namespace GolfMap.Editor
                         f.note = (max > 1.5f ? "open edge with no ground beyond 1 m" : "crack up to " + (max * 100).ToString("0", Inv) + " cm wide") + ", " + list.Count + " probes"
                             + (max > BallM ? ": the ball can drop into it" : ": it shows, the ball rolls over it");
                         break;
+                    case "terrain-above":
+                        f.metric = max; f.severity = "error";
+                        f.note = "the Unity terrain up to " + (max * 100).ToString("0", Inv) + " cm over the course mesh at " + list.Count
+                            + " grid points: its collider is what the ball meets - golfmap.terrain.conform puts it under the meshes";
+                        break;
                     case "step-lip":
                         f.metric = max; f.severity = "info";
                         f.note = "lip up to " + (max * 100).ToString("0", Inv) + " cm (a bunker's sand under its ring, or a mesh running on under the other), " + list.Count + " probes";
+                        break;
+                    case "step-ledge":
+                        f.metric = max; f.severity = "info";
+                        f.note = "rock ledge up to " + (max * 100).ToString("0", Inv) + " cm in the slab's own mesh, " + list.Count + " probes";
                         break;
                     case "step-hidden":
                     case "crack-hidden":
