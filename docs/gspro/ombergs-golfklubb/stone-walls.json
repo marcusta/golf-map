@@ -126,23 +126,23 @@
     0.42
    ],
    "stoneHeightVar": [
-    0.8,
-    1.08
+    1.05,
+    1.25
    ],
    "bedJitterM": 0.05,
    "lengthRatio": [
-    1.4,
-    2.4
+    1.6,
+    2.8
    ],
-   "maxStoneM": 1.1,
+   "maxStoneM": 1.3,
    "depthM": [
     0.45,
     0.7
    ],
-   "faceProudM": 0.03,
+   "faceProudM": 0.12,
    "faceJitterM": 0.03,
    "spinDeg": 3,
-   "gapM": -0.03,
+   "gapM": -0.25,
    "sinkM": 0.1,
    "topMarginM": 0.12,
    "capM": 0.0,
@@ -163,10 +163,10 @@
     0.3
    ],
    "stoneHeightVar": [
-    0.8,
-    1.08
+    1.0,
+    1.15
    ],
-   "bedJitterM": 0.04,
+   "bedJitterM": 0.02,
    "lengthRatio": [
     1.3,
     2.4
@@ -176,10 +176,10 @@
     0.35,
     0.55
    ],
-   "faceProudM": 0.02,
-   "faceJitterM": 0.025,
-   "spinDeg": 3,
-   "gapM": -0.02,
+   "faceProudM": 0.06,
+   "faceJitterM": 0.02,
+   "spinDeg": 2,
+   "gapM": -0.07,
    "sinkM": 0.08,
    "topMarginM": 0.08,
    "capM": 0.0,

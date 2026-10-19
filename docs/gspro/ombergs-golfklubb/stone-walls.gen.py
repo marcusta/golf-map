@@ -42,11 +42,11 @@ BOULDERS = [
     (0.82, 0.72), (0.9, 0.8), (0.62, 0.52), (0.95, 0.88), (0.78, 0.6),
     (0.86, 0.76), (0.66, 0.66), (0.92, 0.62), (0.8, 0.84), (0.58, 0.5),
 ]
-# Dry-stone wall stones (Vreta's WALL_STONES): (depth, height) as a fraction of the length, exponent; a flat face and
-# flat beds cut by WALL_STONE_FLATS.
+# Dry-stone wall stones (Vreta's WALL_STONES, blockier: Marcus wanted the wall tighter): (depth, height) as a fraction
+# of the length, exponent; a flat face and flat beds cut by WALL_STONE_FLATS.
 WALL_STONES = [
-    (0.7, 0.55, 3.0), (0.65, 0.5, 2.6), (0.75, 0.62, 3.4), (0.6, 0.45, 2.8), (0.8, 0.6, 3.2),
-    (0.7, 0.5, 2.5), (0.66, 0.58, 3.0), (0.72, 0.48, 3.6), (0.62, 0.52, 2.7), (0.78, 0.56, 3.1),
+    (0.7, 0.55, 3.8), (0.65, 0.5, 3.4), (0.75, 0.62, 4.2), (0.6, 0.45, 3.6), (0.8, 0.6, 4.0),
+    (0.7, 0.5, 3.3), (0.66, 0.58, 3.8), (0.72, 0.48, 4.4), (0.62, 0.52, 3.5), (0.78, 0.56, 3.9),
 ]
 WALL_STONE_FLATS = [
     {"dir": [0, 1, 0], "at": 0.82, "keep": 0.12},   # the face
@@ -93,15 +93,15 @@ STYLES = {
         "beyondM": 1.2,              # the edge's height this far past the lip: the meshes' smeared edge still falls at 0.4 m
         "baseCourseM": [0.4, 0.55],  # course heights up the face: the bottom course's ...
         "courseM": [0.3, 0.42],      # ... and the rest
-        "stoneHeightVar": [0.8, 1.08],
+        "stoneHeightVar": [1.05, 1.25],  # stones overfill their course (Marcus: tighter)
         "bedJitterM": 0.05,
-        "lengthRatio": [1.4, 2.4],   # a stone's length / its course height: long blocks (photo)
-        "maxStoneM": 1.1,
+        "lengthRatio": [1.6, 2.8],   # a stone's length / its course height: long blocks (photo)
+        "maxStoneM": 1.3,
         "depthM": [0.45, 0.7],
-        "faceProudM": 0.03,
+        "faceProudM": 0.12,          # out of the raised face: the meshes' uneven face swallowed stones set 3 cm proud
         "faceJitterM": 0.03,
         "spinDeg": 3,
-        "gapM": -0.03,
+        "gapM": -0.25,                # neighbours overlap: no dark joints between them (Marcus: tighter)
         "sinkM": 0.1,
         "topMarginM": 0.12,
         "capM": 0.0,                 # flush with the top: the grass hangs over it
@@ -117,15 +117,15 @@ STYLES = {
         "beyondM": 1.2,               # the plateau's height 1.2 m back: nearer, the meshes' smeared edge is still falling
         "baseCourseM": [0.3, 0.4],
         "courseM": [0.2, 0.3],
-        "stoneHeightVar": [0.8, 1.08],
-        "bedJitterM": 0.04,
+        "stoneHeightVar": [1.0, 1.15],  # a stone fills its course and overlaps the next (Marcus: too many gaps)
+        "bedJitterM": 0.02,
         "lengthRatio": [1.3, 2.4],
         "maxStoneM": 0.7,
         "depthM": [0.35, 0.55],
-        "faceProudM": 0.02,
-        "faceJitterM": 0.025,
-        "spinDeg": 3,
-        "gapM": -0.02,
+        "faceProudM": 0.06,            # clear of where the raised face mesh bulges
+        "faceJitterM": 0.02,
+        "spinDeg": 2,
+        "gapM": -0.07,                 # packed tight along the course
         "sinkM": 0.08,
         "topMarginM": 0.08,
         "capM": 0.0,
@@ -470,7 +470,7 @@ def stones_spec():
     for i, (d, h, e) in enumerate(WALL_STONES, 1):
         assets["wallstone_%d" % i] = {"category": "prop", "collider": "mesh", "parts": [
             {"kind": "boulder", "sx": 1.0, "sy": d, "sz": h, "seed": 60 + i, "exponent": e, "lumps": 0.45,
-             "flats": WALL_STONE_FLATS, "seg": 24, "rings": 14, "mat": "granite_boulder",
+             "flats": WALL_STONE_FLATS, "seg": 24, "rings": 14, "mat": "granite_wall",
              "moss": 0.86, "mossMat": "granite_moss"}]}
     for i, (sy, sz, ex, lumps) in enumerate(HEAP_STONES, 1):
         assets["heap_%d" % i] = {"category": "prop", "collider": "mesh", "parts": [
