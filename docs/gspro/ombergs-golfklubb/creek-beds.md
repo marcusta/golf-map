@@ -43,6 +43,14 @@ the same asset, so one material tunes both), and `creeks.import` now fades every
 (`pondFadeM` 2 m, vertex alpha; see [unity/README.md](../../../unity/README.md) "Creeks"). The white patch below the
 bridge is fall G's cascade foam, not the seam.
 
+**Hole 17's brook into pond 231** (2026-10-19, the course checked for more seams): a bright white patch at the mouth. The fit had
+raised the water 0.29 m over the lip where the brook dig meets the pond dig and narrowed it to the export's 0.7 m (no bank either
+side there), so R.A.M. drew cascade foam. The import now runs a creek on flat and as wide over the last 1.5 m before a lake.
+Running on flat lifted creek 575's end over pond 239's surface, so its end edge showed beside the side shore. The fade now
+also counts along the creek past where it reaches the lake.
+The other joints: creek 21b15d21 into pond 235 shows no edge. Hole 3's creeks (572/574) end in banks, not ponds, and keep R.A.M.'s
+pale profile water. Fall E at bridge h9e is hidden by the bridge.
+
 **Where the black stops, per side** (feature `hole_17_233`, attributes `grassBelowLeftM` 0.3 and `grassBelowRightM` 0.2, left/right looking
 downstream = looking north there: left = west): the paint rule `creek-bed` names the creek (`creek`), the creeks export carries the two numbers, and the
 paint takes them per side of the creek's line (`belowM` 0.1 is the fallback, `softM` 0.08 the blend). `grassFrom: rough` gives the brook mesh the nearest

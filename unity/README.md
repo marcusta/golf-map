@@ -1285,7 +1285,11 @@ The Blender half: `blender/tools/course_check.py` (blender/README.md "Course che
   - *into a lake*: an end with a water plane under it or within 1 m past it runs on `pondFadeM` (2 m) past the
     lake's shore instead, and the creek's water fades out over the lake there: R.A.M.'s vertex colour alpha
     (its vertex colour water shaders multiply their alpha by it) eases from 1 at the shore to 0 `pondFadeM`
-    inside it. So a creek whose own colour differs from the lake's has no hard edge on the lake. The report's
+    inside it, counted both from the nearest shore and along the creek past where it reaches the lake (so the
+    end edge is see-through even beside a side shore). So a creek whose own colour differs from the lake's has
+    no hard edge on the lake. The points within 1.5 m of the lake stand on its bank (the lip where the creek's and the lake's digs meet), not on the creek's bed:
+    the water runs on flat and as wide from the last point before them, so it neither climbs over the lip nor
+    narrows to the export's width there (both draw R.A.M.'s white cascade foam at the mouth). The report's
     `endsM` says `lake <m>` (how far the end was moved on; negative: it already ran far enough in) and
     `lakeFadeVertices` how many vertices are see-through at all. `pondFadeM=0` turns it off (every vertex opaque).
   - A side or end that never meets a bank (flat ground, a creek into another creek) keeps the

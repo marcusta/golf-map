@@ -42,7 +42,9 @@
 //   LakeGapM of it) instead runs on pondFadeM past the lake's shore, and the
 //   water fades out over the lake there (R.A.M.'s vertex colour alpha: 1 at
 //   the shore, 0 pondFadeM into the lake), so the creek's colour does not
-//   stop in a hard edge on the lake's.
+//   stop in a hard edge on the lake's. The points within ShoreM of the lake
+//   stand on its bank, not the creek's bed: the water runs on flat and as
+//   wide from the last point before them (no lip, no neck, no cascade foam).
 // A side or end that never meets a bank (a creek into another creek, flat
 // ground) keeps the export's width or end and is counted "open".
 //
@@ -600,6 +602,14 @@ namespace GolfMap.Editor
                 y[i] = float.IsNegativeInfinity(highest) ? pts[i].y
                     : c.held ? Mathf.Max(pts[i].y, highest + above) : highest + above;
             }
+            // At a lake end the bed is the lake's bank (a lip where the creek's and the lake's digs meet), not the creek's:
+            // from the last point before it the water runs on flat, and as wide (below), into the lake.
+            var atLake = o.pondFadeM > 0 ? LakeEnds(pts) : new bool[n];
+            for (int i = 0; i < n; i++)
+            {
+                int k = NotAtLake(atLake, i);
+                if (k != i) y[i] = y[k];
+            }
             // Not forced to fall: held up to the next bump downstream, the water
             // would stand above its banks behind it. Climbs are reported.
             float climb = 0;
@@ -632,7 +642,7 @@ namespace GolfMap.Editor
             {
                 crossed[i] = stations.Any(st => st.owner == i && st.crossing) && !stations.Any(st => st.owner == i && !st.crossing && !float.IsNaN(st.bed));
                 for (int side = 0; side < 2; side++) half[i, side] = found[i, side] ? extent[i, side] : pts[i].w / 2f;
-                if (crossed[i]) continue;
+                if (crossed[i] || atLake[i]) continue;
                 if (!found[i, 0]) openSides++;
                 if (!found[i, 1]) openSides++;
                 if (!found[i, 0] || !found[i, 1]) flag(XZ(pts[i]), "no bank on the " + (!found[i, 0] && !found[i, 1] ? "either side" : !found[i, 0] ? "left" : "right") + ": export width kept");
@@ -645,6 +655,11 @@ namespace GolfMap.Editor
                 while (b < n && crossed[b]) b++;
                 for (int side = 0; side < 2; side++)
                     half[i, side] = a >= 0 && b < n ? (half[a, side] + half[b, side]) / 2f : a >= 0 ? half[a, side] : b < n ? half[b, side] : half[i, side];
+            }
+            for (int i = 0; i < n; i++)
+            {
+                int k = NotAtLake(atLake, i);
+                if (k != i) for (int side = 0; side < 2; side++) half[i, side] = half[k, side];
             }
             // Necks: the points over a sill and down its face (the export's fall points) stay on the export's line,
             // no wider than its lip; the water opens out from them at NeckFlareM a side per metre.
@@ -756,6 +771,7 @@ namespace GolfMap.Editor
                 { "fallM", Math.Round(fitted[0].y - fitted[fitted.Count - 1].y, 2) },
                 { "endsM", ends }, { "openSides", openSides }, { "maxShiftM", Math.Round(maxShift, 2) },
                 { "maxClimbM", Math.Round(climb, 2) }, { "crossings", crossings }, { "cornersDropped", corners },
+                { "lakeEndPoints", atLake.Count(v => v) },
                 { "check", check },
             };
             if (traced.Count > 0) result["trace"] = traced;
@@ -883,6 +899,40 @@ namespace GolfMap.Editor
             return float.NaN;
         }
 
+        // A lake end's run of points: from each end inwards, the points over a lake or within ShoreM of one. None when every
+        // point is (a creek between two lakes, too short to have a bed of its own).
+        const float ShoreM = 1.5f;
+        static bool[] LakeEnds(List<Vector4> pts)
+        {
+            int n = pts.Count;
+            var at = new bool[n];
+            for (int i = 0; i < n && NearLake(XZ(pts[i]), ShoreM); i++) at[i] = true;
+            for (int i = n - 1; i >= 0 && !at[i] && NearLake(XZ(pts[i]), ShoreM); i--) at[i] = true;
+            return at.All(v => v) ? new bool[n] : at;
+        }
+
+        // The point nearest i along the line that is not in a lake end's run (i itself when it is not).
+        static int NotAtLake(bool[] atLake, int i)
+        {
+            if (!atLake[i]) return i;
+            int a = i, b = i;
+            while (a >= 0 && atLake[a]) a--;
+            while (b < atLake.Length && atLake[b]) b++;
+            return a < 0 ? b : b >= atLake.Length ? a : i - a <= b - i ? a : b;
+        }
+
+        static bool NearLake(Vector2 p, float r)
+        {
+            if (OverLake(p)) return true;
+            for (float d = r / 2; d <= r + 1e-3f; d += r / 2)
+                for (int k = 0; k < 16; k++)
+                {
+                    float t = k * Mathf.PI / 8;
+                    if (OverLake(p + new Vector2(Mathf.Cos(t), Mathf.Sin(t)) * d)) return true;
+                }
+            return false;
+        }
+
         // Is (x, z) over a water plane (their MeshColliders)?
         static bool OverLake(Vector2 p)
         {
@@ -917,12 +967,36 @@ namespace GolfMap.Editor
             var colors = field.GetValue(spline) as Color[];
             if (mesh == null || colors == null || colors.Length != mesh.vertexCount) return 0;
             var vertices = mesh.vertices;
+            // R.A.M.'s vertices are edge loops across the water, vertsInShape each. How far each loop's centre lies along the
+            // line past where an end's run over a lake begins: the end loop then fades out whatever shore lies beside it.
+            int per = (int)splineType.GetField("vertsInShape").GetValue(spline);
+            int loops = per > 0 && vertices.Length % per == 0 ? vertices.Length / per : 0;
+            var along = new float[loops];
+            if (fadeM > 0 && loops > 1)
+            {
+                var centre = new Vector2[loops];
+                var cum = new float[loops];
+                for (int l = 0; l < loops; l++)
+                {
+                    Vector3 sum = Vector3.zero;
+                    for (int j = 0; j < per; j++) sum += spline.transform.TransformPoint(vertices[l * per + j]);
+                    centre[l] = new Vector2(sum.x / per, sum.z / per);
+                    if (l > 0) cum[l] = cum[l - 1] + Vector2.Distance(centre[l - 1], centre[l]);
+                }
+                var over = centre.Select(OverLake).ToArray();
+                int first = Array.IndexOf(over, false), last = Array.LastIndexOf(over, false);
+                if (first >= 0)
+                    for (int l = 0; l < loops; l++)
+                        along[l] = l < first ? cum[first] - cum[l] : l > last ? cum[l] - cum[last] : 0;
+            }
             int faded = 0;
             bool changed = false;
             for (int i = 0; i < vertices.Length; i++)
             {
                 var w = spline.transform.TransformPoint(vertices[i]);
-                float a = fadeM > 0 ? 1f - Mathf.SmoothStep(0f, 1f, LakeDepth(new Vector2(w.x, w.z), fadeM) / fadeM) : 1f;
+                float depth = LakeDepth(new Vector2(w.x, w.z), fadeM);
+                if (loops > 0) depth = Mathf.Max(depth, along[i / per]);
+                float a = fadeM > 0 ? 1f - Mathf.SmoothStep(0f, 1f, Mathf.Min(depth, fadeM) / fadeM) : 1f;
                 if (a < 1f) faded++;
                 if (colors[i].a != a) { colors[i].a = a; changed = true; }
             }
