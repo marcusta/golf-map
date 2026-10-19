@@ -573,6 +573,14 @@ MATERIALS = {
     "bridge_granite_b": ("granite:86,86,88:0.3:0.1:0", (4.0, 4.0), None, 0.15, 0.0),
     "bridge_granite_c": ("granite:118,113,106:0.4:0.12:0", (4.0, 4.0), None, 0.15, 0.0),
     "bridge_granite_core": ("granite:66,65,64:0.1:0:0", (4.0, 4.0), None, 0.1, 0.0),
+    # Omberg's car entrance walls (Street View photo): split granite, grey-brown to mauve-grey, dark joints
+    "entrance_granite_a": ("granite:128,108,100:0.25:0.05:0", (4.0, 4.0), None, 0.12, 0.0),
+    "entrance_granite_b": ("granite:104,92,88:0.2:0.05:0", (4.0, 4.0), None, 0.12, 0.0),
+    "entrance_granite_c": ("granite:142,124,112:0.3:0.05:0", (4.0, 4.0), None, 0.12, 0.0),
+    "entrance_granite_core": ("granite:44,40,38:0.05:0:0", (4.0, 4.0), None, 0.1, 0.0),
+    "entrance_granite_cap": ("granite:150,146,140:0.35:0.05:0", (4.0, 4.0), None, 0.12, 0.0),
+    "lantern_glass": (None, (1, 1), (58, 64, 66), 0.9, 0.0),
+    "letter_white": (None, (1, 1), (244, 244, 240), 0.3, 0.0),
     "sandstone_core": ("granite:84,58,40:0.05:0:0", (4.0, 4.0), None, 0.1, 0.0),
     "sandstone_ochre": ("granite:176,120,66:0.05:0:0", (4.0, 4.0), None, 0.12, 0.0),
     "sandstone_rust": ("granite:164,102,62:0.05:0:0", (4.0, 4.0), None, 0.12, 0.0),
@@ -2109,6 +2117,219 @@ def stone_bridge(g, s):
                 g.pop()
 
 
+def _text_mesh(text, font_path, width, depth, res=2):
+    """`text` as polygons (a font curve evaluated to a mesh): in the x-y plane, centred on its bounding box, scaled to
+    `width` m wide, z from 0 to `depth`. Returns the faces (point lists, counter-clockwise seen from outside) and the height."""
+    cu = bpy.data.curves.new("txt", "FONT")
+    cu.body = text
+    cu.resolution_u = res
+    cu.extrude = 0.05
+    cu.align_x = "CENTER"
+    try:
+        cu.font = bpy.data.fonts.load(font_path)
+    except Exception:
+        pass
+    ob = bpy.data.objects.new("txt", cu)
+    bpy.context.scene.collection.objects.link(ob)
+    bpy.context.view_layer.update()
+    me = ob.evaluated_get(bpy.context.evaluated_depsgraph_get()).to_mesh()
+    vs = [tuple(v.co) for v in me.vertices]
+    fs = [list(p.vertices) for p in me.polygons]
+    ob.to_mesh_clear()
+    bpy.data.objects.remove(ob)
+    bpy.data.curves.remove(cu)
+    x0, x1 = min(v[0] for v in vs), max(v[0] for v in vs)
+    y0, y1 = min(v[1] for v in vs), max(v[1] for v in vs)
+    z0, z1 = min(v[2] for v in vs), max(v[2] for v in vs)
+    sc = width / (x1 - x0)
+    pts = [((v[0] - (x0 + x1) / 2) * sc, (v[1] - (y0 + y1) / 2) * sc, (v[2] - z0) / max(z1 - z0, 1e-6) * depth) for v in vs]
+    return [[pts[i] for i in f] for f in fs], (y1 - y0) * sc
+
+
+def entrance_wall(g, s):
+    """Omberg's car entrance walls (Marcus's Street View photo): a dry-laid wall of split grey-brown granite, the stones
+    laid flat and tight in courses with dark joints (a dark core shows in the gaps), the faces nearly vertical with a
+    slight batter, a flat top; a squarer pillar with a flat cap and a black post-top lantern at the road end (x = -length/2,
+    the pillar's centre). Long axis x from the pillar to the far end; `face` = -1 / +1: the side (y) towards the road,
+    where the `sign` stands. `length` (pillar centre to far end), `thick`, `hTop` [at the pillar, at the far end] (the
+    wall top above the origin = the ground), `pillar` {size, height, lantern}, `batter` (m per m), `depth` (how far the
+    wall reaches under the ground), `stone` (mean stone height, m), `mats`, `core`, `cap`, `colorKey`/`darkness`/`tint`
+    (a colour of this wall's own), `lantern` (False = none), `sign` {font, lines: [{text, width, x (from the pillar's
+    centre), dz (below the wall top), depth, mat}], plate: {x, dz, w, h, text}}. Every stone is a `boulder` (flats on
+    its face and its beds)."""
+    L, t = s["length"], s.get("thick", 0.55)
+    h0, h1 = s.get("hTop", [1.3, 1.1])
+    P = s.get("pillar", {})
+    ps, ph = P.get("size", 0.72), P.get("height", 1.45)
+    bat = s.get("batter", 0.04)
+    depth = s.get("depth", 0.5)
+    fs = s.get("face", -1)
+    mats = s.get("mats", ["entrance_granite_a", "entrance_granite_b", "entrance_granite_c"])
+    core = s.get("core", "entrance_granite_core")
+    cap = s.get("cap", "entrance_granite_cap")
+    key = s.get("colorKey")
+    if key:
+        dk, tint = s.get("darkness", 1.0), s.get("tint", (1.0, 1.0, 1.0))
+        mats = [variant(m, key, dk, tint) for m in mats]
+        core = variant(core, key, dk, tint)
+        cap = variant(cap, key, dk, tint)
+    rnd = random.Random(s.get("seed", 1))
+    mean_h = s.get("stone", 0.24)
+    xp = -L / 2  # the pillar's centre
+    xw = xp + ps / 2  # the wall starts at the pillar's far face
+    xe = L / 2
+    hy = t / 2
+    top = lambda x: h0 + (h1 - h0) * min(1.0, max(0.0, (x - xw) / (xe - xw)))
+    zbot = -min(depth, 0.45)
+
+    def stone(pos, d, n, tilt, slope, he, wd, dp, flat_top, sawn=False):
+        """pos = the centre; d, n = the horizontal unit vectors along the edge and out of the wall (n to the left of d)."""
+        flats = [{"dir": (0, 1, 0), "at": 0.78, "keep": 0.0 if sawn else 0.12}, {"dir": (0, 0, 1), "at": 0.78, "keep": 0.12},
+                 {"dir": (0, 0, -1), "at": 0.78, "keep": 0.12}]
+        if flat_top:  # the top row: sawn flat at the line of the top
+            flats[1] = {"dir": (0, 0, 1), "at": 0.8, "keep": 0.0}
+        spec = {"sx": wd / 0.94, "sy": dp, "sz": he / 0.8, "exponent": rnd.uniform(*s.get("exponent", (4.0, 5.5))),
+                "lumps": rnd.uniform(0.2, 0.35), "seed": rnd.randint(1, 10 ** 6), "seg": 10, "rings": 6, "mat": rnd.choice(mats), "flats": flats}
+        B = Matrix(((d.x, n.x, 0, 0), (d.y, n.y, 0, 0), (0, 0, 1, 0), (0, 0, 0, 1)))
+        g.push(Matrix.Translation(pos) @ B @ Matrix.Rotation(-math.atan(slope), 4, "Y") @ Matrix.Rotation(tilt, 4, "X")
+               @ Matrix.Rotation(rnd.uniform(-0.07, 0.07), 4, "Z"))
+        boulder(g, spec)
+        g.pop()
+
+    sg = s.get("sign")
+    sx = None
+    if sg:  # the sign's patch of the face: stones there are sawn flat, laid exactly on the plane (letters sit on it)
+        xs = [xp + ln["x"] + sg_w / 2 * sgn for ln in sg.get("lines", []) for sg_w in (ln["width"],) for sgn in (-1, 1)]
+        if sg.get("plate"):
+            pl = sg["plate"]
+            xs += [xp + pl["x"] - pl["w"] / 2, xp + pl["x"] + pl["w"] / 2]
+        sx = (min(xs) - 0.25, max(xs) + 0.25)
+
+    def lay(a, b, topfn, b_bat, zref):
+        """Courses of stones along the edge a -> b (x, y), the outside to the left of the way. The face plane stands on the
+        edge at height zref and leans in `b_bat` m per m going up."""
+        a, b = Vector(a), Vector(b)
+        dv = b - a
+        ln = dv.length
+        d = dv / ln
+        n = Vector((-d.y, d.x))
+        tilt = math.atan(b_bat)
+        s_ = 0.0
+        while s_ < ln - 0.04:
+            cw = min(ln - s_, (rnd.uniform(0.26, 0.62) if rnd.random() > 0.12 else rnd.uniform(0.64, 0.95)) * mean_h / 0.24)
+            if ln - s_ - cw < 0.16:
+                cw = ln - s_
+            p = a + d * (s_ + cw / 2)
+            zt = topfn(p.x, p.y)
+            in_sign = sx is not None and abs(n.y - fs) < 1e-6 and sx[0] < p.x < sx[1] and abs(n.x) < 1e-6
+            q0, q1 = p - d * 0.2, p + d * 0.2
+            slope = (topfn(q1.x, q1.y) - topfn(q0.x, q0.y)) / 0.4
+            first = True
+            zt0 = zt
+            while zt > zbot - 0.05:
+                he = mean_h * rnd.uniform(0.6, 1.2) if rnd.random() > 0.16 else mean_h * rnd.uniform(1.4, 1.9)
+                dp = rnd.uniform(0.34, 0.48)
+                zc = zt - he / 2
+                sawn = in_sign and zc > zt0 - 1.2
+                face = p + n * (b_bat * (zref - zc) + (0.0 if sawn else rnd.uniform(-0.012, 0.018)))
+                pos = (face.x - n.x * 0.4 * dp, face.y - n.y * 0.4 * dp, zc)
+                stone(pos, d, n, tilt, slope, he, cw * rnd.uniform(0.98, 1.1), dp, first, sawn)
+                zt -= he * rnd.uniform(0.9, 0.97)
+                first = False
+            s_ += cw * rnd.uniform(0.88, 0.97)
+
+    # the core (shows in the joints): a closed dark box inside the stones, in the wall and in the pillar
+    def ctop(x):
+        return top(x) - 0.06
+    zb = zbot - 0.2
+    c0, c1 = -hy + 0.07, hy - 0.07
+    def grid(p00, p10, p11, p01, cell=0.25):
+        """A quad as a grid of small ones (the bake keeps or drops whole triangles by what a ray from them sees: a single big
+        face would go as a whole, or stay as a whole)."""
+        P = [Vector(v) for v in (p00, p10, p11, p01)]
+        nu = max(1, int(round((P[1] - P[0]).length / cell)))
+        nv = max(1, int(round((P[3] - P[0]).length / cell)))
+        at = lambda u, v: tuple((P[0] * (1 - u) + P[1] * u) * (1 - v) + (P[3] * (1 - u) + P[2] * u) * v)
+        for i in range(nu):
+            for j in range(nv):
+                u0, u1, v0, v1 = i / nu, (i + 1) / nu, j / nv, (j + 1) / nv
+                g.poly([at(u0, v0), at(u1, v0), at(u1, v1), at(u0, v1)], core)
+
+    grid((xw, c0, zb), (xe, c0, zb), (xe, c0, ctop(xe)), (xw, c0, ctop(xw)))
+    grid((xe, c1, zb), (xw, c1, zb), (xw, c1, ctop(xw)), (xe, c1, ctop(xe)))
+    grid((xw, c1, zb), (xw, c0, zb), (xw, c0, ctop(xw)), (xw, c1, ctop(xw)))
+    grid((xe, c0, zb), (xe, c1, zb), (xe, c1, ctop(xe)), (xe, c0, ctop(xe)))
+    grid((xw, c0, ctop(xw)), (xe, c0, ctop(xe)), (xe, c1, ctop(xe)), (xw, c1, ctop(xw)))
+    g.box((xp, 0, (zb + ph - 0.06) / 2), (ps - 0.14, ps - 0.14, ph - 0.06 - zb), core)
+    # the wall's two faces and its far end
+    wtop = lambda x, y: top(x)
+    lay((xe, -hy), (xw, -hy), wtop, bat, h0)    # y = -hy, outwards -y
+    lay((xw, hy), (xe, hy), wtop, bat, h0)      # y = +hy, outwards +y
+    lay((xe, hy), (xe, -hy), wtop, bat, h0)     # the far end, outwards +x
+    # the pillar: four faces, a cap slab
+    q = ps / 2
+    ptop = lambda x, y: ph
+    for a, b in (((xp - q, -q), (xp - q, q)), ((xp - q, q), (xp + q, q)), ((xp + q, q), (xp + q, -q)), ((xp + q, -q), (xp - q, -q))):
+        lay(a, b, ptop, 0.02, ph)
+    g.box((xp, 0, ph + 0.035), (ps + 0.1, ps + 0.1, 0.07), cap)
+    # the lantern: a black base, a short post, a four-sided lantern widening upwards (corner posts, glass), a roof, a finial
+    if s.get("lantern", True):
+        k = P.get("lantern", 0.75) / 0.75
+        g.push(Matrix.Translation((xp, 0, ph + 0.07)) @ Matrix.Scale(k, 4))
+        ink, glass = "paint_black", "lantern_glass"
+        g.cylinder((0, 0, 0), 0.13, 0.04, ink, seg=12)
+        g.cylinder((0, 0, 0.04), 0.1, 0.05, ink, seg=12, r_top=0.045)
+        g.cylinder((0, 0, 0.09), 0.032, 0.20, ink, seg=10)
+        g.cylinder((0, 0, 0.27), 0.055, 0.04, ink, seg=10, r_top=0.04)
+        z0, z1 = 0.31, 0.60
+        rb, rt = 0.085 * math.sqrt(2), 0.135 * math.sqrt(2)
+        g.push(Matrix.Rotation(math.radians(45), 4, "Z"))
+        g.cylinder((0, 0, z0 - 0.015), rb + 0.012, 0.03, ink, seg=4)
+        g.cylinder((0, 0, z0), rb, z1 - z0, glass, seg=4, cap=False, r_top=rt)
+        g.cylinder((0, 0, z1), rt + 0.015, 0.025, ink, seg=4)
+        g.cylinder((0, 0, z1 + 0.025), rt + 0.03, 0.13, ink, seg=4, r_top=0.03)
+        g.pop()
+        for i in range(4):
+            a = math.radians(45 + 90 * i)
+            g.beam((rb * math.cos(a), rb * math.sin(a), z0), (rt * math.cos(a), rt * math.sin(a), z1), 0.016, 0.016, ink)
+        g.sphere((0, 0, z1 + 0.17), 0.028, ink, seg=8, rings=4)
+        g.pop()
+    # the sign: raised letters (real geometry) on the road-side face, a white arrow plate
+    sg = s.get("sign")
+    if sg:
+        ang = math.atan(bat)
+        font = sg.get("font", "C:/Windows/Fonts/segoeui.ttf")
+        flip = Matrix(((1, 0, 0, 0), (0, 0, -1, 0), (0, 1, 0, 0), (0, 0, 0, 1))) if fs < 0 else Matrix(((-1, 0, 0, 0), (0, 0, 1, 0), (0, 1, 0, 0), (0, 0, 0, 1)))
+
+        def frame(xc, zc):  # x along the face, y up the face, z out of it, on the face plane
+            return Matrix.Translation((xc, fs * (hy + bat * (h0 - zc)), zc)) @ Matrix.Rotation(fs * ang, 4, "X") @ flip
+
+        for ln in sg.get("lines", []):
+            xc = xp + ln["x"]
+            faces, _ = _text_mesh(ln["text"], ln.get("font", font), ln["width"], ln.get("depth", 0.03))
+            g.push(frame(xc, top(xc) - ln["dz"]) @ Matrix.Translation((0, 0, -0.012)))
+            for f in faces:
+                g.poly(f, ln.get("mat", "letter_white"))
+            g.pop()
+        pl = sg.get("plate")
+        if pl:
+            xc = xp + pl["x"]
+            zc = top(xc) - pl["dz"]
+            w, h = pl["w"], pl["h"]
+            pts = [(-w / 2, -h / 2), (w / 2 - h * 0.35, -h / 2), (w / 2, 0), (w / 2 - h * 0.35, h / 2), (-w / 2, h / 2)]
+            g.push(frame(xc, zc))
+            g.poly([(p[0], p[1], 0.012) for p in pts], "letter_white")
+            for p0, p1 in zip(pts, pts[1:] + pts[:1]):
+                g.poly([(p1[0], p1[1], -0.01), (p0[0], p0[1], -0.01), (p0[0], p0[1], 0.012), (p1[0], p1[1], 0.012)], "letter_white")
+            g.pop()
+            if pl.get("text"):
+                faces, _ = _text_mesh(pl["text"], font, w * 0.62, 0.006)
+                g.push(frame(xc - w * 0.06, zc) @ Matrix.Translation((0, 0, 0.0115)))
+                for f in faces:
+                    g.poly(f, "paint_black")
+                g.pop()
+
+
 def _clip_convex(poly, clip):
     """Sutherland-Hodgman: poly clipped by a convex CCW polygon."""
     out = poly
@@ -2703,7 +2924,7 @@ BUILDERS = {
     "rock": rock, "boulder": boulder, "stones": stones, "drape": drape, "markings": markings, "range_mat": range_mat, "net_poles": net_poles, "target_flag": target_flag,
     "distance_board": distance_board, "banner": banner, "power_pole": power_pole, "car": car,
     "golf_cart": golf_cart, "car2": car2, "bridge_wood": bridge_wood, "bridge_brick": bridge_brick,
-    "bridge_rope": bridge_rope, "stone_bridge": stone_bridge, "jetty": jetty, "marker_post": marker_post, "trolley_rack": trolley_rack,
+    "bridge_rope": bridge_rope, "stone_bridge": stone_bridge, "entrance_wall": entrance_wall, "jetty": jetty, "marker_post": marker_post, "trolley_rack": trolley_rack,
 }
 
 
