@@ -564,6 +564,14 @@ MATERIALS = {
     "granite_lichen_dark": ("granite:50,49,47:0.3:0.7:0.3", (4.0, 4.0), None, 0.15, 0.0),
     # the stone box at hole 3's tees (video frame): pale grey-beige granite
     "granite_beige": ("granite:134,128,116:0.45:0.25:0.15", (4.0, 4.0), None, 0.15, 0.0),
+    # Omberg's stone crossings: the warm heaps on hole 6 (photo: sandstone-pink to ochre in low sun) and the old arch
+    # bridges on holes 7 and 9 (mid-grey field stone, photos 2026-10-19)
+    "sandstone_ochre": ("granite:150,112,90:0.2:0:0", (4.0, 4.0), None, 0.12, 0.0),
+    "sandstone_pink": ("granite:160,118,106:0.2:0:0", (4.0, 4.0), None, 0.12, 0.0),
+    "sandstone_dark": ("granite:116,90,80:0.25:0:0", (4.0, 4.0), None, 0.12, 0.0),
+    "fieldstone_grey": ("granite:128,124,118:0.3:0.1:0", (4.0, 4.0), None, 0.15, 0.0),
+    "fieldstone_dark": ("granite:100,96,92:0.25:0.05:0", (4.0, 4.0), None, 0.15, 0.0),
+    "fieldstone_brown": ("granite:130,118,108:0.3:0.1:0", (4.0, 4.0), None, 0.15, 0.0),
     # ivy over the big boulders by hole 13's tees (photo cddccbea, late September: yellowing)
     "ivy": ("foliage:92,104,40", (1.5, 1.5), None, 0.1, 0.0),
     "concrete": ("plaster:138,136,130", (2.0, 2.0), None, 0.15, 0.0),
@@ -1753,6 +1761,237 @@ def boulder(g, s):
             g.poly(p, m, uv=("uv", [uvs[a][b] for a, b in q]))
 
 
+def _arch_masonry(g, rnd, mats, L, W, ow, oh, depth, zd, roof):
+    """The old arch bridge's stonework (Omberg holes 7 and 9): both faces laid as rough strips of field stone stacked
+    down from the deck line (so the courses follow the hump and the joints stagger), a ring of larger stones round the
+    arch, and a parapet of two rows - a course and a rounded coping - along both edges."""
+    def pick():
+        return mats[0] if rnd.random() < 0.5 else rnd.choice(mats)
+
+    def stone(c, size, rotz=0.0, roty=0.0, **kw):
+        spec = {"sx": size[0], "sy": size[1], "sz": size[2], "exponent": kw.get("exponent", rnd.uniform(2.3, 3.0)), "lumps": kw.get("lumps", 0.7),
+                "seed": rnd.randint(1, 10 ** 6), "seg": 10, "rings": 6, "mat": pick()}
+        if "face" in kw:
+            spec["flats"] = [{"dir": (0, kw["face"], 0), "at": 0.78, "keep": 0.2}]
+        g.push(Matrix.Translation(c) @ Matrix.Rotation(roty, 4, "Y") @ Matrix.Rotation(rotz, 4, "Z"))
+        boulder(g, spec)
+        g.pop()
+
+    t = 0.4  # wall thickness
+    for sgn in (-1, 1):
+        yf = sgn * (W / 2 - 0.13)
+        x = -L / 2 + 0.05
+        while x < L / 2 - 0.1:
+            cw = rnd.uniform(0.42, 0.85)
+            xc = min(x + cw / 2, L / 2)
+            z = zd(xc) - 0.02
+            while z > -depth * 0.6:
+                ch = rnd.uniform(0.22, 0.34)
+                zc = z - ch / 2
+                r0 = roof(xc)
+                in_arch = abs(xc) < ow / 2 + cw * 0.5 + 0.1 and zc - ch * 0.5 < r0 + 0.22
+                if not in_arch and zc + ch * 0.5 > 0.0 - depth * 0.6:
+                    stone((xc, yf, zc), (cw * 1.1, 0.5, ch * 1.2), rnd.uniform(-0.03, 0.03), face=sgn)
+                z -= ch * 0.92
+            x += cw * rnd.uniform(0.9, 1.0)
+        # the arch ring
+        nv = max(7, int(math.pi * (ow + oh) / 2 / 0.42))
+        for k in range(nv + 1):
+            a = math.pi * k / nv
+            xa, za = -math.cos(a) * (ow / 2 + 0.2), math.sin(a) * (oh + 0.2)
+            stone((xa, yf, za), (0.46, 0.5, 0.38), roty=a - math.pi / 2, face=sgn, exponent=2.8)
+        # the parapet: a course and a coping, following the deck
+        yp = sgn * (W / 2 - t / 2)
+        for lift, hh, ww, ex in ((0.13, 0.27, 0.45, 2.8), (0.38, 0.28, 0.4, 2.2)):
+            x = -L / 2 + 0.1
+            while x < L / 2 - 0.1:
+                cw = rnd.uniform(0.5, 0.85)
+                xc = min(x + cw / 2, L / 2 - 0.1)
+                slope = (zd(xc + 0.2) - zd(xc - 0.2)) / 0.4
+                stone((xc, yp + rnd.uniform(-0.02, 0.02), zd(xc) + lift), (cw * 1.1, t * (1.15 if lift > 0.3 else 1.0), hh * 1.15),
+                      rnd.uniform(-0.04, 0.04), -math.atan(slope), exponent=ex, lumps=0.6)
+                x += cw * rnd.uniform(0.92, 1.0)
+
+
+def stone_bridge(g, s):
+    """Omberg's old stone crossing: a low, gently humped heap of dry-laid field stones over a culvert (Marcus's
+    photos, holes 6/7). Long axis x (the way across), the creek runs along y under it. `length`, `width`, `height`
+    (crest above the bank), `seed`; `opening` (width of the culvert, 0 = a solid heap), `openingHeight` (its crown
+    above the bank), `sideDeg` (slope of the flanks), `stone` (mean stone size, m), `mats` (stone materials, the
+    first the commonest), `core` (the dark body the stones sit on - it shows in the gaps), `depth` (how far the
+    body reaches below the bank: the creek groove). One closed core + a shell of `boulder` stones in two passes
+    (big, then infill) + dressed stones round the culvert mouths. Triangles ~ 50 per stone, a few hundred stones."""
+    arch = s.get("style") == "arch"
+    L, W, H = s["length"], s.get("width", 2.4 if arch else 2.6), s.get("height", 1.1 if arch else 0.85)
+    ow, oh = s.get("opening", 2.4 if arch else 1.5), s.get("openingHeight", 0.95 if arch else 0.4)
+    depth, stone, side = s.get("depth", 0.9), s.get("stone", 0.42), math.radians(s.get("sideDeg", 52))
+    mats = s.get("mats", ["fieldstone_grey", "fieldstone_dark", "fieldstone_brown"] if arch else ["sandstone_ochre", "sandstone_pink", "sandstone_dark"])
+    core = s.get("core", "fieldstone_dark" if arch else "granite_dark")
+    deck = s.get("deck", "turf_mat")
+    rnd = random.Random(s.get("seed", 1))
+    if ow > 0:
+        H = max(H, oh + 0.42)
+    run = max(0.2, H / math.tan(side))
+    sink = 0.03 if arch else 0.12  # the stones' shell over the core
+
+    def smooth(t):
+        t = min(1.0, max(0.0, t))
+        return t * t * (3 - 2 * t)
+
+    def surf(x, y):
+        u = min(1.0, abs(2 * x / L))
+        if arch:  # a hump bridge: the deck line, level across, vertical flanks
+            return H * (1 - u ** 2.6)
+        hx = (1 - u ** 2.3) ** 0.6
+        cy = smooth((W / 2 - abs(y)) / run) ** 0.8
+        z = H * hx * cy
+        if ow > 0:  # the headwall over the culvert: a lip that stands to the mouth, then falls steeply
+            hw = (oh + 0.42) * (1 - smooth((abs(x) - ow / 2 - 0.15) / 0.55))
+            z = max(z, hw * min(1.0, (W / 2 - abs(y)) / 0.22))
+        return z
+
+    def grad(x, y):
+        e = 0.05
+        return math.hypot((surf(x + e, y) - surf(x - e, y)) / (2 * e), (surf(x, y + e) - surf(x, y - e)) / (2 * e))
+
+    def roof(x):
+        t = abs(2 * x / ow)
+        return oh * math.sqrt(max(0.0, 1 - t * t)) if ow > 0 else -depth
+
+    # --- the core: a closed solid, top = surface - sink, underside -depth (the arch inside the culvert)
+    xs = {round(-L / 2 + L * i / max(2, int(L / 0.25)), 4) for i in range(max(2, int(L / 0.25)) + 1)}
+    if ow > 0:
+        xs |= {round(ow / 2 * math.sin(math.pi * (k / 8 - 0.5)), 4) for k in range(9)}
+        xs |= {round(ow / 2 * 1.0, 4), round(-ow / 2, 4)}
+    xs = sorted(x for x in xs if abs(x) <= L / 2)
+    ny = max(2, int(W / 0.25))
+    ys = [-W / 2 + W * j / ny for j in range(ny + 1)]
+
+    def top(x, y):
+        return max(surf(x, y) - sink, -0.12)
+
+    def bot(x, y):
+        return roof(x) if ow > 0 and abs(x) < ow / 2 - 1e-6 else -depth
+
+    for i in range(len(xs) - 1):
+        for j in range(ny):
+            x0, x1, y0, y1 = xs[i], xs[i + 1], ys[j], ys[j + 1]
+            g.poly([(x0, y0, top(x0, y0)), (x1, y0, top(x1, y0)), (x1, y1, top(x1, y1)), (x0, y1, top(x0, y1))], deck if arch else core)
+            xm = (x0 + x1) / 2
+            if ow > 0 and abs(xm) < ow / 2:  # inside the culvert: the arch's soffit, seen from below
+                g.poly([(x0, y1, roof(x0)), (x1, y1, roof(x1)), (x1, y0, roof(x1)), (x0, y0, roof(x0))], core)
+            else:
+                g.poly([(x0, y1, -depth), (x1, y1, -depth), (x1, y0, -depth), (x0, y0, -depth)], core)
+    for sgn in (-1, 1):  # the two long faces (y = +-W/2) and the culvert walls
+        y = sgn * W / 2
+        for i in range(len(xs) - 1):
+            x0, x1 = xs[i], xs[i + 1]
+            lo0, lo1 = (roof(x0), roof(x1)) if ow > 0 and abs((x0 + x1) / 2) < ow / 2 else (-depth, -depth)
+            q = [(x0, y, lo0), (x1, y, lo1), (x1, y, top(x1, y)), (x0, y, top(x0, y))]
+            g.poly(q if sgn < 0 else q[::-1], core)
+    for sgn in (-1, 1):  # the short ends (x = +-L/2)
+        x = sgn * L / 2
+        for j in range(ny):
+            q = [(x, ys[j], -depth), (x, ys[j + 1], -depth), (x, ys[j + 1], top(x, ys[j + 1])), (x, ys[j], top(x, ys[j]))]
+            g.poly(q if sgn > 0 else q[::-1], core)
+    if ow > 0:  # vertical culvert walls below the arch springing
+        for sgn in (-1, 1):
+            x = sgn * ow / 2
+            q = [(x, -W / 2, -depth), (x, W / 2, -depth), (x, W / 2, 0.0), (x, -W / 2, 0.0)]
+            g.poly(q[::-1] if sgn > 0 else q, core)
+
+    # --- the stones
+    placed = []  # (x, y, z, r)
+
+    def free(x, y, z, r, k):
+        return all((x - a) ** 2 + (y - b) ** 2 + (z - c) ** 2 >= (k * (r + d)) ** 2 for a, b, c, d in placed)
+
+    def lay(x, y, z, r, nrm, big):
+        sx, sy, sz = r * rnd.uniform(1.8, 2.8), r * rnd.uniform(1.4, 2.0), r * rnd.uniform(0.7, 1.05)
+        if rnd.random() < 0.75:  # blocky, laid flat: a slab with rounded edges
+            spec = {"exponent": rnd.uniform(2.4, 3.3), "lumps": 0.45, "flats": [{"dir": (0, 0, 1), "at": 0.78, "keep": 0.15}, {"dir": (0, 0, -1), "at": 0.78, "keep": 0.15}]}
+        else:
+            spec = {"lumps": 0.8}
+        spec.update(sx=sx, sy=sy, sz=sz, seed=rnd.randint(1, 10 ** 6), seg=14 if big else 10, rings=8 if big else 6,
+                    mat=mats[0] if rnd.random() < 0.55 else rnd.choice(mats))
+        # tilt the stone's up towards the surface normal, a little less than fully; spin about it
+        nz = Vector(nrm)
+        tilt = Vector((0, 0, 1)).rotation_difference(nz) if nz.length > 1e-6 else Matrix.Identity(3).to_quaternion()
+        spin = Matrix.Rotation(rnd.uniform(0, 2 * math.pi), 4, "Z")
+        m = Matrix.Translation((x, y, z)) @ tilt.to_matrix().to_4x4() @ spin
+        g.push(m)
+        boulder(g, spec)
+        g.pop()
+
+    def normal(x, y):
+        e = 0.06
+        dzdx = (surf(x + e, y) - surf(x - e, y)) / (2 * e)
+        dzdy = (surf(x, y + e) - surf(x, y - e)) / (2 * e)
+        n = Vector((-dzdx * 0.7, -dzdy * 0.7, 1.0))
+        return n.normalized()
+
+    def in_mouth(x, y, r):  # keep stones out of the culvert (the mouth's own stones go in below)
+        return ow > 0 and abs(x) < ow / 2 + r * 0.3 and abs(y) > W / 2 - 0.3 and surf(x, y) < oh + 0.2
+
+    passes = () if arch else ((stone * 1.0, 0.95, 2600, True), (stone * 0.6, 0.85, 3200, False))
+    for rad, k, tries, big in passes:
+        for _ in range(tries):
+            x, y = rnd.uniform(-L / 2, L / 2), rnd.uniform(-W / 2, W / 2)
+            z = surf(x, y)
+            if z < 0.03 and (abs(x) > L / 2 - 0.2 or abs(y) > W / 2 - 0.15) and rnd.random() < 0.3:
+                continue
+            gr = grad(x, y)
+            if rnd.random() > min(1.0, math.sqrt(1 + gr * gr) / 1.6) * 0.5 + 0.25 and not big:
+                pass
+            r = rad * rnd.uniform(0.8, 1.15) * (0.55 + 0.45 * min(1.0, (z + 0.15) / 0.45) if z < 0.45 else 1.0)
+            if in_mouth(x, y, r) or not free(x, y, z, r * 0.6, k):
+                continue
+            n = normal(x, y)
+            placed.append((x, y, z, r * 0.6))
+            lay(x, y, z - r * 0.12, r, n, big)
+
+    if arch:
+        _arch_masonry(g, rnd, mats, L, W, ow, oh, depth, lambda x: surf(x, 0.0), roof)
+        return
+    # dressed stones on the headwalls (the vertical faces y = +-W/2 beside and over the culvert) and round the mouth
+    if ow > 0:
+        for sgn in (-1, 1):
+            y = sgn * (W / 2 - 0.02)
+            courses = 0
+            z = -depth * 0.55
+            while z < oh + 0.55:
+                ch = rnd.uniform(0.24, 0.34)
+                x = -(ow / 2 + 0.6)
+                while x < ow / 2 + 0.6:
+                    cw = rnd.uniform(0.34, 0.6)
+                    xc, zc = x + cw / 2, z + ch / 2
+                    r0 = roof(xc)
+                    inside = abs(xc) < ow / 2 + cw * 0.5 and zc - ch * 0.5 < max(r0, 0.0) + 0.02 and abs(xc) < ow / 2 + 0.2
+                    under_head = zc + ch * 0.4 < surf(xc, W / 2 - 0.1) + 0.05
+                    if not inside and under_head and zc > -depth * 0.6 and not (abs(xc) < ow / 2 - 0.05):
+                        spec = {"sx": cw * 1.1, "sy": 0.34, "sz": ch * 1.2, "exponent": rnd.uniform(2.6, 3.4), "lumps": 0.5,
+                                "flats": [{"dir": (0, sgn, 0), "at": 0.75, "keep": 0.15}], "seed": rnd.randint(1, 10 ** 6),
+                                "seg": 10, "rings": 6, "mat": mats[0] if rnd.random() < 0.55 else rnd.choice(mats)}
+                        g.push(Matrix.Translation((xc, y - sgn * 0.12, zc)) @ Matrix.Rotation(math.radians(rnd.uniform(-4, 4)), 4, "Z"))
+                        boulder(g, spec)
+                        g.pop()
+                    x += cw * rnd.uniform(0.9, 1.0)
+                z += ch * 0.92
+                courses += 1
+        # the voussoirs: bigger stones standing round the arch at both mouths
+        nv = max(5, int(math.pi * ow / 2 / 0.4))
+        for sgn in (-1, 1):
+            for k in range(nv + 1):
+                a = math.pi * k / nv
+                xa, za = -math.cos(a) * (ow / 2 + 0.12), math.sin(a) * (oh + 0.12)
+                spec = {"sx": 0.42, "sy": 0.46, "sz": 0.3, "exponent": 2.8, "lumps": 0.5,
+                        "flats": [{"dir": (0, sgn, 0), "at": 0.75, "keep": 0.15}], "seed": rnd.randint(1, 10 ** 6),
+                        "seg": 10, "rings": 6, "mat": mats[0] if rnd.random() < 0.55 else rnd.choice(mats)}
+                g.push(Matrix.Translation((xa, sgn * (W / 2 - 0.05), za)) @ Matrix.Rotation(a - math.pi / 2, 4, "Y"))
+                boulder(g, spec)
+                g.pop()
+
+
 def _clip_convex(poly, clip):
     """Sutherland-Hodgman: poly clipped by a convex CCW polygon."""
     out = poly
@@ -2347,7 +2586,7 @@ BUILDERS = {
     "rock": rock, "boulder": boulder, "stones": stones, "drape": drape, "markings": markings, "range_mat": range_mat, "net_poles": net_poles, "target_flag": target_flag,
     "distance_board": distance_board, "banner": banner, "power_pole": power_pole, "car": car,
     "golf_cart": golf_cart, "car2": car2, "bridge_wood": bridge_wood, "bridge_brick": bridge_brick,
-    "bridge_rope": bridge_rope, "jetty": jetty, "marker_post": marker_post, "trolley_rack": trolley_rack,
+    "bridge_rope": bridge_rope, "stone_bridge": stone_bridge, "jetty": jetty, "marker_post": marker_post, "trolley_rack": trolley_rack,
 }
 
 
