@@ -434,7 +434,9 @@ namespace GolfMap.Editor
                 var preset = styles == null ? null : styles.Object(style);
                 if (styles != null && preset == null) throw new InvalidOperationException(path + ": wall " + wo.String("id") + " has style '" + style + "', which `styles` does not define.");
                 var ws = defaults.Over(preset).Over(wo);
-                ws.style = style;
+                // a preset named for its look (a tee's "teewall") says which builder it is in its own "style"
+                ws.style = (preset == null ? null : preset.String("style")) ?? style;
+                style = ws.style;
                 if (style != "rose" && style != "wall" && style != "cliff") throw new InvalidOperationException(path + ": wall " + wo.String("id") + ": style must be rose, wall or cliff.");
                 var w = new Wall { id = wo.String("id"), note = wo.String("note"), seed = (int)wo.Number("seed", 1), s = ws };
                 var ol = wo.Array("outline");

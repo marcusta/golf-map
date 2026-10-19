@@ -59,7 +59,8 @@ STONE_SETS = {"rose": [{"asset": "boulder_%d" % i, "weight": 1} for i in range(1
 TOE_IN_M = 0.6    # the foot this far inside the outline: under the water, on the dug bank
 LIP_OUT_M = 1.0   # the top edge this far outside it, on the bank above the water
 STATION_M = 0.5   # stations along the outline
-LINE_TOE_OUT_M = 0.45   # a drawn wall: the foot this far out from its line (the terrain edit's face runs 0.3 m) ...
+LINE_TOE_OUT_M = 1.0    # a drawn wall: the foot this far out from its line (the terrain edit's face runs 0.3 m, the meshes
+#                         smear it over a grid step, 0.74 m; GolfMapWallGround raises it back into a face) ...
 LINE_LIP_IN_M = 0.15    # ... and the top edge this far back, on the plateau
 
 DEFAULTS = {
@@ -108,6 +109,7 @@ STYLES = {
     # The wall round a raised tee: hole 9's north tee (Marcus's photo, 2026-10-19): near vertical, steeper than Vreta's
     # hole 13 tee walls and of smaller stones, five or six courses in 1-1.7 m.
     "teewall": {
+        "style": "wall",              # the builder: a dry-stone wall (GolfMapWalls)
         "stoneSet": "wall",
         "faceDeg": 86,
         "baseInM": 0.05,
