@@ -489,14 +489,19 @@ namespace GolfMap.Editor
             GolfMapAreaMix area = null;
             if (source == biome && !string.IsNullOrEmpty(t.area)) areaMixes.TryGetValue(t.area, out area);
             // Match owns the sized rule: a stem sized by hand gets no woodland canopy.
-            var m = GolfMapBiomeMatcher.Match(source, t.id, t.h, t.r, kind, woodland, area, edit != null && edit.sized);
+            // A flat Arborist plant placed by hand (a lily pad on the water, about 0 m tall): sized by its width alone.
+            double h = t.h;
+            if (!(h > 0) && edit != null && !string.IsNullOrEmpty(edit.model) && source.assets.Count > 0 && source.assets[0].IsArborist
+                && source.assets[0].crownWidthM > 0 && t.r > 0)
+                h = Math.Max(source.assets[0].heightM, 1e-6) * 2 * t.r / source.assets[0].crownWidthM;
+            var m = GolfMapBiomeMatcher.Match(source, t.id, h, t.r, kind, woodland, area, edit != null && edit.sized);
             if (m != null && edit != null && edit.rotationSet) m.rotation = edit.rotation;
             if (m != null && edit != null)
             {
                 // A hand-edited stem must follow its height and crown radius exactly, so
                 // the palette's scale clamp (meant for automatic best-fit picks) is lifted
                 // and width gets its own axis. Outer billboards can only scale uniformly.
-                m.scale = t.h / m.asset.heightM;
+                m.scale = h / m.asset.heightM;
                 m.widthScale = forceBillboards ? 0 : 2 * t.r / m.asset.crownWidthM;
                 m.heightError = 0;
                 m.widthError = m.widthScale > 0 ? 0 : Math.Abs(Math.Log(m.asset.crownWidthM * m.scale / (2 * t.r)));

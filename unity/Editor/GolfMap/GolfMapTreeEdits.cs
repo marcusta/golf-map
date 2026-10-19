@@ -65,10 +65,12 @@ namespace GolfMap.Editor
                 if (e == null || string.IsNullOrEmpty(e.id)) throw new Exception("Edit without id in " + path);
                 if (!seen.Add(e.id)) throw new Exception("Duplicate edit id " + e.id + " in " + path);
                 if (e.op != "modify" && e.op != "delete" && e.op != "add") throw new Exception("Unknown edit op '" + e.op + "' for " + e.id);
-                if (e.op != "delete" && (!(e.h > 0) || !(e.r > 0) || e.k < 0 || e.k > 2)) throw new Exception("Invalid height, radius or kind for edit " + e.id);
                 if (e.species == null) e.species = "";
                 if (e.guid == null) e.guid = "";
                 if (e.model == null) e.model = "";
+                // a flat Arborist plant (a lily pad floating on the water) is 0 m tall; Arborist draws it, Unity does not plant it
+                bool flatArborist = e.h == 0 && e.model.StartsWith("arborist:", StringComparison.Ordinal);
+                if (e.op != "delete" && (!(e.h > 0 || flatArborist) || !(e.r > 0) || e.k < 0 || e.k > 2)) throw new Exception("Invalid height, radius or kind for edit " + e.id);
             }
             return file;
         }

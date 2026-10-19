@@ -193,6 +193,114 @@
     {
       "model": "arborist:CE_Plants_buckthorn-bush",
       "enabled": false
+    },
+    {
+      "model": "arborist:LakePlants_Water_Lily_01",
+      "enabled": false
+    },
+    {
+      "model": "arborist:LakePlants_Water_Lily_02",
+      "enabled": false
+    },
+    {
+      "model": "arborist:LakePlants_Water_Lily_03",
+      "enabled": false
+    },
+    {
+      "model": "arborist:LakePlants_Water_Lily_04",
+      "enabled": false
+    },
+    {
+      "model": "arborist:LakePlants_Water_Lily_05",
+      "enabled": false
+    },
+    {
+      "model": "arborist:LakePlants_Lily_Pad_Group_01",
+      "enabled": false
+    },
+    {
+      "model": "arborist:LakePlants_Lily_Pad_Group_02",
+      "enabled": false
+    },
+    {
+      "model": "arborist:LakePlants_Lily_Pad_Cluster_01",
+      "enabled": false
+    },
+    {
+      "model": "arborist:LakePlants_Lily_Pad_Cluster_02",
+      "enabled": false
+    },
+    {
+      "model": "arborist:LakePlants_Lily_Pad_Cluster_03",
+      "enabled": false
+    },
+    {
+      "model": "arborist:LakePlants_Lily_Pad_Flower_White",
+      "enabled": false
+    },
+    {
+      "model": "arborist:LakePlants_Lily_Pad_Flower_Yellow",
+      "enabled": false
+    },
+    {
+      "model": "arborist:LakePlants_Yellow_Flag_01",
+      "enabled": false
+    },
+    {
+      "model": "arborist:LakePlants_Yellow_Flag_02",
+      "enabled": false
+    },
+    {
+      "model": "arborist:LakePlants_BurReed_Clump_01",
+      "enabled": false
+    },
+    {
+      "model": "arborist:LakePlants_BurReed_Clump_02",
+      "enabled": false
+    },
+    {
+      "model": "arborist:LakePlants_BurReed_Clump_03",
+      "enabled": false
+    },
+    {
+      "model": "arborist:LakePlants_BurReed_Line",
+      "enabled": false
+    },
+    {
+      "model": "arborist:LakePlants_Bulrush_01",
+      "enabled": false
+    },
+    {
+      "model": "arborist:LakePlants_Bulrush_02",
+      "enabled": false
+    },
+    {
+      "model": "arborist:LakePlants_BogBean",
+      "enabled": false
+    },
+    {
+      "model": "arborist:LakePlants_Duckweed_Corner_A",
+      "enabled": false
+    },
+    {
+      "model": "arborist:LakePlants_Duckweed_Corner_B",
+      "enabled": false
+    },
+    {
+      "model": "arborist:LakePlants_Duckweed_Corner_C",
+      "enabled": false
+    },
+    {
+      "model": "arborist:MeadowEnv_bush_grey_willow_01",
+      "enabled": false
+    },
+    {
+      "model": "arborist:Forest_fern_01_1",
+      "enabled": false
+    },
+    {
+      "model": "arborist:Forest_fern_01_3",
+      "enabled": false
     }
   ],
   "species": {
