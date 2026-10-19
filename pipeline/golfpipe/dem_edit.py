@@ -399,6 +399,15 @@ def load_edits(path: Path, log=print) -> list[DemEdit]:
             except (KeyError, TypeError, ValueError):
                 log(f"warning: {label}: a wall needs levelM, runM > 0 and minShelfM >= 0 — skipped")
                 continue
+        if op == "plane" and props.get("levelM") is not None:
+            # a flat plane at a given height (a sill between two ponds at the upper one's water)
+            try:
+                wall = {"level_m": float(props["levelM"])}
+                if not np.isfinite(wall["level_m"]):
+                    raise ValueError
+            except (TypeError, ValueError):
+                log(f"warning: {label}: plane levelM is not a number — skipped")
+                continue
         shore: dict = {}
         if op == "shore":
             try:
@@ -865,7 +874,8 @@ def _plane_target(
         log(f"warning: {label}: rank-deficient plane fit — skipped")
         return None
     if edit.flat:
-        fit = replace(fit, a=0.0, b=0.0, c=float(cur_win[fit_cells][fit.inliers].mean()))
+        level = edit.level_m if edit.level_m is not None else float(cur_win[fit_cells][fit.inliers].mean())
+        fit = replace(fit, a=0.0, b=0.0, c=float(level))
 
     target = cur_win.copy()
     mask_rows, mask_cols = np.nonzero(mask_win)

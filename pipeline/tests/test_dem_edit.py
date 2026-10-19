@@ -19,7 +19,7 @@ from rasterio.transform import from_origin
 from golfpipe import dem_edit
 from golfpipe.__main__ import main
 from golfpipe.commands import cmd_apply_dem_edits
-from golfpipe.dem_edit import DemEdit, DemEditError, apply_edits, fit_plane, load_edits
+from golfpipe.dem_edit import DemEdit, DemEditError, apply_edits, fit_plane, load_edits, reproject_edits
 
 ORIGIN_X = 533000.0  # SWEREF99 TM metres (near Linkoping, like conftest)
 ORIGIN_Y = 6475000.0
@@ -831,6 +831,15 @@ def test_wall_raises_the_plateau_behind_its_line_back_to_its_own_slope():
     assert np.allclose(out[40:42, 10:70], plateau[40:42, 10:70], atol=0.02)   # the cut plateau: back on its plane
     assert np.array_equal(out[43:, :], dem[43:, :].astype(float))            # beyond the band: untouched
     assert np.allclose(out[38, 10:70], 99.55, atol=0.01)                      # and the wall's shelf as before
+
+
+def test_a_flat_plane_with_a_level_sets_that_height(tmp_path: Path):
+    ring = rect_3006(10, 20, 10, 20)
+    path = write_edits(tmp_path, [wgs84_feature("plane", ring, featherM=0, flat=True, levelM=100.95)])
+    [e] = load_edits(path)
+    dem = np.full((SIZE, SIZE), 100.2, dtype=np.float32)
+    out = apply_edits(dem, TRANSFORM, NODATA, reproject_edits([e], CRS.from_epsg(3006)), log=lambda *_: None)
+    assert np.allclose(out[10:20, 10:20], 100.95, atol=1e-4) and np.allclose(out[:10, :], 100.2)
 
 
 def test_load_edits_reads_a_wall(tmp_path: Path):
