@@ -128,6 +128,8 @@ Reading the transforms out of the scene by hand still works when `placed.json` i
 
 Walls get no such record: a wall's stones are generated from its seed and have no identity in the spec, so there is nothing to key a hand move to. Single boulders (the spec's `boulders`) can: `golfmap.walls.capture {only: "<id prefix>"}` lists the ones moved, turned or scaled by hand since the last build, each with the `pose` to keep it (e/n of the pivot, `dy` over the ground under it, Euler, scale). Do it before any mesh refresh: a refresh rebuilds the boulders on changed ground. Write the poses into `stone-walls.gen.py` (`H4_POSES`, `H4_STONE_POSES` or a `pose` on the entry), run it with `--out "<Unity course folder>"`, then `golfmap.walls.build {only: "<wall id>", dryRun: true}`, then for real. A boulder with a `pose` is placed exactly so on every rebuild.
 
+A baked wall (`bake: true`, [unity/README.md](../unity/README.md) "Baked walls") draws merged chunks, not its stones: to move its stones by hand, `golfmap.walls.unbake {only: "<wall id>"}` first, move them, then `golfmap.walls.bake {only: "<wall id>"}`. Done when the bake row has no `error` and the chunks show the moves. They last until the wall is next built, like any wall stone.
+
 ## 5. A path changed surface → Blender → Unity
 
 Only for a changed **Path surface** (Draw mode's selection panel). A moved or redrawn path, a new road, and a grass track made a hard path (or back: a grass track is built as rough) need the SVG export and the OPCD build.

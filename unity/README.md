@@ -1528,6 +1528,37 @@ the stone in).
   it. After removing wall ground, the terrain it lowered stays down: `golfmap.terrain.conform` with `x0/z0/x1/z1` raises it
   back in that area only; then `golfmap.surfaces.export` and `bun run grass:zones` so the grass returns.
 
+### Baked walls
+
+A built wall is hundreds of single stones (~440 tris and a non-convex MeshCollider each), overlapping on purpose and
+partly buried. Baking (`GolfMapWallBake.cs` + `blender/walls/wall_bake.py`) keeps that layout and only changes how it
+is drawn: the stones as they stand are merged in Blender into chunks along the wall with the hidden triangles removed,
+each chunk with LODs and one simplified collider.
+
+- Turn it on per wall with `bake: true` (in `defaults`, a style or the wall entry of `stone-walls.gen.py`), regenerate
+  with `--out`. From then on every `golfmap.walls.build` of that wall bakes it (so `golfmap.course.refresh` and the
+  rebuild over changed meshes do too); `bake=false` on the build skips it once. A failed bake leaves the stones shown and
+  puts `error` on the wall's row under `bake`.
+- Settings (flat keys like the rest): `bakeChunkM` (8: chunk length along the foot), `bakeLods` ([1, 0.35, 0.1]:
+  triangle ratio per LOD after culling), `bakeLodM` ([40, 120]: metres at which LOD k switches to k+1, for a 60 deg
+  camera at lodBias 1), `bakeCullM` (0: the last LOD is never culled), `bakeColliderLod` (1), `bakeLastLodShadows`
+  (false), `bakeCullHidden` (true: the ray test below), `bakeRays` (48).
+- Culling, per triangle, kept whole or dropped whole: all three corners below the ground (the ground sampled by
+  Unity on a 0.15 m grid round the stones, the same `Ground` the build stands stones on), all three inside another
+  stone, or (`bakeCullHidden`) no hemisphere ray from it escapes the stones and the ground.
+- Scene: `GolfMap Walls/<wall>/Baked/chunk-NN` (LODGroup, `chunk-NN_LOD<k>` renderers, MeshCollider with the spec's
+  `physicMaterial` on the chunk, static) and `<wall>/Stones` (the stones, inactive: the source of the next bake).
+  Meshes: `<course>/Walls/Baked/<wall>.asset`. Work files: `GolfMapSpelunk/wall-bake/<Course>_<wall>.in.json` (what
+  Unity sent), `.out.json` + `.out.bin` (what Blender made), `.out.log` (Blender's output).
+- `golfmap.walls.bake [only=<wall ids>] [dryRun=true]` bakes walls standing in the scene without rebuilding them: after
+  moving wall stones by hand, `golfmap.walls.unbake only=<id>` (shows the stones again, deletes the chunks), move them,
+  then `golfmap.walls.bake only=<id>`. Hand moves last until the next build of that wall, as before.
+- The result per wall: `stones`, `trisBefore`, `trisLod`, `collidersBefore` -> `colliders`, `colliderTris`, `culled`
+  (ground / inside / hidden) and `seconds` (export / blender / import).
+- Blender: `GOLFMAP_BLENDER`, else Blender 4.5's default install. The script comes from the project's
+  `GolfMapTools/blender-walls/` (outside Assets), copied there by `unity_sync push` from `blender/walls/`
+  (`unity/install.json`).
+
 ## Hole navigator
 
 `GolfMap > Scene View > Hole navigator` (`Editor/GolfMap/GolfMapHoleNavigator.cs`) is fast travel in the Scene view: a row per hole with a button per stop (**Tee**, **Aim 1..n**, **Green**). A click puts the eye over that point, 5 m above the ground (the toolbar's `m up`), tilted 10° down and looking along the direction of play: from the tee to the first aim point ahead of it (else the green), from an aim point to the next stop. **Green** stands 15 m behind the green centre and looks back down the hole (towards the last aim point, else the tee). `<` and `>` step through the course in playing order. **Tee** is the back tee unless the toolbar picks a tee by name.

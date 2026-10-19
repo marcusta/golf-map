@@ -48,7 +48,7 @@ export interface SyncOptions {
   only?: string[]; // substrings of project-relative paths; empty = everything
 }
 
-const TEXT = /\.(cs|shader|cginc|hlsl|compute|json|md|txt|html|js|mjs|ts|xml|asmdef|uss|uxml)$/i;
+const TEXT = /\.(cs|shader|cginc|hlsl|compute|json|md|txt|html|js|mjs|ts|xml|asmdef|uss|uxml|py)$/i;
 
 export function loadInstallFolders(repoRoot: string): InstallFolder[] {
   const doc = JSON.parse(readFileSync(join(repoRoot, "install.json"), "utf8"));
@@ -69,6 +69,7 @@ function listFiles(dir: string): string[] {
   const out: string[] = [];
   for (const entry of readdirSync(dir, { withFileTypes: true })) {
     const full = join(dir, entry.name);
+    if (entry.isDirectory() && entry.name === "__pycache__") continue;
     if (entry.isDirectory()) out.push(...listFiles(full).map((f) => join(entry.name, f)));
     else if (!entry.name.endsWith(".meta")) out.push(entry.name);
   }

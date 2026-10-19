@@ -19,7 +19,8 @@
 // Stones are instances under 'GolfMap Walls/<wall id>/' named <model>#<n>, with a prefab's own LODs and
 // colliders (a Blender boulder gets a MeshCollider) and no custom component (GSPro would load it as a
 // missing script). A build replaces the stones of the walls it builds. A wall's seed (+ variant) makes the
-// same stones every time; stones moved by hand are lost on a rebuild.
+// same stones every time; stones moved by hand are lost on a rebuild. A wall whose settings say bake is then merged
+// into a few chunks with LODs and one collider each (GolfMapWallBake); its stones stay, inactive, under '<wall>/Stones'.
 using System;
 using System.Collections.Generic;
 using System.IO;
@@ -68,6 +69,13 @@ namespace GolfMap.Editor
             public float paintInsetM = 0f;
             public float roundTopM = 0f;
             public bool placeStones = true;
+            // the bake (GolfMapWallBake): the placed stones merged in Blender into chunks of bakeChunkM along the wall,
+            // hidden triangles dropped, one LOD per bakeLods ratio switching at bakeLodM metres (one fewer than the LODs),
+            // the last shown to bakeCullM (0: always), one collider per chunk from LOD bakeColliderLod
+            public bool bake = false, bakeCullHidden = true, bakeLastLodShadows = false;
+            public float bakeChunkM = 8f, bakeCullM = 0f;
+            public float[] bakeLods = { 1f, 0.35f, 0.1f }, bakeLodM = { 40f, 120f };
+            public int bakeColliderLod = 1, bakeRays = 48;
 
             public Settings Over(GolfMapJsonObject o)
             {
@@ -105,6 +113,15 @@ namespace GolfMap.Editor
                 s.paintInsetM = (float)o.Number("paintInsetM", s.paintInsetM);
                 s.roundTopM = (float)o.Number("roundTopM", s.roundTopM);
                 s.placeStones = o.Bool("placeStones", s.placeStones);
+                s.bake = o.Bool("bake", s.bake);
+                s.bakeCullHidden = o.Bool("bakeCullHidden", s.bakeCullHidden);
+                s.bakeLastLodShadows = o.Bool("bakeLastLodShadows", s.bakeLastLodShadows);
+                s.bakeChunkM = (float)o.Number("bakeChunkM", s.bakeChunkM);
+                s.bakeCullM = (float)o.Number("bakeCullM", s.bakeCullM);
+                s.bakeLods = Floats(o, "bakeLods", s.bakeLods);
+                s.bakeLodM = Floats(o, "bakeLodM", s.bakeLodM);
+                s.bakeColliderLod = (int)o.Number("bakeColliderLod", s.bakeColliderLod);
+                s.bakeRays = (int)o.Number("bakeRays", s.bakeRays);
                 var sc = o.Array("stoneColor");
                 if (sc != null && sc.Count >= 3) s.stoneColor = new Color(F(sc[0]), F(sc[1]), F(sc[2]), 0f);
                 s.style = o.String("style") ?? s.style;
@@ -122,6 +139,12 @@ namespace GolfMap.Editor
                 s.bedJitterM = (float)o.Number("bedJitterM", s.bedJitterM);
                 s.stoneHeightVar = Range(o, "stoneHeightVar", s.stoneHeightVar);
                 return s;
+            }
+
+            static float[] Floats(GolfMapJsonObject o, string key, float[] fallback)
+            {
+                var l = o.Array(key);
+                return l == null ? fallback : l.Select(x => F(x)).ToArray();
             }
 
             static Vector2 Range(GolfMapJsonObject o, string key, Vector2 fallback)
@@ -187,11 +210,11 @@ namespace GolfMap.Editor
         static void MenuClear() { Debug.Log("[GolfMap Walls] " + GolfMapJson.Serialize(Clear(null), false)); }
 
         [BridgeCommand("golfmap.walls.build", "Build dry-stone walls from the course's golfmap-walls-v1 spec (<course>/stone-walls.json, from docs/gspro/<course>/stone-walls.gen.py): each wall's bank, between its traced foot and top edge, faced with courses of boulders (Blender-built, the spec's stonesFolder, or prefabs), fitted to the course meshes; and the spec's single boulders, each topM over the highest ground under it. Replaces the stones of the walls and boulders it builds under 'GolfMap Walls'; the same seed + variant gives the same stones (a stone moved by hand is not kept: capture it as a pose boulder in the generator). Marks the scene dirty; save=true saves it (and the assets it changed) once the build has succeeded.",
-            args = "file (default <course>/stone-walls.json), only (wall or boulder ids, comma-separated), dryRun=false (plan and counts, nothing placed), variant=0 (another random layout), profile (a wall id: its bank measured on the meshes every metre), " + GolfMapSceneSave.Arg)]
+            args = "file (default <course>/stone-walls.json), only (wall or boulder ids, comma-separated), dryRun=false (plan and counts, nothing placed), variant=0 (another random layout), profile (a wall id: its bank measured on the meshes every metre), bake=true (walls whose settings say bake: true are baked after they are built: golfmap.walls.bake), " + GolfMapSceneSave.Arg)]
         static object Command(BridgeArgs a)
         {
             var only = a.Strings("only").SelectMany(s => s.Split(',')).Select(s => s.Trim()).Where(s => s.Length > 0).ToList();
-            return Build(a.String("file"), only.Count == 0 ? null : new HashSet<string>(only), a.Bool("dryRun", false), a.Int("variant", 0), a.String("profile"));
+            return Build(a.String("file"), only.Count == 0 ? null : new HashSet<string>(only), a.Bool("dryRun", false), a.Int("variant", 0), a.String("profile"), true, a.Bool("bake", true));
         }
 
         [BridgeCommand("golfmap.walls.clear", "Delete the stones golfmap.walls.build placed ('GolfMap Walls', or only the named walls). Marks the scene dirty.", args = "only (wall ids, comma-separated), " + GolfMapSceneSave.Arg)]
@@ -201,7 +224,7 @@ namespace GolfMap.Editor
             return Clear(only.Count == 0 ? null : new HashSet<string>(only));
         }
 
-        static GameObject FindRoot()
+        internal static GameObject FindRoot()
         {
             return EditorSceneManager.GetActiveScene().GetRootGameObjects().FirstOrDefault(g => g.name == RootName);
         }
@@ -512,7 +535,7 @@ namespace GolfMap.Editor
 
         // The highest course mesh under (x, z), else the highest terrain: what the player stands on. Stones, trees,
         // props and water planes do not count.
-        static float? Ground(float x, float z)
+        internal static float? Ground(float x, float z)
         {
             var hits = Physics.RaycastAll(new Ray(new Vector3(x, 5000f, z), Vector3.down), 10000f, ~0, QueryTriggerInteraction.Ignore);
             float? mesh = null, terrain = null;
@@ -665,7 +688,7 @@ namespace GolfMap.Editor
             return new Dictionary<string, object> { { "spec", file }, { "checked", checkedCount }, { "boulders", rows } };
         }
 
-        public static Dictionary<string, object> Build(string file, HashSet<string> only, bool dryRun, int variant, string profile, bool runPaint = true)
+        public static Dictionary<string, object> Build(string file, HashSet<string> only, bool dryRun, int variant, string profile, bool runPaint = true, bool bake = true)
         {
             var course = GolfMapCourses.Require();
             // read from the course now: importing the stones saves assets, which can leave `course` without a path
@@ -798,6 +821,9 @@ namespace GolfMap.Editor
             result["placed"] = placed;
             result["report"] = report;
             if (!dryRun) result["colors"] = ApplyPlacedColors();
+            // walls that say bake: merged into chunks in Blender (GolfMapWallBake); a failed bake leaves the stones shown
+            var toBake = walls.Where(w => (only == null || only.Contains(w.id)) && w.s.bake && !w.s.paintOnly && w.s.placeStones).Select(w => w.id).ToList();
+            if (!dryRun && bake && toBake.Count > 0) result["bake"] = GolfMapWallBake.Bake(toBake, false);
             return result;
         }
 
@@ -829,8 +855,12 @@ namespace GolfMap.Editor
             if (p.stone.meshCollider)
                 foreach (var mf in go.GetComponentsInChildren<MeshFilter>()) mf.gameObject.AddComponent<MeshCollider>().sharedMesh = mf.sharedMesh;
             if (physics != null) foreach (var c in go.GetComponentsInChildren<Collider>(true)) c.sharedMaterial = physics;
-            foreach (var t in go.GetComponentsInChildren<Transform>(true))
-                GameObjectUtility.SetStaticEditorFlags(t.gameObject, StaticEditorFlags.BatchingStatic | StaticEditorFlags.OccludeeStatic | StaticEditorFlags.OccluderStatic | StaticEditorFlags.ReflectionProbeStatic);
+            foreach (var t in go.GetComponentsInChildren<Transform>(true)) MarkStatic(t.gameObject);
+        }
+
+        internal static void MarkStatic(GameObject g)
+        {
+            GameObjectUtility.SetStaticEditorFlags(g, StaticEditorFlags.BatchingStatic | StaticEditorFlags.OccludeeStatic | StaticEditorFlags.OccluderStatic | StaticEditorFlags.ReflectionProbeStatic);
         }
 
         // A pack's material with its _Color multiplied by `tint`: a course-local copy under <course>/Walls/Materials/, made
@@ -895,7 +925,7 @@ namespace GolfMap.Editor
             return new Dictionary<string, object> { { "physicMaterial", mat.name }, { "walls", rows } };
         }
 
-        static PhysicMaterial LoadPhysics(GolfMapJsonObject spec, string path)
+        internal static PhysicMaterial LoadPhysics(GolfMapJsonObject spec, string path)
         {
             var p = spec.String("physicMaterial");
             if (string.IsNullOrEmpty(p)) return null;

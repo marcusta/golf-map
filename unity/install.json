@@ -1,8 +1,9 @@
 {
-  "description": "What the repo installs into a GSPro/OPCD course project, and where. Read by the unity MCP server's unity_sync. Paths: repo side relative to unity/, project side relative to the Unity project root.",
+  "description": "What the repo installs into a GSPro/OPCD course project, and where. Read by the unity MCP server's unity_sync. Paths: repo side relative to unity/, project side relative to the Unity project root (outside Assets: files Unity does not import, e.g. the Blender scripts editor commands run).",
   "folders": [
     { "repo": "Editor/GolfMapBridge", "project": "Assets/Editor/GolfMapBridge" },
     { "repo": "Editor/GolfMap", "project": "Assets/Editor/GolfMap" },
-    { "repo": "Runtime/GolfMap", "project": "Assets/GolfMap/Runtime" }
+    { "repo": "Runtime/GolfMap", "project": "Assets/GolfMap/Runtime" },
+    { "repo": "../blender/walls", "project": "GolfMapTools/blender-walls" }
   ]
 }
