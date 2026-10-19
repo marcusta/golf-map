@@ -102,7 +102,7 @@ view to a place read off a screenshot.
 
 Getting to a hole: `golfmap.holes {hole, point: tee|aim1..|green}` (`GolfMapHoleNavigator.cs`, window `GolfMap > Scene View >
 Hole navigator`) puts the view 5 m over that point looking along the direction of play; without `hole` it lists the holes.
-Reads `<export folder>/<prefix>-holes.json`; after tees, aim points or greens move in golf-map, write it again:
+Reads `<export folder>/<prefix>-holes.json`; the GreenKeeper course file export writes it too, or by hand:
 `bun run py gspro.py holes --course <course> --out <export folder>/<prefix>-holes.json`.
 
 Terrains after the first import: `golfmap.terrain.update` (GolfMap > Terrain > Update heights from export) puts a new heightmap export onto the existing terrains in place (backup, VSP refresh, outer sink kept); golf-map's **Update terrain** calls it.

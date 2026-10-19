@@ -4,7 +4,7 @@
 // from the tee to the first aim point ahead of it (else the green), from an aim point to the next stop. The green
 // is seen from 15 m behind its centre, looking back down the hole. < and > step through the whole course in playing order.
 //
-// Read from the course export folder's <prefix>-holes.json (`pipeline/gspro.py holes`):
+// Read from the course export folder's <prefix>-holes.json (`pipeline/gspro.py holes`, run with every GreenKeeper course file export):
 //
 //   { "format": "golfmap-holes-v1", "crs": "EPSG:3006",
 //     "holes": [ { "number": 1, "par": 4, "tees": [ { "name": "Yellow", "color": "yellow", "e": .., "n": .. } ],
@@ -69,7 +69,7 @@ namespace GolfMap.Editor
                 if (string.IsNullOrEmpty(course.exportFolder)) throw new InvalidOperationException("The course has no export folder.");
                 var folder = Path.IsPathRooted(course.exportFolder) ? course.exportFolder : Path.Combine(Application.dataPath, course.exportFolder);
                 var file = Path.GetFullPath(Path.Combine(folder, course.exportPrefix + "-holes.json"));
-                if (!File.Exists(file)) throw new InvalidOperationException("No holes file: " + file + "\nWrite it from the golf-map repo:\nbun run py gspro.py holes --course <course> --out \"" + file + "\"");
+                if (!File.Exists(file)) throw new InvalidOperationException("No holes file: " + file + "\nExport the GreenKeeper course file in golf-map, or:\nbun run py gspro.py holes --course <course> --out \"" + file + "\"");
                 var doc = GolfMapJsonDoc.ParseObject(File.ReadAllText(file));
                 if (doc.String("format") != Format) throw new InvalidOperationException(file + " is not " + Format + ".");
                 double e0, n0; Vector3 origin;

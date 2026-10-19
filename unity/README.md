@@ -1532,7 +1532,7 @@ the stone in).
 
 `GolfMap > Scene View > Hole navigator` (`Editor/GolfMap/GolfMapHoleNavigator.cs`) is fast travel in the Scene view: a row per hole with a button per stop (**Tee**, **Aim 1..n**, **Green**). A click puts the eye over that point, 5 m above the ground (the toolbar's `m up`), tilted 10° down and looking along the direction of play: from the tee to the first aim point ahead of it (else the green), from an aim point to the next stop. **Green** stands 15 m behind the green centre and looks back down the hole (towards the last aim point, else the tee). `<` and `>` step through the course in playing order. **Tee** is the back tee unless the toolbar picks a tee by name.
 
-The stops come from `<export folder>/<prefix>-holes.json` (golfmap-holes-v1: every tee, aim point and green centre in EPSG:3006, no heights). Write it again after they move in golf-map: `bun run py gspro.py holes --course <course> --out <export folder>/<prefix>-holes.json`. The window reloads the file when it gets focus. Bridge: `golfmap.holes {hole, point, tee, heightM}`, or no arguments for the list.
+The stops come from `<export folder>/<prefix>-holes.json` (golfmap-holes-v1: every tee, aim point and green centre in EPSG:3006, no heights). The GreenKeeper course file export (web UI, or the sync board's course file) writes it too; by hand: `bun run py gspro.py holes --course <course> --out <export folder>/<prefix>-holes.json`. The window reloads the file when it gets focus. Bridge: `golfmap.holes {hole, point, tee, heightM}`, or no arguments for the list.
 
 ## Power lines
 

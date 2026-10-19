@@ -578,6 +578,11 @@ export function waterfallsExportFileName(courseName: string): string {
     return `${courseSlug(courseName)}-inner-waterfalls.json`;
 }
 
+/** `Vreta` -> `vreta-holes.json` (golfmap-holes-v1: tees, aim points, green centres for Unity's hole navigator). */
+export function holesExportFileName(courseName: string): string {
+    return `${courseSlug(courseName)}-holes.json`;
+}
+
 /** The request's forest-floor fields as `renderOrtho` options; undefined when not asked for. */
 function floorOptions(r: GsproExportRequest): ForestFloorOptions | undefined {
     return r.forestFloor ? { color: r.floorColor, mix: r.floorMix } : undefined;
@@ -2179,7 +2184,8 @@ export class GsproExportService {
      * it, so what GreenKeeper owns — the range, wind, stimp — stays. The
      * course details kept with the course (`setMeta`) go into the header;
      * without any, the file's own stay too. Reads the inner heightmap sidecar (and the GeoTIFF next to it)
-     * for the terrain's zero, exported first when the folder has none.
+     * for the terrain's zero, exported first when the folder has none. The same tees, aim points and
+     * green centres also go to Unity's hole navigator (`<export folder>/<slug>-holes.json`, `gspro.py holes`).
      */
     async exportGkd(courseId: string): Promise<GsproExportResult> {
         const course = await this.courses.get(courseId);
@@ -2202,7 +2208,12 @@ export class GsproExportService {
             '--out', out,
         ];
         const rendered = await this.run('GreenKeeper course file', args, out);
-        return { path: rendered.path, report: [...prepared, ...rendered.report] };
+        const holes = await this.run('Hole navigator', [
+            path.join(this.pipelineDir, 'gspro.py'), 'holes',
+            '--course', courseId,
+            '--out', path.join(dir, holesExportFileName(course.name)),
+        ], out);
+        return { path: rendered.path, report: [...prepared, ...rendered.report, ...holes.report] };
     }
 
     // --- Jobs ---

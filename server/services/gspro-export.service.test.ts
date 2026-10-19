@@ -1282,7 +1282,7 @@ test('the GKD export needs the course folder, exports the inner heightmap itself
 
     // No inner heightmap sidecar in the folder: it is exported first instead of refused.
     const first = await t.svc.exportGkd(TEST_COURSE_ID);
-    expect(calls.map(c => c.args[1])).toEqual(['dem', 'gkd']);
+    expect(calls.map(c => c.args[1])).toEqual(['dem', 'gkd', 'holes']);
     expect(first.report[0]).toMatch(/^exported the inner heightmap first, for linkan-inner-dem-2050m\.tif\.json/);
     const sidecar = path.join(dir, 'linkan-inner-dem-2050m.tif.json');
     await writeFile(sidecar, '{}');
@@ -1293,7 +1293,7 @@ test('the GKD export needs the course folder, exports the inner heightmap itself
     await t.svc.whenIdle(TEST_COURSE_ID);
     const res = t.svc.job(job.id).result!;
     expect(res.path).toBe(path.join(scene, 'Linkan_scene.GKD'));
-    expect(res.report).toEqual(['Wrote x.GKD', '18 holes, par 72']);
+    expect(res.report).toEqual(['Wrote x.GKD', '18 holes, par 72', 'Wrote x.GKD', '18 holes, par 72']);  // the runner answers both runs alike
     const args = calls[0].args;
     expect(args[0]).toBe(path.join('/pipeline', 'gspro.py'));
     expect(args[1]).toBe('gkd');
@@ -1301,6 +1301,11 @@ test('the GKD export needs the course folder, exports the inner heightmap itself
     expect(flag(args, '--course')).toBe(TEST_COURSE_ID);
     expect(flag(args, '--sidecar')).toBe(sidecar);
     expect(flag(args, '--out')).toBe(res.path);
+    // The hole navigator's file goes to the export folder, from the same tees, aims and greens.
+    const holes = calls[1].args;
+    expect(holes[1]).toBe('holes');
+    expect(flag(holes, '--course')).toBe(TEST_COURSE_ID);
+    expect(flag(holes, '--out')).toBe(path.join(dir, 'linkan-holes.json'));
 });
 
 test('the pipeline is found from the code, whatever folder the server was started in', async () => {
