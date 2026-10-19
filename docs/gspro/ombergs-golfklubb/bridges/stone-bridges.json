@@ -19,13 +19,7 @@
      "height": 1.3,
      "seed": 11,
      "colorKey": "h6a",
-     "darkness": 0.8,
-     "tint": [
-      1.0,
-      0.96,
-      0.92
-     ],
-     "stone": 0.22,
+     "stone": 0.2,
      "opening": 1.8,
      "openingHeight": 0.5
     }
@@ -43,7 +37,7 @@
      "height": 1.4,
      "seed": 23,
      "colorKey": "h6b",
-     "stone": 0.22,
+     "stone": 0.2,
      "opening": 1.8,
      "openingHeight": 0.5
     }
@@ -61,7 +55,7 @@
      "height": 1.2,
      "seed": 31,
      "colorKey": "h9c",
-     "stone": 0.22,
+     "stone": 0.2,
      "opening": 1.8,
      "openingHeight": 0.5
     }

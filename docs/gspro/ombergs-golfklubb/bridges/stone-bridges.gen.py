@@ -60,7 +60,7 @@ def spec(all_sites=False):
         if s["style"] == "arch":
             part["deck"] = s.get("deck", "turf_mat_dark")
         if s["style"] == "mound":
-            part["stone"] = s.get("stone", 0.22)
+            part["stone"] = s.get("stone", 0.2)
             part["opening"] = s.get("opening", 1.8)
             part["openingHeight"] = s.get("openingHeight", 0.5)
         if "opening" in s:
@@ -96,7 +96,7 @@ def cmd_tune(argv):
     json.dump(tn, open(TUNE, "w", encoding="utf-8"), indent=1)
     dk, tint = cur.get("darkness", 1.0), cur.get("tint", [1.0, 1.0, 1.0])
     key = asset.replace("omberg_stone_bridge_", "")
-    mats = {"sandstone_ochre", "sandstone_rust", "sandstone_dark", "sandstone_core", "fieldstone_grey", "fieldstone_dark", "fieldstone_brown"}
+    mats = {"bridge_granite_a", "bridge_granite_b", "bridge_granite_c", "bridge_granite_core", "sandstone_ochre", "sandstone_rust", "sandstone_dark", "sandstone_core"}
     for p in (BUILD_MANIFEST, UNITY_MANIFEST):
         print(p, "->", patch_manifest(p, asset, key, mats, dk, tint), "materials")
     json.dump(spec(), open(os.path.join(HERE, "stone-bridges.json"), "w", encoding="utf-8"), indent=1)

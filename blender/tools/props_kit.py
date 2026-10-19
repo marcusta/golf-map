@@ -566,6 +566,11 @@ MATERIALS = {
     "granite_beige": ("granite:134,128,116:0.45:0.25:0.15", (4.0, 4.0), None, 0.15, 0.0),
     # Omberg's stone crossings: the warm heaps on hole 6 (photo: sandstone-pink to ochre in low sun) and the old arch
     # bridges on holes 7 and 9 (mid-grey field stone, photos 2026-10-19)
+    # Omberg's stone bridges (Marcus 2026-10-19: typical granite, darker, definitely grey)
+    "bridge_granite_a": ("granite:104,102,100:0.35:0.1:0", (4.0, 4.0), None, 0.15, 0.0),
+    "bridge_granite_b": ("granite:86,86,88:0.3:0.1:0", (4.0, 4.0), None, 0.15, 0.0),
+    "bridge_granite_c": ("granite:118,113,106:0.4:0.12:0", (4.0, 4.0), None, 0.15, 0.0),
+    "bridge_granite_core": ("granite:66,65,64:0.1:0:0", (4.0, 4.0), None, 0.1, 0.0),
     "sandstone_core": ("granite:84,58,40:0.05:0:0", (4.0, 4.0), None, 0.1, 0.0),
     "sandstone_ochre": ("granite:176,120,66:0.05:0:0", (4.0, 4.0), None, 0.12, 0.0),
     "sandstone_rust": ("granite:164,102,62:0.05:0:0", (4.0, 4.0), None, 0.12, 0.0),
@@ -1785,16 +1790,16 @@ def _parapet(g, rnd, mats, L, yp, t, zd, sc=1.0):
     for lift, hh, ex in ((0.13 * sc, 0.27 * sc, 2.8), (0.38 * sc, 0.28 * sc, 2.2)):
         x = -L / 2 + 0.1
         while x < L / 2 - 0.1:
-            cw = rnd.uniform(0.5, 0.85) * sc
+            cw = rnd.uniform(0.3, 0.75) * sc
             xc = min(x + cw / 2, L / 2 - 0.1)
             slope = (zd(xc + 0.2) - zd(xc - 0.2)) / 0.4
-            spec = {"sx": cw * 1.1, "sy": t * (1.15 if lift > 0.3 * sc else 1.0), "sz": hh * 1.15, "exponent": ex, "lumps": 0.6,
+            spec = {"sx": cw * 1.1, "sy": t * (1.15 if lift > 0.3 * sc else 1.0), "sz": hh * rnd.uniform(0.95, 1.4), "exponent": ex, "lumps": 0.6,
                     "seed": rnd.randint(1, 10 ** 6), "seg": 10, "rings": 6, "mat": mats[0] if rnd.random() < 0.5 else rnd.choice(mats)}
             g.push(Matrix.Translation((xc, yp + rnd.uniform(-0.02, 0.02), zd(xc) + lift)) @ Matrix.Rotation(-math.atan(slope), 4, "Y")
                    @ Matrix.Rotation(rnd.uniform(-0.04, 0.04), 4, "Z"))
             boulder(g, spec)
             g.pop()
-            x += cw * rnd.uniform(0.92, 1.0)
+            x += cw * rnd.uniform(0.75, 0.92)
 
 
 def _arch_masonry(g, rnd, mats, L, W, ow, oh, depth, zd, roof):
@@ -1816,26 +1821,42 @@ def _arch_masonry(g, rnd, mats, L, W, ow, oh, depth, zd, roof):
     t = 0.4  # wall thickness
     for sgn in (-1, 1):
         yf = sgn * (W / 2 - 0.13)
+        main = []  # (xc, zc, cw, ch) of the face stones: the infill goes where none stands
         x = -L / 2 + 0.05
         while x < L / 2 - 0.1:
-            cw = rnd.uniform(0.42, 0.85)
+            cw = rnd.uniform(0.28, 0.6) if rnd.random() > 0.12 else rnd.uniform(0.62, 0.9)
             xc = min(x + cw / 2, L / 2)
-            z = zd(xc) - 0.02
+            z = zd(xc) - rnd.uniform(0.0, 0.08)
             while z > -depth * 0.6:
-                ch = rnd.uniform(0.22, 0.34)
+                ch = rnd.uniform(0.15, 0.3) if rnd.random() > 0.1 else rnd.uniform(0.32, 0.42)
                 zc = z - ch / 2
                 r0 = roof(xc)
                 in_arch = abs(xc) < ow / 2 + cw * 0.5 + 0.1 and zc - ch * 0.5 < r0 + 0.22
                 if not in_arch and zc + ch * 0.5 > 0.0 - depth * 0.6:
-                    stone((xc, yf, zc), (cw * 1.1, 0.5, ch * 1.2), rnd.uniform(-0.03, 0.03), face=sgn)
-                z -= ch * 0.92
-            x += cw * rnd.uniform(0.9, 1.0)
-        # the arch ring
-        nv = max(7, int(math.pi * (ow + oh) / 2 / 0.42))
-        for k in range(nv + 1):
-            a = math.pi * k / nv
-            xa, za = -math.cos(a) * (ow / 2 + 0.2), math.sin(a) * (oh + 0.2)
-            stone((xa, yf, za), (0.46, 0.5, 0.38), roty=a - math.pi / 2, face=sgn, exponent=2.8)
+                    w2 = cw * rnd.uniform(1.15, 1.4)
+                    stone((xc + rnd.uniform(-0.05, 0.05), yf + rnd.uniform(-0.04, 0.03), zc), (w2, rnd.uniform(0.4, 0.6), ch * rnd.uniform(1.2, 1.5)),
+                          rnd.uniform(-0.08, 0.08), rnd.uniform(-0.18, 0.18), face=sgn, exponent=rnd.uniform(2.1, 3.1))
+                    main.append((xc, zc, w2, ch * 1.3))
+                z -= ch * rnd.uniform(0.74, 0.9)
+            x += cw * rnd.uniform(0.72, 0.9)
+        # infill: small stones in the gaps between the big ones
+        for _ in range(int(L * 55)):
+            xi = rnd.uniform(-L / 2, L / 2)
+            zi = rnd.uniform(-depth * 0.55, zd(xi) - 0.05)
+            if abs(xi) < ow / 2 + 0.25 and zi < roof(xi) + 0.3:
+                continue
+            if any(((xi - a) / (w * 0.45)) ** 2 + ((zi - b) / (h * 0.45)) ** 2 < 1.0 for a, b, w, h in main):
+                continue
+            stone((xi, yf + 0.03, zi), (rnd.uniform(0.14, 0.26), 0.4, rnd.uniform(0.1, 0.18)), rnd.uniform(-0.3, 0.3), rnd.uniform(-0.3, 0.3), face=sgn, exponent=2.6)
+        # the arch ring: voussoirs of every size, a little out of line
+        a = 0.0
+        while a < math.pi:
+            da = rnd.uniform(0.17, 0.3)
+            rr = rnd.uniform(0.15, 0.3)
+            xa, za = -math.cos(a + da / 2) * (ow / 2 + rr), math.sin(a + da / 2) * (oh + rr)
+            stone((xa, yf + rnd.uniform(-0.03, 0.02), za), (rnd.uniform(0.3, 0.5), 0.5, rnd.uniform(0.26, 0.42)),
+                  roty=a + da / 2 - math.pi / 2 + rnd.uniform(-0.12, 0.12), face=sgn, exponent=rnd.uniform(2.3, 3.0))
+            a += da * 0.85
         _parapet(g, rnd, mats, L, sgn * (W / 2 - t / 2), t, zd)
 
 
@@ -1851,8 +1872,8 @@ def stone_bridge(g, s):
     L, W, H = s["length"], s.get("width", 2.4 if arch else 2.6), s.get("height", 1.1 if arch else 0.85)
     ow, oh = s.get("opening", 2.4 if arch else 1.5), s.get("openingHeight", 0.95 if arch else 0.4)
     depth, stone, side = s.get("depth", 0.9), s.get("stone", 0.42), math.radians(s.get("sideDeg", 52))
-    mats = s.get("mats", ["fieldstone_grey", "fieldstone_dark", "fieldstone_brown"] if arch else ["sandstone_ochre", "sandstone_rust", "sandstone_dark"])
-    core = s.get("core", "fieldstone_dark" if arch else "sandstone_core")
+    mats = s.get("mats", ["bridge_granite_a", "bridge_granite_b", "bridge_granite_c"])
+    core = s.get("core", "bridge_granite_core")
     deck = s.get("deck", "turf_mat")
     key = s.get("colorKey")  # a colour of this bridge's own: `darkness` (all channels) and `tint` (r, g, b) multiply the stones' albedo
     if key:
@@ -1944,17 +1965,17 @@ def stone_bridge(g, s):
         return True
 
     def lay(x, y, z, r, nrm, big):
-        sx, sy, sz = r * rnd.uniform(1.6, 2.6), r * rnd.uniform(1.3, 2.0), r * rnd.uniform(0.6, 0.95)
+        sx, sy, sz = r * rnd.uniform(1.4, 3.0), r * rnd.uniform(1.1, 2.1), r * rnd.uniform(0.55, 1.1)
         if rnd.random() < 0.85:  # angular, laid flat: a slab with worn edges
             spec = {"exponent": rnd.uniform(2.8, 3.8), "lumps": 0.3, "flats": [{"dir": (0, 0, 1), "at": 0.74, "keep": 0.1}, {"dir": (0, 0, -1), "at": 0.74, "keep": 0.1}]}
         else:
             spec = {"lumps": 0.6}
-        spec.update(sx=sx, sy=sy, sz=sz, seed=rnd.randint(1, 10 ** 6), seg=8 if big else 6, rings=5 if big else 4,
+        spec.update(sx=sx, sy=sy, sz=sz, seed=rnd.randint(1, 10 ** 6), seg=7 if big else 6, rings=4,
                     mat=mats[0] if rnd.random() < 0.55 else rnd.choice(mats))
         # tilt the stone's up towards the surface normal, a little less than fully; spin about it
         nz = Vector(nrm)
         tilt = Vector((0, 0, 1)).rotation_difference(nz) if nz.length > 1e-6 else Matrix.Identity(3).to_quaternion()
-        spin = Matrix.Rotation(rnd.uniform(0, 2 * math.pi), 4, "Z")
+        spin = Matrix.Rotation(rnd.uniform(0, 2 * math.pi), 4, "Z") @ Matrix.Rotation(rnd.uniform(-0.3, 0.3), 4, "X") @ Matrix.Rotation(rnd.uniform(-0.3, 0.3), 4, "Y")
         m = Matrix.Translation((x, y, z)) @ tilt.to_matrix().to_4x4() @ spin
         g.push(m)
         boulder(g, spec)
@@ -1970,7 +1991,7 @@ def stone_bridge(g, s):
     def in_mouth(x, y, r):  # keep stones out of the culvert (the mouth's own stones go in below)
         return ow > 0 and abs(x) < ow / 2 + r * 0.3 and abs(y) > W / 2 - 0.3 and surf(x, y) < oh + 0.2
 
-    passes = () if arch else ((stone * 1.0, 0.9, 7000, True), (stone * 0.7, 0.85, 6000, False))
+    passes = () if arch else ((stone * 1.0, 0.8, 9000, True), (stone * 0.6, 0.78, 8000, False))
     for rad, k, tries, big in passes:
         for _ in range(tries):
             x, y = rnd.uniform(-L / 2, L / 2), rnd.uniform(-W / 2, W / 2)
@@ -1980,7 +2001,7 @@ def stone_bridge(g, s):
             gr = grad(x, y)
             if rnd.random() > min(1.0, math.sqrt(1 + gr * gr) / 1.6) * 0.5 + 0.25 and not big:
                 pass
-            r = rad * rnd.uniform(0.8, 1.2) * (0.6 + 0.4 * min(1.0, (z + 0.1) / 0.25) if z < 0.25 else 1.0)
+            r = rad * (rnd.uniform(0.7, 1.15) if rnd.random() > 0.15 else rnd.uniform(1.2, 1.6)) * (0.6 + 0.4 * min(1.0, (z + 0.1) / 0.25) if z < 0.25 else 1.0)
             if in_mouth(x, y, r) or not free(x, y, z, r * 0.6, k):
                 continue
             n = normal(x, y)
