@@ -6843,6 +6843,9 @@ def cmd_creeks(bbox, db_path: Path, course_ident: str, dem_path: Path, sidecar_p
         if len(lip) >= 2:
             a = json.loads(r["attributes_json"]) if r["attributes_json"] else {}
             a = a if isinstance(a, dict) else {}
+            # A cascade's line runs down its own stream and a fountain stands in a pond: neither is a lip across a creek.
+            if a.get("style") in ("cascade", "fountain"):
+                continue
             style = "outlet" if a.get("style") == "outlet" else "sill"
             sill = float(a["sillM"]) if isinstance(a.get("sillM"), (int, float)) else (1.0 if style == "sill" else 0.0)
             falls.append((LineString(lip), sill))
@@ -6905,24 +6908,30 @@ def cmd_creeks(bbox, db_path: Path, course_ident: str, dem_path: Path, sidecar_p
         pts_xy = [tuple(p) for p in control]
         pts_z = list(z)
         pts_w = [width] * len(pts_s)
+        pts_fall = [False] * len(pts_s)
         for sb, sill, lip_len in sorted(falls_here):
             top = float(np.interp(sb - max(sill, 0.5) - 0.5, prof.s, prof.z))
             bottom = float(np.interp(sb + CREEK_BELOW_FALL_M + 1.0, prof.s, prof.z))
             keep = [i for i, sv in enumerate(pts_s) if not (sb - sill - 0.5 < sv < sb + CREEK_FALL_RUN_M + 1.0)]
             pts_s = [pts_s[i] for i in keep]; pts_xy = [pts_xy[i] for i in keep]; pts_z = [pts_z[i] for i in keep]
-            pts_w = [pts_w[i] for i in keep]
-            # Over the sill the water is as wide as the lip (a weir in a narrow neck of a wide pond).
-            fall_w = min(width, lip_len + CREEK_FALL_WIDTH_PAD_M)
+            pts_w = [pts_w[i] for i in keep]; pts_fall = [pts_fall[i] for i in keep]
+            # Over the sill the water is as wide as the lip (a weir in a narrow neck of a wide pond). A polygon's
+            # width is its mean, far under a pond's: only a drawn creek's width caps the neck.
+            fall_w = lip_len + CREEK_FALL_WIDTH_PAD_M
+            if source == "centerline":
+                fall_w = min(width, fall_w)
             for sv, h in ((sb - sill, top), (sb - 0.05, top - 0.02), (sb + CREEK_FALL_RUN_M, bottom + 0.02),
                           (sb + CREEK_FALL_RUN_M + 1.0, bottom)):
                 pts_s.append(sv)
                 pts_xy.append((float(np.interp(sv, prof.s, prof.x)), float(np.interp(sv, prof.s, prof.y))))
                 pts_z.append(h)
                 pts_w.append(fall_w)
+                pts_fall.append(True)
         order = np.argsort(pts_s)
         c_xy = [pts_xy[i] for i in order]
         c_z = [pts_z[i] for i in order]
         c_w = [pts_w[i] for i in order]
+        c_fall = [pts_fall[i] for i in order]
         creeks.append({
             "id": f"feature:{r['id']}",
             "profile": str(attrs.get("ramProfile") or DEFAULT_RAM_PROFILE),
@@ -6935,7 +6944,9 @@ def cmd_creeks(bbox, db_path: Path, course_ident: str, dem_path: Path, sidecar_p
             "source": source,
             **({"falls": len(falls_here),
                 "fallsAt": [[round(float(np.interp(sb, prof.s, prof.x)) - e0, 3), round(float(np.interp(sb, prof.s, prof.y)) - n0, 3)]
-                            for sb, *_ in sorted(falls_here)]} if falls_here else {}),
+                            for sb, *_ in sorted(falls_here)],
+                # The points over each sill and down its face (Unity keeps them as the fall's neck).
+                "fallPoints": [i for i, f in enumerate(c_fall) if f]} if falls_here else {}),
             "points": [[round(float(x - e0), 3), round(float(h - min_m + surface_offset_m), 3), round(float(y - n0), 3), round(w, 2)]
                        for (x, y), h, w in zip(c_xy, c_z, c_w)],
         })

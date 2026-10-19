@@ -134,3 +134,34 @@ def test_a_waterfall_drops_the_creeks_spline_over_its_lip(tmp_path):
     assert len(drops) == 1 and drops[0][0] <= 0.5 and drops[0][1] == pytest.approx(0.96, abs=0.06)
     assert 99.0 <= [x for x, h in pts if h > 18.9][-1] <= 101.0          # the lip near x = 100
     assert by_id["feature:k1"].get("falls") is None                     # the other creek has no fall
+    # A polygon creek's neck is as wide as the lip (5 m) plus the pad, not the polygon's 3 m mean width.
+    # Its points over the sill and down the face are listed (Unity keeps them as the neck); the others keep the width.
+    neck = creek["fallPoints"]
+    assert len(neck) == 4 and all(98.0 <= creek["points"][i][0] <= 102.0 for i in neck)
+    assert all(creek["points"][i][3] == pytest.approx(5.0 + gspro.CREEK_FALL_WIDTH_PAD_M, abs=0.01) for i in neck)
+    assert all(p[3] == creek["widthM"] for i, p in enumerate(creek["points"]) if i not in neck)
+
+
+def test_a_fountain_or_a_cascade_on_a_creek_is_no_fall(tmp_path):
+    dem = _dem(tmp_path / "dem.tif")
+    db = _db(tmp_path / "app.sqlite")
+    conn = sqlite3.connect(db)
+    across = {"crs": "EPSG:3006", "rings": [], "centerline": {
+        "points": [{"x": E0 + 60, "y": N0 + 39.4}, {"x": E0 + 60, "y": N0 + 40.6}], "widthM": 1}}
+    down = {"crs": "EPSG:3006", "rings": [], "centerline": {
+        "points": [{"x": E0 + 120, "y": N0 + 40}, {"x": E0 + 150, "y": N0 + 40}], "widthM": 1}}
+    conn.execute("INSERT INTO course_features VALUES ('f1', 'c1', NULL, 'waterfall', ?, 3, ?)",
+                 (json.dumps(across), json.dumps({"style": "fountain"})))
+    conn.execute("INSERT INTO course_features VALUES ('f2', 'c1', NULL, 'waterfall', ?, 4, ?)",
+                 (json.dumps(down), json.dumps({"style": "cascade"})))
+    conn.commit()
+    conn.close()
+    sidecar = tmp_path / "inner.tif.json"
+    sidecar.write_text(json.dumps({"terrain": "inner", "square3006": list(EXTENT), "minM": MIN_M, "maxM": 30.0}))
+    out = tmp_path / "creeks.json"
+
+    gspro.cmd_creeks(None, db, "c1", dem, sidecar, out, extent=EXTENT)
+
+    creek = {c["id"]: c for c in json.loads(out.read_text())["creeks"]}["feature:k2"]
+    assert creek.get("falls") is None and creek.get("fallsAt") is None
+    assert len({round(p[3], 2) for p in creek["points"]}) == 1          # no neck anywhere

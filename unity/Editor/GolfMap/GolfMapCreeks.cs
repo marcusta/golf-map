@@ -31,7 +31,12 @@
 //   ground rises buryM above it, then bankM further (short of where the ground
 //   dips back under the water), so its edges sit inside the banks with no gap
 //   under them. The two sides are measured apart and the point moved across
-//   to centre the water between them;
+//   to centre the water between them, by little more from point to point
+//   than their spacing allows (ShiftSlope). At a fall the export's points
+//   over the sill and down the face are the neck: on the export's line, no
+//   wider than the lip, the water opening out from them gradually
+//   (NeckFlareM). A point at a corner too sharp for the water's width (two
+//   sections crossing: R.A.M. folds the mesh there) is dropped;
 // - ends: both ends run on along the line until the ground rises the same
 //   way, then bankM into the bank.
 // A side or end that never meets a bank (a creek into a pond or another
@@ -83,6 +88,8 @@ namespace GolfMap.Editor
             // dropping over each lip (fallsAt, plot x/z) where R.A.M. draws the cascade.
             public bool held;
             public List<Vector2> fallsAt = new List<Vector2>();
+            // The points gspro.py put over each sill and down its face (`fallPoints`, indices into points): the neck.
+            public HashSet<int> fallPoints = new HashSet<int>();
             // The look for this creek alone (the feature's ramWater: lake|profile), else the import's.
             public string water;
             // An asset path of a material this creek alone wears (the feature's ramWaterMaterial), over `water`: Omberg's hole 17
@@ -277,6 +284,7 @@ namespace GolfMap.Editor
                     var v = q.OfType<GolfMapJsonNumber>().Select(n => (float)n.Value).ToArray();
                     if (v.Length >= 2) c.fallsAt.Add(new Vector2(v[0], v[1]));
                 }
+                foreach (var q in (o.Array("fallPoints") ?? new List<object>()).OfType<GolfMapJsonNumber>()) c.fallPoints.Add((int)q.Value);
                 foreach (var p in (o.Array("points") ?? new List<object>()).OfType<List<object>>())
                 {
                     var v = p.OfType<GolfMapJsonNumber>().Select(n => (float)n.Value).ToArray();
@@ -457,6 +465,9 @@ namespace GolfMap.Editor
         const float BumpM = 0.3f, CrossingM = 20f, RampM = 0.1f;
         // No crossing within this of a waterfall's lip (its sill is no culvert).
         const float FallClearM = 4f;
+        // A fall's neck: the export's fallPoints (over the sill, the lip, down the face), else its points within NeckM of it.
+        // The water opens out from it at NeckFlareM a side per metre; the line moves across at most ShiftSlope per metre.
+        const float NeckM = 2.5f, NeckFlareM = 0.75f, ShiftSlope = 0.25f;
 
         sealed class Station
         {
@@ -608,17 +619,64 @@ namespace GolfMap.Editor
                 for (int side = 0; side < 2; side++)
                     half[i, side] = a >= 0 && b < n ? (half[a, side] + half[b, side]) / 2f : a >= 0 ? half[a, side] : b < n ? half[b, side] : half[i, side];
             }
-            float maxShift = 0;
-            var widths = new List<float>();
-            var fitted = new List<Vector4>();
+            // Necks: the points over a sill and down its face (the export's fall points) stay on the export's line,
+            // no wider than its lip; the water opens out from them at NeckFlareM a side per metre.
+            var neck = new bool[n];
+            foreach (int i in c.fallPoints) if (i >= 0 && i < n) neck[i] = true;
+            // An export from before `fallPoints`: the points within NeckM of each fall along the line.
+            foreach (var f in c.fallPoints.Count > 0 ? new List<Vector2>() : c.fallsAt)
+            {
+                int k = 0;
+                for (int i = 1; i < n; i++) if (Vector2.Distance(XZ(pts[i]), f) < Vector2.Distance(XZ(pts[k]), f)) k = i;
+                for (int i = 0; i < n; i++) if (Mathf.Abs(cum[i] - cum[k]) <= NeckM) neck[i] = true;
+            }
+            var shift = new float[n];
+            var full = new float[n];
             for (int i = 0; i < n; i++)
             {
                 float left = Mathf.Max(half[i, 0], StepM), right = Mathf.Max(half[i, 1], StepM);
-                Vector2 dir = (XZ(pts[Math.Min(i + 1, n - 1)]) - XZ(pts[Math.Max(i - 1, 0)])).normalized;
-                Vector2 p = XZ(pts[i]) + new Vector2(dir.y, -dir.x) * ((right - left) / 2f);
+                full[i] = neck[i] ? Mathf.Min(left + right, pts[i].w) : left + right;
+                shift[i] = neck[i] ? 0 : (right - left) / 2f;
+            }
+            // The centre moves across at most ShiftSlope per metre along the line: a jump between two close
+            // points turns their sections across the flow, and R.A.M. folds the mesh there.
+            Limit(shift, cum, neck, ShiftSlope, false);
+            var sides = new[] { new float[n], new float[n] };
+            for (int i = 0; i < n; i++) { sides[0][i] = full[i] / 2f - shift[i]; sides[1][i] = full[i] / 2f + shift[i]; }
+            Limit(sides[0], cum, neck, NeckFlareM, true);
+            Limit(sides[1], cum, neck, NeckFlareM, true);
+            var line = new List<int>();
+            var at = new Vector2[n];
+            for (int i = 0; i < n; i++)
+            {
+                line.Add(i);
+                at[i] = XZ(pts[i]) + Right(pts, i) * ((sides[1][i] - sides[0][i]) / 2f);
+            }
+            // Corners: where two neighbours' sections cross inside the water (a short leg at a sharp turn), the
+            // free point of the two at the sharper turn goes; the line then cuts the corner.
+            int corners = 0;
+            for (int guard = 0; guard < n; guard++)
+            {
+                int hit = -1;
+                for (int a = 0; a + 1 < line.Count && hit < 0; a++)
+                    if (SectionsCross(at, sides, line, a)) hit = a;
+                if (hit < 0) break;
+                var free = new[] { hit, hit + 1 }.Where(a => a > 0 && a < line.Count - 1 && !neck[line[a]]).ToList();
+                if (free.Count == 0) break;
+                int drop = free.OrderByDescending(a => Turn(at, line, a)).First();
+                flag(at[line[drop]], "corner too sharp for the water's width: point dropped");
+                line.RemoveAt(drop);
+                corners++;
+            }
+            float maxShift = 0;
+            var widths = new List<float>();
+            var fitted = new List<Vector4>();
+            foreach (int i in line)
+            {
+                float left = sides[0][i], right = sides[1][i];
                 maxShift = Mathf.Max(maxShift, Mathf.Abs(right - left) / 2f);
                 widths.Add(left + right);
-                fitted.Add(new Vector4(p.x, y[i], p.y, left + right));
+                fitted.Add(new Vector4(at[i].x, y[i], at[i].y, left + right));
             }
 
             // Ends: on along the line into the bank.
@@ -649,7 +707,7 @@ namespace GolfMap.Editor
                     traced.Add(string.Format(CultureInfo.InvariantCulture, "s {0:0} x {1:0.0} z {2:0.0} pt {3} bed {4:0.00} centre {5:0.00} water {6:0.00} left {7} right {8}{9}",
                         st.s, st.pos.x, st.pos.y, st.owner, st.bed, st.ground[m], h, lf ? "bank" : "open", rf ? "bank" : "open", st.crossing ? " crossing" : ""));
                 }
-            var diff = fitted.Skip(ends[0] is float ? 1 : 0).Take(n).Select((p, i) => p.y - pts[i].y).OrderBy(v => v).ToList();
+            var diff = Enumerable.Range(0, n).Select(i => y[i] - pts[i].y).OrderBy(v => v).ToList();
             c.points = fitted;
             widths.Sort();
             var result = new Dictionary<string, object>
@@ -659,7 +717,7 @@ namespace GolfMap.Editor
                 { "surfaceMinusExportM", Math.Round(diff[diff.Count / 2], 2) },
                 { "fallM", Math.Round(fitted[0].y - fitted[fitted.Count - 1].y, 2) },
                 { "endsM", ends }, { "openSides", openSides }, { "maxShiftM", Math.Round(maxShift, 2) },
-                { "maxClimbM", Math.Round(climb, 2) }, { "crossings", crossings },
+                { "maxClimbM", Math.Round(climb, 2) }, { "crossings", crossings }, { "cornersDropped", corners },
                 { "check", check },
             };
             if (traced.Count > 0) result["trace"] = traced;
@@ -685,6 +743,54 @@ namespace GolfMap.Editor
             }
             reach = Math.Abs(last - from) * StepM;
             return true;
+        }
+
+        // Clamps v along the line (cum: its distance along it) so it changes at most `slope` per metre, the
+        // `fixedAt` values left as they are; down=true only lowers values (each is at most its neighbours' + slope).
+        static void Limit(float[] v, float[] cum, bool[] fixedAt, float slope, bool down)
+        {
+            int n = v.Length;
+            for (int pass = 0; pass < 4; pass++)
+                for (int k = 1; k < 2 * n - 1; k++)
+                {
+                    bool forward = k < n;
+                    int i = forward ? k : 2 * n - 2 - k, j = forward ? i - 1 : i + 1;
+                    if (fixedAt[i]) continue;
+                    float d = Mathf.Abs(cum[i] - cum[j]) * slope;
+                    v[i] = down ? Mathf.Min(v[i], v[j] + d) : Mathf.Clamp(v[i], v[j] - d, v[j] + d);
+                }
+        }
+
+        // The horizontal right of the line at point i, the way R.A.M. turns a control point's section (its
+        // Catmull-Rom tangent runs from the point before to the point after).
+        static Vector2 Right(List<Vector4> pts, int i)
+        {
+            Vector2 dir = (XZ(pts[Math.Min(i + 1, pts.Count - 1)]) - XZ(pts[Math.Max(i - 1, 0)])).normalized;
+            return new Vector2(dir.y, -dir.x);
+        }
+
+        static Vector2 Right(Vector2[] at, List<int> line, int a)
+        {
+            Vector2 dir = (at[line[Math.Min(a + 1, line.Count - 1)]] - at[line[Math.Max(a - 1, 0)]]).normalized;
+            return new Vector2(dir.y, -dir.x);
+        }
+
+        // Do the sections of line[a] and line[a + 1] (left sides[0], right sides[1] across the line) cross?
+        static bool SectionsCross(Vector2[] at, float[][] sides, List<int> line, int a)
+        {
+            int i = line[a], j = line[a + 1];
+            Vector2 na = Right(at, line, a), nb = Right(at, line, a + 1), r = at[j] - at[i];
+            float den = na.x * -nb.y + na.y * nb.x;
+            if (Mathf.Abs(den) < 1e-6f) return false;
+            float t = (r.x * -nb.y + r.y * nb.x) / den, u = (na.x * r.y - na.y * r.x) / den;
+            return -sides[0][i] < t && t < sides[1][i] && -sides[0][j] < u && u < sides[1][j];
+        }
+
+        // How sharply the line turns at line[a] (radians).
+        static float Turn(Vector2[] at, List<int> line, int a)
+        {
+            Vector2 u1 = at[line[a]] - at[line[a - 1]], u2 = at[line[a + 1]] - at[line[a]];
+            return Mathf.Abs(Mathf.Atan2(u1.x * u2.y - u1.y * u2.x, Vector2.Dot(u1, u2)));
         }
 
         // The bed three stations deep into the lowest of stations[from..to]: a
