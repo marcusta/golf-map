@@ -17,7 +17,8 @@
      "length": 6.4,
      "width": 3.0,
      "height": 0.85,
-     "seed": 11
+     "seed": 11,
+     "stone": 0.34
     }
    ]
   },
@@ -31,7 +32,8 @@
      "length": 6.8,
      "width": 3.0,
      "height": 0.9,
-     "seed": 23
+     "seed": 23,
+     "stone": 0.34
     }
    ]
   }
@@ -42,16 +44,16 @@
    "e": 477447.4,
    "n": 6457784.8,
    "yawDeg": 154.0,
-   "ground": "max",
-   "dz": 0.0
+   "ground": "median",
+   "dz": -0.1
   },
   {
    "asset": "omberg_stone_bridge_h6b",
    "e": 477521.1,
    "n": 6457810.1,
    "yawDeg": 180.0,
-   "ground": "max",
-   "dz": 0.0
+   "ground": "median",
+   "dz": -0.1
   }
  ]
 }

@@ -566,9 +566,10 @@ MATERIALS = {
     "granite_beige": ("granite:134,128,116:0.45:0.25:0.15", (4.0, 4.0), None, 0.15, 0.0),
     # Omberg's stone crossings: the warm heaps on hole 6 (photo: sandstone-pink to ochre in low sun) and the old arch
     # bridges on holes 7 and 9 (mid-grey field stone, photos 2026-10-19)
-    "sandstone_ochre": ("granite:150,112,90:0.2:0:0", (4.0, 4.0), None, 0.12, 0.0),
-    "sandstone_pink": ("granite:160,118,106:0.2:0:0", (4.0, 4.0), None, 0.12, 0.0),
-    "sandstone_dark": ("granite:116,90,80:0.25:0:0", (4.0, 4.0), None, 0.12, 0.0),
+    "sandstone_core": ("granite:78,62,54:0.1:0:0", (4.0, 4.0), None, 0.1, 0.0),
+    "sandstone_ochre": ("granite:142,104,78:0.2:0:0", (4.0, 4.0), None, 0.12, 0.0),
+    "sandstone_pink": ("granite:148,110,98:0.2:0:0", (4.0, 4.0), None, 0.12, 0.0),
+    "sandstone_dark": ("granite:106,84,72:0.25:0:0", (4.0, 4.0), None, 0.12, 0.0),
     "fieldstone_grey": ("granite:128,124,118:0.3:0.1:0", (4.0, 4.0), None, 0.15, 0.0),
     "fieldstone_dark": ("granite:100,96,92:0.25:0.05:0", (4.0, 4.0), None, 0.15, 0.0),
     "fieldstone_brown": ("granite:130,118,108:0.3:0.1:0", (4.0, 4.0), None, 0.15, 0.0),
@@ -1826,7 +1827,7 @@ def stone_bridge(g, s):
     ow, oh = s.get("opening", 2.4 if arch else 1.5), s.get("openingHeight", 0.95 if arch else 0.4)
     depth, stone, side = s.get("depth", 0.9), s.get("stone", 0.42), math.radians(s.get("sideDeg", 52))
     mats = s.get("mats", ["fieldstone_grey", "fieldstone_dark", "fieldstone_brown"] if arch else ["sandstone_ochre", "sandstone_pink", "sandstone_dark"])
-    core = s.get("core", "fieldstone_dark" if arch else "granite_dark")
+    core = s.get("core", "fieldstone_dark" if arch else "sandstone_core")
     deck = s.get("deck", "turf_mat")
     rnd = random.Random(s.get("seed", 1))
     if ow > 0:
@@ -1842,8 +1843,8 @@ def stone_bridge(g, s):
         u = min(1.0, abs(2 * x / L))
         if arch:  # a hump bridge: the deck line, level across, vertical flanks
             return H * (1 - u ** 2.6)
-        hx = (1 - u ** 2.3) ** 0.6
-        cy = smooth((W / 2 - abs(y)) / run) ** 0.8
+        hx = (1 - u ** 2.0) ** 0.85
+        cy = (1 - min(1.0, abs(2 * y / W)) ** 2.2) ** 0.55
         z = H * hx * cy
         if ow > 0:  # the headwall over the culvert: a lip that stands to the mouth, then falls steeply
             hw = (oh + 0.42) * (1 - smooth((abs(x) - ow / 2 - 0.15) / 0.55))
@@ -1950,6 +1951,18 @@ def stone_bridge(g, s):
             placed.append((x, y, z, r * 0.6))
             lay(x, y, z - r * 0.12, r, n, big)
 
+    if not arch:  # a skirt: two rows round the foot, down the slope, so a heap on a hillside has no gap under it
+        per = [(x, -W / 2) for x in [-L / 2 + L * i / 14 for i in range(15)]] + [(L / 2, y) for y in [-W / 2 + W * j / 6 for j in range(1, 7)]]             + [(x, W / 2) for x in [L / 2 - L * i / 14 for i in range(1, 15)]] + [(-L / 2, y) for y in [W / 2 - W * j / 6 for j in range(1, 6)]]
+        for x, y in per:
+            if ow > 0 and abs(x) < ow / 2 + 0.3:
+                continue
+            for zr in (-0.22, -0.55):
+                r = stone * rnd.uniform(0.55, 0.8)
+                spec = {"sx": r * 2.2, "sy": r * 1.6, "sz": r * 1.3, "exponent": rnd.uniform(2.3, 3.0), "lumps": 0.5, "seed": rnd.randint(1, 10 ** 6),
+                        "seg": 10, "rings": 6, "mat": mats[0] if rnd.random() < 0.55 else rnd.choice(mats)}
+                g.push(Matrix.Translation((x * 0.985, y * 0.985, zr)) @ Matrix.Rotation(rnd.uniform(0, math.pi), 4, "Z"))
+                boulder(g, spec)
+                g.pop()
     if arch:
         _arch_masonry(g, rnd, mats, L, W, ow, oh, depth, lambda x: surf(x, 0.0), roof)
         return
