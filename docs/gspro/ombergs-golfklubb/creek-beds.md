@@ -42,3 +42,9 @@ downstream = looking north there: left = west): the paint rule `creek-bed` names
 paint takes them per side of the creek's line (`belowM` 0.1 is the fallback, `softM` 0.08 the blend). `grassFrom: rough` gives the brook mesh the nearest
 rough's Stix components (NatureMeshFilter, grassonoffnew, GrassRenderer), so its red lip grows the same 3D grass as the rough all the way to the black
 edge, and the black (red 0) grows none.
+
+**Hole 17's ponds, the light halo at the shore** (2026-10-19): the shallow shelf shows the lake bed's pale material through the water. paint.json rules
+`pond-shore-230` / `pond-shore-231` (kind `object`, `shoreM` 0.6, `softM` 0.3): the bed vertices less than 0.6 m under the water's edge are painted red, and the
+ponds' own copy of the lake material (`Assets/GolfMap/Omberg/Ponds/OPCD MAHS Water Base Lake_Sat (pond 17).mat`, the other lakes keep theirs) draws the nearest
+rough's red channel (copyFromRough), the same grass as the bank, with green and blue 10 % darker (scaleGreen/scaleBlue 0.9). A steeper bank (the dig's
+`digBankSlopeDeg`, shelf) would shorten the shelf itself but needs a terrain bake and the Blender replay: not done.

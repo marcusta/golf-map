@@ -117,9 +117,19 @@ namespace GolfMap.Editor
             // grassonoffnew, NatureMeshFilter), so its red vertices grow the 3D grass the rough has: the lip of a creek bed.
             public bool grassFromRough;
             public List<Vector2> line; public float belowLeftM = float.NaN, belowRightM = float.NaN;
-            public string albedo, normal;     // material: asset paths, null = keep the material
+            // shoreM > 0 (with the depth reading above): the opposite band - the channel is painted where the vertex is LESS than shoreM
+            // under the nearest border vertex (a pond's shore: the border is the water's edge) and fades out over softM below it.
+            public float shoreM = -1f;
+            public string albedo, normal;     // material: asset paths, null = no texture on the channel
             public float tileM = 1f;
             public Color tint = Color.white;
+            // `material` present = the mesh wears a course copy <folder>/<base material> (<name>).mat: of the nearest rough's material
+            // (default) or of its own (base "self": a pond bed keeps its lake material); copyFromRough = [{from, to}] channels taken from
+            // that rough (the shore band draws the same grass as the rough beside it); scale* = a channel's overall colour times this.
+            public bool hasMaterial, baseSelf;
+            public string matName = "creek bed", matFolder = "Creeks";
+            public List<string[]> copyRough = new List<string[]>();
+            public float scaleRed = 1f, scaleGreen = 1f, scaleBlue = 1f, scaleBlack = 1f;
         }
 
         static float Num(object o) { var n = o as GolfMapJsonNumber; return n == null ? 0f : (float)n.Value; }
@@ -147,7 +157,9 @@ namespace GolfMap.Editor
                     reachM = (float)o.Number("reachM", 1.5),
                     creek = o.String("creek"),
                     grassFromRough = o.String("grassFrom") == "rough",
+                    shoreM = (float)o.Number("shoreM", -1),
                 };
+                if (r.shoreM > 0 && (r.softM <= 0 || r.reachM <= 0)) throw new InvalidOperationException(where + ": softM and reachM must be > 0.");
                 if (!string.IsNullOrEmpty(r.creek))
                 {
                     r.line = GolfMapCreeks.SideLine(r.creek, out r.belowLeftM, out r.belowRightM);
@@ -160,9 +172,21 @@ namespace GolfMap.Editor
                 var m = o["material"] as GolfMapJsonObject;
                 if (m != null)
                 {
+                    r.hasMaterial = true;
+                    r.baseSelf = m.String("base") == "self";
+                    r.matName = m.String("name") ?? r.matName;
+                    r.matFolder = m.String("folder") ?? r.matFolder;
                     r.albedo = m.String("albedo");
                     r.normal = m.String("normal");
-                    if (string.IsNullOrEmpty(r.albedo) || string.IsNullOrEmpty(r.normal)) throw new InvalidOperationException(where + ": material needs albedo and normal (asset paths).");
+                    if (string.IsNullOrEmpty(r.albedo) != string.IsNullOrEmpty(r.normal)) throw new InvalidOperationException(where + ": material needs albedo and normal (asset paths) together.");
+                    foreach (var c in (m.Array("copyFromRough") ?? new List<object>()).OfType<GolfMapJsonObject>())
+                    {
+                        string from = c.String("from"), to = c.String("to");
+                        ChannelColor((from ?? "").ToLowerInvariant(), where); ChannelColor((to ?? "").ToLowerInvariant(), where);
+                        r.copyRough.Add(new[] { from.ToLowerInvariant(), to.ToLowerInvariant() });
+                    }
+                    r.scaleRed = (float)m.Number("scaleRed", 1); r.scaleGreen = (float)m.Number("scaleGreen", 1);
+                    r.scaleBlue = (float)m.Number("scaleBlue", 1); r.scaleBlack = (float)m.Number("scaleBlack", 1);
                     r.tileM = (float)m.Number("tileM", 1);
                     var tint = m.Array("tint");
                     if (tint != null && tint.Count >= 3) r.tint = new Color(Num(tint[0]), Num(tint[1]), Num(tint[2]), 1f);
@@ -175,22 +199,72 @@ namespace GolfMap.Editor
         // A copy of the nearest rough's material (<course>/Creeks/<rough> (creek bed).mat) whose rule channel draws the
         // pebbles; rebuilt from the rough on every run so the rule wins. The copy keeps every other channel, so the
         // bed's red fringe still draws the grass ground around it.
-        static Material CreekBedMaterial(string courseFolder, ObjectRule rule, Material rough)
+        static Material CreekBedMaterial(string courseFolder, ObjectRule rule, Material rough, Material own)
         {
-            if (rough == null || string.IsNullOrEmpty(rule.albedo)) return null;
-            var dir = courseFolder + "Creeks";
-            if (!AssetDatabase.IsValidFolder(dir)) AssetDatabase.CreateFolder(courseFolder.TrimEnd('/'), "Creeks");
-            var path = dir + "/" + rough.name + " (creek bed).mat";
+            var baseMat = rule.baseSelf ? own : rough;
+            if (baseMat == null || !rule.hasMaterial) return null;
+            var dir = courseFolder + rule.matFolder;
+            if (!AssetDatabase.IsValidFolder(dir)) AssetDatabase.CreateFolder(courseFolder.TrimEnd('/'), rule.matFolder);
+            var path = dir + "/" + baseMat.name + " (" + rule.matName + ").mat";
             var m = AssetDatabase.LoadAssetAtPath<Material>(path);
-            if (m == null) { m = new Material(rough) { name = rough.name + " (creek bed)" }; AssetDatabase.CreateAsset(m, path); }
-            else { m.shader = rough.shader; m.CopyPropertiesFromMaterial(rough); }
-            GolfMapWallGround.ApplyChannelTexture(m, rule.channel, rule.albedo, rule.normal, rule.tileM, rule.tint, dir);
-            // the photo under the base would tint the pebbles
-            string p = "_" + char.ToUpperInvariant(rule.channel[0]) + rule.channel.Substring(1);
-            if (m.HasProperty(p + "UseSatelliteForBase")) m.SetFloat(p + "UseSatelliteForBase", 0);
-            m.DisableKeyword((p + "UseSatelliteForBase").ToUpperInvariant() + "_ON");
+            if (m == null) { m = new Material(baseMat) { name = baseMat.name + " (" + rule.matName + ")" }; AssetDatabase.CreateAsset(m, path); }
+            else { m.shader = baseMat.shader; m.CopyPropertiesFromMaterial(baseMat); }
+            foreach (var c in rule.copyRough)
+                if (rough != null) CopyChannel(m, rough, c[0], c[1]);
+            if (!string.IsNullOrEmpty(rule.albedo))
+            {
+                GolfMapWallGround.ApplyChannelTexture(m, rule.channel, rule.albedo, rule.normal, rule.tileM, rule.tint, dir);
+                // the photo under the base would tint the pebbles
+                string p = "_" + char.ToUpperInvariant(rule.channel[0]) + rule.channel.Substring(1);
+                if (m.HasProperty(p + "UseSatelliteForBase")) m.SetFloat(p + "UseSatelliteForBase", 0);
+                m.DisableKeyword((p + "UseSatelliteForBase").ToUpperInvariant() + "_ON");
+            }
+            ScaleChannel(m, "Red", rule.scaleRed); ScaleChannel(m, "Green", rule.scaleGreen);
+            ScaleChannel(m, "Blue", rule.scaleBlue); ScaleChannel(m, "Black", rule.scaleBlack);
             EditorUtility.SetDirty(m);
             return m;
+        }
+
+        static string CapChannel(string channel) { return char.ToUpperInvariant(channel[0]) + channel.Substring(1); }
+
+        // Every _<To>* property and _<TO>*_ON keyword of `m` set from the same _<From>* of `src` (a channel of the nearest rough's material
+        // drawn on another or the same channel: the pond bed's shore band is the rough's own grass).
+        static void CopyChannel(Material m, Material src, string from, string to)
+        {
+            string F = CapChannel(from), T = CapChannel(to);
+            var shader = m.shader;
+            for (int i = 0; i < ShaderUtil.GetPropertyCount(shader); i++)
+            {
+                var name = ShaderUtil.GetPropertyName(shader, i);
+                if (!name.StartsWith("_" + T, StringComparison.Ordinal)) continue;
+                var other = "_" + F + name.Substring(1 + T.Length);
+                if (!src.HasProperty(other)) continue;
+                switch (ShaderUtil.GetPropertyType(shader, i))
+                {
+                    case ShaderUtil.ShaderPropertyType.Color: m.SetColor(name, src.GetColor(other)); break;
+                    case ShaderUtil.ShaderPropertyType.Vector: m.SetVector(name, src.GetVector(other)); break;
+                    case ShaderUtil.ShaderPropertyType.Float:
+                    case ShaderUtil.ShaderPropertyType.Range: m.SetFloat(name, src.GetFloat(other)); break;
+                    case ShaderUtil.ShaderPropertyType.TexEnv:
+                        m.SetTexture(name, src.GetTexture(other));
+                        m.SetTextureScale(name, src.GetTextureScale(other));
+                        m.SetTextureOffset(name, src.GetTextureOffset(other));
+                        break;
+                }
+            }
+            string TU = "_" + T.ToUpperInvariant(), FU = "_" + F.ToUpperInvariant();
+            var kw = new HashSet<string>(m.shaderKeywords.Where(k => !k.StartsWith(TU, StringComparison.Ordinal)));
+            foreach (var k in src.shaderKeywords) if (k.StartsWith(FU, StringComparison.Ordinal)) kw.Add(TU + k.Substring(FU.Length));
+            m.shaderKeywords = kw.ToArray();
+        }
+
+        // The channel's overall colour times `scale` (a few percent darker: 0.9).
+        static void ScaleChannel(Material m, string channel, float scale)
+        {
+            string p = "_" + channel + "OverallColor";
+            if (Mathf.Approximately(scale, 1f) || !m.HasProperty(p)) return;
+            var c = m.GetColor(p);
+            m.SetColor(p, new Color(c.r * scale, c.g * scale, c.b * scale, c.a));
         }
 
         // The material of the rough mesh nearest to `bed` (by bounds centre) that is a plain OPCD one: no walls stone
@@ -338,11 +412,11 @@ namespace GolfMap.Editor
             var course = GolfMapCourses.Require();
             var folder = GolfMapCourses.Folder(course);
             var recipePath = folder + PaintFile;
-            var rule = (File.Exists(recipePath) ? LoadObjectRules(File.ReadAllText(recipePath), recipePath) : new List<ObjectRule>()).FirstOrDefault(r => !string.IsNullOrEmpty(r.albedo));
+            var rule = (File.Exists(recipePath) ? LoadObjectRules(File.ReadAllText(recipePath), recipePath) : new List<ObjectRule>()).FirstOrDefault(r => r.hasMaterial && !r.baseSelf);
             if (rule == null) throw new BridgeError(recipePath + ": no object rule with a material.");
             var centre = new Vector3((float)a.Number("x", 0), 0, (float)a.Number("z", 0));
             var rough = NearestRoughMaterial(CourseMeshes(EditorSceneManager.GetActiveScene()), centre);
-            var bed = CreekBedMaterial(folder, rule, rough);
+            var bed = CreekBedMaterial(folder, rule, rough, null);
             AssetDatabase.SaveAssets();
             return new Dictionary<string, object> { { "rule", rule.id }, { "rough", rough != null ? AssetDatabase.GetAssetPath(rough) : null }, { "material", bed != null ? AssetDatabase.GetAssetPath(bed) : null } };
         }
@@ -444,7 +518,7 @@ namespace GolfMap.Editor
                 PointGrid ownEdge = null;
                 if (mine.Count > 0)
                 {
-                    ownEdge = new PointGrid(mine.Max(r => r.belowM > 0 ? r.reachM : r.fadeM));
+                    ownEdge = new PointGrid(mine.Max(r => r.belowM > 0 || r.shoreM > 0 ? r.reachM : r.fadeM));
                     foreach (var q in BoundaryPoints(f)) ownEdge.Add(q);
                 }
                 for (int i = 0; i < local.Length; i++)
@@ -454,7 +528,13 @@ namespace GolfMap.Editor
                     foreach (var r in mine)
                     {
                         float w;
-                        if (r.belowM > 0)
+                        if (r.shoreM > 0)
+                        {
+                            Vector3 top;
+                            float depth = ownEdge.NearestXZ(p, r.reachM, out top) == float.MaxValue ? float.MaxValue : top.y - p.y;
+                            w = r.strength * (1f - Smooth(r.shoreM, r.shoreM + r.softM, depth));
+                        }
+                        else if (r.belowM > 0)
                         {
                             Vector3 top;
                             // no border vertex in reach: far from any edge, fully inside
@@ -531,18 +611,18 @@ namespace GolfMap.Editor
                     else if (stone != null && known == null) errors.Add(path + ": renders a walls stone material but its original is not in " + RestoreFile + ".");
                 }
                 // a creek bed draws its pebbles from a copy of the nearest rough's material (the original is remembered)
-                var bedRule = mine.FirstOrDefault(r => !string.IsNullOrEmpty(r.albedo));
+                var bedRule = mine.FirstOrDefault(r => r.hasMaterial);
                 if (bedRule != null && mr != null)
                 {
                     var known = RecordMaterial(records, path);
                     var original = known ?? mr.sharedMaterial;
-                    var bed = CreekBedMaterial(folder, bedRule, NearestRoughMaterial(allFilters, mr.bounds.center));
+                    var bed = CreekBedMaterial(folder, bedRule, NearestRoughMaterial(allFilters, mr.bounds.center), original);
                     if (bed != null)
                     {
                         if (mr.sharedMaterial != bed) { Undo.RecordObject(mr, "Vertex paint"); mr.sharedMaterial = bed; }
                         material = original != null && original != bed ? AssetDatabase.GetAssetPath(original) : null;
                     }
-                    else warnings.Add(path + ": no rough mesh with a plain material to copy the creek bed material from.");
+                    else warnings.Add(path + ": no material to copy for rule " + bedRule.id + " (a rough mesh with a plain material, or the mesh's own).");
                 }
                 if (material == null) PutBackMaterial(f, records, path);
                 records[path] = material == null ? new[] { AssetDatabase.GetAssetPath(source), source.name } : new[] { AssetDatabase.GetAssetPath(source), source.name, material };
