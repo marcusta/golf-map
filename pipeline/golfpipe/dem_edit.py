@@ -147,6 +147,10 @@ WALL_TOE_RUN_M = 0.75
 # ... and at least this far below the ground at the line (where the line runs a little inside the bank's top, the
 # flat ground before the bank is cut away: the wall stands on the line) ...
 WALL_TOE_DROP_M = 0.4
+# Behind the line (where the polygon reaches over it) the plateau runs on to the wall at its own slope: fitted to the
+# ground this far behind the line and never lowered (an earlier edit, a pond's bank cut at bankAboveDeg, may have
+# cut into it).
+WALL_PLATEAU_FIT_M = (3.0, 5.0)
 # ... smoothed along the wall over this (lidar noise would make the foot jump from stone to stone).
 WALL_TOE_SMOOTH_M = 2.0
 # ... and where the polygon ends anywhere but the line (the wall's ends, ground kept round a sill), the cut or the
@@ -678,7 +682,8 @@ def _apply_one(
     cell_y = abs(transform.e)
     # A shore reads past its window on a grid of its own (_shore_target).
     feather_m = edit.feather_m if edit.op != "shore" else 0.0
-    pad_m = max(feather_m, edit.radius_m if edit.op == "smooth" else 0.0, edit.rim_m if edit.op == "dig" else 0.0)
+    pad_m = max(feather_m, edit.radius_m if edit.op == "smooth" else 0.0, edit.rim_m if edit.op == "dig" else 0.0,
+                WALL_PLATEAU_FIT_M[1] + 1.0 if edit.op == "wall" else 0.0)
     pad = int(np.ceil(pad_m / min(cell_x, cell_y))) + 2
     mask_rows = np.flatnonzero(mask.any(axis=1))
     mask_cols = np.flatnonzero(mask.any(axis=0))
@@ -741,7 +746,8 @@ def _wall_target(
 ) -> np.ndarray | None:
     """A stone wall in place of a bank (a green's bank above a pond). The polygon is the ground on the wall's outer
     side; the wall stands along the edit's line (its centerline) and the ground behind it, outside the polygon, is left
-    alone. Along the line the wall's foot is found where the bank ends (WALL_TOE_DEG: a terrace, or the water at
+    alone, but where the polygon reaches behind the line too, the plateau there is raised back to its own plane
+    (WALL_PLATEAU_FIT_M). Along the line the wall's foot is found where the bank ends (WALL_TOE_DEG: a terrace, or the water at
     levelM); its height is that ground's, never below levelM. Each cell in the polygon, by its distance d from the line:
     - d < runM: the face, from the ground just behind the line down to the foot's height;
     - d < the foot (at least runM + minShelfM): level with the foot, the bank's steep part cut away;
@@ -777,10 +783,14 @@ def _wall_target(
     normal = np.column_stack([-tan[:, 1], tan[:, 0]])
     from shapely.geometry import shape as _shape
     poly = _shape(edit.geometry)
-    # Which way is out (into the polygon) along the line: the side with more of the polygon within a metre.
-    poly_side = shapely.contains_xy(poly, sp[:, 0] + normal[:, 0], sp[:, 1] + normal[:, 1])
-    poly_side = np.full(len(sp), poly_side.mean() >= 0.5)
-    back = np.where(poly_side[:, None], -normal, normal)
+    # Each cell's side of the line, and which way is out: the side with more of the polygon (a band behind the line
+    # for the plateau is narrower than the ground the wall shapes in front of it).
+    near = shapely.get_coordinates(shapely.line_interpolate_point(line, s))
+    n_at = np.column_stack([np.interp(s, st, normal[:, 0]), np.interp(s, st, normal[:, 1])])
+    left = ((xs - near[:, 0]) * n_at[:, 0] + (ys - near[:, 1]) * n_at[:, 1]) > 0
+    out_left = left.mean() >= 0.5
+    ahead_cell = left == out_left
+    back = -normal if out_left else normal
     win_t = transform * rasterio.Affine.translation(c0, r0)
     h, w = cur_win.shape
 
@@ -788,8 +798,14 @@ def _wall_target(
         rr, cc = rasterio.transform.rowcol(win_t, px, py)
         rr, cc = np.clip(np.asarray(rr), 0, h - 1), np.clip(np.asarray(cc), 0, w - 1)
         return cur_win[rr, cc]
-    top_st = np.maximum(ground(sp[:, 0] + back[:, 0] * 0.4, sp[:, 1] + back[:, 1] * 0.4),
-                        ground(sp[:, 0] + back[:, 0] * 0.8, sp[:, 1] + back[:, 1] * 0.8))
+    # The plateau's plane along each station: a line fitted to the ground WALL_PLATEAU_FIT_M behind it.
+    fit_d = np.arange(WALL_PLATEAU_FIT_M[0], WALL_PLATEAU_FIT_M[1] + 1e-9, 0.25)
+    fz = np.stack([ground(sp[:, 0] + back[:, 0] * k, sp[:, 1] + back[:, 1] * k) for k in fit_d], axis=1)
+    fd = fit_d - fit_d.mean()
+    slope_st = (fz - fz.mean(axis=1, keepdims=True)) @ fd / (fd @ fd)
+    plane0_st = fz.mean(axis=1) - slope_st * fit_d.mean()
+    top_st = np.maximum.reduce([plane0_st, ground(sp[:, 0] + back[:, 0] * 0.4, sp[:, 1] + back[:, 1] * 0.4),
+                                ground(sp[:, 0] + back[:, 0] * 0.8, sp[:, 1] + back[:, 1] * 0.8)])
     top = np.interp(s, st, top_st)
     level = float(edit.level_m)
     run, shelf = edit.wall_run_m, edit.wall_min_shelf_m
@@ -815,6 +831,8 @@ def _wall_target(
     cur = cur_win[rows, cols]
     face = top - (top - foot) * np.clip(d / run, 0.0, 1.0)
     new = np.where(d < run, face, np.where(d < toe, foot, cur))
+    plateau = np.interp(s, st, plane0_st) + np.interp(s, st, slope_st) * d
+    new = np.where(ahead_cell, new, np.maximum(cur, plateau))
     ends = poly.boundary.difference(line.buffer(0.3))
     if not ends.is_empty:
         slope = np.tan(np.radians(WALL_BANK_DEG)) * shapely.distance(ends, cells)

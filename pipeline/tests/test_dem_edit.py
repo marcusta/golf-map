@@ -815,6 +815,24 @@ def test_wall_stands_on_a_terrace_and_leaves_the_terrace_alone():
     assert np.all(out[39, 10:70] >= 100.1) and np.all(out[39, 10:70] < 100.7)  # 0.5 m out: down at the terrace
 
 
+def test_wall_raises_the_plateau_behind_its_line_back_to_its_own_slope():
+    # A pond's bank cut the plateau's last 2 m behind the line (rows 40-41) down by a metre. With the polygon reaching
+    # 3 m behind the line, the wall puts the plateau back at its slope there and leaves the rest of it alone.
+    rows = np.arange(SIZE)[:, None] * np.ones((1, SIZE))
+    north = 40.0 - rows
+    plateau = 102.0 - 0.02 * (SIZE - rows)
+    dem = np.where(north <= 0, plateau, np.maximum(101.2 - 0.5 * north, 98.0))
+    dem[40:42, :] -= 1.0
+    dem = dem.astype(np.float32)
+    line = [[ORIGIN_X + 4, ORIGIN_Y - 40.0], [ORIGIN_X + 76, ORIGIN_Y - 40.0]]
+    edit = edit_3006("wall", rect_3006(4, 76, 30, 43), feather_m=0.0, centerline=line, level_m=99.55, wall_run_m=0.6,
+                     wall_min_shelf_m=1.0)
+    out = apply_edits(dem, TRANSFORM, NODATA, [edit], log=lambda *_: None).astype(float)
+    assert np.allclose(out[40:42, 10:70], plateau[40:42, 10:70], atol=0.02)   # the cut plateau: back on its plane
+    assert np.array_equal(out[43:, :], dem[43:, :].astype(float))            # beyond the band: untouched
+    assert np.allclose(out[38, 10:70], 99.55, atol=0.01)                      # and the wall's shelf as before
+
+
 def test_load_edits_reads_a_wall(tmp_path: Path):
     ring = rect_3006(4, 76, 30, 40)
     line = ring_to_wgs84([[ORIGIN_X + 4, ORIGIN_Y - 40], [ORIGIN_X + 76, ORIGIN_Y - 40]])

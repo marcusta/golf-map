@@ -3,7 +3,7 @@
 // the lidar (a terrace, or the water: never below the shelf's floor, --level), and the ground beyond is left alone.
 //
 //   bun run terrain:wall -- <course> --id <name> --line "e,n e,n ..." --water <shape> [--above 0.15 | --level <m>]
-//        [--reach 6] [--run 0.3] [--min-shelf 0.5] [--keep <shape>]... [--keep-margin 3] [--avoid e,n,r]... [--dry-run]
+//        [--reach 6] [--behind 3] [--run 0.3] [--min-shelf 0.5] [--keep <shape>]... [--keep-margin 3] [--avoid e,n,r]... [--dry-run]
 //
 //   --line       the wall's line (its top edge on the green side), EPSG:3006 points, west to east or any way round
 //   --water      the pond the wall stands at (shape name, number or id): the wall's outer side, and the floor of its
@@ -11,6 +11,7 @@
 //   --level      the floor's height instead (metres above sea level)
 //   --min-shelf  the ground at the wall's foot at least this wide (0: the foot where the bank ends)
 //   --reach      how far out from the line the ground is shaped (the edit's polygon), metres
+//   --behind     how far behind it the plateau is kept on its own slope (raised back where a pond's bank cut it)
 //   --keep       a feature whose ground must stay (another pond's bank): left out of the polygon, --keep-margin round it
 //   --avoid      a circle left out (e,n,radius): a fall's sill, a bridge's footing
 // The edit is stored as origin `wall`, originRef `wall:<id>` (a second run with the same id replaces it), dated now so
@@ -32,7 +33,7 @@ type Pt = { x: number; y: number };
 function usage(msg?: string): never {
     if (msg) console.error(`error: ${msg}`);
     console.error('usage: bun run terrain:wall -- <course> --id <name> --line "e,n e,n ..." --water <shape> [--above 0.15 | --level <m>]\n'
-        + '         [--reach 6] [--run 0.3] [--min-shelf 0.5] [--keep <shape>]... [--keep-margin 3] [--avoid e,n,r]... [--dry-run]');
+        + '         [--reach 6] [--behind 3] [--run 0.3] [--min-shelf 0.5] [--keep <shape>]... [--keep-margin 3] [--avoid e,n,r]... [--dry-run]');
     process.exit(2);
 }
 
@@ -54,7 +55,7 @@ const [ident] = positional;
 if (!ident) usage();
 const id = typeof flags.id === 'string' ? flags.id : usage('--id names the wall');
 const num = (k: string, d: number) => (flags[k] === undefined ? d : Number(flags[k]));
-const reach = num('reach', 6), run = num('run', 0.3), minShelf = num('min-shelf', 0.5), above = num('above', 0.15), keepMargin = num('keep-margin', 3);
+const reach = num('reach', 6), behind = num('behind', 3), run = num('run', 0.3), minShelf = num('min-shelf', 0.5), above = num('above', 0.15), keepMargin = num('keep-margin', 3);
 const line: Pt[] = String(flags.line ?? '').split(/[\s;]+/).filter(Boolean).map((s) => {
     const [x, y] = s.split(',').map(Number);
     if (!Number.isFinite(x) || !Number.isFinite(y)) usage(`--line point '${s}' is not e,n`);
@@ -106,12 +107,12 @@ try {
         if (![x, y, r].every(Number.isFinite)) usage(`--avoid '${a}' is not e,n,r`);
         return { x, y, r };
     });
-    const zone = wallZone(line, side, reach, multi.keep.map((k) => ringOf(findFeature(all, k))), keepMargin, avoid);
+    const zone = wallZone(line, side, reach, multi.keep.map((k) => ringOf(findFeature(all, k))), keepMargin, avoid, behind);
     if (!zone) usage('nothing left of the polygon');
     const { rings, dropped } = zone;
     const lengthM = line.slice(1).reduce((s, p, i) => s + Math.hypot(p.x - line[i].x, p.y - line[i].y), 0);
     console.log(`wall ${id}: ${lengthM.toFixed(1)} m line, shelf at ${level.toFixed(2)} m, face ${run} m out, shelf at least ${minShelf} m, `
-        + `shaped ${reach} m out (${rings[0].length} points${dropped ? `, ${dropped} small piece(s) dropped` : ''})`);
+        + `shaped ${reach} m out and ${behind} m behind (${rings[0].length} points${dropped ? `, ${dropped} small piece(s) dropped` : ''})`);
     if (flags['dry-run']) { console.log('dry run, nothing stored'); process.exit(0); }
 
     const edits = new TerrainEditsService(db);

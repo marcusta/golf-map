@@ -40,7 +40,8 @@ export function wallSideOf(line: readonly WallPt[], ring: readonly WallPt[]): 1 
 }
 
 /**
- * The strip `reachM` wide on `side` of `line`, less each `keep` ring grown by `keepMarginM` and each `avoid` circle.
+ * The strip `reachM` wide on `side` of `line` and `behindM` on its other side (the plateau the wall keeps on its own
+ * slope), less each `keep` ring grown by `keepMarginM` and each `avoid` circle.
  * Returns the biggest piece left (its outer ring first, holes after) and how many small pieces were dropped. Worked
  * in metres round the line's first point: polygon-clipping loses its sweep line on 6.4e6-sized coordinates.
  */
@@ -51,18 +52,20 @@ export function wallZone(
     keep: readonly (readonly WallPt[])[] = [],
     keepMarginM = 3,
     avoid: readonly { x: number; y: number; r: number }[] = [],
+    behindM = 0,
 ): { rings: WallPt[][]; dropped: number } | null {
     const o = line[0];
     const local = (r: readonly WallPt[]) => r.map((p) => ({ x: p.x - o.x, y: p.y - o.y }));
     line = local(line);
-    const out: WallPt[] = [];
+    const out: WallPt[] = [], back: WallPt[] = [];
     for (let i = 0; i < line.length; i++) {
         const p = line[i], q0 = line[Math.max(i - 1, 0)], q1 = line[Math.min(i + 1, line.length - 1)];
         const L = Math.hypot(q1.x - q0.x, q1.y - q0.y) || 1;
         const nx = (-(q1.y - q0.y) / L) * side, ny = ((q1.x - q0.x) / L) * side;
         out.push({ x: p.x + nx * reachM, y: p.y + ny * reachM });
+        back.push({ x: p.x - nx * behindM, y: p.y - ny * behindM });
     }
-    let zone: MultiPolygon = [toPoly([...line, ...out.reverse()])];
+    let zone: MultiPolygon = [toPoly([...(behindM > 0 ? back : line), ...out.reverse()])];
     for (const ring of keep) zone = polygonClipping.difference(zone, grownRing(local(ring), keepMarginM));
     for (const c of avoid) zone = polygonClipping.difference(zone, [toPoly(circleRing({ x: c.x - o.x, y: c.y - o.y }, c.r))]);
     if (zone.length === 0) return null;
