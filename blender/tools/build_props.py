@@ -4,7 +4,8 @@
         [--only id,id] [--preview] [--layout] [--blend <file.blend>]
 
 Spec (golfmap-props-spec-v1, e.g. docs/gspro/vreta/clubhouse-props.json):
-  assets:    {id: {parts: [...], category: building|structure|prop|vehicle, collider: mesh|box|none}}
+  assets:    {id: {parts: [...], category: building|structure|prop|vehicle, collider: mesh|box|none,
+                   bake: true | {lods, lodM, cullM, colliderLod, rays, lastLodShadows}}}
   instances: [{asset, e, n, yawDeg, ground: max|min|centre, dz}]   e/n = EPSG:3006 metres,
              yawDeg = compass bearing of the asset's local +x axis
   origin:    [E, N] for the --layout preview scene
@@ -17,6 +18,14 @@ Writes into --out:
                            bounds), instances - GolfMapProps.cs reads it
 --layout also builds every instance in one scene around `origin` (flat ground, optional ortho
 image) and renders top and oblique views to Previews/layout_*.png, to check placement.
+
+`bake` (an asset of many stones in one mesh: a stone bridge's core + shell): its loose parts go through the
+stone-wall bake (blender/walls/wall_bake.py bake_doc): triangles inside another closed part or that no ray
+from them escapes are dropped, then LODs by Decimate (`lods` ratios, default [1, 0.35, 0.1]) and a collider
+mesh from LOD `colliderLod` (default 1). The FBX then holds <id>_LOD0.. and <id>_collider; the manifest
+says so (`lods`: {count, lodM, cullM, lastLodShadows}, `colliderMesh`) and GolfMapProps builds the LODGroup
+(switching at lodM metres, default [40, 120]) and the MeshCollider from them. No ground: what is buried
+stays (its shadow too).
 Never touches the course .blend.
 """
 import argparse
@@ -27,10 +36,16 @@ import sys
 import time
 
 import bpy
+import numpy as np
 from mathutils import Matrix, Vector
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "walls"))
 import props_kit as kit  # noqa: E402
+import wall_bake  # noqa: E402
+
+BAKE_DEFAULTS = {"lods": [1.0, 0.35, 0.1], "lodM": [40.0, 120.0], "cullM": 0.0, "colliderLod": 1, "rays": 48,
+                 "lastLodShadows": False}
 
 
 def args():
@@ -60,7 +75,7 @@ def export_fbx(ob, path):
     and remaps by name. Texture links are cut for the export (else Unity's importer makes its own
     materials from them and asks to re-type the normal maps)."""
     cut = []
-    for m in ob.data.materials:
+    for m in {m for o in (ob if isinstance(ob, (list, tuple)) else [ob]) for m in o.data.materials if m}:
         if m and m.use_nodes:
             for l in list(m.node_tree.links):
                 if l.from_node.type == "TEX_IMAGE":
@@ -74,13 +89,104 @@ def export_fbx(ob, path):
 
 
 def _export(ob, path):
+    obs = ob if isinstance(ob, (list, tuple)) else [ob]
     for o in bpy.context.view_layer.objects:
         o.select_set(False)
-    ob.select_set(True)
-    bpy.context.view_layer.objects.active = ob
+    for o in obs:
+        o.select_set(True)
+    bpy.context.view_layer.objects.active = obs[0]
     bpy.ops.export_scene.fbx(filepath=path, use_selection=True, bake_space_transform=True,
                              object_types={"MESH"}, mesh_smooth_type="OFF", add_leaf_bones=False,
                              path_mode="STRIP", embed_textures=False)
+
+
+def loose_parts(nv, tris):
+    """Connected component per vertex (union-find over the triangles' vertex ids)."""
+    parent = list(range(nv))
+
+    def find(a):
+        while parent[a] != a:
+            parent[a] = parent[parent[a]]
+            a = parent[a]
+        return a
+    for a, b, c in tris.tolist():
+        ra = find(a)
+        parent[find(b)] = ra
+        parent[find(c)] = ra
+    return np.array([find(i) for i in range(nv)])
+
+
+def bake_asset(ob, aid, opts, collection):
+    """The asset's loose parts baked like a stone wall (wall_bake.bake_doc, Blender's Z up, no ground, one
+    chunk) -> [<id>_LOD0.., <id>_collider] objects in the asset's own frame, and the bake's stats."""
+    me = ob.data
+    me.calc_loop_triangles()
+    nt = len(me.loop_triangles)
+    lv, ll, lm = np.empty(nt * 3, np.int32), np.empty(nt * 3, np.int32), np.empty(nt, np.int32)
+    me.loop_triangles.foreach_get("vertices", lv)
+    me.loop_triangles.foreach_get("loops", ll)
+    me.loop_triangles.foreach_get("material_index", lm)
+    lv, ll = lv.reshape(-1, 3), ll.reshape(-1, 3)
+    co = np.empty(len(me.vertices) * 3)
+    me.vertices.foreach_get("co", co)
+    co = co.reshape(-1, 3)
+    cn = np.empty(len(me.loops) * 3)
+    me.corner_normals.foreach_get("vector", cn)
+    cn = cn.reshape(-1, 3)
+    uv = np.zeros(len(me.loops) * 2)
+    if me.uv_layers.active is not None:
+        me.uv_layers.active.data.foreach_get("uv", uv)
+    uv = uv.reshape(-1, 2)
+    part = loose_parts(len(co), lv)[lv[:, 0]]
+    nmat = max(1, len(me.materials))
+    models, stones = {}, []
+    for k, p in enumerate(np.unique(part).tolist()):
+        t = np.nonzero(part == p)[0]
+        idx = np.arange(3 * len(t)).reshape(-1, 3)
+        used = np.unique(lm[t]).tolist()
+        models[str(k)] = {"vertices": co[lv[t]].ravel().tolist(), "normals": cn[ll[t]].ravel().tolist(),
+                          "uv": uv[ll[t]].ravel().tolist(),
+                          "submeshes": [idx[lm[t] == m].ravel().tolist() for m in used]}
+        stones.append({"model": str(k), "matrix": [1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1],
+                       "materials": used, "along": 0.0})
+    doc = wall_bake.check_settings({
+        "format": wall_bake.FORMAT_IN, "wall": aid, "models": models, "materials": list(range(nmat)), "stones": stones,
+        "settings": {"chunkM": 1e9, "lods": opts["lods"], "colliderLod": opts["colliderLod"], "rays": opts["rays"],
+                     "cullHidden": True, "up": 2}})
+    core = wall_bake.bake_doc(doc)
+    chunk = core["chunks"][0]
+    pivot = np.asarray(chunk["pivot"], np.float64)
+    out = []
+    for k, (verts, subs) in enumerate(chunk["lods"]):
+        out.append(mesh_object("{}_LOD{}".format(aid, k), verts, subs, pivot, me.materials, collection))
+    cpos, cidx = chunk["collider"]
+    cme = bpy.data.meshes.new(aid + "_collider")
+    cme.from_pydata((cpos + pivot).tolist(), [], cidx.reshape(-1, 3).tolist())
+    cme.update()
+    col = bpy.data.objects.new(aid + "_collider", cme)
+    collection.objects.link(col)
+    col.hide_render = True
+    out.append(col)
+    return out, core["stats"]
+
+
+def mesh_object(name, verts, subs, pivot, materials, collection):
+    """A baked LOD (rows of position, normal, uv; [(material slot, indices)]) as an object with those normals."""
+    idx = np.concatenate([i for _, i in subs]).reshape(-1, 3)
+    mat = np.concatenate([np.full(len(i) // 3, m) for m, i in subs])
+    me = bpy.data.meshes.new(name)
+    me.from_pydata((verts[:, 0:3].astype(np.float64) + pivot).tolist(), [], idx.tolist())
+    for m in materials:
+        me.materials.append(m)
+    me.polygons.foreach_set("material_index", mat.astype(np.int32))
+    uvl = me.uv_layers.new(name="UVMap")
+    uvl.data.foreach_set("uv", verts[idx.ravel(), 6:8].astype(np.float32).ravel())
+    me.shade_smooth()
+    me.normals_split_custom_set(verts[idx.ravel(), 3:6].astype(np.float64).tolist())
+    me.update()
+    ob = bpy.data.objects.new(name, me)
+    collection.objects.link(ob)
+    return ob
 
 
 def bounds(ob):
@@ -185,7 +291,6 @@ def main():
             manifest_assets[aid].update(category=asset.get("category", "prop"), collider=asset.get("collider", "keep"))
             continue
         ob = kit.to_object(geos[aid], aid, table, texdir, lib)
-        objs[aid] = ob
         used_mats.update(m.name for m in ob.data.materials)
         manifest_assets[aid] = {
             "fbx": "Models/" + aid + ".fbx", "category": asset.get("category", "prop"),
@@ -193,9 +298,24 @@ def main():
             "bounds": bounds(ob), "tris": sum(len(p.vertices) - 2 for p in ob.data.polygons),
             "materials": [m.name for m in ob.data.materials],
         }
+        export = ob
+        if asset.get("bake") and not (only and aid not in only):
+            opts = dict(BAKE_DEFAULTS, **(asset["bake"] if isinstance(asset["bake"], dict) else {}))
+            export, st = bake_asset(ob, aid, opts, lib)
+            bpy.data.objects.remove(ob)
+            bpy.context.view_layer.update()
+            ob = export[0]
+            manifest_assets[aid].update(
+                tris=st["trisLod"][0], trisSource=st["trisIn"], colliderMesh=aid + "_collider",
+                lods={"count": len(opts["lods"]), "lodM": opts["lodM"], "cullM": opts["cullM"],
+                      "lastLodShadows": opts["lastLodShadows"]},
+                bake={"culledInside": st["culledInside"], "culledHidden": st["culledHidden"], "trisLod": st["trisLod"],
+                      "colliderTris": st["colliderTris"], "seconds": st["seconds"]["total"]})
+            print("baked %-24s %6d -> %s tris, collider %d" % (aid, st["trisIn"], st["trisLod"], st["colliderTris"]))
+        objs[aid] = ob
         if only and aid not in only:
             continue
-        export_fbx(ob, os.path.join(models, aid + ".fbx"))
+        export_fbx(export, os.path.join(models, aid + ".fbx"))
         if a.preview:
             for o in lib.objects:
                 o.hide_render = o is not ob

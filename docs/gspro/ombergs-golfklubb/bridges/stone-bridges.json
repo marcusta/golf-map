@@ -10,6 +10,7 @@
   "omberg_stone_bridge_h6a": {
    "category": "structure",
    "collider": "mesh",
+   "bake": true,
    "parts": [
     {
      "kind": "stone_bridge",
@@ -26,6 +27,7 @@
   "omberg_stone_bridge_h6b": {
    "category": "structure",
    "collider": "mesh",
+   "bake": true,
    "parts": [
     {
      "kind": "stone_bridge",
@@ -42,6 +44,7 @@
   "omberg_stone_bridge_h3c": {
    "category": "structure",
    "collider": "mesh",
+   "bake": true,
    "parts": [
     {
      "kind": "stone_bridge",
@@ -68,6 +71,7 @@
   "omberg_stone_bridge_h9c": {
    "category": "structure",
    "collider": "mesh",
+   "bake": true,
    "parts": [
     {
      "kind": "stone_bridge",
@@ -84,6 +88,7 @@
   "omberg_stone_bridge_h9e": {
    "category": "structure",
    "collider": "mesh",
+   "bake": true,
    "parts": [
     {
      "kind": "stone_bridge",
@@ -102,6 +107,7 @@
   "omberg_stone_bridge_h17": {
    "category": "structure",
    "collider": "mesh",
+   "bake": true,
    "parts": [
     {
      "kind": "stone_bridge",

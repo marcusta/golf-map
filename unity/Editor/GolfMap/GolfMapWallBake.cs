@@ -450,22 +450,30 @@ namespace GolfMap.Editor
             return a;
         }
 
-        // LOD k shows until the chunk is bakeLodM[k] metres away (a FovDeg camera, lodBias 1); the last LOD until
-        // bakeCullM (0: never culled).
         static LOD[] Lods(List<Renderer> renderers, float size, GolfMapWalls.Settings s)
         {
+            var h = LodHeights(size, renderers.Count, s.bakeLodM, s.bakeCullM);
+            return renderers.Select((r, k) => new LOD(h[k], new[] { r })).ToArray();
+        }
+
+        // The LODGroup transition heights for `count` LODs of an object `size` metres across: LOD k shows until it is
+        // switchM[k] metres away (a FovDeg camera, lodBias 1), the last LOD until cullM (0: never culled). Baked
+        // props (GolfMapProps) use it too.
+        internal static float[] LodHeights(float size, int count, float[] switchM, float cullM)
+        {
+            if (switchM == null || switchM.Length < count - 1) throw new InvalidOperationException((count - 1) + " LOD switch distances needed.");
             Func<float, float> height = d => size / (2f * d * Mathf.Tan(FovDeg * 0.5f * Mathf.Deg2Rad));
-            var lods = new LOD[renderers.Count];
+            var h = new float[count];
             float prev = 1f;
-            for (int k = 0; k < renderers.Count; k++)
+            for (int k = 0; k < count; k++)
             {
-                bool last = k == renderers.Count - 1;
-                float h = last ? (s.bakeCullM > 0 ? height(s.bakeCullM) : 0f) : height(s.bakeLodM[k]);
-                h = Mathf.Min(h, prev * 0.999f);  // strictly decreasing, as LODGroup needs
-                lods[k] = new LOD(Mathf.Max(0f, h), new[] { renderers[k] });
-                prev = h;
+                bool last = k == count - 1;
+                float x = last ? (cullM > 0 ? height(cullM) : 0f) : height(switchM[k]);
+                x = Mathf.Min(x, prev * 0.999f);  // strictly decreasing, as LODGroup needs
+                h[k] = Mathf.Max(0f, x);
+                prev = x;
             }
-            return lods;
+            return h;
         }
 
         static void EnsureFolder(string folder)

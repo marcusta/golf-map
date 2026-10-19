@@ -15,7 +15,8 @@ Unity's: cross(b - a, c - a) of a front face points out of the stone; the output
   2. Cull triangles, kept whole (no cutting), in this order (each triangle counted once):
        a. below ground: all 3 vertices more than groundEpsM below the bilinear ground height;
        b. inside another stone: all 3 vertices at least insideEpsM inside the same other stone
-          (nearest point on that stone + the sign against its face normal; stones are closed meshes);
+          (nearest point on that stone + the sign against its face normal; only closed stones - every
+          edge in two triangles - count as containers);
        c. hidden (cullHidden): every sample point (centroid, and the corners pulled 10% toward it, 1 mm
           out along the face normal) has every one of `rays` Fibonacci-hemisphere rays blocked within
           rayM by all stones (pre-cull) + the ground mesh. One BVH for everything; a triangle stops at
@@ -32,6 +33,9 @@ Output vertices are split per (position, normal, uv), one submesh per material i
   blender.exe -b --factory-startup --python-exit-code 1 --python blender/walls/wall_bake.py --
       --in <wall>.in.json --out <wall>.out.json
 Test: blender/walls/wall_bake_test.py (same way, no arguments).
+
+build_props.py bakes a props asset with `bake` in its spec (a stone bridge: a core + a shell of stones in one
+mesh) through bake_doc: its loose parts are the stones, settings.up = 2 (Blender's Z up), no ground, one chunk.
 """
 import argparse
 import json
@@ -77,15 +81,7 @@ def read_input(path):
     for k, t in (("models", dict), ("materials", list), ("stones", list)):
         need(isinstance(doc.get(k), t), "input lacks '{}' ({})".format(k, t.__name__))
     need(len(doc["stones"]) > 0, "input has no stones")
-    s = dict(DEFAULTS)
-    s.update(doc.get("settings") or {})
-    need(float(s["chunkM"]) > 0, "settings.chunkM must be > 0")
-    need(isinstance(s["lods"], list) and len(s["lods"]) > 0 and all(0 < float(r) <= 1 for r in s["lods"]),
-         "settings.lods must be a non-empty list of ratios in (0, 1]")
-    need(0 <= int(s["colliderLod"]) < len(s["lods"]), "settings.colliderLod is not a LOD index")
-    need(int(s["rays"]) > 0 and float(s["rayM"]) > 0, "settings.rays and rayM must be > 0")
-    doc["settings"] = s
-    return doc
+    return check_settings(doc)
 
 
 class Model:
@@ -127,6 +123,11 @@ class Model:
         self.tri = w[ok]
         self.src = src[ok]
         self.sub = sub[ok]
+        # closed: every edge shared by exactly two triangles. Only a closed stone can hold another's triangles
+        # 'inside' it (a props part may be an open slab)
+        e = np.sort(np.concatenate([self.tri[:, [0, 1]], self.tri[:, [1, 2]], self.tri[:, [2, 0]]]), 1)
+        _, counts = np.unique(e, axis=0, return_counts=True)
+        self.closed = bool(len(counts)) and bool(np.all(counts == 2))
 
 
 class Ground:
@@ -197,6 +198,8 @@ class Wall:
         self.tris_in = self.degenerate = 0
         nv = nt = 0
         self.along = np.zeros(len(doc["stones"]))
+        self.closed = np.zeros(len(doc["stones"]), bool)
+        self.up = int(doc["settings"].get("up", 1))      # 1: Unity's Y up; 2: Blender's Z up (a props asset)
         for si, st in enumerate(doc["stones"]):
             where = "stone {}".format(si)
             md = models.get(st.get("model"))
@@ -209,6 +212,7 @@ class Wall:
             need(isinstance(mtx, list) and len(mtx) == 16, where + ": matrix must be 16 floats")
             need(isinstance(st.get("along"), (int, float)), where + ": no 'along'")
             self.along[si] = float(st["along"])
+            self.closed[si] = md.closed
             M = np.asarray(mtx, np.float64).reshape(4, 4)    # row-major, Unity m00 m01 m02 m03 m10 ...
             A, t = M[:3, :3], M[:3, 3]
             det = float(np.linalg.det(A))
@@ -275,7 +279,7 @@ def cull_inside(wall, alive, eps):
         pi = wall.PL[va:vb]
         tri = wall.T[ta:tb] - va
         for j in others.tolist():
-            if j == i or not al.any():
+            if j == i or not wall.closed[j] or not al.any():
                 continue
             # a vertex >= eps inside stone j lies inside j's bounds shrunk by eps
             inb = np.all((pi > lo[j] - wall.origin + eps) & (pi < hi[j] - wall.origin - eps), 1)
@@ -304,7 +308,7 @@ def hemisphere(n):
     return np.stack([r * np.cos(phi), r * np.sin(phi), z], 1)
 
 
-def ray_frames(nrm, H):
+def ray_frames(nrm, H, up=1):
     """Per normal: the rotation taking the +Z hemisphere H onto it (columns tangent, bitangent, normal),
     and the order of H's directions with the most upward (+Y) world direction first. A visible face
     mostly escapes upward, so it stops after a ray or two; the order cannot change a result (hidden =
@@ -314,7 +318,7 @@ def ray_frames(nrm, H):
     tx /= np.maximum(np.linalg.norm(tx, axis=1), 1e-12)[:, None]
     ty = np.cross(nrm, tx)
     rot = np.stack([tx, ty, nrm], 2)                       # (k, 3, 3), world = rot @ local
-    order = np.argsort(-(rot[:, 1, :] @ H.T), axis=1, kind="stable")
+    order = np.argsort(-(rot[:, up, :] @ H.T), axis=1, kind="stable")
     return rot, order
 
 
@@ -345,7 +349,7 @@ def cull_hidden(wall, ground, alive, rays, ray_m):
         nrm = nrm / np.where(good, ln, 1.0)[:, None]
         cen = p.mean(1)
         smp = np.concatenate([cen[:, None], p + 0.1 * (cen[:, None] - p)], 1) + SAMPLE_OFF_M * nrm[:, None]
-        rot, order = ray_frames(nrm, H)
+        rot, order = ray_frames(nrm, H, wall.up)
         for k in np.nonzero(good)[0].tolist():
             R = Matrix(rot[k].tolist())
             pts = smp[k].tolist()
@@ -455,7 +459,8 @@ def build_chunk(wall, tri_ids, lods, collider_lod, name):
     local = local.reshape(-1, 3)
     wpos = wall.P[used]
     lo, hi = wpos.min(0), wpos.max(0)
-    pivot = np.round([(lo[0] + hi[0]) / 2, lo[1], (lo[2] + hi[2]) / 2], 6)
+    pivot = np.round((lo + hi) / 2, 6)
+    pivot[wall.up] = round(float(lo[wall.up]), 6)        # centre across, the bottom up
     pos = wpos - pivot
     mats = wall.TM[tri_ids]
     nrm_c, uv_c = wall.CN[tri_ids], wall.CU[tri_ids]
@@ -489,6 +494,27 @@ def build_chunk(wall, tri_ids, lods, collider_lod, name):
 def bake(inp, out_path):
     t0 = time.perf_counter()
     doc = read_input(inp)
+    core = bake_doc(doc, t0)
+    return write_output(doc, core, out_path, t0)
+
+
+def check_settings(doc):
+    """The settings with the defaults filled in, validated (in place)."""
+    s = dict(DEFAULTS)
+    s.update(doc.get("settings") or {})
+    need(float(s["chunkM"]) > 0, "settings.chunkM must be > 0")
+    need(isinstance(s["lods"], list) and len(s["lods"]) > 0 and all(0 < float(r) <= 1 for r in s["lods"]),
+         "settings.lods must be a non-empty list of ratios in (0, 1]")
+    need(0 <= int(s["colliderLod"]) < len(s["lods"]), "settings.colliderLod is not a LOD index")
+    need(int(s["rays"]) > 0 and float(s["rayM"]) > 0, "settings.rays and rayM must be > 0")
+    doc["settings"] = s
+    return doc
+
+
+def bake_doc(doc, t0=None):
+    """The bake of a validated golfmap-wallbake-in-v1 document, in memory: {"chunks": [{id, pivot, stones,
+    along, lods: [(verts, subs)], collider: (pos, idx)}], stats}. build_props.py bakes a props asset this way."""
+    t0 = time.perf_counter() if t0 is None else t0
     s = doc["settings"]
     ground = Ground(doc.get("ground"))
     wall = Wall(doc)
@@ -518,12 +544,23 @@ def bake(inp, out_path):
         chunks.append({"id": cid, "pivot": pivot, "stones": int((bins == b).sum()), "along": rng,
                        "lods": lod_meshes, "collider": col})
     t3 = time.perf_counter()
+    stats = {"stones": len(doc["stones"]), "trisIn": wall.tris_in, "degenerate": wall.degenerate,
+             "culledGround": int(below.sum()), "culledInside": int(inside.sum()),
+             "culledHidden": int(hidden.sum()),
+             "trisLod": [sum(sum(len(i) for _, i in c["lods"][k][1]) // 3 for c in chunks) for k in range(len(lods))],
+             "colliderTris": sum(len(c["collider"][1]) // 3 for c in chunks),
+             "seconds": {"load": round(t1 - t0, 3), "cull": round(t2 - t1, 3), "lods": round(t3 - t2, 3),
+                         "write": 0.0, "total": 0.0, "cullGround": round(tb - t1, 3),
+                         "cullInside": round(tc - tb, 3), "cullHidden": round(t2 - tc, 3)}}
+    return {"chunks": chunks, "stats": stats, "t": t3}
+
+
+def write_output(doc, core, out_path, t0):
+    chunks, stats, t3 = core["chunks"], core["stats"], core["t"]
 
     bin_path = out_path[:-5] + ".bin" if out_path.lower().endswith(".json") else out_path + ".bin"
     parts, off = [], 0
     out_chunks = []
-    tris_lod = [0] * len(lods)
-    col_tris = 0
     for c in chunks:
         lod_rec = []
         for k, (verts, subs) in enumerate(c["lods"]):
@@ -532,13 +569,11 @@ def bake(inp, out_path):
             rec += [i.astype("<i4").tobytes() for _, i in subs]
             lod_rec.append({"offset": off, "vertexCount": len(verts),
                             "submeshes": [{"material": m, "indexCount": len(i)} for m, i in subs]})
-            tris_lod[k] += sum(len(i) for _, i in subs) // 3
             parts += rec
             off += sum(len(r) for r in rec)
         cpos, cidx = c["collider"]
         rec = [cpos.astype("<f4").tobytes(), cidx.astype("<i4").tobytes()]
         col_rec = {"offset": off, "vertexCount": len(cpos), "indexCount": len(cidx)}
-        col_tris += len(cidx) // 3
         parts += rec
         off += sum(len(r) for r in rec)
         out_chunks.append({"id": c["id"], "pivot": [float(v) for v in c["pivot"]], "stones": c["stones"],
@@ -546,12 +581,6 @@ def bake(inp, out_path):
                            "lods": lod_rec, "collider": col_rec})
     with open(bin_path, "wb") as f:
         f.write(b"".join(parts))
-    stats = {"stones": len(doc["stones"]), "trisIn": wall.tris_in, "degenerate": wall.degenerate,
-             "culledGround": int(below.sum()), "culledInside": int(inside.sum()),
-             "culledHidden": int(hidden.sum()), "trisLod": tris_lod, "colliderTris": col_tris,
-             "seconds": {"load": round(t1 - t0, 3), "cull": round(t2 - t1, 3), "lods": round(t3 - t2, 3),
-                         "write": 0.0, "total": 0.0, "cullGround": round(tb - t1, 3),
-                         "cullInside": round(tc - tb, 3), "cullHidden": round(t2 - tc, 3)}}
     out = {"format": FORMAT_OUT, "wall": doc.get("wall", ""), "bin": os.path.basename(bin_path),
            "materials": doc["materials"], "stats": stats, "chunks": out_chunks}
     t5 = time.perf_counter()

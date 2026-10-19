@@ -64,7 +64,14 @@ namespace GolfMap.Editor
         // axis: the prefab's forward axis ("x" default, "z" for most vehicle packs) - yawDeg is its compass bearing.
         // recolor: copies of named materials with another _Color, swapped in on this asset's instances.
         class Recolor { public string material, name; public Color color; }
-        class Asset { public string id, fbx, prefab, category, collider, axis; public Vector3 bmin, bmax; public List<string> materials = new List<string>(); public List<Recolor> recolor = new List<Recolor>(); }
+        // A baked asset (build_props.py `bake`): its FBX holds <id>_LOD0.. and <id>_collider; lodM: metres at which LOD k
+        // switches to k+1, cullM: the last LOD's (0: never culled), colliderMesh: the child the MeshCollider is made of.
+        class Asset
+        {
+            public string id, fbx, prefab, category, collider, axis, colliderMesh; public Vector3 bmin, bmax;
+            public List<string> materials = new List<string>(); public List<Recolor> recolor = new List<Recolor>();
+            public int lodCount; public float[] lodM; public float cullM; public bool lastLodShadows;
+        }
         class Inst { public string asset, ground; public double e, n; public float yaw, dz; public Vector3 scale = Vector3.one; }
 
         static float F(object o, float fallback = 0f)
@@ -129,6 +136,16 @@ namespace GolfMap.Editor
                 var ml = o.Array("materials");
                 if (ml != null) a.materials.AddRange(ml.Select(x => x as string).Where(x => x != null));
                 a.axis = o.String("axis") ?? "x";
+                a.colliderMesh = o.String("colliderMesh");
+                var lo = o.Object("lods");
+                if (lo != null)
+                {
+                    a.lodCount = (int)lo.Number("count", 0);
+                    var lm = lo.Array("lodM");
+                    a.lodM = lm == null ? new float[0] : lm.Select(x => F(x)).ToArray();
+                    a.cullM = (float)lo.Number("cullM", 0);
+                    a.lastLodShadows = lo.Bool("lastLodShadows", false);
+                }
                 var rl = o.Array("recolor");
                 if (rl != null)
                     foreach (var r in rl.Cast<GolfMapJsonObject>())
@@ -384,6 +401,36 @@ namespace GolfMap.Editor
                 mi.SaveAndReimport();
             }
             return AssetDatabase.LoadAssetAtPath<GameObject>(path);
+        }
+
+        // A baked asset's LODs: <id>_LOD0.. under one LODGroup on the instance (the importer's own, else a new one),
+        // switching at lodM metres (GolfMapWallBake.LodHeights), the last LOD without shadows unless lastLodShadows.
+        static void Lods(GameObject go, Asset a)
+        {
+            var renderers = new List<Renderer>();
+            for (int k = 0; k < a.lodCount; k++)
+            {
+                var t = go.GetComponentsInChildren<Renderer>(true).FirstOrDefault(r => r.name == a.id + "_LOD" + k);
+                if (t == null) throw new InvalidOperationException(a.fbx + " has no " + a.id + "_LOD" + k + ": rebuild it with build_props.py.");
+                renderers.Add(t);
+            }
+            var lg = go.GetComponent<LODGroup>() ?? go.AddComponent<LODGroup>();
+            lg.fadeMode = LODFadeMode.None;
+            lg.SetLODs(new[] { new LOD(0.01f, renderers.ToArray()) });
+            lg.RecalculateBounds();
+            var heights = GolfMapWallBake.LodHeights(lg.size, renderers.Count, a.lodM, a.cullM);
+            lg.SetLODs(renderers.Select((r, k) => new LOD(heights[k], new[] { r })).ToArray());
+            if (!a.lastLodShadows) renderers[renderers.Count - 1].shadowCastingMode = UnityEngine.Rendering.ShadowCastingMode.Off;
+        }
+
+        // A baked asset's collider: a MeshCollider of its <id>_collider child, whose renderer is switched off.
+        static void BakedCollider(GameObject go, Asset a)
+        {
+            var mf = go.GetComponentsInChildren<MeshFilter>(true).FirstOrDefault(f => f.name == a.colliderMesh);
+            if (mf == null) throw new InvalidOperationException(a.fbx + " has no " + a.colliderMesh + ": rebuild it with build_props.py.");
+            var r = mf.GetComponent<Renderer>();
+            if (r != null) { r.enabled = false; r.shadowCastingMode = UnityEngine.Rendering.ShadowCastingMode.Off; }
+            mf.gameObject.AddComponent<MeshCollider>().sharedMesh = mf.sharedMesh;
         }
 
         // A manifest folder's materials and FBX import settings, nothing placed: asset id -> model, and each asset's
@@ -827,7 +874,9 @@ namespace GolfMap.Editor
                         if (changed) r.sharedMaterials = ms;
                     }
                 }
-                if (a.collider == "mesh")
+                if (a.lodCount > 1) Lods(go, a);
+                if (a.colliderMesh != null) BakedCollider(go, a);
+                else if (a.collider == "mesh")
                     foreach (var mf in go.GetComponentsInChildren<MeshFilter>()) { var mc = mf.gameObject.AddComponent<MeshCollider>(); mc.sharedMesh = mf.sharedMesh; }
                 else if (a.collider == "box" && native)
                 {
