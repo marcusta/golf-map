@@ -90,6 +90,7 @@ STYLES = {
         "stoneSet": "wall",
         "faceDeg": 80,
         "baseInM": 0.05,
+        "beyondM": 1.2,              # the edge's height this far past the lip: the meshes' smeared edge still falls at 0.4 m
         "baseCourseM": [0.4, 0.55],  # course heights up the face: the bottom course's ...
         "courseM": [0.3, 0.42],      # ... and the rest
         "stoneHeightVar": [0.8, 1.08],

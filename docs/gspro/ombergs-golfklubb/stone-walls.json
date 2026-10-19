@@ -116,6 +116,7 @@
    "stoneSet": "wall",
    "faceDeg": 80,
    "baseInM": 0.05,
+   "beyondM": 1.2,
    "baseCourseM": [
     0.4,
     0.55
