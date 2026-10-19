@@ -166,6 +166,496 @@
     }
    ]
   },
+  "wallstone_1": {
+   "category": "prop",
+   "collider": "mesh",
+   "parts": [
+    {
+     "kind": "boulder",
+     "sx": 1.0,
+     "sy": 0.7,
+     "sz": 0.55,
+     "seed": 61,
+     "exponent": 3.0,
+     "lumps": 0.45,
+     "flats": [
+      {
+       "dir": [
+        0,
+        1,
+        0
+       ],
+       "at": 0.82,
+       "keep": 0.12
+      },
+      {
+       "dir": [
+        0,
+        0,
+        1
+       ],
+       "at": 0.85,
+       "keep": 0.3
+      },
+      {
+       "dir": [
+        0,
+        0,
+        -1
+       ],
+       "at": 0.85,
+       "keep": 0.3
+      }
+     ],
+     "seg": 24,
+     "rings": 14,
+     "mat": "granite_boulder",
+     "moss": 0.86,
+     "mossMat": "granite_moss"
+    }
+   ]
+  },
+  "wallstone_2": {
+   "category": "prop",
+   "collider": "mesh",
+   "parts": [
+    {
+     "kind": "boulder",
+     "sx": 1.0,
+     "sy": 0.65,
+     "sz": 0.5,
+     "seed": 62,
+     "exponent": 2.6,
+     "lumps": 0.45,
+     "flats": [
+      {
+       "dir": [
+        0,
+        1,
+        0
+       ],
+       "at": 0.82,
+       "keep": 0.12
+      },
+      {
+       "dir": [
+        0,
+        0,
+        1
+       ],
+       "at": 0.85,
+       "keep": 0.3
+      },
+      {
+       "dir": [
+        0,
+        0,
+        -1
+       ],
+       "at": 0.85,
+       "keep": 0.3
+      }
+     ],
+     "seg": 24,
+     "rings": 14,
+     "mat": "granite_boulder",
+     "moss": 0.86,
+     "mossMat": "granite_moss"
+    }
+   ]
+  },
+  "wallstone_3": {
+   "category": "prop",
+   "collider": "mesh",
+   "parts": [
+    {
+     "kind": "boulder",
+     "sx": 1.0,
+     "sy": 0.75,
+     "sz": 0.62,
+     "seed": 63,
+     "exponent": 3.4,
+     "lumps": 0.45,
+     "flats": [
+      {
+       "dir": [
+        0,
+        1,
+        0
+       ],
+       "at": 0.82,
+       "keep": 0.12
+      },
+      {
+       "dir": [
+        0,
+        0,
+        1
+       ],
+       "at": 0.85,
+       "keep": 0.3
+      },
+      {
+       "dir": [
+        0,
+        0,
+        -1
+       ],
+       "at": 0.85,
+       "keep": 0.3
+      }
+     ],
+     "seg": 24,
+     "rings": 14,
+     "mat": "granite_boulder",
+     "moss": 0.86,
+     "mossMat": "granite_moss"
+    }
+   ]
+  },
+  "wallstone_4": {
+   "category": "prop",
+   "collider": "mesh",
+   "parts": [
+    {
+     "kind": "boulder",
+     "sx": 1.0,
+     "sy": 0.6,
+     "sz": 0.45,
+     "seed": 64,
+     "exponent": 2.8,
+     "lumps": 0.45,
+     "flats": [
+      {
+       "dir": [
+        0,
+        1,
+        0
+       ],
+       "at": 0.82,
+       "keep": 0.12
+      },
+      {
+       "dir": [
+        0,
+        0,
+        1
+       ],
+       "at": 0.85,
+       "keep": 0.3
+      },
+      {
+       "dir": [
+        0,
+        0,
+        -1
+       ],
+       "at": 0.85,
+       "keep": 0.3
+      }
+     ],
+     "seg": 24,
+     "rings": 14,
+     "mat": "granite_boulder",
+     "moss": 0.86,
+     "mossMat": "granite_moss"
+    }
+   ]
+  },
+  "wallstone_5": {
+   "category": "prop",
+   "collider": "mesh",
+   "parts": [
+    {
+     "kind": "boulder",
+     "sx": 1.0,
+     "sy": 0.8,
+     "sz": 0.6,
+     "seed": 65,
+     "exponent": 3.2,
+     "lumps": 0.45,
+     "flats": [
+      {
+       "dir": [
+        0,
+        1,
+        0
+       ],
+       "at": 0.82,
+       "keep": 0.12
+      },
+      {
+       "dir": [
+        0,
+        0,
+        1
+       ],
+       "at": 0.85,
+       "keep": 0.3
+      },
+      {
+       "dir": [
+        0,
+        0,
+        -1
+       ],
+       "at": 0.85,
+       "keep": 0.3
+      }
+     ],
+     "seg": 24,
+     "rings": 14,
+     "mat": "granite_boulder",
+     "moss": 0.86,
+     "mossMat": "granite_moss"
+    }
+   ]
+  },
+  "wallstone_6": {
+   "category": "prop",
+   "collider": "mesh",
+   "parts": [
+    {
+     "kind": "boulder",
+     "sx": 1.0,
+     "sy": 0.7,
+     "sz": 0.5,
+     "seed": 66,
+     "exponent": 2.5,
+     "lumps": 0.45,
+     "flats": [
+      {
+       "dir": [
+        0,
+        1,
+        0
+       ],
+       "at": 0.82,
+       "keep": 0.12
+      },
+      {
+       "dir": [
+        0,
+        0,
+        1
+       ],
+       "at": 0.85,
+       "keep": 0.3
+      },
+      {
+       "dir": [
+        0,
+        0,
+        -1
+       ],
+       "at": 0.85,
+       "keep": 0.3
+      }
+     ],
+     "seg": 24,
+     "rings": 14,
+     "mat": "granite_boulder",
+     "moss": 0.86,
+     "mossMat": "granite_moss"
+    }
+   ]
+  },
+  "wallstone_7": {
+   "category": "prop",
+   "collider": "mesh",
+   "parts": [
+    {
+     "kind": "boulder",
+     "sx": 1.0,
+     "sy": 0.66,
+     "sz": 0.58,
+     "seed": 67,
+     "exponent": 3.0,
+     "lumps": 0.45,
+     "flats": [
+      {
+       "dir": [
+        0,
+        1,
+        0
+       ],
+       "at": 0.82,
+       "keep": 0.12
+      },
+      {
+       "dir": [
+        0,
+        0,
+        1
+       ],
+       "at": 0.85,
+       "keep": 0.3
+      },
+      {
+       "dir": [
+        0,
+        0,
+        -1
+       ],
+       "at": 0.85,
+       "keep": 0.3
+      }
+     ],
+     "seg": 24,
+     "rings": 14,
+     "mat": "granite_boulder",
+     "moss": 0.86,
+     "mossMat": "granite_moss"
+    }
+   ]
+  },
+  "wallstone_8": {
+   "category": "prop",
+   "collider": "mesh",
+   "parts": [
+    {
+     "kind": "boulder",
+     "sx": 1.0,
+     "sy": 0.72,
+     "sz": 0.48,
+     "seed": 68,
+     "exponent": 3.6,
+     "lumps": 0.45,
+     "flats": [
+      {
+       "dir": [
+        0,
+        1,
+        0
+       ],
+       "at": 0.82,
+       "keep": 0.12
+      },
+      {
+       "dir": [
+        0,
+        0,
+        1
+       ],
+       "at": 0.85,
+       "keep": 0.3
+      },
+      {
+       "dir": [
+        0,
+        0,
+        -1
+       ],
+       "at": 0.85,
+       "keep": 0.3
+      }
+     ],
+     "seg": 24,
+     "rings": 14,
+     "mat": "granite_boulder",
+     "moss": 0.86,
+     "mossMat": "granite_moss"
+    }
+   ]
+  },
+  "wallstone_9": {
+   "category": "prop",
+   "collider": "mesh",
+   "parts": [
+    {
+     "kind": "boulder",
+     "sx": 1.0,
+     "sy": 0.62,
+     "sz": 0.52,
+     "seed": 69,
+     "exponent": 2.7,
+     "lumps": 0.45,
+     "flats": [
+      {
+       "dir": [
+        0,
+        1,
+        0
+       ],
+       "at": 0.82,
+       "keep": 0.12
+      },
+      {
+       "dir": [
+        0,
+        0,
+        1
+       ],
+       "at": 0.85,
+       "keep": 0.3
+      },
+      {
+       "dir": [
+        0,
+        0,
+        -1
+       ],
+       "at": 0.85,
+       "keep": 0.3
+      }
+     ],
+     "seg": 24,
+     "rings": 14,
+     "mat": "granite_boulder",
+     "moss": 0.86,
+     "mossMat": "granite_moss"
+    }
+   ]
+  },
+  "wallstone_10": {
+   "category": "prop",
+   "collider": "mesh",
+   "parts": [
+    {
+     "kind": "boulder",
+     "sx": 1.0,
+     "sy": 0.78,
+     "sz": 0.56,
+     "seed": 70,
+     "exponent": 3.1,
+     "lumps": 0.45,
+     "flats": [
+      {
+       "dir": [
+        0,
+        1,
+        0
+       ],
+       "at": 0.82,
+       "keep": 0.12
+      },
+      {
+       "dir": [
+        0,
+        0,
+        1
+       ],
+       "at": 0.85,
+       "keep": 0.3
+      },
+      {
+       "dir": [
+        0,
+        0,
+        -1
+       ],
+       "at": 0.85,
+       "keep": 0.3
+      }
+     ],
+     "seg": 24,
+     "rings": 14,
+     "mat": "granite_boulder",
+     "moss": 0.86,
+     "mossMat": "granite_moss"
+    }
+   ]
+  },
   "heap_1": {
    "category": "prop",
    "collider": "mesh",

@@ -42,11 +42,25 @@ BOULDERS = [
     (0.82, 0.72), (0.9, 0.8), (0.62, 0.52), (0.95, 0.88), (0.78, 0.6),
     (0.86, 0.76), (0.66, 0.66), (0.92, 0.62), (0.8, 0.84), (0.58, 0.5),
 ]
-STONE_SETS = {"rose": [{"asset": "boulder_%d" % i, "weight": 1} for i in range(1, len(BOULDERS) + 1)]}
+# Dry-stone wall stones (Vreta's WALL_STONES): (depth, height) as a fraction of the length, exponent; a flat face and
+# flat beds cut by WALL_STONE_FLATS.
+WALL_STONES = [
+    (0.7, 0.55, 3.0), (0.65, 0.5, 2.6), (0.75, 0.62, 3.4), (0.6, 0.45, 2.8), (0.8, 0.6, 3.2),
+    (0.7, 0.5, 2.5), (0.66, 0.58, 3.0), (0.72, 0.48, 3.6), (0.62, 0.52, 2.7), (0.78, 0.56, 3.1),
+]
+WALL_STONE_FLATS = [
+    {"dir": [0, 1, 0], "at": 0.82, "keep": 0.12},   # the face
+    {"dir": [0, 0, 1], "at": 0.85, "keep": 0.3},    # top bed
+    {"dir": [0, 0, -1], "at": 0.85, "keep": 0.3},   # bottom bed
+]
+STONE_SETS = {"rose": [{"asset": "boulder_%d" % i, "weight": 1} for i in range(1, len(BOULDERS) + 1)],
+              "wall": [{"asset": "wallstone_%d" % i, "weight": 1} for i in range(1, len(WALL_STONES) + 1)]}
 
 TOE_IN_M = 0.6    # the foot this far inside the outline: under the water, on the dug bank
 LIP_OUT_M = 1.0   # the top edge this far outside it, on the bank above the water
 STATION_M = 0.5   # stations along the outline
+LINE_TOE_OUT_M = 0.45   # a drawn wall: the foot this far out from its line (the terrain edit's face runs 0.3 m) ...
+LINE_LIP_IN_M = 0.15    # ... and the top edge this far back, on the plateau
 
 DEFAULTS = {
     "style": "rose",
@@ -68,6 +82,29 @@ DEFAULTS = {
     "minFaceM": 0.2,      # a pond edge is low: stones wherever the bank rises this much from the foot
 }
 STYLES = {
+    # A dry-stone wall (Vreta's "wall"): courses of flat-faced stones fitted into the face's plane. Hole 9's green wall
+    # (Marcus's photos, 2026-10-19): about three courses of grey blocks 0.4-1 m long in a metre of wall, near vertical,
+    # the green's tall grass hanging over the top.
+    "wall": {
+        "stoneSet": "wall",
+        "faceDeg": 80,
+        "baseInM": 0.05,
+        "baseCourseM": [0.4, 0.55],  # course heights up the face: the bottom course's ...
+        "courseM": [0.3, 0.42],      # ... and the rest
+        "stoneHeightVar": [0.8, 1.08],
+        "bedJitterM": 0.05,
+        "lengthRatio": [1.4, 2.4],   # a stone's length / its course height: long blocks (photo)
+        "maxStoneM": 1.1,
+        "depthM": [0.45, 0.7],
+        "faceProudM": 0.03,
+        "faceJitterM": 0.03,
+        "spinDeg": 3,
+        "gapM": -0.03,
+        "sinkM": 0.1,
+        "topMarginM": 0.12,
+        "capM": 0.0,                 # flush with the top: the grass hangs over it
+        "minTopCourseM": 0.15,
+    },
     # A rough revetment: one or two courses of rounded boulders, packed, from under the water over the edge.
     "rose": {
         "stoneSet": "rose",
@@ -88,7 +125,9 @@ STYLES = {
 }
 
 # feature: the pond (water feature number 83, shape hole_14_53); from/to: the stretch of its outline, from the point
-# nearest `start` to the one nearest `end`, the way that passes `via`.
+# nearest `start` to the one nearest `end`, the way that passes `via`. Or `line`: the wall's top edge drawn directly
+# (EPSG:3006), its water on the left of the line's direction; the foot LINE_TOE_OUT_M out from it (the terrain edit's
+# face, `bun run terrain:wall`), the top edge LINE_LIP_IN_M back on the plateau.
 WALLS = [
     {"id": "h14-pond-edge", "feature": "b2388429-8a29-41d6-9396-559dcfd5f18c",
      "start": (477339.0, 6457146.5), "via": (477336.6, 6457150.5), "end": (477358.0, 6457157.5),
@@ -111,6 +150,15 @@ WALLS = [
      "note": "Pond behind hole 13's green: the south side back to the south-west corner, so the rim runs all round "
              "(Marcus 2026-10-18: the back was missing; the 2025 ortho shows grass and a dark edge there, the 2023 "
              "ortho a thin shadowed lip)."},
+    # Hole 9: the dry-stone wall along the green's north side above pond 573 (shape hole_9_23d), on Marcus's line
+    # (2026-10-19). The ground is shaped in the DEM by the terrain edit wall:hole9-green (the same line): straight down
+    # into the water in the west, about a metre over a sloping grass terrace in the east (his drone and bridge photos).
+    {"id": "h9-green-wall", "style": "wall",
+     "line": [(477711.75, 6457792.3), (477714.35, 6457793.75), (477717.65, 6457795.15), (477721.4, 6457796.05),
+              (477725.15, 6457796.6), (477728.5, 6457796.6), (477731.85, 6457796.25), (477735.15, 6457795.45),
+              (477738.1, 6457794.0), (477740.6, 6457792.15), (477742.15, 6457790.35)],
+     "note": "Hole 9: the dry-stone wall along the green's north side, on Marcus's line (photos from the drone and "
+             "the bridge, 2026-10-19)."},
     {"id": "p77-north-tip", "feature": "4530bf16-35ec-4c82-b78b-f139db337b9e",
      "start": (477675.8, 6457494.0), "via": (477683.8, 6457497.0), "end": (477694.5, 6457487.4),
      "note": "Pond between 18 and 1: the grey stone rim round the north tip (2025 and 2023 orthos)."},
@@ -359,9 +407,13 @@ def stretch(ring, start, via, end):
 
 
 def stations(w):
-    ring = dug_ring(w["feature"])
-    pts, direction = stretch(ring, w["start"], w["via"], w["end"])
-    pts = resample(pts, STATION_M)
+    if "line" in w:
+        # a drawn line: the water on its left, so "out" (towards the plateau) is its right
+        pts, direction, toe_in, lip_out = resample(list(w["line"]), STATION_M), -1, -LINE_TOE_OUT_M, LINE_LIP_IN_M
+    else:
+        ring = dug_ring(w["feature"])
+        pts, direction = stretch(ring, w["start"], w["via"], w["end"])
+        pts, toe_in, lip_out = resample(pts, STATION_M), TOE_IN_M, LIP_OUT_M
     toe, lip = [], []
     for i, p in enumerate(pts):
         a, b = pts[max(0, i - 2)], pts[min(len(pts) - 1, i + 2)]
@@ -369,8 +421,8 @@ def stations(w):
         L = math.hypot(tx, ty) or 1.0
         # a counter-clockwise ring has its inside on the left; walked backwards, on the right
         ox, oy = (ty / L, -tx / L) if direction > 0 else (-ty / L, tx / L)
-        toe.append([round(p[0] - ox * TOE_IN_M, 2), round(p[1] - oy * TOE_IN_M, 2)])
-        lip.append([round(p[0] + ox * LIP_OUT_M, 2), round(p[1] + oy * LIP_OUT_M, 2)])
+        toe.append([round(p[0] - ox * toe_in, 2), round(p[1] - oy * toe_in, 2)])
+        lip.append([round(p[0] + ox * lip_out, 2), round(p[1] + oy * lip_out, 2)])
     return toe, lip
 
 
@@ -380,6 +432,11 @@ def stones_spec():
         assets["boulder_%d" % i] = {"category": "prop", "collider": "mesh", "parts": [
             {"kind": "boulder", "sx": 1.0, "sy": w, "sz": h, "seed": 40 + i, "mat": "granite_boulder",
              "moss": 0.84, "mossMat": "granite_moss"}]}
+    for i, (d, h, e) in enumerate(WALL_STONES, 1):
+        assets["wallstone_%d" % i] = {"category": "prop", "collider": "mesh", "parts": [
+            {"kind": "boulder", "sx": 1.0, "sy": d, "sz": h, "seed": 60 + i, "exponent": e, "lumps": 0.45,
+             "flats": WALL_STONE_FLATS, "seg": 24, "rings": 14, "mat": "granite_boulder",
+             "moss": 0.86, "mossMat": "granite_moss"}]}
     for i, (sy, sz, ex, lumps) in enumerate(HEAP_STONES, 1):
         assets["heap_%d" % i] = {"category": "prop", "collider": "mesh", "parts": [
             {"kind": "boulder", "sx": 1.0, "sy": sy, "sz": sz, "seed": 100 + i, "exponent": ex, "lumps": lumps,
@@ -414,7 +471,8 @@ def main():
         toe, lip = stations(w)
         length = sum(math.dist(toe[i], toe[i + 1]) for i in range(len(toe) - 1))
         print("%-16s %3d stations, %5.1f m along the foot" % (w["id"], len(toe), length))
-        walls.append({"id": w["id"], "note": w["note"], "seed": sum(map(ord, w["id"])), "toe": toe, "lip": lip})
+        walls.append({"id": w["id"], "note": w["note"], "seed": sum(map(ord, w["id"])), "toe": toe, "lip": lip,
+                      **({"style": w["style"]} if "style" in w else {})})
     spec = {"format": "golfmap-walls-v1", "source": "docs/gspro/ombergs-golfklubb/stone-walls.gen.py", "stonesFolder": STONES_FOLDER,
             "physicMaterial": PHYSIC_MATERIAL, "stoneSets": STONE_SETS, "defaults": DEFAULTS, "styles": STYLES,
             "walls": walls, "boulders": H1_BOULDERS + H2_BOULDERS + BOX_BOULDERS + BIRCH_BOULDERS, "placedColors": {}}
