@@ -113,6 +113,7 @@ STYLES = {
         "stoneSet": "wall",
         "faceDeg": 86,
         "baseInM": 0.05,
+        "beyondM": 1.2,               # the plateau's height 1.2 m back: nearer, the meshes' smeared edge is still falling
         "baseCourseM": [0.3, 0.4],
         "courseM": [0.2, 0.3],
         "stoneHeightVar": [0.8, 1.08],
