@@ -586,7 +586,8 @@ has nothing to share but the features and its render dominates likewise.
   worker on `GOLFMAP_SHAPING_URL` (default `http://127.0.0.1:8766`) — started when nothing answers
   there (`<blender> -b --python blender/tools/shape_worker.py -- --port <p> --blend <blend> --layers
   <dir> --fbx-folder <fbx>`, one log per spawn in `<data>/shaping-worker/`; it outlives a server
-  restart), `POST /load {blend, layersDir, fbxFolder}` when it holds another .blend or layer folder
+  restart and Claude being closed: on Windows it is created through WMI, outside the app's job,
+  `server/services/detached-process.ts`; by hand: `bun run shaping:worker -- --blend ... --layers ...`), `POST /load {blend, layersDir, fbxFolder}` when it holds another .blend or layer folder
   (or is in error), then `POST /sync {dryRun?}`; (c) `golfmap.course.refresh only=<changedObjects + removed FBX names without .fbx>` (meshes.sync prunes a named object whose FBX is gone)
   (+ `dryRun`, + `save` when the caller asked for it) in the Unity editor whose active course exports to the course's folder, skipped when
   nothing changed or no editor is open (a warning, not a failure; a bridge that rejects `only` gets

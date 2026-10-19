@@ -66,7 +66,7 @@
 //                 named by `latest.json`, older than 14 days pruned.
 import * as path from 'node:path';
 import { readdir, readFile, rm, stat, writeFile } from 'node:fs/promises';
-import { closeSync, existsSync, openSync, renameSync } from 'node:fs';
+import { existsSync, renameSync } from 'node:fs';
 import { ConflictError, NotFoundError } from '@basics/core/server/auth';
 import type { CoursesService } from './courses.service';
 import {
@@ -75,6 +75,7 @@ import {
 } from './gspro-export.service';
 import { defaultUnityBridge, editorForExportDir, type UnityBridge, type UnityEditor } from './unity-bridge';
 import { DEFAULT_PIPELINE_DIR } from './pipeline-dir';
+import { spawnDetached, type DetachedProcess } from './detached-process';
 import {
     defaultRecipeLibraryPath, loadRecipeLibrary, recipesFor, type RecipeSurface, type ShapingRecipe,
 } from './shaping-recipes';
@@ -347,7 +348,7 @@ export class ShapingService {
     private readonly local = new Map<string, LocalRequest>();
     /** The loop that waits for this process's requests: runs batches while it holds the lease, else follows the files. */
     private driving: Promise<void> | null = null;
-    private worker: { proc: ReturnType<typeof Bun.spawn>; exitCode: number | null; log: string } | null = null;
+    private worker: { proc: DetachedProcess; log: string } | null = null;
 
     constructor(deps: ShapingDeps) {
         this.courses = deps.courses;
@@ -643,8 +644,7 @@ export class ShapingService {
     async stopWorker(): Promise<void> {
         const w = this.worker;
         if (!w) return;
-        w.proc.kill();
-        await w.proc.exited;
+        await w.proc.kill();
         this.worker = null;
     }
 
@@ -877,7 +877,7 @@ export class ShapingService {
 
     /** `GET /status`, never throwing: unreachable is a status. */
     async workerStatus(): Promise<ShapingWorkerStatus> {
-        const spawnedPid = this.worker && this.worker.exitCode === null ? this.worker.proc.pid : null;
+        const spawnedPid = this.worker?.proc.alive() ? this.worker.proc.pid : null;
         const base = { url: this.workerUrl, spawnedPid, log: this.worker?.log ?? null };
         try {
             const res = await fetch(`${this.workerUrl}/status`, { headers: this.headers(), signal: AbortSignal.timeout(5000) });
@@ -973,36 +973,30 @@ export class ShapingService {
         const cmd = [...this.workerLauncher, ...args];
         const stamp = logStamp(new Date());
         let log = path.join(dir, `${stamp}.log`);
-        const fd = openSync(log, 'a');
-        let proc: ReturnType<typeof Bun.spawn>;
-        try {
-            proc = Bun.spawn(cmd, {
-                cwd: REPO_DIR,
-                env: {
-                    ...process.env,
-                    GOLFMAP_SHAPING_PORT: port,
-                    ...(this.token ? { GOLFMAP_SHAPING_TOKEN: this.token } : {}),
-                    PYTHONIOENCODING: 'utf-8',
-                },
-                stdin: 'ignore',
-                stdout: fd,
-                stderr: fd,
-            });
-        } finally {
-            closeSync(fd);   // the child holds its own copy
+        // Outside this process's tree (and on Windows outside the app's job): the worker
+        // outlives a server restart (bun --watch) and Claude being closed; the next server finds it on its port.
+        const proc = await spawnDetached(cmd, {
+            cwd: REPO_DIR,
+            env: {
+                ...process.env,
+                GOLFMAP_SHAPING_PORT: port,
+                ...(this.token ? { GOLFMAP_SHAPING_TOKEN: this.token } : {}),
+                PYTHONIOENCODING: 'utf-8',
+            },
+            log,
+        });
+        // Named after the run it holds; the child writes through its inherited handle either way. Not on
+        // Windows: there the detached cmd opens the log by name, maybe after this, so the timestamp alone names it.
+        if (process.platform !== 'win32') {
+            try {
+                const named = path.join(dir, `${stamp}-${proc.pid}.log`);
+                renameSync(log, named);
+                log = named;
+            } catch {
+                // Kept under the timestamp alone.
+            }
         }
-        try {
-            // Named after the run it holds; the child writes through its inherited handle either way.
-            const named = path.join(dir, `${stamp}-${proc.pid}.log`);
-            renameSync(log, named);
-            log = named;
-        } catch {
-            // Windows may refuse while the child has it open: the timestamp alone names the run then.
-        }
-        const worker = { proc, exitCode: null as number | null, log };
-        proc.exited.then(code => { worker.exitCode = code; });
-        // The worker outlives a server restart (bun --watch): the next server finds it on its port.
-        proc.unref();
+        const worker = { proc, log };
         this.worker = worker;
         await writeFile(path.join(dir, LATEST_LOG), `${JSON.stringify({
             file: path.basename(log), pid: proc.pid, startedAt: new Date().toISOString(), command: cmd,
@@ -1019,8 +1013,8 @@ export class ShapingService {
             if (ok(st)) return st;
             onPoll?.(st);
             const w = this.worker;
-            if (w && w.exitCode !== null && !st.reachable) {
-                throw new ConflictError(`The shaping worker exited (code ${w.exitCode}) before ${what.replace(/^the shaping worker /, '')}: ${await logTail(w.log)}`);
+            if (w && !w.proc.alive() && !st.reachable) {
+                throw new ConflictError(`The shaping worker exited (code ${await w.proc.exitCode() ?? '?'}) before ${what.replace(/^the shaping worker /, '')}: ${await logTail(w.log)}`);
             }
             if (Date.now() > until) throw new ConflictError(`Timed out waiting for ${what} (${Math.round(timeoutMs / 1000)} s; ${st.reachable ? `state ${st.state}` : st.error})`);
             await Bun.sleep(this.timeouts.pollMs);

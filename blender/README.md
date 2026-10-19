@@ -1322,8 +1322,15 @@ reach the meshes in seconds ([SHAPING-PLAN.md](SHAPING-PLAN.md), "Terrain editor
 `--host` (else `GOLFMAP_SHAPING_HOST`, else 127.0.0.1) and `--port` (else `GOLFMAP_SHAPING_PORT`, else 8766):
 
 ```bash
-"C:/Program Files/Blender Foundation/Blender 4.5/blender.exe" -b --python blender/tools/shape_worker.py -- --port 8766 --blend "D:/gspro_courses/vreta-opcd/vreta_svg_1985.blend" --layers docs/gspro/vreta/shaping --fbx-folder "<Unity project>/Assets/fbx"
+bun run shaping:worker -- --port 8766 --blend "D:/gspro_courses/vreta-opcd/vreta_svg_1985.blend" --layers docs/gspro/vreta/shaping --fbx-folder "<Unity project>/Assets/fbx"
 ```
+
+Start it this way (or let the server start it), never as a plain `blender.exe -b --python blender/tools/shape_worker.py -- ...`
+from a Claude Bash call or a terminal: on Windows that makes it part of the app's job object, and closing Claude kills it
+with its 40-60 min load. `shaping:worker` (and the server's own spawn) creates it through WMI
+(`server/services/detached-process.ts`), so its parent is `WmiPrvSE.exe`, it is in no job, and it outlives Claude, the
+server and the shell. Both streams and a last `[exited <code>]` line go to `data/shaping-worker/<when>-cli.log`; it refuses
+when a worker already answers on the port.
 
 A `/load` or `/sync` is a **job**: the call answers at once and the work goes on in the main thread, so a sync that
 takes an hour holds no connection. `?wait=1` on either POST keeps the old blocking behaviour — the answer is the
