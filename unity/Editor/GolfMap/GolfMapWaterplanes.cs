@@ -83,6 +83,68 @@ namespace GolfMap.Editor
             args = "dryRun=false, selected=false (the editor's selected meshes, any name, instead of the lakes; a selected plane rebuilds from its mesh), only (comma-separated lake keys or name parts; may name a Water_Base_Creek), outsetM=2, belowM=0.05, liftM=0.3 (new planes; existing ones keep theirs unless given), slabs=true (rock slabs in a lake join its plane and the rim beside them does not set the level), parent=Waterplanes, replaceExisting=false, prune=false (delete planes made here whose lake is gone, and any water plane whose mesh is gone, e.g. OPCD's after a new .blend), " + GolfMapSceneSave.Arg)]
         static object Command(BridgeArgs a) { return Build(a); }
 
+        // <course>/water-extra.json (golfmap-water-extra-v1): water the course's lake meshes do not reach yet, e.g. a pond
+        // whose outline the app changed after the last OPCD build (hole 9: the bay and the channel under the bridge):
+        //   {"planes": [{"name": "Spline_hole_9_240b_WaterPlane", "like": "Spline_hole_9_240_WaterPlane",
+        //                "vertices": [[x, z], ...], "triangles": [i, j, k, ...]}]}   (scene XZ; the repo's generator writes it)
+        // Each is a copy of its `like` plane (material, physics, reflection probe) at that plane's surface, with this mesh.
+        public const string ExtraFile = "water-extra.json";
+        const string ExtraFormat = "golfmap-water-extra-v1";
+
+        [BridgeCommand("golfmap.waterplanes.extra", "Build the extra water planes of <course>/water-extra.json (golfmap-water-extra-v1): water the lake meshes do not reach yet (a pond outline changed after the last OPCD build). Each is a copy of its 'like' plane (AQUAS material, GSPwater physics, reflection probe) at that plane's surface with its own mesh (vertices in scene XZ, triangles), saved to <course>/WaterPlanes/. A rerun refills the same objects. Marks the scene dirty; save=true saves it.",
+            args = "file (default <course>/water-extra.json), dryRun=false, " + GolfMapSceneSave.Arg)]
+        static object ExtraCommand(BridgeArgs a)
+        {
+            var course = GolfMapCourses.Require();
+            var path = a.String("file") ?? GolfMapCourses.Folder(course) + ExtraFile;
+            var assetFolder = GolfMapCourses.Folder(course) + AssetFolder;
+            if (!File.Exists(path)) throw new InvalidOperationException(path + " not found.");
+            var root = GolfMapJsonDoc.ParseObject(File.ReadAllText(path));
+            if (root.String("format") != ExtraFormat) throw new InvalidOperationException(path + ": format must be " + ExtraFormat + ".");
+            bool dryRun = a.Bool("dryRun", false);
+            var scene = EditorSceneManager.GetActiveScene();
+            var all = scene.GetRootGameObjects().SelectMany(r => r.GetComponentsInChildren<Transform>(true)).Select(t => t.gameObject).ToList();
+            var report = new List<object>();
+            EnsureFolder(assetFolder);
+            foreach (var o in (root.Array("planes") ?? new List<object>()).Cast<GolfMapJsonObject>())
+            {
+                string name = o.String("name"), likeName = o.String("like");
+                var like = all.FirstOrDefault(g => g.name == likeName && g.activeInHierarchy && g.GetComponent<MeshFilter>() != null);
+                if (like == null) throw new InvalidOperationException(path + ": plane " + name + ": no active plane '" + likeName + "' to copy.");
+                float surface = like.GetComponent<Renderer>().bounds.max.y;
+                var xz = o.Array("vertices").Cast<List<object>>().Select(q => new Vector2(Convert.ToSingle(q[0]), Convert.ToSingle(q[1]))).ToList();
+                var tris = o.Array("triangles").Select(Convert.ToInt32).ToList();
+                if (tris.Count % 3 != 0 || tris.Any(i => i < 0 || i >= xz.Count)) throw new InvalidOperationException(path + ": plane " + name + ": bad triangles.");
+                report.Add(new Dictionary<string, object> { { "name", name }, { "like", likeName }, { "surfaceY", Round(surface) }, { "vertices", xz.Count }, { "triangles", tris.Count / 3 } });
+                if (dryRun) continue;
+                var go = all.FirstOrDefault(g => g.name == name);
+                if (go != null) Undo.DestroyObjectImmediate(go);
+                go = UnityEngine.Object.Instantiate(like, like.transform.parent);
+                go.name = name;
+                go.SetActive(true);
+                Undo.RegisterCreatedObjectUndo(go, "Extra water planes");
+                var geo = new Geometry();
+                foreach (var p in xz) geo.vertices.Add(go.transform.InverseTransformPoint(new Vector3(p.x, surface, p.y)));
+                // wound to face up in the plane's space
+                for (int i = 0; i < tris.Count; i += 3)
+                {
+                    Vector3 v0 = geo.vertices[tris[i]], v1 = geo.vertices[tris[i + 1]], v2 = geo.vertices[tris[i + 2]];
+                    bool up = Vector3.Cross(v1 - v0, v2 - v0).y > 0f;
+                    geo.triangles.AddRange(up ? new[] { tris[i], tris[i + 1], tris[i + 2] } : new[] { tris[i], tris[i + 2], tris[i + 1] });
+                }
+                var mesh = SaveMesh(geo.ToMesh(name), assetFolder + "/" + name + ".asset");
+                go.GetComponent<MeshFilter>().sharedMesh = mesh;
+                var collider = go.GetComponent<MeshCollider>();
+                if (collider != null) { collider.sharedMesh = null; collider.sharedMesh = mesh; }
+                Physics.SyncTransforms();
+                var probe = Probes(go).FirstOrDefault();
+                if (probe != null) PlaceProbe(go, probe, ProbeAboveM, "Extra water planes");
+                EditorSceneManager.MarkSceneDirty(scene);
+            }
+            AssetDatabase.SaveAssets();
+            return new Dictionary<string, object> { { "file", path }, { "dryRun", dryRun }, { "planes", report } };
+        }
+
         sealed class Lake
         {
             public GameObject go;

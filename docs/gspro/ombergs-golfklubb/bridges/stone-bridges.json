@@ -55,6 +55,23 @@
     }
    ]
   },
+  "omberg_stone_bridge_h9e": {
+   "category": "structure",
+   "collider": "mesh",
+   "parts": [
+    {
+     "kind": "stone_bridge",
+     "style": "arch",
+     "length": 10.0,
+     "width": 2.8,
+     "height": 1.0,
+     "seed": 53,
+     "colorKey": "h9e",
+     "deck": "turf_mat_dark",
+     "opening": 3.2
+    }
+   ]
+  },
   "omberg_stone_bridge_h17": {
    "category": "structure",
    "collider": "mesh",
@@ -94,6 +111,14 @@
    "e": 477635.0,
    "n": 6457827.0,
    "yawDeg": 27.0,
+   "ground": "median",
+   "dz": -0.1
+  },
+  {
+   "asset": "omberg_stone_bridge_h9e",
+   "e": 477742.9,
+   "n": 6457804.8,
+   "yawDeg": 175.0,
    "ground": "median",
    "dz": -0.1
   },
