@@ -778,3 +778,30 @@ def test_load_edits_reads_a_creek_digs_steps(tmp_path: Path):
     [e] = dem_edit.reproject_edits(load_edits(path), "EPSG:3006")
     assert e.steps[0]["sillM"] == 1.5
     assert e.steps[0]["line"][0] == [pytest.approx(ORIGIN_X + 40, abs=0.01), pytest.approx(ORIGIN_Y - 35, abs=0.01)]
+
+
+def test_wall_drops_straight_to_a_shelf_and_leaves_the_ground_behind_it_alone():
+    # A green's plateau (falling gently north to 101.2 at row 40), a bank falling 0.5 m per metre north of it into a
+    # pond whose bed is 98 m. The wall's line runs along the top of row 40 (cells north of it are rows 0-39).
+    rows = np.arange(SIZE)[:, None] * np.ones((1, SIZE))
+    north = 40.0 - rows                          # how far north of row 40's top edge a row's centre lies (+0.5)
+    plateau = 102.0 - 0.02 * (SIZE - rows)
+    dem = np.where(north <= 0, plateau, np.maximum(101.2 - 0.5 * north, 98.0)).astype(np.float32)
+    line = [[ORIGIN_X + 4, ORIGIN_Y - 40.0], [ORIGIN_X + 76, ORIGIN_Y - 40.0]]
+    outer = rect_3006(4, 76, 30, 40)            # the polygon: north of the line, 10 m out
+    edit = edit_3006("wall", outer, feather_m=0.0, centerline=line, level_m=99.55, wall_run_m=0.6, wall_min_shelf_m=1.0)
+    out = apply_edits(dem, TRANSFORM, NODATA, [edit], log=lambda *_: None).astype(float)
+    assert np.array_equal(out[40:, :], dem[40:, :].astype(float))         # behind the line: untouched
+    assert np.all(out[39, 10:70] < 101.2) and np.all(out[39, 10:70] > 99.55)   # 0.5 m out: on the face
+    assert np.allclose(out[38, 10:70], 99.55, atol=0.01)                  # 1.5 m out: the shelf (the bank was 100.2)
+    assert np.allclose(out[37, 10:70], 99.55, atol=0.01)                  # 2.5 m out: cut to the shelf (the bank was 99.7)
+    assert np.allclose(out[33, 10:70], 98.0, atol=0.01)                   # the pond's bed: left alone
+    assert abs(out[38, 75] - dem[38, 75]) < 0.45                           # half a metre in from the wall's end: a bank, no step
+
+
+def test_load_edits_reads_a_wall(tmp_path: Path):
+    ring = rect_3006(4, 76, 30, 40)
+    line = ring_to_wgs84([[ORIGIN_X + 4, ORIGIN_Y - 40], [ORIGIN_X + 76, ORIGIN_Y - 40]])
+    path = write_edits(tmp_path, [wgs84_feature("wall", ring, featherM=0, centerline=line, levelM=99.55, runM=0.4, minShelfM=0.6)])
+    [e] = load_edits(path)
+    assert (e.op, e.level_m, e.wall_run_m, e.wall_min_shelf_m, len(e.centerline)) == ("wall", 99.55, 0.4, 0.6, 2)

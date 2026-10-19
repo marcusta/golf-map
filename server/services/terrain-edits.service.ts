@@ -32,7 +32,7 @@ import {
  * `feature:<id>`, no rings. At most one per feature. The DEM replay skips it
  * (`isDemEdit`); `gspro.py shaping-global` writes it as an `afrod.recipe` op.
  */
-export const TERRAIN_EDIT_OPS = ['plane', 'smooth', 'corridor', 'dig', 'shore', 'delta', 'recipe'] as const;
+export const TERRAIN_EDIT_OPS = ['plane', 'smooth', 'corridor', 'dig', 'shore', 'delta', 'recipe', 'wall'] as const;
 
 /** The origin of every `recipe` edit (its originRef names the feature). */
 export const RECIPE_ORIGIN = 'feature';
@@ -106,6 +106,9 @@ export interface TerrainEditParams {
      * dem_edit owns their meaning and defaults; the server only stores them.
      */
     levelM?: number;
+    /** wall: the face's run out from its line and the shelf's least width (levelM is the shelf's height). */
+    runM?: number;
+    minShelfM?: number;
     edgeSlope?: number;
     edgeM?: number;
     edgeEaseM?: number;
@@ -148,6 +151,13 @@ export const DIG_PARAM_KEYS = [
 ] as const;
 
 /** The shore params (all numbers), in the order they go into the pipeline handoff; `depthM` is shared with dig. */
+/**
+ * wall: a stone wall along `centerline` (EPSG:3006) with a shelf at `levelM` at its foot; the polygon is the ground on
+ * the wall's outer side (pipeline dem_edit._wall_target): the face `runM` out from the line, the shelf at least
+ * `minShelfM` wide, everything further out cut to `levelM`; the ground behind the line is left alone.
+ */
+export const WALL_PARAM_KEYS = ['runM', 'minShelfM'] as const;
+
 export const SHORE_PARAM_KEYS = [
     'levelM', 'edgeSlope', 'edgeM', 'edgeEaseM', 'shelfSlope', 'shelfEndM', 'shelfEaseM', 'slope', 'depthM', 'floorRoundM',
     'channelDepthM', 'channelRatio', 'channelFullM', 'channelGoneM',
@@ -306,6 +316,10 @@ export function parseEditsGeojson(doc: unknown): { edits: TerrainEditInput[]; sk
             if (props[key] === undefined || props[key] === null) continue;
             params[key] = Number(props[key]);
         }
+        for (const key of WALL_PARAM_KEYS) {
+            if (props[key] === undefined || props[key] === null) continue;
+            params[key] = Number(props[key]);
+        }
         if (Array.isArray(props.centerline)) {
             params.centerline = props.centerline.map((p: unknown) =>
                 Array.isArray(p) && p.length >= 2 ? wgs84ToSweref99tm(Number(p[1]), Number(p[0])) : { x: NaN, y: NaN });
@@ -401,6 +415,12 @@ function assertOpParams(op: TerrainEditOp, params: TerrainEditParams): void {
     }
     if (op === 'dig') assertDigParams(params);
     if (op === 'shore') assertShoreParams(params);
+    if (op === 'wall') {
+        if (!params.centerline) throw new InvalidTerrainEditError('A wall edit needs its line (centerline)');
+        if (!Number.isFinite(params.levelM)) throw new InvalidTerrainEditError('A wall edit needs levelM (the shelf at its foot)');
+        if (params.runM !== undefined && !(params.runM > 0 && params.runM <= 5)) throw new InvalidTerrainEditError('runM must be 0..5 m');
+        if (params.minShelfM !== undefined && !(params.minShelfM >= 0 && params.minShelfM <= 10)) throw new InvalidTerrainEditError('minShelfM must be 0..10 m');
+    }
     if (op === 'delta' && (typeof params.raster !== 'string' || !SCULPT_RASTER.test(params.raster))) {
         throw new InvalidTerrainEditError('A delta edit needs raster: inner-sculpt.tif or outer-sculpt.tif');
     }

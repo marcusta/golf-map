@@ -135,7 +135,14 @@ class DemEditError(RuntimeError):
     """User-actionable apply-dem-edits input/setup error."""
 
 
-OPS = ("plane", "smooth", "corridor", "dig", "delta", "shore")
+OPS = ("plane", "smooth", "corridor", "dig", "delta", "shore", "wall")
+# wall: the face from the ground at the line down to the shelf, this far out (a stone wall: near vertical) ...
+DEFAULT_WALL_RUN_M = 0.3
+# ... and the shelf at its foot at least this wide, whatever the ground (or the water) was there.
+DEFAULT_WALL_MIN_SHELF_M = 0.5
+# ... and where the polygon ends anywhere but the line (the wall's ends, ground kept round a sill), the cut or the
+# fill meets the ground there at this bank, not as a step.
+WALL_BANK_DEG = 40.0
 DEFAULT_FEATHER_M = 2.0
 DEFAULT_SMOOTH_RADIUS_M = 2.0
 # Longitudinal smoothing window for corridors: long enough to take out the
@@ -230,6 +237,9 @@ class DemEdit:
     raster: str | None = None
     # shore only (SHORE_PARAMS; depth_m is shared with dig).
     level_m: float | None = None
+    # wall: the face's run out from the line and the shelf's least width (levelM is the shelf's height).
+    wall_run_m: float = DEFAULT_WALL_RUN_M
+    wall_min_shelf_m: float = DEFAULT_WALL_MIN_SHELF_M
     edge_slope: float = 0.15
     edge_m: float = 2.0
     edge_ease_m: float = 2.0
@@ -321,6 +331,13 @@ def load_edits(path: Path, log=print) -> list[DemEdit]:
             if not np.isfinite(smooth_m) or smooth_m <= 0 or (width_m is not None and not width_m > 0):
                 log(f"warning: {label}: smoothM and widthM must be > 0 — skipped")
                 continue
+        elif op == "wall":
+            centerline = props.get("centerline")
+            if (not isinstance(centerline, list) or len(centerline) < 2
+                    or not all(isinstance(p, (list, tuple)) and len(p) >= 2 for p in centerline)):
+                log(f"warning: {label}: a wall needs its line (centerline) of at least 2 [x, y] points — skipped")
+                continue
+            centerline = [[float(p[0]), float(p[1])] for p in centerline]
         elif op == "dig" and props.get("centerline") is not None:
             # A creek dig (reference: stream) may carry its line and width.
             centerline = props.get("centerline")
@@ -358,6 +375,17 @@ def load_edits(path: Path, log=print) -> list[DemEdit]:
             except ValueError as exc:
                 log(f"warning: {label}: {exc} — skipped")
                 continue
+        wall: dict = {}
+        if op == "wall":
+            try:
+                wall = {"level_m": float(props["levelM"]),
+                        "wall_run_m": float(props.get("runM", DEFAULT_WALL_RUN_M)),
+                        "wall_min_shelf_m": float(props.get("minShelfM", DEFAULT_WALL_MIN_SHELF_M))}
+                if not all(np.isfinite(v) for v in wall.values()) or wall["wall_run_m"] <= 0 or wall["wall_min_shelf_m"] < 0:
+                    raise ValueError
+            except (KeyError, TypeError, ValueError):
+                log(f"warning: {label}: a wall needs levelM, runM > 0 and minShelfM >= 0 — skipped")
+                continue
         shore: dict = {}
         if op == "shore":
             try:
@@ -382,6 +410,7 @@ def load_edits(path: Path, log=print) -> list[DemEdit]:
             raster=raster,
             **dig,
             **shore,
+            **wall,
         ))
 
     edits.sort(key=lambda e: (e.created_at is None, e.created_at or ""))
@@ -663,6 +692,8 @@ def _apply_one(
                              water_levels=water_levels, key=edit.origin_ref or f"edit:{index + 1}")
     elif edit.op == "delta":
         target = _delta_target(cur_win, mask_win, transform, r0, c0, edit)
+    elif edit.op == "wall":
+        target = _wall_target(cur_win, mask_win, valid_win, transform, r0, c0, edit, label, log)
     elif edit.op == "shore":
         target = _shore_target(cur_win, mask_win, valid_win, transform, r0, c0, cell_x, cell_y, edit, label, log)
     else:
@@ -686,6 +717,82 @@ def _apply_one(
     weight = np.where(valid_win & np.isfinite(target), weight, 0.0)
     target = np.where(weight > 0, target, cur_win)
     current[window] = cur_win * (1.0 - weight) + target * weight
+
+
+def _wall_target(
+    cur_win: np.ndarray,
+    mask_win: np.ndarray,
+    valid_win: np.ndarray,
+    transform: "rasterio.Affine",
+    r0: int,
+    c0: int,
+    edit: DemEdit,
+    label: str,
+    log,
+) -> np.ndarray | None:
+    """A stone wall with a shelf at its foot (a green's bank above a pond). The polygon is the ground on the wall's
+    outer side; the wall stands along the edit's line (its centerline) and the ground behind it, outside the
+    polygon, is left alone. Each cell in the polygon, by its distance d from the line:
+    - d < runM: the face, from the ground just behind the line down to levelM;
+    - d < runM + minShelfM: the shelf at levelM, raised or cut to it (a shelf where the bank ran into the water);
+    - further out: cut to levelM where it stands above it, left alone below it (the water's bed).
+    Towards the polygon's other edges the change fades in at WALL_BANK_DEG: no step where the wall ends."""
+    import shapely
+
+    pts = np.asarray(edit.centerline or [], dtype=np.float64)
+    if pts.ndim != 2 or len(pts) < 2 or edit.level_m is None:
+        log(f"warning: {label}: wall has no line or no levelM — skipped")
+        return None
+    line = shapely.LineString(pts)
+    if line.length <= 0:
+        log(f"warning: {label}: wall line has zero length — skipped")
+        return None
+    rows, cols = np.nonzero(mask_win & valid_win)
+    if len(rows) == 0:
+        log(f"warning: {label}: no valid cells on the wall's outer side — skipped")
+        return None
+    xs, ys = rasterio.transform.xy(transform, rows + r0, cols + c0)
+    xs, ys = np.asarray(xs), np.asarray(ys)
+    cells = shapely.points(xs, ys)
+    d = shapely.distance(line, cells)
+    s = shapely.line_locate_point(line, cells)
+    # The ground at the line: just behind it, on the side away from the polygon.
+    step = 0.25
+    st = np.arange(0.0, line.length + step, step)
+    sp = shapely.get_coordinates(shapely.line_interpolate_point(line, st))
+    ahead = shapely.get_coordinates(shapely.line_interpolate_point(line, np.minimum(st + 0.1, line.length)))
+    behind = shapely.get_coordinates(shapely.line_interpolate_point(line, np.maximum(st - 0.1, 0.0)))
+    tan = ahead - behind
+    tan /= np.maximum(np.hypot(tan[:, 0], tan[:, 1]), 1e-9)[:, None]
+    normal = np.column_stack([-tan[:, 1], tan[:, 0]])
+    from shapely.geometry import shape as _shape
+    poly = _shape(edit.geometry)
+    # Which way is out (into the polygon) along the line: the side with more of the polygon within a metre.
+    poly_side = shapely.contains_xy(poly, sp[:, 0] + normal[:, 0], sp[:, 1] + normal[:, 1])
+    poly_side = np.full(len(sp), poly_side.mean() >= 0.5)
+    back = np.where(poly_side[:, None], -normal, normal)
+    win_t = transform * rasterio.Affine.translation(c0, r0)
+    h, w = cur_win.shape
+
+    def ground(px, py):
+        rr, cc = rasterio.transform.rowcol(win_t, px, py)
+        rr, cc = np.clip(np.asarray(rr), 0, h - 1), np.clip(np.asarray(cc), 0, w - 1)
+        return cur_win[rr, cc]
+    top_st = np.maximum(ground(sp[:, 0] + back[:, 0] * 0.4, sp[:, 1] + back[:, 1] * 0.4),
+                        ground(sp[:, 0] + back[:, 0] * 0.8, sp[:, 1] + back[:, 1] * 0.8))
+    top = np.interp(s, st, top_st)
+    level = float(edit.level_m)
+    run, shelf = edit.wall_run_m, edit.wall_min_shelf_m
+    cur = cur_win[rows, cols]
+    face = top - (top - level) * np.clip(d / run, 0.0, 1.0)
+    new = np.where(d < run, face, np.where(d < run + shelf, level, np.minimum(cur, level)))
+    ends = poly.boundary.difference(line.buffer(0.3))
+    if not ends.is_empty:
+        slope = np.tan(np.radians(WALL_BANK_DEG)) * shapely.distance(ends, cells)
+        new = np.clip(new, cur - slope, cur + slope)
+    target = cur_win.copy()
+    target[rows, cols] = new
+    return target
 
 
 def _plane_target(

@@ -25,6 +25,7 @@
         "grass:zones": "bun scripts/grass-zones.ts",
         "vegetation:rules": "bun scripts/vegetation-rules.ts",
         "terrain:generate": "bun scripts/terrain-generate.ts",
+        "terrain:wall": "bun scripts/terrain-wall.ts",
         "features:union": "bun scripts/features-union.ts",
         "water:edge": "bun scripts/water-edge.ts",
         "water:steps": "bun scripts/water-steps.ts",
