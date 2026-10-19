@@ -83,6 +83,29 @@ DEFAULTS = {
     "minFaceM": 0.2,      # a pond edge is low: stones wherever the bank rises this much from the foot
 }
 STYLES = {
+    # A sill a fall pours over (hole 9's fall E): a near-vertical face of long, flat, tightly fitted blocks, more a
+    # built wall than a pile (Marcus 2026-10-19), up to the upper water (the wall's topY).
+    "sill": {
+        "style": "wall",
+        "stoneSet": "wall",
+        "faceDeg": 86,
+        "baseInM": 0.05,
+        "baseCourseM": [0.3, 0.38],
+        "courseM": [0.22, 0.3],
+        "stoneHeightVar": [1.02, 1.1],
+        "bedJitterM": 0.01,
+        "lengthRatio": [2.2, 3.4],
+        "maxStoneM": 1.0,
+        "depthM": [0.4, 0.6],
+        "faceProudM": 0.08,
+        "faceJitterM": 0.01,
+        "spinDeg": 1,
+        "gapM": -0.08,
+        "sinkM": 0.1,
+        "topMarginM": 0.04,
+        "capM": 0.03,
+        "minTopCourseM": 0.1,
+    },
     # A dry-stone wall (Vreta's "wall"): courses of flat-faced stones fitted into the face's plane. Hole 9's green wall
     # (Marcus's photos, 2026-10-19): about three courses of grey blocks 0.4-1 m long in a metre of wall, near vertical,
     # the green's tall grass hanging over the top.
@@ -181,6 +204,7 @@ STYLES = {
 # face, `bun run terrain:wall`), the top edge LINE_LIP_IN_M back on the plateau.
 WALLS = [
     {"id": "h14-pond-edge", "style": "pondwall", "feature": "b2388429-8a29-41d6-9396-559dcfd5f18c",
+     "bake": True,  # merged into chunks with LODs and one collider each (GolfMapWallBake), the first wall tried 2026-10-19
      "start": (477383.2, 6457119.8), "via": (477339.1, 6457149.0), "end": (477358.0, 6457157.5),
      "note": "Hole 14 pond: the stone wall from the east tip along the whole south side (Marcus's photo, 2026-10-19), "
              "round the west tip (the creek's outlet) and along the north edge to E 477358 (2025 and 2023 orthos)."},
@@ -221,8 +245,8 @@ WALLS = [
              "line (photo, 2026-10-19)."},
     # Hole 9, fall E (Marcus 2026-10-19): the stone sill the upper pond 576's water falls over into 573, 5 m west of the
     # bridge; the ground is the terrain edit sill:h9-fall-e (flat at the upper water, 0.8 m wide), the line its west edge.
-    {"id": "h9-fall-e-sill", "style": "wall", "beyondM": 0.1, "capM": 0.25,   # up to the sill and a little over (Marcus: much higher); the bay behind is water
-     "line": [(477736.13, 6457800.36), (477735.5, 6457805.5), (477734.87, 6457810.64)],   # 1.5 m into both banks (Marcus: wider)
+    {"id": "h9-fall-e-sill", "style": "sill", "beyondM": 0.1, "topY": 20.21,   # up to the upper water, where the fall starts (scene y; 576 = 20.207)
+     "line": [(477736.63, 6457800.42), (477736.0, 6457805.56), (477735.37, 6457810.70)],   # the sill's east edge, so the foot (1 m out) is its west face; 1.5 m into both banks (Marcus: wider)
      "note": "Hole 9: the stone sill of fall E between the upper pond (576) and 573, west of the bridge (photo from the west)."},
     {"id": "p77-north-tip", "feature": "4530bf16-35ec-4c82-b78b-f139db337b9e",
      "start": (477675.8, 6457494.0), "via": (477683.8, 6457497.0), "end": (477694.5, 6457487.4),

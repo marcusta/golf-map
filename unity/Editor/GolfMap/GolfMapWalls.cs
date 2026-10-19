@@ -57,6 +57,9 @@ namespace GolfMap.Editor
             public Vector2 baseCourseM = new Vector2(0.5f, 0.65f), courseM = new Vector2(0.34f, 0.5f), lengthRatio = new Vector2(1.3f, 2.6f), depthM = new Vector2(0.55f, 0.8f);
             public float maxStoneM = 1.4f, faceProudM = 0.03f, faceJitterM = 0.03f, minTopCourseM = 0.18f, bedJitterM = 0.05f;
             public float jitterDeg = 0f;  // cliff: the face angle varies this much either way along the face
+            // the wall's top at least this world height (NaN: the bank's own, measured on the meshes): a sill the
+            // meshes smear lower than the water that falls over it
+            public float topY = float.NaN;
             public Vector2 stoneHeightVar = new Vector2(0.94f, 1.04f);  // a stone's height / its course's
 
             public string stoneAlbedo = "", stoneNormal = "";
@@ -115,6 +118,7 @@ namespace GolfMap.Editor
                 s.faceJitterM = (float)o.Number("faceJitterM", s.faceJitterM);
                 s.minTopCourseM = (float)o.Number("minTopCourseM", s.minTopCourseM);
                 s.jitterDeg = (float)o.Number("jitterDeg", s.jitterDeg);
+                s.topY = (float)o.Number("topY", s.topY);
                 s.bedJitterM = (float)o.Number("bedJitterM", s.bedJitterM);
                 s.stoneHeightVar = Range(o, "stoneHeightVar", s.stoneHeightVar);
                 return s;
@@ -568,6 +572,7 @@ namespace GolfMap.Editor
                 if (k > 0) b.rise[k] = Mathf.Max(b.rise[k], b.rise[k - 1]);  // monotone: a dip in the bank is not the lip
             }
             b.height = g0 == null ? 0f : b.rise[n - 1];
+            if (g0 != null && !float.IsNaN(w.s.topY)) b.height = Mathf.Max(b.height, w.s.topY - b.groundAtToe);
             return b;
         }
 
