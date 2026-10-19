@@ -1,14 +1,15 @@
-// A stone wall with a shelf at its foot, as a terrain edit (op `wall`, pipeline dem_edit._wall_target): the ground
-// behind the wall's line is left alone; on its water side the ground drops straight to a shelf just above the water,
-// at least `--min-shelf` wide, and everything further out is cut to the shelf (the water's bed below it stays).
+// A stone wall in place of a bank, as a terrain edit (op `wall`, pipeline dem_edit._wall_target): the ground behind
+// the wall's line is left alone; on its water side the ground drops straight from the line to where the bank ends in
+// the lidar (a terrace, or the water: never below the shelf's floor, --level), and the ground beyond is left alone.
 //
 //   bun run terrain:wall -- <course> --id <name> --line "e,n e,n ..." --water <shape> [--above 0.15 | --level <m>]
 //        [--reach 6] [--run 0.3] [--min-shelf 0.5] [--keep <shape>]... [--keep-margin 3] [--avoid e,n,r]... [--dry-run]
 //
 //   --line       the wall's line (its top edge on the green side), EPSG:3006 points, west to east or any way round
-//   --water      the pond the wall stands at (shape name, number or id): the shelf's side, and its level, the pond's
-//                dug water level (the dig's recorded level) plus --above
-//   --level      the shelf's height instead (metres above sea level)
+//   --water      the pond the wall stands at (shape name, number or id): the wall's outer side, and the floor of its
+//                foot, the pond's dug water level (the dig's recorded level) plus --above
+//   --level      the floor's height instead (metres above sea level)
+//   --min-shelf  the ground at the wall's foot at least this wide (0: the foot where the bank ends)
 //   --reach      how far out from the line the ground is shaped (the edit's polygon), metres
 //   --keep       a feature whose ground must stay (another pond's bank): left out of the polygon, --keep-margin round it
 //   --avoid      a circle left out (e,n,radius): a fall's sill, a bridge's footing

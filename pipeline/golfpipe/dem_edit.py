@@ -140,6 +140,15 @@ OPS = ("plane", "smooth", "corridor", "dig", "delta", "shore", "wall")
 DEFAULT_WALL_RUN_M = 0.3
 # ... and the shelf at its foot at least this wide, whatever the ground (or the water) was there.
 DEFAULT_WALL_MIN_SHELF_M = 0.5
+# The wall's foot is where the bank it replaces ends: walking out from the line, the first point the ground falls less
+# steeply than this over the next WALL_TOE_RUN_M (at least 1.5 cells; a terrace), or reaches levelM (the water) ...
+WALL_TOE_DEG = 14.0
+WALL_TOE_RUN_M = 0.75
+# ... and at least this far below the ground at the line (where the line runs a little inside the bank's top, the
+# flat ground before the bank is cut away: the wall stands on the line) ...
+WALL_TOE_DROP_M = 0.4
+# ... smoothed along the wall over this (lidar noise would make the foot jump from stone to stone).
+WALL_TOE_SMOOTH_M = 2.0
 # ... and where the polygon ends anywhere but the line (the wall's ends, ground kept round a sill), the cut or the
 # fill meets the ground there at this bank, not as a step.
 WALL_BANK_DEG = 40.0
@@ -730,12 +739,13 @@ def _wall_target(
     label: str,
     log,
 ) -> np.ndarray | None:
-    """A stone wall with a shelf at its foot (a green's bank above a pond). The polygon is the ground on the wall's
-    outer side; the wall stands along the edit's line (its centerline) and the ground behind it, outside the
-    polygon, is left alone. Each cell in the polygon, by its distance d from the line:
-    - d < runM: the face, from the ground just behind the line down to levelM;
-    - d < runM + minShelfM: the shelf at levelM, raised or cut to it (a shelf where the bank ran into the water);
-    - further out: cut to levelM where it stands above it, left alone below it (the water's bed).
+    """A stone wall in place of a bank (a green's bank above a pond). The polygon is the ground on the wall's outer
+    side; the wall stands along the edit's line (its centerline) and the ground behind it, outside the polygon, is left
+    alone. Along the line the wall's foot is found where the bank ends (WALL_TOE_DEG: a terrace, or the water at
+    levelM); its height is that ground's, never below levelM. Each cell in the polygon, by its distance d from the line:
+    - d < runM: the face, from the ground just behind the line down to the foot's height;
+    - d < the foot (at least runM + minShelfM): level with the foot, the bank's steep part cut away;
+    - further out: left alone (the terrace, or the water's bed).
     Towards the polygon's other edges the change fades in at WALL_BANK_DEG: no step where the wall ends."""
     import shapely
 
@@ -783,9 +793,28 @@ def _wall_target(
     top = np.interp(s, st, top_st)
     level = float(edit.level_m)
     run, shelf = edit.wall_run_m, edit.wall_min_shelf_m
+    # The foot along the line: out from it in steps, the first point past the face where the bank flattens or the water is.
+    out_dir = -back
+    reach = float(min(np.max(d) if len(d) else run, 30.0))
+    ks = np.arange(run, reach + 0.25, 0.25)
+    prof = np.stack([ground(sp[:, 0] + out_dir[:, 0] * k, sp[:, 1] + out_dir[:, 1] * k) for k in ks], axis=1)
+    toe_run = max(WALL_TOE_RUN_M, 1.5 * abs(transform.a))     # always into the next cell
+    nxt = np.stack([ground(sp[:, 0] + out_dir[:, 0] * (k + toe_run), sp[:, 1] + out_dir[:, 1] * (k + toe_run))
+                    for k in ks], axis=1)
+    flat = ((prof - nxt) / toe_run < np.tan(np.radians(WALL_TOE_DEG))) & (prof <= top_st[:, None] - WALL_TOE_DROP_M)
+    flat |= prof <= level + 0.05
+    first = np.where(flat.any(axis=1), flat.argmax(axis=1), len(ks) - 1)
+    toe_st = ks[first]
+    foot_st = np.maximum(prof[np.arange(len(sp)), first], level)
+    k = max(1, int(round(WALL_TOE_SMOOTH_M / step / 2)))
+    pad = lambda a: np.pad(a, k, mode="edge")
+    toe_st = np.array([np.median(pad(toe_st)[i:i + 2 * k + 1]) for i in range(len(sp))])
+    foot_st = np.array([np.median(pad(foot_st)[i:i + 2 * k + 1]) for i in range(len(sp))])
+    toe = np.maximum(np.interp(s, st, toe_st), run + shelf)
+    foot = np.interp(s, st, foot_st)
     cur = cur_win[rows, cols]
-    face = top - (top - level) * np.clip(d / run, 0.0, 1.0)
-    new = np.where(d < run, face, np.where(d < run + shelf, level, np.minimum(cur, level)))
+    face = top - (top - foot) * np.clip(d / run, 0.0, 1.0)
+    new = np.where(d < run, face, np.where(d < toe, foot, cur))
     ends = poly.boundary.difference(line.buffer(0.3))
     if not ends.is_empty:
         slope = np.tan(np.radians(WALL_BANK_DEG)) * shapely.distance(ends, cells)

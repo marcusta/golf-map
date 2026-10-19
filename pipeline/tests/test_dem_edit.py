@@ -799,6 +799,22 @@ def test_wall_drops_straight_to_a_shelf_and_leaves_the_ground_behind_it_alone():
     assert abs(out[38, 75] - dem[38, 75]) < 0.45                           # half a metre in from the wall's end: a bank, no step
 
 
+def test_wall_stands_on_a_terrace_and_leaves_the_terrace_alone():
+    # The bank drops a metre in the first metre north of row 40, then a terrace falls gently (5 %) to the north: the
+    # wall replaces the drop only, its foot on the terrace, well above the shelf's floor (levelM, the water).
+    rows = np.arange(SIZE)[:, None] * np.ones((1, SIZE))
+    north = 40.0 - rows
+    plateau = 102.0 - 0.02 * (SIZE - rows)
+    dem = np.where(north <= 0, plateau, np.where(north < 1, 101.2 - north, 100.2 - 0.05 * (north - 1))).astype(np.float32)
+    line = [[ORIGIN_X + 4, ORIGIN_Y - 40.0], [ORIGIN_X + 76, ORIGIN_Y - 40.0]]
+    edit = edit_3006("wall", rect_3006(4, 76, 30, 40), feather_m=0.0, centerline=line, level_m=99.55, wall_run_m=0.3,
+                     wall_min_shelf_m=0.0)
+    out = apply_edits(dem, TRANSFORM, NODATA, [edit], log=lambda *_: None).astype(float)
+    assert np.array_equal(out[40:, :], dem[40:, :].astype(float))         # behind the line: untouched
+    assert np.allclose(out[30:39, 10:70], dem[30:39, 10:70], atol=1e-4)    # the terrace: untouched
+    assert np.all(out[39, 10:70] >= 100.1) and np.all(out[39, 10:70] < 100.7)  # 0.5 m out: down at the terrace
+
+
 def test_load_edits_reads_a_wall(tmp_path: Path):
     ring = rect_3006(4, 76, 30, 40)
     line = ring_to_wgs84([[ORIGIN_X + 4, ORIGIN_Y - 40], [ORIGIN_X + 76, ORIGIN_Y - 40]])

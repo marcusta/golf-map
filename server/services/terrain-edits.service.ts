@@ -152,9 +152,10 @@ export const DIG_PARAM_KEYS = [
 
 /** The shore params (all numbers), in the order they go into the pipeline handoff; `depthM` is shared with dig. */
 /**
- * wall: a stone wall along `centerline` (EPSG:3006) with a shelf at `levelM` at its foot; the polygon is the ground on
- * the wall's outer side (pipeline dem_edit._wall_target): the face `runM` out from the line, the shelf at least
- * `minShelfM` wide, everything further out cut to `levelM`; the ground behind the line is left alone.
+ * wall: a stone wall along `centerline` (EPSG:3006) in place of a bank; the polygon is the ground on the wall's outer
+ * side (pipeline dem_edit._wall_target): the face `runM` out from the line down to where the bank ends in the lidar
+ * (never below `levelM`), the ground at its foot at least `minShelfM` wide; the ground behind the line and beyond
+ * the foot is left alone.
  */
 export const WALL_PARAM_KEYS = ['runM', 'minShelfM'] as const;
 
