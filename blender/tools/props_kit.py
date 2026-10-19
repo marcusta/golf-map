@@ -1804,7 +1804,7 @@ def _parapet(g, rnd, mats, L, yp, t, zd, sc=1.0):
             x += cw * rnd.uniform(0.75, 0.92)
 
 
-def _arch_masonry(g, rnd, mats, L, W, ow, oh, depth, zd, roof):
+def _arch_masonry(g, rnd, mats, L, W, ops, depth, zd, roof):
     """The old arch bridge's stonework (Omberg holes 7 and 9): both faces laid as rough strips of field stone stacked
     down from the deck line (so the courses follow the hump and the joints stagger), a ring of larger stones round the
     arch, and a parapet of two rows - a course and a rounded coping - along both edges."""
@@ -1833,7 +1833,7 @@ def _arch_masonry(g, rnd, mats, L, W, ow, oh, depth, zd, roof):
                 ch = rnd.uniform(0.15, 0.3) if rnd.random() > 0.1 else rnd.uniform(0.32, 0.42)
                 zc = z - ch / 2
                 r0 = roof(xc)
-                in_arch = abs(xc) < ow / 2 + cw * 0.5 + 0.1 and zc - ch * 0.5 < r0 + 0.22
+                in_arch = any(abs(xc - c) < w / 2 + cw * 0.5 + 0.1 for c, w, h in ops) and zc - ch * 0.5 < r0 + 0.22
                 if not in_arch and zc + ch * 0.5 > 0.0 - depth * 0.6:
                     w2 = cw * rnd.uniform(1.15, 1.4)
                     stone((xc + rnd.uniform(-0.05, 0.05), yf + rnd.uniform(-0.04, 0.03), zc), (w2, rnd.uniform(0.4, 0.6), ch * rnd.uniform(1.2, 1.5)),
@@ -1845,20 +1845,22 @@ def _arch_masonry(g, rnd, mats, L, W, ow, oh, depth, zd, roof):
         for _ in range(int(L * 55)):
             xi = rnd.uniform(-L / 2, L / 2)
             zi = rnd.uniform(-depth * 0.55, zd(xi) - 0.05)
-            if abs(xi) < ow / 2 + 0.25 and zi < roof(xi) + 0.3:
+            if any(abs(xi - c) < w / 2 + 0.25 for c, w, h in ops) and zi < roof(xi) + 0.3:
                 continue
             if any(((xi - a) / (w * 0.45)) ** 2 + ((zi - b) / (h * 0.45)) ** 2 < 1.0 for a, b, w, h in main):
                 continue
             stone((xi, yf + 0.03, zi), (rnd.uniform(0.14, 0.26), 0.4, rnd.uniform(0.1, 0.18)), rnd.uniform(-0.3, 0.3), rnd.uniform(-0.3, 0.3), face=sgn, exponent=2.6)
-        # the arch ring: voussoirs of every size, a little out of line
-        a = 0.0
-        while a < math.pi:
-            da = rnd.uniform(0.17, 0.3)
-            rr = rnd.uniform(0.15, 0.3)
-            xa, za = -math.cos(a + da / 2) * (ow / 2 + rr), math.sin(a + da / 2) * (oh + rr)
-            stone((xa, yf + rnd.uniform(-0.03, 0.02), za), (rnd.uniform(0.3, 0.5), 0.5, rnd.uniform(0.26, 0.42)),
-                  roty=a + da / 2 - math.pi / 2 + rnd.uniform(-0.12, 0.12), face=sgn, exponent=rnd.uniform(2.3, 3.0))
-            a += da * 0.85
+        # the arch rings: voussoirs of every size, a little out of line
+        for c, w, h in ops:
+            ow, oh = w, roof(c)
+            a = 0.0
+            while a < math.pi:
+                da = rnd.uniform(0.17, 0.3)
+                rr = rnd.uniform(0.15, 0.3)
+                xa, za = c - math.cos(a + da / 2) * (ow / 2 + rr), math.sin(a + da / 2) * (oh + rr)
+                stone((xa, yf + rnd.uniform(-0.03, 0.02), za), (rnd.uniform(0.3, 0.5), 0.5, rnd.uniform(0.26, 0.42)),
+                      roty=a + da / 2 - math.pi / 2 + rnd.uniform(-0.12, 0.12), face=sgn, exponent=rnd.uniform(2.3, 3.0))
+                a += da * 0.85
         _parapet(g, rnd, mats, L, sgn * (W / 2 - t / 2), t, zd)
 
 
@@ -1883,6 +1885,13 @@ def stone_bridge(g, s):
         mats = [variant(m, key, dk, tint) for m in mats]
         core = variant(core, key, dk, tint)
     rnd = random.Random(s.get("seed", 1))
+    arches = int(s.get("arches", 1))
+    if arch and arches > 1:  # several arches over piers: `abutment` (the stone at each end), `pier` (between arches)
+        ab, pr = s.get("abutment", 1.4), s.get("pier", 1.1)
+        aw = (L - 2 * ab - (arches - 1) * pr) / arches
+        ops = [(-L / 2 + ab + aw / 2 + k * (aw + pr), aw, oh) for k in range(arches)]
+    else:
+        ops = [(0.0, ow, oh)] if ow > 0 else []
     if ow > 0:
         H = max(H, oh + 0.42)
     run = max(0.2, H / math.tan(side))
@@ -1895,7 +1904,7 @@ def stone_bridge(g, s):
     def surf(x, y):
         u = min(1.0, abs(2 * x / L))
         if arch:  # a hump bridge: the deck line, level across, vertical flanks
-            return H * (1 - u ** 2.6)
+            return H * (1 - u ** s.get("hump", 2.6))
         hx = smooth((1 - u) / 0.5) ** 0.9 * (1 - 0.28 * u * u)  # gently domed (the Swilcan bridge's hump), the ends feathering out
         cy = (1 - min(1.0, abs(2 * y / W)) ** 5.0) ** 0.5  # flat top, steep shoulders
         z = H * hx * cy
@@ -1908,15 +1917,28 @@ def stone_bridge(g, s):
         e = 0.05
         return math.hypot((surf(x + e, y) - surf(x - e, y)) / (2 * e), (surf(x, y + e) - surf(x, y - e)) / (2 * e))
 
+    def opening_at(x):
+        for c, w, h in ops:
+            if abs(x - c) < w / 2:
+                return (c, w, h)
+        return None
+
     def roof(x):
-        t = abs(2 * x / ow)
-        return oh * math.sqrt(max(0.0, 1 - t * t)) if ow > 0 else -depth
+        if not ops:
+            return -depth
+        o = opening_at(x)
+        if o is None:
+            return 0.0
+        c, w, h = o
+        t = abs(2 * (x - c) / w)
+        v = h * math.sqrt(max(0.0, 1 - t * t))
+        return min(v, surf(x, 0.0) - 0.35) if arch else v  # the crown keeps its stone over it
 
     # --- the core: a closed solid, top = surface - sink, underside -depth (the arch inside the culvert)
     xs = {round(-L / 2 + L * i / max(2, int(L / 0.25)), 4) for i in range(max(2, int(L / 0.25)) + 1)}
-    if ow > 0:
-        xs |= {round(ow / 2 * math.sin(math.pi * (k / 8 - 0.5)), 4) for k in range(9)}
-        xs |= {round(ow / 2 * 1.0, 4), round(-ow / 2, 4)}
+    for c, w, h in ops:
+        xs |= {round(c + w / 2 * math.sin(math.pi * (k / 8 - 0.5)), 4) for k in range(9)}
+        xs |= {round(c + w / 2, 4), round(c - w / 2, 4)}
     xs = sorted(x for x in xs if abs(x) <= L / 2)
     ny = max(2, int(W / 0.25))
     ys = [-W / 2 + W * j / ny for j in range(ny + 1)]
@@ -1932,7 +1954,7 @@ def stone_bridge(g, s):
             x0, x1, y0, y1 = xs[i], xs[i + 1], ys[j], ys[j + 1]
             g.poly([(x0, y0, top(x0, y0)), (x1, y0, top(x1, y0)), (x1, y1, top(x1, y1)), (x0, y1, top(x0, y1))], deck if arch else core)
             xm = (x0 + x1) / 2
-            if ow > 0 and abs(xm) < ow / 2:  # inside the culvert: the arch's soffit, seen from below
+            if opening_at(xm):  # inside the culvert: the arch's soffit, seen from below
                 g.poly([(x0, y1, roof(x0)), (x1, y1, roof(x1)), (x1, y0, roof(x1)), (x0, y0, roof(x0))], core)
             else:
                 g.poly([(x0, y1, -depth), (x1, y1, -depth), (x1, y0, -depth), (x0, y0, -depth)], core)
@@ -1940,7 +1962,7 @@ def stone_bridge(g, s):
         y = sgn * W / 2
         for i in range(len(xs) - 1):
             x0, x1 = xs[i], xs[i + 1]
-            lo0, lo1 = (roof(x0), roof(x1)) if ow > 0 and abs((x0 + x1) / 2) < ow / 2 else (-depth, -depth)
+            lo0, lo1 = (roof(x0), roof(x1)) if opening_at((x0 + x1) / 2) else (-depth, -depth)
             q = [(x0, y, lo0), (x1, y, lo1), (x1, y, top(x1, y)), (x0, y, top(x0, y))]
             g.poly(q if sgn < 0 else q[::-1], core)
     for sgn in (-1, 1):  # the short ends (x = +-L/2)
@@ -1948,9 +1970,9 @@ def stone_bridge(g, s):
         for j in range(ny):
             q = [(x, ys[j], -depth), (x, ys[j + 1], -depth), (x, ys[j + 1], top(x, ys[j + 1])), (x, ys[j], top(x, ys[j]))]
             g.poly(q if sgn > 0 else q[::-1], core)
-    if ow > 0:  # vertical culvert walls below the arch springing
+    for c, w, h in ops:  # vertical culvert walls below the arch springing
         for sgn in (-1, 1):
-            x = sgn * ow / 2
+            x = c + sgn * w / 2
             q = [(x, -W / 2, -depth), (x, W / 2, -depth), (x, W / 2, 0.0), (x, -W / 2, 0.0)]
             g.poly(q[::-1] if sgn > 0 else q, core)
 
@@ -2024,7 +2046,7 @@ def stone_bridge(g, s):
                 boulder(g, spec)
                 g.pop()
     if arch:
-        _arch_masonry(g, rnd, mats, L, W, ow, oh, depth, lambda x: surf(x, 0.0), roof)
+        _arch_masonry(g, rnd, mats, L, W, ops, depth, lambda x: surf(x, 0.0), roof)
         return
     # the flanks (steep: the passes above sample from above and leave them thin) and the parapet along both edges
     for _ in range(int(L * 260 * stone)):

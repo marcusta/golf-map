@@ -37,6 +37,11 @@ SITES = {
                                     note="creek 575, deck 6.5 x 3.5 m in the ortho, creek WSW-ENE"),
     "omberg_stone_bridge_h6b": dict(hole=6, e=477521.1, n=6457810.1, yawDeg=180.0, style="arch", length=7.0, width=2.6, height=1.3, seed=23, active=True,
                                     note="creek 575, deck 6.7 x 3.3 m, creek W-E, a parapet strip on the east side"),
+    # hole 3's long bridge over the pond arm east of the green (Google photo; ortho 2025: a pale deck about 16 x 2.6 m on bearing 52, lidar
+    # points 0.9 m over the ground; no waterfall feature there). Three arches over piers. Centre by eye at 40 px/m.
+    "omberg_stone_bridge_h3c": dict(hole=3, e=477955.0, n=6457780.0, yawDeg=52.0, style="arch", length=16.0, width=2.6, height=1.8, seed=51, active=True,
+                                    opening=6.5, openingHeight=1.3, hump=5.0, depth=1.6,
+                                    note="pond 572, the pale bridge SE of the green; Marcus's Street View photo: ONE wide shallow arch, long solid abutments, a flat coping"),
     # candidates: ask Marcus first
     "omberg_stone_bridge_h9c": dict(hole=9, e=477635.0, n=6457827.0, yawDeg=27.0, style="arch", length=6.5, width=2.6, height=1.2, seed=31, active=True,
                                     note="creek 575 where it enters hole 9's west pond (pale slab 5 x 3 m); not the 'bridge at hole 9's green' (sill E)"),
@@ -62,6 +67,7 @@ def spec(all_sites=False):
             continue
         part = {"kind": "stone_bridge", "style": s["style"], "length": s["length"], "width": s["width"], "height": s["height"], "seed": s["seed"], "colorKey": name.replace("omberg_stone_bridge_", "")}
         part.update({k: v for k, v in tn.get(name, {}).items() if k in ("darkness", "tint")})
+        part.update({k: s[k] for k in ("arches", "hump", "depth", "abutment", "pier", "opening", "openingHeight") if k in s and s["style"] == "arch"})
         if s["style"] == "arch":
             part["deck"] = s.get("deck", "turf_mat_dark")
         if s["style"] == "mound":

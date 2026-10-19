@@ -1,5 +1,13 @@
 {
  "omberg_stone_bridge_h9e": {
   "darkness": 0.8
+ },
+ "omberg_stone_bridge_h3c": {
+  "darkness": 1.0,
+  "tint": [
+   1.06,
+   0.98,
+   0.88
+  ]
  }
 }
