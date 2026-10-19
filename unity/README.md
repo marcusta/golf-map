@@ -1550,6 +1550,9 @@ each chunk with LODs and one simplified collider.
   `physicMaterial` on the chunk, static) and `<wall>/Stones` (the stones, inactive: the source of the next bake).
   Meshes: `<course>/Walls/Baked/<wall>.asset`. Work files: `GolfMapSpelunk/wall-bake/<Course>_<wall>.in.json` (what
   Unity sent), `.out.json` + `.out.bin` (what Blender made), `.out.log` (Blender's output).
+- Look: the same as the stones close up except in the sun on the top edges, which come out a little brighter (Omberg
+  h14, 2026-10-19). OPCD's course meshes cast no shadows (`CastShadows: Off`), so the loose stones' buried backs shadowed
+  the wall through the bank; the bake drops them. Before/after: `docs/gspro/ombergs-golfklubb/wall-bake-h14-before-after.png`.
 - `golfmap.walls.bake [only=<wall ids>] [dryRun=true]` bakes walls standing in the scene without rebuilding them: after
   moving wall stones by hand, `golfmap.walls.unbake only=<id>` (shows the stones again, deletes the chunks), move them,
   then `golfmap.walls.bake only=<id>`. Hand moves last until the next build of that wall, as before.
