@@ -38,9 +38,13 @@
 //   (NeckFlareM). A point at a corner too sharp for the water's width (two
 //   sections crossing: R.A.M. folds the mesh there) is dropped;
 // - ends: both ends run on along the line until the ground rises the same
-//   way, then bankM into the bank.
-// A side or end that never meets a bank (a creek into a pond or another
-// creek, flat ground) keeps the export's width or end and is counted "open".
+//   way, then bankM into the bank. An end at a lake (a water plane within
+//   LakeGapM of it) instead runs on pondFadeM past the lake's shore, and the
+//   water fades out over the lake there (R.A.M.'s vertex colour alpha: 1 at
+//   the shore, 0 pondFadeM into the lake), so the creek's colour does not
+//   stop in a hard edge on the lake's.
+// A side or end that never meets a bank (a creek into another creek, flat
+// ground) keeps the export's width or end and is counted "open".
 //
 // The report compares each creek's exported surface with the ground under it
 // (the highest collider straight down: the course meshes) and gives the fit.
@@ -109,6 +113,7 @@ namespace GolfMap.Editor
             public float aboveBedM = 0.15f, buryM = 0.05f, bankM = 2f, searchM = 8f;
             public string trace;  // a creek id (or part of one): its stations go into the result
             public string water = "lake";  // lake: the lakes' AQUAS water; profile: R.A.M.'s material
+            public float pondFadeM = 2f;  // how far into a lake a creek's water runs and fades out; 0 = no fade, every vertex opaque
             // golfmap.course.refresh only=: refit just the creeks with a point inside one of these (world XZ); the others
             // are left as they are and none is removed. Null = every creek of the export.
             public List<Rect> within;
@@ -123,8 +128,8 @@ namespace GolfMap.Editor
         [MenuItem("GolfMap/Creeks/Water from the R.A.M. profile")]
         static void MenuProfile() { Debug.Log("[GolfMap Creeks] " + GolfMapJson.Serialize(Style("profile"), false)); }
 
-        [BridgeCommand("golfmap.creeks.import", "Import the course's unity-creeks-v1 export (<prefix>-inner-creeks.json) as NatureManufacture R.A.M. splines under 'GolfMap Creeks': one RamSpline per creek with its profile, fitted to the course meshes under it (water aboveBedM over the bed; each side out to where the bank rises above the water plus bankM; both ends run on into the bank the same way), wearing the lakes' water (water=lake) or the profile's material (water=profile). Re-import after changing creeks, heightmap or meshes refits them in place (points and transform reset) and removes creeks no longer exported. Marks the scene dirty; save=true saves it (and the assets it changed) once the import has succeeded.",
-            args = "file (default: the active course's export), dryRun=false, fit=true (false: the export's surface and width as they are), aboveBedM=0.15, bankM=2, buryM=0.05, searchM=8 (how far past the export's half width to look for a bank), trace (a creek id or part of one: its fit station by station), water=lake|profile, " + GolfMapSceneSave.Arg)]
+        [BridgeCommand("golfmap.creeks.import", "Import the course's unity-creeks-v1 export (<prefix>-inner-creeks.json) as NatureManufacture R.A.M. splines under 'GolfMap Creeks': one RamSpline per creek with its profile, fitted to the course meshes under it (water aboveBedM over the bed; each side out to where the bank rises above the water plus bankM; both ends run on into the bank the same way, or at a lake pondFadeM past its shore, the water fading out over the lake by vertex alpha), wearing the lakes' water (water=lake) or the profile's material (water=profile). Re-import after changing creeks, heightmap or meshes refits them in place (points and transform reset) and removes creeks no longer exported. Marks the scene dirty; save=true saves it (and the assets it changed) once the import has succeeded.",
+            args = "file (default: the active course's export), dryRun=false, fit=true (false: the export's surface and width as they are), aboveBedM=0.15, bankM=2, buryM=0.05, searchM=8 (how far past the export's half width to look for a bank), trace (a creek id or part of one: its fit station by station), water=lake|profile, pondFadeM=2 (0: no fade at lakes), " + GolfMapSceneSave.Arg)]
         static object Command(BridgeArgs a)
         {
             var o = new FitOptions();
@@ -135,6 +140,7 @@ namespace GolfMap.Editor
             o.searchM = (float)a.Number("searchM", o.searchM);
             o.trace = a.String("trace");
             o.water = a.String("water") ?? o.water;
+            o.pondFadeM = (float)a.Number("pondFadeM", o.pondFadeM);
             return Import(a.String("file"), a.Bool("dryRun", false), o);
         }
 
@@ -233,6 +239,8 @@ namespace GolfMap.Editor
                 splineType.GetField("snapToTerrain").SetValue(spline, false);
                 if (profile != null) ApplyProfile(spline, splineType, profile, profileType);
                 splineType.GetMethod("GenerateSpline").Invoke(spline, new object[] { null });
+                int faded = FadeIntoLakes(spline, splineType, fit.pondFadeM);
+                if (faded > 0) row["lakeFadeVertices"] = faded;
                 EditorUtility.SetDirty(spline);
                 imported.Add(go);
                 if (c.water == "lake" || c.water == "profile") perCreek[go] = c.water;
@@ -704,6 +712,17 @@ namespace GolfMap.Editor
             {
                 int i = e == 0 ? 0 : fitted.Count - 1, inward = e == 0 ? 1 : fitted.Count - 2;
                 Vector2 end = XZ(fitted[i]), outward = (end - XZ(fitted[inward])).normalized;
+                float into = o.pondFadeM > 0 ? IntoLake(end, outward, o.pondFadeM) : float.NaN;
+                if (!float.IsNaN(into))
+                {
+                    // At a lake: on past its shore, where FadeIntoLakes fades the water out.
+                    ends.Add("lake " + M(into));
+                    if (into < 0.1f) continue;
+                    var p = end + outward * into;
+                    var on = new Vector4(p.x, fitted[i].y, p.y, fitted[i].w);
+                    if (e == 0) fitted.Insert(0, on); else fitted.Add(on);
+                    continue;
+                }
                 int steps = Mathf.CeilToInt((fitted[i].w / 2f + o.searchM) / StepM);
                 var ground = new float[steps + 1];
                 for (int k = 0; k <= steps; k++) ground[k] = GroundAt(end + outward * (k * StepM));
@@ -850,6 +869,67 @@ namespace GolfMap.Editor
                 else if (h.collider is TerrainCollider) terrain = Mathf.Max(terrain, h.point.y);
             }
             return !float.IsNegativeInfinity(mesh) ? mesh : !float.IsNegativeInfinity(terrain) ? terrain : float.NaN;
+        }
+
+        // A creek end at a lake: a water plane within LakeGapM past the end (or under it, LakeBackM back along the line).
+        const float LakeGapM = 1f, LakeBackM = 4f;
+
+        // How far past `end` along `outward` the water runs to stand fadeM over the lake there (negative: it already
+        // does); NaN when no lake is at this end.
+        static float IntoLake(Vector2 end, Vector2 outward, float fadeM)
+        {
+            for (float s = -LakeBackM; s <= LakeGapM; s += StepM)
+                if (OverLake(end + outward * s)) return s + fadeM;
+            return float.NaN;
+        }
+
+        // Is (x, z) over a water plane (their MeshColliders)?
+        static bool OverLake(Vector2 p)
+        {
+            foreach (var h in Physics.RaycastAll(new Vector3(p.x, 10000f, p.y), Vector3.down, 20000f, ~0, QueryTriggerInteraction.Ignore))
+                if (GolfMapWaterplanes.IsWaterPlane(h.collider.name)) return true;
+            return false;
+        }
+
+        // How far (x, z) lies inside a lake: the nearest point off the water planes, looked for in rings StepM apart; maxM
+        // when none is nearer, 0 off the lakes.
+        static float LakeDepth(Vector2 p, float maxM)
+        {
+            if (!OverLake(p)) return 0;
+            for (float r = StepM; r < maxM; r += StepM)
+                for (int k = 0; k < 16; k++)
+                {
+                    float t = k * Mathf.PI / 8;
+                    if (!OverLake(p + new Vector2(Mathf.Cos(t), Mathf.Sin(t)) * r)) return r;
+                }
+            return maxM;
+        }
+
+        // The water's opacity, R.A.M.'s vertex colour alpha (its vertex colour water shaders multiply their alpha by it): 1 off
+        // the lakes, easing to 0 fadeM inside a lake's shore, so a creek running into a pond melts into the pond's own water.
+        // Every vertex is set (R.A.M. keeps the colours of a spline whose vertex count is unchanged), the spline regenerated
+        // with them. The number of vertices made see-through at all.
+        static int FadeIntoLakes(Component spline, Type splineType, float fadeM)
+        {
+            var filter = spline.GetComponent<MeshFilter>();
+            var mesh = filter != null ? filter.sharedMesh : null;
+            var field = splineType.GetField("colors");
+            var colors = field.GetValue(spline) as Color[];
+            if (mesh == null || colors == null || colors.Length != mesh.vertexCount) return 0;
+            var vertices = mesh.vertices;
+            int faded = 0;
+            bool changed = false;
+            for (int i = 0; i < vertices.Length; i++)
+            {
+                var w = spline.transform.TransformPoint(vertices[i]);
+                float a = fadeM > 0 ? 1f - Mathf.SmoothStep(0f, 1f, LakeDepth(new Vector2(w.x, w.z), fadeM) / fadeM) : 1f;
+                if (a < 1f) faded++;
+                if (colors[i].a != a) { colors[i].a = a; changed = true; }
+            }
+            if (!changed) return faded;
+            field.SetValue(spline, colors);
+            splineType.GetMethod("GenerateSpline").Invoke(spline, new object[] { null });
+            return faded;
         }
 
         // Ground (the highest collider straight down, course meshes first) minus

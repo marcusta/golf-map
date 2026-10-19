@@ -113,7 +113,9 @@ edges run `bankM` into the banks, ends into the bank, crossings bridged). Refit 
 export creeks again + import again. `trace=<id>` explains a bad fit. R.A.M. types are resolved by name. The creeks wear
 the lakes' AQUAS water by default (`water=lake`: `<course>/Creeks/Creek water (lake).mat`, copied once from OPCD's plane
 material, probe anchored to the nearest lake's); `golfmap.creeks.water water=lake|profile` switches the look without a refit.
-See [README.md](README.md#creeks-ram).
+A feature's `ramWaterMaterial` (asset path) overrides the look for that creek. An end at a lake runs `pondFadeM` (2 m) past the
+shore and fades out there by R.A.M.'s vertex colour alpha, so no hard edge shows on the pond (`pondFadeM=0`: off).
+See [README.md](../unity/README.md#creeks-ram).
 
 Lake water planes: `GolfMap > Waterplanes` (`GolfMapWaterplanes.cs`, bridge `golfmap.waterplanes.build`) does OPCD's Blender
 "Add Water Plane" in Unity from the scene's `*_Water_Base_Lake_-_Mesh`, or one selected mesh of any name (`Build for selected

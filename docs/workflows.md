@@ -197,3 +197,5 @@ A creek or a chain of ponds drawn as one or two features, really a run of flat p
 6. **Waterfalls.** **Update waterfalls** (`bun run gspro:update -- <course> waterfalls`): `golfmap.waterfalls.build` puts the falling water along each lip, from the water above down to the water below. Done when every fall shows in a `unity_screenshot` from beside it.
 
 A fall the lidar does not show (drop 0 on a forced cut) keeps no levels on its feature: the export reads them from the ponds on either side.
+
+**A creek's water ends in a visible edge on a pond** (another colour): `golfmap.creeks.import` fades each creek's water out `pondFadeM` (2 m) into a lake it runs into. If the creek's colour still differs, give its feature `ramWaterMaterial` = a course material whose colours match the ponds (Omberg: `Assets/GolfMap/Omberg/Creeks/Creek water (hole 17).mat`), then **Update creeks**. See [unity/README.md](../unity/README.md) "Creeks (R.A.M.)" and [docs/gspro/ombergs-golfklubb/creek-beds.md](gspro/ombergs-golfklubb/creek-beds.md).

@@ -37,6 +37,12 @@ so every `creeks.import` keeps it: `ramWaterMaterial` (asset path) and `ramAbove
 import's 0.15) -> the creeks export (`waterMaterial`, `aboveBedM`) -> `GolfMapCreeks`. The black paint stops 0.1 m under the grass level (paint.json
 `belowM` 0.1, `softM` 0.08), so a grass lip stands at the top of the bank.
 
+**Creek 575 at pond 239** (hole 9's outlet by the stone bridge, 2026-10-19): the profile's pale blue water lay as a hard
+wedge on the pond's dark AQUAS water. Two fixes: creek 575 wears hole 17's material too (`ramWaterMaterial` set on the feature,
+the same asset, so one material tunes both), and `creeks.import` now fades every creek's water out over a lake it runs into
+(`pondFadeM` 2 m, vertex alpha; see [unity/README.md](../../../unity/README.md) "Creeks"). The white patch below the
+bridge is fall G's cascade foam, not the seam.
+
 **Where the black stops, per side** (feature `hole_17_233`, attributes `grassBelowLeftM` 0.3 and `grassBelowRightM` 0.2, left/right looking
 downstream = looking north there: left = west): the paint rule `creek-bed` names the creek (`creek`), the creeks export carries the two numbers, and the
 paint takes them per side of the creek's line (`belowM` 0.1 is the fallback, `softM` 0.08 the blend). `grassFrom: rough` gives the brook mesh the nearest
