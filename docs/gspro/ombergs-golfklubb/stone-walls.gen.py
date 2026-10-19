@@ -117,15 +117,15 @@ STYLES = {
         "beyondM": 1.2,               # the plateau's height 1.2 m back: nearer, the meshes' smeared edge is still falling
         "baseCourseM": [0.3, 0.4],
         "courseM": [0.2, 0.3],
-        "stoneHeightVar": [1.0, 1.15],  # a stone fills its course and overlaps the next (Marcus: too many gaps)
+        "stoneHeightVar": [1.05, 1.2],  # a stone fills its course and overlaps the next (Marcus: too many gaps)
         "bedJitterM": 0.02,
         "lengthRatio": [1.3, 2.4],
         "maxStoneM": 0.7,
         "depthM": [0.35, 0.55],
-        "faceProudM": 0.06,            # clear of where the raised face mesh bulges
+        "faceProudM": 0.1,             # clear of the raised face mesh: nearer, it swallows whole stones
         "faceJitterM": 0.02,
         "spinDeg": 2,
-        "gapM": -0.07,                 # packed tight along the course
+        "gapM": -0.12,                 # neighbours overlap: no dark joints
         "sinkM": 0.08,
         "topMarginM": 0.08,
         "capM": 0.0,

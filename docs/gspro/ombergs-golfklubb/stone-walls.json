@@ -163,8 +163,8 @@
     0.3
    ],
    "stoneHeightVar": [
-    1.0,
-    1.15
+    1.05,
+    1.2
    ],
    "bedJitterM": 0.02,
    "lengthRatio": [
@@ -176,10 +176,10 @@
     0.35,
     0.55
    ],
-   "faceProudM": 0.06,
+   "faceProudM": 0.1,
    "faceJitterM": 0.02,
    "spinDeg": 2,
-   "gapM": -0.07,
+   "gapM": -0.12,
    "sinkM": 0.08,
    "topMarginM": 0.08,
    "capM": 0.0,
