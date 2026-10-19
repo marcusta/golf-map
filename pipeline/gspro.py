@@ -6938,6 +6938,7 @@ def cmd_creeks(bbox, db_path: Path, course_ident: str, dem_path: Path, sidecar_p
             **({"water": str(attrs["ramWater"])} if attrs.get("ramWater") in ("lake", "profile") else {}),
             **({"waterMaterial": str(attrs["ramWaterMaterial"])} if attrs.get("ramWaterMaterial") else {}),
             **({"aboveBedM": float(attrs["ramAboveBedM"])} if isinstance(attrs.get("ramAboveBedM"), (int, float)) else {}),
+            **{k: float(attrs[k]) for k in ("grassBelowLeftM", "grassBelowRightM") if isinstance(attrs.get(k), (int, float))},
             "widthM": round(width, 2),
             "lengthM": round(float(prof.s[-1]), 1),
             "fallM": round(float(c_z[0] - c_z[-1]), 2),

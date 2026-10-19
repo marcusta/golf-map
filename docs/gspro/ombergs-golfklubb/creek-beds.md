@@ -36,3 +36,9 @@ course's Creeks folder (a copy of `Creek water (Small Stream Profile).mat`; colo
 so every `creeks.import` keeps it: `ramWaterMaterial` (asset path) and `ramAboveBedM` 0.25 (the water 0.25 m over the bed, +0.10 m on the
 import's 0.15) -> the creeks export (`waterMaterial`, `aboveBedM`) -> `GolfMapCreeks`. The black paint stops 0.1 m under the grass level (paint.json
 `belowM` 0.1, `softM` 0.08), so a grass lip stands at the top of the bank.
+
+**Where the black stops, per side** (feature `hole_17_233`, attributes `grassBelowLeftM` 0.3 and `grassBelowRightM` 0.2, left/right looking
+downstream = looking north there: left = west): the paint rule `creek-bed` names the creek (`creek`), the creeks export carries the two numbers, and the
+paint takes them per side of the creek's line (`belowM` 0.1 is the fallback, `softM` 0.08 the blend). `grassFrom: rough` gives the brook mesh the nearest
+rough's Stix components (NatureMeshFilter, grassonoffnew, GrassRenderer), so its red lip grows the same 3D grass as the rough all the way to the black
+edge, and the black (red 0) grows none.

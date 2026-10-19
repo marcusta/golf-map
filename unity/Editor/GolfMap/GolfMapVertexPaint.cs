@@ -110,6 +110,13 @@ namespace GolfMap.Editor
             // nearest border vertex (within reachM); vertices less than belowM under it keep their colour, so a grass lip
             // stands at the top, and the paint is full from belowM + softM down.
             public float belowM = -1f, softM = 0.08f, reachM = 1.5f;
+            // `creek` = an exported creek's id (feature:<id>): its grassBelowLeftM / grassBelowRightM (feature settings; left and
+            // right looking downstream) replace belowM on that side of its line.
+            public string creek;
+            // grassFrom "rough": the mesh gets the Stix grass components of the nearest rough mesh (GrassRenderer,
+            // grassonoffnew, NatureMeshFilter), so its red vertices grow the 3D grass the rough has: the lip of a creek bed.
+            public bool grassFromRough;
+            public List<Vector2> line; public float belowLeftM = float.NaN, belowRightM = float.NaN;
             public string albedo, normal;     // material: asset paths, null = keep the material
             public float tileM = 1f;
             public Color tint = Color.white;
@@ -138,7 +145,14 @@ namespace GolfMap.Editor
                     belowM = (float)o.Number("belowM", -1),
                     softM = (float)o.Number("softM", 0.08),
                     reachM = (float)o.Number("reachM", 1.5),
+                    creek = o.String("creek"),
+                    grassFromRough = o.String("grassFrom") == "rough",
                 };
+                if (!string.IsNullOrEmpty(r.creek))
+                {
+                    r.line = GolfMapCreeks.SideLine(r.creek, out r.belowLeftM, out r.belowRightM);
+                    if (r.line == null || r.line.Count < 2) throw new InvalidOperationException(where + ": creek " + r.creek + " is not in the creeks export (Export creeks first).");
+                }
                 if (r.belowM > 0 && (r.softM <= 0 || r.reachM <= 0)) throw new InvalidOperationException(where + ": softM and reachM must be > 0.");
                 if (string.IsNullOrEmpty(r.match)) throw new InvalidOperationException(where + ": an object rule needs match (a name substring).");
                 if (r.fadeM <= 0) throw new InvalidOperationException(where + ": fadeM must be > 0.");
@@ -445,7 +459,14 @@ namespace GolfMap.Editor
                             Vector3 top;
                             // no border vertex in reach: far from any edge, fully inside
                             float depth = ownEdge.NearestXZ(p, r.reachM, out top) == float.MaxValue ? float.MaxValue : top.y - p.y;
-                            w = r.strength * Smooth(r.belowM, r.belowM + r.softM, depth);
+                            float below = r.belowM;
+                            if (r.line != null)
+                            {
+                                float side = SideOf(r.line, p);
+                                float sideBelow = side > 0 ? r.belowLeftM : r.belowRightM;
+                                if (!float.IsNaN(sideBelow)) below = sideBelow;
+                            }
+                            w = r.strength * Smooth(below, below + r.softM, depth);
                         }
                         else
                         {
@@ -492,6 +513,7 @@ namespace GolfMap.Editor
                 Mesh saved;
                 if (existing == null) { AssetDatabase.CreateAsset(copy, assetPath); saved = copy; }
                 else { Overwrite(existing, copy); UnityEngine.Object.DestroyImmediate(copy); saved = existing; EditorUtility.SetDirty(saved); }
+                if (mine.Any(r => r.grassFromRough)) EnsureGrassComponents(f, allFilters);
                 SetMesh(f, saved, reshaped ? saved : source);
                 // a reshaped rough draws its stone channel from a copy of its material (the original is remembered)
                 string material = null;
@@ -665,6 +687,50 @@ namespace GolfMap.Editor
             type.GetMethod("ResetCache").Invoke(nmf, null);
             type.GetMethod("GetMeshes").Invoke(nmf, new object[] { false });
             EditorUtility.SetDirty(nmf);
+        }
+
+        // Which side of the line (plot x, z, running downstream) the point is on: > 0 left, < 0 right (looking downstream), by the
+        // nearest segment.
+        static float SideOf(List<Vector2> line, Vector3 p)
+        {
+            var q = new Vector2(p.x, p.z);
+            float best = float.MaxValue, side = 0;
+            for (int i = 0; i + 1 < line.Count; i++)
+            {
+                var a = line[i]; var d = line[i + 1] - a;
+                float l2 = Mathf.Max(d.sqrMagnitude, 1e-9f);
+                float t = Mathf.Clamp01(Vector2.Dot(q - a, d) / l2);
+                float dist = (a + d * t - q).sqrMagnitude;
+                if (dist < best) { best = dist; side = d.x * (q.y - a.y) - d.y * (q.x - a.x); }
+            }
+            return side;
+        }
+
+        // The Stix grass components of the nearest rough mesh copied onto `f` where it has none (the rough's own NatureMeshFilter
+        // cache is reset by SetMesh afterwards).
+        static void EnsureGrassComponents(MeshFilter f, List<MeshFilter> all)
+        {
+            if (Component(f, NatureMeshFilterType) != null) return;
+            var br = f.GetComponent<Renderer>();
+            if (br == null) return;
+            MeshFilter from = null;
+            float bestD = float.MaxValue;
+            foreach (var o in all)
+            {
+                if (GolfMapSurfaces.Classify(o.name) != GolfMapSurfaces.Surface.Rough || Component(o, NatureMeshFilterType) == null) continue;
+                var r = o.GetComponent<Renderer>();
+                if (r == null) continue;
+                var dc = r.bounds.center - br.bounds.center;
+                float d = dc.x * dc.x + dc.z * dc.z;
+                if (d < bestD) { bestD = d; from = o; }
+            }
+            if (from == null) return;
+            foreach (var typeName in new[] { NatureMeshFilterType, "grassonoffnew", GrassRendererType })
+            {
+                var c = Component(from, typeName);
+                if (c == null || Component(f, typeName) != null) continue;
+                if (UnityEditorInternal.ComponentUtility.CopyComponent(c)) UnityEditorInternal.ComponentUtility.PasteComponentAsNew(f.gameObject);
+            }
         }
 
         static IEnumerable<Vector3> BoundaryPoints(MeshFilter f)

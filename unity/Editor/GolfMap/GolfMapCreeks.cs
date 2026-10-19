@@ -97,6 +97,9 @@ namespace GolfMap.Editor
             public string waterMaterial;
             // The water's height over this creek's lowest ground, instead of the import's aboveBedM (the feature's ramAboveBedM).
             public float aboveBedM = float.NaN;
+            // Where a vertex paint rule that names this creek stops painting, metres under the grass level, on each side looking
+            // downstream (the feature's grassBelowLeftM / grassBelowRightM); NaN = the rule's own.
+            public float grassBelowLeftM = float.NaN, grassBelowRightM = float.NaN;
             public List<Vector4> points = new List<Vector4>();
         }
 
@@ -262,6 +265,20 @@ namespace GolfMap.Editor
             return result;
         }
 
+        // The line (plot x, z, downstream) and the per-side paint depths of one exported creek, for GolfMapVertexPaint's object rules;
+        // null when the course has no creeks export or the creek is not in it.
+        internal static List<Vector2> SideLine(string creekId, out float left, out float right)
+        {
+            left = right = float.NaN;
+            var course = GolfMapCourses.Require();
+            var file = GolfMapCourses.ExportFile(course, "inner", "creeks");
+            if (string.IsNullOrEmpty(file) || !File.Exists(file)) return null;
+            var c = Load(file).FirstOrDefault(x => x.id == creekId);
+            if (c == null) return null;
+            left = c.grassBelowLeftM; right = c.grassBelowRightM;
+            return c.points.Select(p => new Vector2(p.x, p.z)).ToList();
+        }
+
         static List<Creek> Load(string file)
         {
             var root = GolfMapJsonDoc.ParseObject(File.ReadAllText(file));
@@ -278,6 +295,8 @@ namespace GolfMap.Editor
                     held = o.Number("stretches", 0) > 1 || o.Number("falls", 0) > 0,
                     water = o.String("water"), waterMaterial = o.String("waterMaterial"),
                     aboveBedM = (float)o.Number("aboveBedM", float.NaN),
+                    grassBelowLeftM = (float)o.Number("grassBelowLeftM", float.NaN),
+                    grassBelowRightM = (float)o.Number("grassBelowRightM", float.NaN),
                 };
                 foreach (var q in (o.Array("fallsAt") ?? new List<object>()).OfType<List<object>>())
                 {
