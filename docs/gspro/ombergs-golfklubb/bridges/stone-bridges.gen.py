@@ -38,10 +38,10 @@ SITES = {
     "omberg_stone_bridge_h6b": dict(hole=6, e=477521.1, n=6457810.1, yawDeg=180.0, style="mound", length=9.5, width=3.2, height=1.4, seed=23, active=True,
                                     note="creek 575, deck 6.7 x 3.3 m, creek W-E, a parapet strip on the east side"),
     # candidates: ask Marcus first
-    "omberg_stone_bridge_h9c": dict(hole=9, e=477635.0, n=6457827.0, yawDeg=27.0, style="mound", length=7.5, width=3.0, height=1.2, seed=31, active=False,
+    "omberg_stone_bridge_h9c": dict(hole=9, e=477635.0, n=6457827.0, yawDeg=27.0, style="mound", length=7.5, width=3.0, height=1.2, seed=31, active=True,
                                     note="creek 575 where it enters hole 9's west pond (pale slab 5 x 3 m); not the 'bridge at hole 9's green' (sill E)"),
-    "omberg_stone_bridge_h17": dict(hole=17, e=477672.6, n=6457220.5, yawDeg=69.0, style="mound", length=7.0, width=3.0, height=1.2, seed=41, active=False,
-                                    note="would replace omberg_creek_bridge_17 (creek_bridge.json, 4.8 m on bearing 69)"),
+    "omberg_stone_bridge_h17": dict(hole=17, e=477672.6, n=6457220.5, yawDeg=69.0, style="arch", length=6.5, width=2.4, height=1.1, seed=41, active=True,
+                                    note="replaces omberg_creek_bridge_17 (creek-bridge.json, 4.8 m on bearing 69) - Marcus 2026-10-19: the arch bridge on 17"),
 }
 
 
@@ -57,6 +57,8 @@ def spec(all_sites=False):
             continue
         part = {"kind": "stone_bridge", "style": s["style"], "length": s["length"], "width": s["width"], "height": s["height"], "seed": s["seed"], "colorKey": name.replace("omberg_stone_bridge_", "")}
         part.update({k: v for k, v in tn.get(name, {}).items() if k in ("darkness", "tint")})
+        if s["style"] == "arch":
+            part["deck"] = s.get("deck", "turf_mat_dark")
         if s["style"] == "mound":
             part["stone"] = s.get("stone", 0.22)
             part["opening"] = s.get("opening", 1.8)
@@ -94,7 +96,7 @@ def cmd_tune(argv):
     json.dump(tn, open(TUNE, "w", encoding="utf-8"), indent=1)
     dk, tint = cur.get("darkness", 1.0), cur.get("tint", [1.0, 1.0, 1.0])
     key = asset.replace("omberg_stone_bridge_", "")
-    mats = {"sandstone_ochre", "sandstone_rust", "sandstone_dark", "sandstone_core"}
+    mats = {"sandstone_ochre", "sandstone_rust", "sandstone_dark", "sandstone_core", "fieldstone_grey", "fieldstone_dark", "fieldstone_brown"}
     for p in (BUILD_MANIFEST, UNITY_MANIFEST):
         print(p, "->", patch_manifest(p, asset, key, mats, dk, tint), "materials")
     json.dump(spec(), open(os.path.join(HERE, "stone-bridges.json"), "w", encoding="utf-8"), indent=1)
