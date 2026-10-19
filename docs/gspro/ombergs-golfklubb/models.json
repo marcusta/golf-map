@@ -549,7 +549,7 @@
       "heightM": 0.178071871,
       "crownWidthM": 4.590543,
       "kind": "broadleaf",
-      "form": "tree"
+      "form": "shrub"
     },
     {
       "id": "arborist:LakePlants_Water_Lily_02",
@@ -558,7 +558,7 @@
       "heightM": 0.180862829,
       "crownWidthM": 4.590543,
       "kind": "broadleaf",
-      "form": "tree"
+      "form": "shrub"
     },
     {
       "id": "arborist:LakePlants_Water_Lily_03",
@@ -567,7 +567,7 @@
       "heightM": 0.213051379,
       "crownWidthM": 5.58320236,
       "kind": "broadleaf",
-      "form": "tree"
+      "form": "shrub"
     },
     {
       "id": "arborist:LakePlants_Water_Lily_04",
@@ -576,7 +576,7 @@
       "heightM": 0.04372437,
       "crownWidthM": 1.61444879,
       "kind": "broadleaf",
-      "form": "tree"
+      "form": "shrub"
     },
     {
       "id": "arborist:LakePlants_Water_Lily_05",
@@ -585,52 +585,52 @@
       "heightM": 0.221133932,
       "crownWidthM": 4.560499,
       "kind": "broadleaf",
-      "form": "tree"
+      "form": "shrub"
     },
     {
       "id": "arborist:LakePlants_Lily_Pad_Group_01",
       "species": "water_lily",
       "renderer": "arborist",
-      "heightM": 3.60005821e-8,
+      "heightM": 3.60005821e-08,
       "crownWidthM": 2.89191222,
       "kind": "broadleaf",
-      "form": "tree"
+      "form": "shrub"
     },
     {
       "id": "arborist:LakePlants_Lily_Pad_Group_02",
       "species": "water_lily",
       "renderer": "arborist",
-      "heightM": 6.470543e-8,
+      "heightM": 6.470543e-08,
       "crownWidthM": 3.32910371,
       "kind": "broadleaf",
-      "form": "tree"
+      "form": "shrub"
     },
     {
       "id": "arborist:LakePlants_Lily_Pad_Cluster_01",
       "species": "water_lily",
       "renderer": "arborist",
-      "heightM": 7.848879e-9,
+      "heightM": 7.848879e-09,
       "crownWidthM": 0.6827783,
       "kind": "broadleaf",
-      "form": "tree"
+      "form": "shrub"
     },
     {
       "id": "arborist:LakePlants_Lily_Pad_Cluster_02",
       "species": "water_lily",
       "renderer": "arborist",
-      "heightM": 2.00063113e-8,
+      "heightM": 2.00063113e-08,
       "crownWidthM": 0.9153821,
       "kind": "broadleaf",
-      "form": "tree"
+      "form": "shrub"
     },
     {
       "id": "arborist:LakePlants_Lily_Pad_Cluster_03",
       "species": "water_lily",
       "renderer": "arborist",
-      "heightM": 1.69024084e-8,
+      "heightM": 1.69024084e-08,
       "crownWidthM": 0.9340718,
       "kind": "broadleaf",
-      "form": "tree"
+      "form": "shrub"
     },
     {
       "id": "arborist:LakePlants_Lily_Pad_Flower_White",
@@ -639,7 +639,7 @@
       "heightM": 0.03036268,
       "crownWidthM": 0.140398443,
       "kind": "broadleaf",
-      "form": "tree"
+      "form": "shrub"
     },
     {
       "id": "arborist:LakePlants_Lily_Pad_Flower_Yellow",
@@ -648,7 +648,7 @@
       "heightM": 0.03036268,
       "crownWidthM": 0.140398443,
       "kind": "broadleaf",
-      "form": "tree"
+      "form": "shrub"
     },
     {
       "id": "arborist:LakePlants_Yellow_Flag_01",
@@ -657,7 +657,7 @@
       "heightM": 0.707104,
       "crownWidthM": 0.7446685,
       "kind": "broadleaf",
-      "form": "tree"
+      "form": "shrub"
     },
     {
       "id": "arborist:LakePlants_Yellow_Flag_02",
@@ -666,7 +666,7 @@
       "heightM": 0.958512843,
       "crownWidthM": 1.14640927,
       "kind": "broadleaf",
-      "form": "tree"
+      "form": "shrub"
     },
     {
       "id": "arborist:LakePlants_BurReed_Clump_01",
@@ -675,7 +675,7 @@
       "heightM": 0.4907434,
       "crownWidthM": 0.285367042,
       "kind": "broadleaf",
-      "form": "tree"
+      "form": "shrub"
     },
     {
       "id": "arborist:LakePlants_BurReed_Clump_02",
@@ -684,7 +684,7 @@
       "heightM": 0.3569486,
       "crownWidthM": 1.057446,
       "kind": "broadleaf",
-      "form": "tree"
+      "form": "shrub"
     },
     {
       "id": "arborist:LakePlants_BurReed_Clump_03",
@@ -693,7 +693,7 @@
       "heightM": 0.6087525,
       "crownWidthM": 1.78665483,
       "kind": "broadleaf",
-      "form": "tree"
+      "form": "shrub"
     },
     {
       "id": "arborist:LakePlants_BurReed_Line",
@@ -702,7 +702,7 @@
       "heightM": 0.709443867,
       "crownWidthM": 3.65629053,
       "kind": "broadleaf",
-      "form": "tree"
+      "form": "shrub"
     },
     {
       "id": "arborist:LakePlants_Bulrush_01",
@@ -711,7 +711,7 @@
       "heightM": 0.9668202,
       "crownWidthM": 0.5867369,
       "kind": "broadleaf",
-      "form": "tree"
+      "form": "shrub"
     },
     {
       "id": "arborist:LakePlants_Bulrush_02",
@@ -720,7 +720,7 @@
       "heightM": 1.27027178,
       "crownWidthM": 1.21393418,
       "kind": "broadleaf",
-      "form": "tree"
+      "form": "shrub"
     },
     {
       "id": "arborist:LakePlants_BogBean",
@@ -729,7 +729,7 @@
       "heightM": 0.453316718,
       "crownWidthM": 2.21707034,
       "kind": "broadleaf",
-      "form": "tree"
+      "form": "shrub"
     },
     {
       "id": "arborist:LakePlants_Duckweed_Corner_A",
@@ -738,7 +738,7 @@
       "heightM": 0.007568764,
       "crownWidthM": 3.25774813,
       "kind": "broadleaf",
-      "form": "tree"
+      "form": "shrub"
     },
     {
       "id": "arborist:LakePlants_Duckweed_Corner_B",
@@ -747,7 +747,7 @@
       "heightM": 0.0075687645,
       "crownWidthM": 2.31404257,
       "kind": "broadleaf",
-      "form": "tree"
+      "form": "shrub"
     },
     {
       "id": "arborist:LakePlants_Duckweed_Corner_C",
@@ -756,7 +756,7 @@
       "heightM": 0.0075687645,
       "crownWidthM": 3.4976058,
       "kind": "broadleaf",
-      "form": "tree"
+      "form": "shrub"
     },
     {
       "id": "arborist:MeadowEnv_bush_grey_willow_01",
