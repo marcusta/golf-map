@@ -181,9 +181,9 @@ STYLES = {
 # face, `bun run terrain:wall`), the top edge LINE_LIP_IN_M back on the plateau.
 WALLS = [
     {"id": "h14-pond-edge", "style": "pondwall", "feature": "b2388429-8a29-41d6-9396-559dcfd5f18c",
-     "start": (477339.0, 6457146.5), "via": (477336.6, 6457150.5), "end": (477358.0, 6457157.5),
-     "note": "Hole 14 pond: the rough stone edge towards the green, round the west tip (the creek's outlet) and "
-             "along the north edge to E 477358 (2025 and 2023 orthos)."},
+     "start": (477383.2, 6457119.8), "via": (477339.1, 6457149.0), "end": (477358.0, 6457157.5),
+     "note": "Hole 14 pond: the stone wall from the east tip along the whole south side (Marcus's photo, 2026-10-19), "
+             "round the west tip (the creek's outlet) and along the north edge to E 477358 (2025 and 2023 orthos)."},
     # The pond between holes 18, 1 and tee 10 (water feature 77, others_4d; Deep Water, 2 m, 34 deg, 45 deg above).
     {"id": "p77-south-west", "feature": "4530bf16-35ec-4c82-b78b-f139db337b9e",
      "start": (477682.7, 6457395.2), "via": (477652.3, 6457383.8), "end": (477643.7, 6457447.0),
