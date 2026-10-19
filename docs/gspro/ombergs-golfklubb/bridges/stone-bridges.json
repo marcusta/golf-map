@@ -67,6 +67,7 @@
      "height": 1.0,
      "seed": 53,
      "colorKey": "h9e",
+     "darkness": 0.8,
      "deck": "turf_mat_dark",
      "opening": 3.2
     }
@@ -120,7 +121,7 @@
    "n": 6457804.8,
    "yawDeg": 175.0,
    "ground": "median",
-   "dz": -0.1
+   "dz": -0.3
   },
   {
    "asset": "omberg_stone_bridge_h17",

@@ -183,8 +183,12 @@ namespace GolfMap.Editor
                 go.transform.SetParent(root.transform, false);
                 Undo.RegisterCreatedObjectUndo(go, "Build waterfalls");
 
-                // The water: down the middle of the lip, as wide as it (unless the creek's spline carries it).
+                // The water: down the middle of the lip, as wide as it (unless the creek's spline carries it), breaking
+                // into a few streams over the lip (each fall its own, from its id).
+                var streams = Streams(f.id, width);
+                row["streams"] = streams.Count;
                 var pts = Profile(f, mid, u, topY, bottomY, land);
+                var lipDir = Across(f.lip, u);
                 if (!onCreek)
                 {
                     var spline = (Component)splineType.GetMethod("CreateSpline", BindingFlags.Public | BindingFlags.Static)
@@ -193,12 +197,15 @@ namespace GolfMap.Editor
                     spline.transform.SetParent(go.transform, false);
                     spline.transform.localPosition = Vector3.zero;
                     var addPoint = splineType.GetMethod("AddPoint", new[] { typeof(Vector4) });
-                    foreach (var p in pts) addPoint.Invoke(spline, new object[] { new Vector4(p.x, p.y, p.z, width) });
+                    foreach (var p in pts) addPoint.Invoke(spline, new object[] { new Vector4(p.at.x, p.at.y, p.at.z, width * p.widthK) });
                     splineType.GetField("width").SetValue(spline, width);
                     splineType.GetField("snapToTerrain").SetValue(spline, false);
                     ApplyProfile(spline, splineType, profile, profileType);
+                    Shape(spline, splineType, f.id, pts, streams, width);
                     if (material != null) spline.GetComponent<MeshRenderer>().sharedMaterial = material;
                     splineType.GetMethod("GenerateSpline").Invoke(spline, new object[] { null });
+                    var side = Paint(spline, splineType, streams, mid, u, topY, bottomY, land, width, f.style == "outlet");
+                    if (side != null) lipDir = side.Value;
                     foreach (var r in spline.GetComponentsInChildren<MeshRenderer>(true))
                     {
                         r.shadowCastingMode = UnityEngine.Rendering.ShadowCastingMode.Off;
@@ -209,12 +216,19 @@ namespace GolfMap.Editor
 
                 if (o.particles)
                 {
-                    var lipDir = Across(f.lip, u);
-                    var lipTop = new Vector3(mid.x, topY + 0.02f, mid.y) + new Vector3(u.x, 0, u.y) * 0.05f;
-                    var landAt = new Vector3(mid.x + u.x * land, bottomY + 0.03f, mid.y + u.y * land);
-                    if (foam != null) Emitter(go, "Foam over the lip", foam, lipTop, lipDir, width, u, drop, o.foamRate, false);
-                    if (splash != null) Emitter(go, "Splash", splash, landAt, lipDir, width, u, drop, o.splashRate, true);
-                    if (mist != null && drop >= 1f) Emitter(go, "Mist", mist, landAt + Vector3.up * 0.2f, lipDir, width, u, drop, 3f, true, mist: true);
+                    // White water only where a stream breaks over the lip and where it lands, never along the whole lip.
+                    var lipTop = new Vector3(mid.x, topY + 0.02f, mid.y) + new Vector3(u.x, 0, u.y) * 0.08f;
+                    var landAt = new Vector3(mid.x + u.x * land, bottomY + 0.06f, mid.y + u.y * land);
+                    for (int k = 0; k < streams.Count; k++)
+                    {
+                        var s = streams[k];
+                        var off = lipDir * ((s.centre - 0.5f) * width);
+                        float sw = Mathf.Max(2f * s.half * width, 0.25f);
+                        string n = streams.Count > 1 ? " " + (k + 1) : "";
+                        if (foam != null) Emitter(go, "Foam over the lip" + n, foam, lipTop + off, lipDir, sw * 0.6f, u, drop, o.foamRate * s.strength, false);
+                        if (splash != null) Emitter(go, "Splash" + n, splash, landAt + off, lipDir, sw * 1.2f, u, drop, o.splashRate * s.strength, true);
+                    }
+                    if (mist != null && drop >= 1f) Emitter(go, "Mist", mist, landAt + Vector3.up * 0.2f, lipDir, width * 0.7f, u, drop, 2f, true, mist: true);
                 }
             }
 
@@ -338,12 +352,22 @@ namespace GolfMap.Editor
 
         const float CascadeAboveGroundM = 0.08f;
 
-        // The spline's points (x, y, z) down the middle of the fall, upstream to downstream.
-        static List<Vector3> Profile(Fall f, Vector2 mid, Vector2 u, float topY, float bottomY, float land)
+        enum Part { Crest, Lip, Curtain, Foot }
+
+        // One control point of a fall's spline: where, how wide (times the lip's width) and which part of the fall.
+        struct FallPoint
+        {
+            public Vector3 at; public float widthK; public Part part;
+            public FallPoint(Vector3 at, float widthK, Part part) { this.at = at; this.widthK = widthK; this.part = part; }
+        }
+
+        // The spline's points down the middle of the fall, upstream to downstream: the sheet narrows a little as it
+        // falls (water draws together) and the foam spreads where it lands.
+        static List<FallPoint> Profile(Fall f, Vector2 mid, Vector2 u, float topY, float bottomY, float land)
         {
             float drop = topY - bottomY;
             Func<float, float, Vector3> at = (along, y) => new Vector3(mid.x + u.x * along, y, mid.y + u.y * along);
-            var pts = new List<Vector3>();
+            var pts = new List<FallPoint>();
             if (f.style == "outlet")
             {
                 // Out of the bank face (the spout starts inside it, hidden), a little below the upper water and
@@ -352,24 +376,201 @@ namespace GolfMap.Editor
                 var face = mid - u * 0.3f;
                 float? ground = GolfMapProps.Ground(face.x, face.y, null);
                 if (ground != null && ground.Value - OutletCoverM < outY) outY = Mathf.Max(ground.Value - OutletCoverM, bottomY + drop * 0.4f);
-                pts.Add(at(-0.8f, outY + 0.02f));
-                pts.Add(at(-0.1f, outY));
+                pts.Add(new FallPoint(at(-0.8f, outY + 0.02f), 0.9f, Part.Crest));
+                pts.Add(new FallPoint(at(-0.1f, outY), 1f, Part.Lip));
             }
             else
             {
                 // Over the sill's crest, a few centimetres deep, then over the lip.
-                pts.Add(at(-(f.sillM + 0.3f), topY + 0.01f));
-                pts.Add(at(-f.sillM * 0.5f, topY - 0.01f));
-                pts.Add(at(0f, topY - 0.03f));
+                pts.Add(new FallPoint(at(-(f.sillM + 0.3f), topY + 0.01f), 1.04f, Part.Crest));
+                pts.Add(new FallPoint(at(-f.sillM * 0.5f, topY - 0.01f), 1f, Part.Crest));
+                pts.Add(new FallPoint(at(0f, topY - 0.03f), 0.98f, Part.Lip));
             }
-            // The free fall: a curtain bowing out, steepening as it goes.
-            pts.Add(at(land * 0.35f, bottomY + drop * 0.55f));
-            pts.Add(at(land * 0.8f, bottomY + drop * 0.12f));
-            // Landing and running out on the lower water.
-            pts.Add(at(land + 0.35f, bottomY + 0.01f));
-            pts.Add(at(land + 1.2f, bottomY + 0.005f));
+            // The free fall: bowing out, steepening as it goes; three points so R.A.M.'s curve follows it.
+            pts.Add(new FallPoint(at(land * 0.2f, bottomY + drop * 0.78f), 0.95f, Part.Curtain));
+            pts.Add(new FallPoint(at(land * 0.5f, bottomY + drop * 0.45f), 0.91f, Part.Curtain));
+            pts.Add(new FallPoint(at(land * 0.82f, bottomY + drop * 0.12f), 0.88f, Part.Curtain));
+            // Landing and running out on the lower water, the foam spreading.
+            pts.Add(new FallPoint(at(land + 0.35f, bottomY + 0.012f), 1.0f, Part.Foot));
+            pts.Add(new FallPoint(at(land + 1.4f, bottomY + 0.008f), 1.2f, Part.Foot));
             return pts;
         }
+
+        // A stream over the lip: its centre and half width across the lip (0..1) and how much of the water it carries.
+        struct Stream { public float centre, half, strength; }
+
+        // A lip this wide breaks into 1 (under 2.4 m), 2 or 3 (from 4.5 m) streams, placed from the fall's id so a
+        // rebuild gives the same fall.
+        static List<Stream> Streams(string id, float widthM)
+        {
+            var rng = new System.Random(Seed(id));
+            Func<float, float, float> range = (a, b) => a + (float)rng.NextDouble() * (b - a);
+            int n = widthM >= 4.5f ? 3 : widthM >= 2.4f ? 2 : 1;
+            var list = new List<Stream>();
+            if (n == 1) { list.Add(new Stream { centre = 0.5f + range(-0.06f, 0.06f), half = 0.36f, strength = 1f }); return list; }
+            int main = rng.Next(n);
+            for (int k = 0; k < n; k++)
+                list.Add(new Stream
+                {
+                    centre = (k + 0.5f) / n + range(-0.18f, 0.18f) / n,
+                    half = 0.5f / n * range(0.8f, 0.98f) * (k == main ? 1.1f : 1f),
+                    strength = k == main ? 1f : range(0.6f, 0.9f),
+                });
+            return list;
+        }
+
+        static int Seed(string id)
+        {
+            unchecked
+            {
+                int h = (int)2166136261;
+                foreach (char c in id ?? "") h = (h ^ c) * 16777619;
+                return h & 0x7fffffff;
+            }
+        }
+
+        // How much water is at s (0..1 across the lip), the streams spread by `spread` (1 = at the lip).
+        // wobble > 0: each stream's width and line waver with `phase` (how far it has fallen), so its edges are
+        // never ruler-straight.
+        static float Water(List<Stream> streams, float s, float spread, float phase = 0f, float wobble = 0f)
+        {
+            float w = 0;
+            for (int k = 0; k < streams.Count; k++)
+            {
+                var st = streams[k];
+                float sp = spread * (1f + wobble * Mathf.Sin(phase * (1.7f + 0.6f * k) + 2.1f * k));
+                float c = st.centre + wobble * 0.35f * st.half * Mathf.Sin(phase * 1.3f + 1.7f * k);
+                float d = (s - c) / Mathf.Max(st.half * sp, 1e-3f);
+                w = Mathf.Max(w, st.strength * Mathf.Exp(-2.2f * d * d));
+            }
+            return Mathf.Clamp01(w);
+        }
+
+        // Fade to nothing at both ends of the lip, over endM.
+        static float Ends(float s, float widthM, float endM)
+        {
+            float e = Mathf.Clamp(endM / Mathf.Max(widthM, 0.1f), 0.02f, 0.45f);
+            return Mathf.SmoothStep(0f, 1f, s / e) * Mathf.SmoothStep(0f, 1f, (1f - s) / e);
+        }
+
+        // R.A.M.'s own shape data: vertices across the width (the profile's 2 make a flat rectangle) and per control
+        // point a cross-section curve (R.A.M. lifts each vertex by it): the crest a few centimetres uneven, lower
+        // where a stream goes over, the curtain bowing where the streams fall.
+        static void Shape(Component spline, Type splineType, string id, List<FallPoint> pts, List<Stream> streams, float widthM)
+        {
+            splineType.GetField("vertsInShape").SetValue(spline, Mathf.Clamp(Mathf.RoundToInt(widthM / AcrossM) + 1, 5, 31));
+            splineType.GetField("traingleDensity").SetValue(spline, 1f / 8f);
+            var rng = new System.Random(Seed(id) ^ 0x5bd1e995);
+            var curves = (List<AnimationCurve>)splineType.GetField("controlPointsMeshCurves").GetValue(spline);
+            const int keys = 13;
+            for (int i = 0; i < curves.Count && i < pts.Count; i++)
+            {
+                var part = pts[i].part;
+                var c = new AnimationCurve();
+                for (int k = 0; k < keys; k++)
+                {
+                    float s = k / (float)(keys - 1);
+                    float w = Water(streams, s, 1f);
+                    float jitter = ((float)rng.NextDouble() * 2f - 1f);
+                    float bow = 1f - (2f * s - 1f) * (2f * s - 1f);                                   // 0 at the ends, 1 mid-lip
+                    float y;
+                    if (i == 0) y = 0f;                                                               // flat into the upper water
+                    else if (part == Part.Crest) y = 0.015f * (1f - w) - 0.01f * w - 0.02f * bow + 0.006f * jitter;
+                    else if (part == Part.Lip) y = 0.03f * (1f - w) - 0.035f * w - LipBowM * bow + 0.012f * jitter; // bowed, notched by the streams
+                    else if (part == Part.Curtain) y = 0.05f * (1f - w) - 0.07f * w - 1.5f * LipBowM * bow + 0.025f * jitter;
+                    else y = 0.006f + 0.004f * jitter;                                                // over the lower water, never under it
+                    c.AddKey(new Keyframe(s, y));
+                }
+                for (int k = 0; k < c.keys.Length; k++) c.SmoothTangents(k, 0f);
+                curves[i] = c;
+            }
+        }
+
+        // R.A.M.'s vertex colours (kept by the spline through any regenerate): alpha thins the sheet into the streams
+        // and fades its ends, the crest's start and the run-out; red keeps the glassy crest and the streams' thin
+        // edges clear water; green puts R.A.M.'s small-cascade foam where the streams land, fading out downstream.
+        // Returns the across direction of the mesh (vertex 0 to the last of a row) for the particles.
+        static Vector3? Paint(Component spline, Type splineType, List<Stream> streams, Vector2 mid, Vector2 u, float topY, float bottomY,
+            float land, float widthM, bool outlet)
+        {
+            var mf = spline.GetComponent<MeshFilter>();
+            var mesh = mf != null ? mf.sharedMesh : null;
+            int vs = (int)splineType.GetField("vertsInShape").GetValue(spline);
+            if (mesh == null || vs < 2 || mesh.vertexCount % vs != 0) return null;
+            var verts = mesh.vertices;
+            int rows = verts.Length / vs;
+            var t = spline.transform;
+            float drop = Mathf.Max(topY - bottomY, 0.05f);
+            var colors = new Color[verts.Length];
+            float start = float.MaxValue, end = float.MinValue;
+            var along = new float[rows];
+            var height = new float[rows];
+            for (int i = 0; i < rows; i++)
+            {
+                var c = t.TransformPoint((verts[i * vs] + verts[i * vs + vs - 1]) * 0.5f);
+                along[i] = Vector2.Dot(new Vector2(c.x, c.z) - mid, u);
+                height[i] = c.y;
+                start = Mathf.Min(start, along[i]); end = Mathf.Max(end, along[i]);
+            }
+            Vector3? side = null;
+            float footFrom = land * 0.85f;
+            for (int i = 0; i < rows; i++)
+            {
+                float a = along[i];
+                float fall = a <= 0f ? 0f : Mathf.Clamp01((topY - height[i]) / drop);
+                float fadeIn = Mathf.SmoothStep(0f, 1f, (a - start) / (outlet ? 0.5f : 0.6f));
+                float runOut = a < footFrom ? 0f : Mathf.Clamp01((a - footFrom) / Mathf.Max(end - footFrom, 0.3f));
+                bool foot = a >= footFrom && fall > 0.75f;
+                if (side == null && a >= 0f)
+                {
+                    var d = t.TransformPoint(verts[i * vs + vs - 1]) - t.TransformPoint(verts[i * vs]);
+                    d.y = 0; if (d.sqrMagnitude > 1e-4f) side = d.normalized;
+                }
+                for (int j = 0; j < vs; j++)
+                {
+                    float s = j / (float)(vs - 1);
+                    float r = 0f, g = 0f, alpha;
+                    if (a < 0f)
+                    {
+                        // Over the crest: a thin glassy film all along the lip, deeper over the streams.
+                        float w = Water(streams, s, 1.25f);
+                        alpha = Ends(s, widthM, CrestEndM) * Mathf.Lerp(CrestFilm, CrestStream, w) * fadeIn;
+                        r = 1f;
+                    }
+                    else if (!foot)
+                    {
+                        // Over the lip and falling: the film breaks into the streams, which draw together as they fall.
+                        float w = Water(streams, s, 1f - 0.3f * fall, fall * 12f, 0.3f);
+                        float film = Mathf.Lerp(CrestFilm, CrestStream, Water(streams, s, 1.25f));
+                        float broken = Mathf.SmoothStep(0f, 1f, Mathf.Clamp01(fall / 0.2f));
+                        alpha = Ends(s, widthM, CrestEndM) * Mathf.Lerp(film, Mathf.Pow(w, 1.2f), broken) * fadeIn;
+                        // Clear water at the streams' thin edges, R.A.M.'s waterfall (white where its texture breaks)
+                        // mixed with clear water in their cores.
+                        r = Mathf.Lerp(0.9f, StreamClear, w);
+                    }
+                    else
+                    {
+                        // Where they land: foam spreading round each stream and thinning out downstream.
+                        float w = Water(streams, s, 1.5f + 1.6f * runOut, runOut * 6f, 0.25f);
+                        alpha = Ends(s, widthM, CrestEndM) * w * Mathf.Pow(1f - runOut, 2f);
+                        g = w * (1f - runOut) * FootFoam;
+                    }
+                    colors[i * vs + j] = new Color(r, g, 0f, Mathf.Clamp01(alpha));
+                }
+            }
+            splineType.GetField("colors").SetValue(spline, colors);
+            splineType.GetMethod("GenerateSpline").Invoke(spline, new object[] { null });
+            return side;
+        }
+
+        // Vertices across a fall's width every this many metres.
+        const float AcrossM = 0.22f;
+        // The lip's middle this much lower than its ends (the curtain's 1.5 times that): a bowed crest.
+        const float LipBowM = 0.05f;
+        // The film over the crest between the streams / over them (vertex alpha), the ends fading over this many
+        // metres, how much clear water is in a stream's core (red) and the foam where it lands (green).
+        // (Marcus 2026-10-19, fall E: "needs to show better": more film, whiter streams, more foam)
+        const float CrestFilm = 0.4f, CrestStream = 0.85f, CrestEndM = 0.8f, StreamClear = 0.15f, FootFoam = 1f;
 
         static void Emitter(GameObject parent, string name, Material material, Vector3 at, Vector3 along, float widthM, Vector2 u,
             float drop, float ratePerM, bool landing, bool mist = false)
@@ -398,7 +599,7 @@ namespace GolfMap.Editor
                 main.startLifetime = new ParticleSystem.MinMaxCurve(2f, 3.5f);
                 main.startSpeed = 0f;
                 main.startSize = new ParticleSystem.MinMaxCurve(0.8f + drop * 0.3f, 1.5f + drop * 0.5f);
-                main.startColor = new Color(1f, 1f, 1f, 0.12f);
+                main.startColor = new Color(1f, 1f, 1f, 0.25f);   // R.A.M.'s particle materials already draw at _Opacity 0.2
                 emission.rateOverTime = Mathf.Max(widthM, 1f) * ratePerM;
                 vel.x = flowDir.x * 0.15f; vel.y = 0.12f; vel.z = flowDir.z * 0.15f;
             }
@@ -407,12 +608,12 @@ namespace GolfMap.Editor
                 // Spray and foam where the curtain lands, drifting downstream.
                 main.startLifetime = new ParticleSystem.MinMaxCurve(0.8f, 1.6f);
                 main.startSpeed = new ParticleSystem.MinMaxCurve(0.1f, 0.3f + drop * 0.2f);
-                main.startSize = new ParticleSystem.MinMaxCurve(0.25f + drop * 0.15f, 0.5f + drop * 0.3f);
+                main.startSize = new ParticleSystem.MinMaxCurve(0.15f + drop * 0.1f, 0.35f + drop * 0.2f);
                 main.startRotation = new ParticleSystem.MinMaxCurve(0f, Mathf.PI * 2f);
-                main.startColor = new Color(1f, 1f, 1f, 0.55f);
+                main.startColor = new Color(1f, 1f, 1f, 0.9f);
                 main.gravityModifier = 0.05f;
                 emission.rateOverTime = Mathf.Max(widthM, 0.5f) * ratePerM * Mathf.Clamp(drop, 0.5f, 2f);
-                vel.x = flowDir.x * 0.25f; vel.y = 0.05f; vel.z = flowDir.z * 0.25f;
+                vel.x = flowDir.x * 0.25f; vel.y = 0.08f; vel.z = flowDir.z * 0.25f;
                 shape.scale = new Vector3(0.4f, 0.05f, Mathf.Max(widthM - 0.1f, 0.3f));
             }
             else
@@ -420,9 +621,9 @@ namespace GolfMap.Editor
                 // White water breaking over the lip and falling with the curtain.
                 main.startLifetime = new ParticleSystem.MinMaxCurve(0.35f, 0.6f);
                 main.startSpeed = new ParticleSystem.MinMaxCurve(0.2f, 0.5f);
-                main.startSize = new ParticleSystem.MinMaxCurve(0.12f, 0.3f);
+                main.startSize = new ParticleSystem.MinMaxCurve(0.08f, 0.2f);
                 main.startRotation = new ParticleSystem.MinMaxCurve(0f, Mathf.PI * 2f);
-                main.startColor = new Color(1f, 1f, 1f, 0.45f);
+                main.startColor = new Color(1f, 1f, 1f, 0.7f);
                 main.gravityModifier = 0.6f;
                 emission.rateOverTime = Mathf.Max(widthM, 0.5f) * ratePerM;
                 vel.x = flowDir.x * 0.6f; vel.y = 0f; vel.z = flowDir.z * 0.6f;
@@ -455,19 +656,29 @@ namespace GolfMap.Editor
             if ((have != null && !reset) || from == null) return have;
             if (!AssetDatabase.IsValidFolder(folder)) AssetDatabase.CreateFolder(folder.Substring(0, folder.LastIndexOf('/')), AssetFolder);
             var made = new Material(from) { name = WaterMaterial };
-            // R.A.M.'s cascade is drawn for a river's big white falls (HDR white x20, all but opaque): a garden weir's
-            // curtain is clear water with white streaks.
+            // R.A.M.'s cascades are drawn for a river's big white falls (HDR white x20, all but opaque): a garden weir's
+            // curtain is clear water with white only where the texture breaks. Big cascade = the steep curtain,
+            // small cascade = the gentle crest and run-out (the Tesseled Vertex Color shader has no _CascadeColor /
+            // _SlowCascadeColor; they are set for the shaders that do).
             foreach (var name in new[] { "_BigCascadeColor", "_CascadeColor", "_SlowCascadeColor" })
                 if (made.HasProperty(name)) made.SetColor(name, new Color(CascadeWhite, CascadeWhite, CascadeWhite, 0f));
+            if (made.HasProperty("_SmallCascadeColor")) made.SetColor("_SmallCascadeColor", new Color(SmallCascadeWhite, SmallCascadeWhite, SmallCascadeWhite, 0f));
             if (made.HasProperty("_FoamColor")) made.SetColor("_FoamColor", new Color(FoamWhite, FoamWhite, FoamWhite, 0f));
             if (made.HasProperty("_BigCascadeTransparency")) made.SetFloat("_BigCascadeTransparency", CascadeTransparency);
+            // White only where the cascade texture is brightest (pow(alpha, falloff); R.A.M.'s 0.72 whitens it all).
+            if (made.HasProperty("_BigCascadeFoamFalloff")) made.SetFloat("_BigCascadeFoamFalloff", CascadeFoamFalloff);
+            if (made.HasProperty("_SmallCascadeFoamFalloff")) made.SetFloat("_SmallCascadeFoamFalloff", SmallCascadeFoamFalloff);
+            // R.A.M.'s noise breaks the cascade texture's tiling (its manual: too high looks strange); the profile's 10
+            // leaves the curtain's regular streaks.
+            if (made.HasProperty("_BigCascadeNoisePower")) made.SetFloat("_BigCascadeNoisePower", CascadeNoisePower);
             if (have != null) { EditorUtility.CopySerialized(made, have); EditorUtility.SetDirty(have); made = have; }
             else AssetDatabase.CreateAsset(made, path);
             madeFrom = AssetDatabase.GetAssetPath(from);
             return made;
         }
 
-        const float CascadeWhite = 2.5f, FoamWhite = 3f, CascadeTransparency = 0.35f;
+        const float CascadeWhite = 2.2f, SmallCascadeWhite = 1.8f, FoamWhite = 2.6f, CascadeTransparency = 0.6f,
+            CascadeFoamFalloff = 4f, SmallCascadeFoamFalloff = 4f, CascadeNoisePower = 4f;
 
         // The creeks' water (the creeks export golfmap.creeks.import fits; one line per creek stretch, [x, y, z]):
         // R.A.M. splines have no collider to hit.
