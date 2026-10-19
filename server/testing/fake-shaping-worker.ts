@@ -1,6 +1,7 @@
 // A stand-in for blender/tools/shape_worker.py on its HTTP contract
 // (blender/README.md, "Shaping worker"): `GET /status`, `GET /job/<id>`,
-// `POST /load`, `POST /sync`. No Blender: `/load` applies the layers, `/sync`
+// `POST /load`, `POST /sync`, `POST /check`. No Blender: `/check` reports one
+// seam step per applied op (course-check.service.test.ts), `/load` applies the layers, `/sync`
 // re-reads them and reports every op whose content differs from what the FBX
 // folder holds (added, edited or removed since the last export; everything
 // after a load into a new folder, as fbx_sync's manifest would) as one changed
@@ -56,7 +57,7 @@ export const TOKEN_HEADER = 'X-Golfmap-Token';
 /** One /load or /sync run, as /status and /job/<id> report it. */
 interface FakeJob {
     id: string;
-    kind: 'load' | 'sync';
+    kind: 'load' | 'sync' | 'check';
     state: 'running' | 'succeeded' | 'failed';
     t0: number;
     t1: number | null;
@@ -145,6 +146,37 @@ export function startFakeShapingWorker(opts: FakeShapingWorkerOptions = {}): Fak
         }
     };
 
+    /**
+     * `/check`: course_check.check()'s report (golfmap-course-check-v1, layer
+     * blender) — one seam step per applied op, an error — written to `out`
+     * (default beside the conformed .blend) and answered with `report` set.
+     */
+    const check = async (body: any) => {
+        if (!blend) throw new HttpError(409, 'nothing loaded (or the last sync failed): POST /load first');
+        state = 'busy';
+        phase = 'check';
+        try {
+            if (opts.syncMs) await Bun.sleep(opts.syncMs);
+            const findings = [...applied.keys()].sort().map(id => ({
+                type: 'seam-step', severity: 'error', note: `7 cm step at op ${id}`, objects: [`Spline_${id}`], hole: '1',
+                blend: [1, 2, 3], unity: [-1, 3, -2], epsg3006: [529500, 6487500],
+            }));
+            const report = {
+                format: 'golfmap-course-check-v1', layer: 'blender', blend,
+                ok: findings.length === 0, errors: findings.length, warnings: 0,
+                area: body.boundary ? `${path.basename(body.boundary)} + ${body.marginM ?? 50} m` : 'no boundary: every course mesh',
+                meshes: applied.size, counts: findings.length ? { 'seam-step': { findings: findings.length, severity: 'error' } } : {},
+                seconds: { objects: 0.1, seams: 0.2 }, findings,
+            };
+            const out = body.out ?? path.join(path.dirname(blend), 'course-check-blender.json');
+            writeFileSync(out, JSON.stringify(report));
+            return { ...report, report: out };
+        } finally {
+            phase = null;
+            state = 'ready';
+        }
+    };
+
     const publicJob = (job: FakeJob) => ({
         id: job.id,
         kind: job.kind,
@@ -164,7 +196,7 @@ export function startFakeShapingWorker(opts: FakeShapingWorkerOptions = {}): Fak
     });
 
     /** Queue a job, or null when one is already going (the caller answers 409). */
-    const start = (kind: 'load' | 'sync', body: any): FakeJob | null => {
+    const start = (kind: 'load' | 'sync' | 'check', body: any): FakeJob | null => {
         if (current?.state === 'running') return null;
         const job: FakeJob = {
             id: String(++seq), kind, state: 'running', t0: Date.now(), t1: null,
@@ -174,7 +206,7 @@ export function startFakeShapingWorker(opts: FakeShapingWorkerOptions = {}): Fak
         byId.set(job.id, job);
         job.done = (kind === 'load'
             ? load(body.blend, body.layersDir, body.fbxFolder ?? null)
-            : sync(body)
+            : kind === 'check' ? check(body) : sync(body)
         ).then(
             (result) => { job.body = result; job.state = 'succeeded'; },
             (e: unknown) => {
@@ -209,7 +241,7 @@ export function startFakeShapingWorker(opts: FakeShapingWorkerOptions = {}): Fak
                 const job = byId.get(route.slice('/job/'.length));
                 return job ? Response.json(publicJob(job)) : Response.json({ error: `no job ${route.slice(5)}` }, { status: 404 });
             }
-            const kind = route === '/load' ? 'load' : route === '/sync' ? 'sync' : null;
+            const kind = route === '/load' ? 'load' : route === '/sync' ? 'sync' : route === '/check' ? 'check' : null;
             if (kind && req.method === 'POST') {
                 if (kind === 'load' && (!body.blend || !body.layersDir)) {
                     return Response.json({ error: 'blend and layersDir are required' }, { status: 400 });

@@ -35,6 +35,7 @@ import {
     GsproSyncService, aboutLabel, buildMarks, rowStatusLabel, secsLabel, whenLabel,
 } from './gspro-sync.service';
 import { JobPhasesComponent } from './job-phases.component';
+import { CourseCheckService, checkStatusLabel, checkStatusTitle } from './course-check.service';
 import {
     SVG_FEATURE_TYPES, COURSE_WIDE, NO_FILTER, svgFeatures, matchSvgFilter, variantFileName, landmarksOf, nearLabel, shapeName,
     type SvgExclusionFilter, type SvgStatusFilter,
@@ -363,10 +364,32 @@ const boardRow = (id: GsproTargetId) => {
     </div>`;
 };
 
+/**
+ * The Course tab's Check row: is the built course whole as the ball meets it
+ * (CourseCheckService — the Unity scene, then the Blender worker's shaped
+ * course, inside the course boundary). Not a target: nothing is updated, so
+ * it is not in GSPRO_TARGETS and "Update all stale" leaves it alone.
+ */
+const CHECK_TIP = 'Is the built course whole as the ball meets it? Checks the Unity scene\'s course meshes through their '
+    + 'colliders (cracks, steps, gaps, overlaps, missing or wrong colliders, upside-down faces) inside the drawn OOB line '
+    + '+ 50 m, opens GolfMap › Review in Unity on what it found, then the shaped course in the Blender worker when it holds '
+    + 'this course. Read-only, about 30 s. Same as bun run course:check.';
+const checkRow = `
+    <div class="gspro-export__brow" data-testid="gspro-check-row">
+        <div class="gspro-export__bmain">
+            <span bind="checkDot" class="gspro-export__dot"></span>
+            <div class="gspro-export__blabel" title="${CHECK_TIP}">Check</div>
+            <div bind="checkStatus" class="gspro-export__bstatus" data-testid="gspro-status-check"></div>
+            <button bind="checkRun" type="button" class="gspro-export__update gspro-export__run" data-testid="gspro-check-run">Check</button>
+        </div>
+        <div bind="checkPhases" class="gspro-export__note"></div>
+        <div bind="checkError" class="hint gspro-export__blocked gspro-export__oneline" data-testid="gspro-check-error"></div>
+    </div>`;
+
 /** A tab's pane: its rows, then its files and settings. */
 const pane = (tab: typeof TABS[number]) => `
     <div bind="pane_${tab.id}" class="gspro-export__pane hidden" role="tabpanel" data-testid="gspro-pane-${tab.id}">
-        ${tab.targets.length ? `<div class="gspro-export__rows">${tab.targets.map(boardRow).join('')}</div>` : ''}
+        ${tab.targets.length ? `<div class="gspro-export__rows">${tab.targets.map(boardRow).join('')}${tab.id === 'course' ? checkRow : ''}</div>` : ''}
         ${PANES[tab.id]}
     </div>`;
 
@@ -680,6 +703,9 @@ export class GsproExportPanelComponent extends Component {
                 color: ${t('color-text-secondary')};
             }
             & .gspro-export__update { min-width: 6rem; }
+            /* The Check row: its long reasons are in the title, the line stays one line. */
+            & .gspro-export__oneline { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+            & .gspro-export__note.hidden { display: none; }
             & .gspro-export__note, & .gspro-export__manual, & .gspro-export__blocked { padding-left: calc(10px + ${s('sm')}); }
             & .gspro-export__builds {
                 &:empty { display: none; }
@@ -1005,6 +1031,8 @@ export class GsproExportPanelComponent extends Component {
     private svc = this.inject(GsproExportService);
     /** The board itself: what is stale, the Unity editor, the update jobs. */
     private sync = this.inject(GsproSyncService);
+    /** The Course tab's Check row: is the built course whole. */
+    private check = this.inject(CourseCheckService);
     private features = this.inject(FeaturesService);
     private courseDetail = this.inject(CourseDetailService);
     private mapSvc = this.inject(MapService);
@@ -1210,6 +1238,45 @@ export class GsproExportPanelComponent extends Component {
         return out;
     }
 
+    /** The Check row: marker, one status line (details in its title), the button, the error. */
+    private checkBindings(): Record<string, (() => unknown) | Record<string, unknown>> {
+        const status = () => this.check.status.get();
+        return {
+            checkDot: {
+                className: () => {
+                    const unity = status()?.unity;
+                    if (!unity) return 'gspro-export__dot';
+                    return unity.errors > 0 || status()!.meshesChangedSince ? 'gspro-export__dot stale' : 'gspro-export__dot fresh';
+                },
+            },
+            checkStatus: {
+                textContent: () => {
+                    this.check.tick.get();
+                    const job = this.check.job.get();
+                    if (job?.status === 'running') return job.step;
+                    return checkStatusLabel(status());
+                },
+                title: () => checkStatusTitle(status()),
+            },
+            checkRun: {
+                disabled: () => this.check.running.get() || !this.openCourseId(),
+                title: () => (this.check.running.get() ? 'A check is running' : CHECK_TIP),
+                onclick: () => {
+                    const id = this.openCourseId();
+                    if (id) void this.check.run(id);
+                },
+            },
+            // The phases while it runs (and after a failure); a finished check is its status line.
+            checkPhases: {
+                className: () => {
+                    const s = this.check.job.get()?.status;
+                    return s === 'running' || s === 'failed' ? 'gspro-export__note' : 'gspro-export__note hidden';
+                },
+            },
+            checkError: { textContent: () => this.check.error.get(), title: () => this.check.error.get() },
+        };
+    }
+
     /** True when one of the tab's rows is out of date (and can be updated). */
     private tabStale(tab: typeof TABS[number]): boolean {
         return tab.targets.some(id => {
@@ -1248,6 +1315,7 @@ export class GsproExportPanelComponent extends Component {
             backToDialog: { onclick: () => this.view.set('dialog') },
             closeSide: { onclick: () => this.closeDialog() },
             ...this.rowBindings(),
+            ...this.checkBindings(),
             // --- The board's head: Unity, the shaping worker, Update all stale ---
             unityChip: {
                 textContent: () => this.sync.unityLabel(),
@@ -1748,6 +1816,18 @@ export class GsproExportPanelComponent extends Component {
             phases: () => this.sync.job.get()?.phases ?? [],
             testid: 'gspro-job-phases',
         });
+        // The Check row's phases while a check runs.
+        this.spawn(JobPhasesComponent, this.ref(frag, 'checkPhases'), {
+            phases: () => this.check.job.get()?.phases ?? [],
+            testid: 'gspro-check-phases',
+        });
+        // The Check row's reports are re-read with the board (on open, every 30 s, after an update):
+        // a Meshes update is what makes the last check "meshes changed since".
+        this.track(effect(() => {
+            this.sync.status.get();
+            const id = this.sync.courseId.get();
+            if (id) void this.check.refresh(id);
+        }));
 
         // Each finished target's report, collapsed; the last one open, since
         // that is the one the operator just watched.

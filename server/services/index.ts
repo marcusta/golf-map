@@ -41,6 +41,7 @@ import { HttpTapscoreClient } from './tapscore-client';
 import { PhotosService } from './photos.service';
 import { ShapingService } from './shaping.service';
 import { GsproSyncService } from './gspro-sync.service';
+import { CourseCheckService } from './course-check.service';
 
 export interface ServicesConfig {
     /** Root directory for course assets/tiles on disk. Defaults to DATA_DIR env var, then './data'. */
@@ -103,6 +104,8 @@ export function createServices(db: Kysely<Database>, config: ServicesConfig = {}
         db, courses: coursesService, exports: gsproExportService, shaping: shapingService,
         mapBuild: mapBuildService, terrainEdits: terrainEditsService, dataDir,
     });
+    // Is the built course whole: the Unity scene and the shaped Blender course inside the boundary (the board's Check row, `bun run course:check`).
+    const courseCheckService = new CourseCheckService({ db, courses: coursesService, exports: gsproExportService, shaping: shapingService });
     const terrainGeneratorsService = new TerrainGeneratorsService({
         courses: coursesService, assets: assetsService, terrainEdits: terrainEditsService,
         courseFeatures: courseFeaturesService, dataDir,
@@ -158,6 +161,7 @@ export function createServices(db: Kysely<Database>, config: ServicesConfig = {}
         vegetationRulesService,
         shapingService,
         gsproSyncService,
+        courseCheckService,
         publishService,
         tapscoreBridgeService,
         ingestService,

@@ -49,8 +49,10 @@ namespace GolfMap.Editor
             {
                 get
                 {
-                    var name = !string.IsNullOrEmpty(obj) ? obj : !string.IsNullOrEmpty(featureId) ? "feature " + featureId : "place " + index;
-                    return (string.IsNullOrEmpty(type) ? "" : "[" + type + "] ") + name + (string.IsNullOrEmpty(note) ? "" : " - " + note);
+                    var name = !string.IsNullOrEmpty(obj) ? obj : !string.IsNullOrEmpty(featureId) ? "feature " + featureId : null;
+                    // a course check's place is a spot, not an object: its note says what is wrong there
+                    if (name == null && !string.IsNullOrEmpty(note)) return (string.IsNullOrEmpty(type) ? "" : "[" + type + "] ") + note;
+                    return (string.IsNullOrEmpty(type) ? "" : "[" + type + "] ") + (name ?? "place " + index) + (string.IsNullOrEmpty(note) ? "" : " - " + note);
                 }
             }
         }

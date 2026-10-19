@@ -34,6 +34,9 @@ takes an hour needs no held connection.
 - Both POSTs answer {job, kind, state: "running"} with 202, or 409 when a job is already going.
   `?wait=1` instead holds the connection until the job is done and answers its result, as before
   (what `curl` users want).
+- POST /check {boundary?, marginM?, tjunctions?, out?} -> course_check.check() on the shaped course as it is now
+  (seam steps, T-junctions, upside-down top faces, NaN; inside the boundary ring + marginM): the report, also
+  written to `out` (default course-check-blender.json beside the conformed .blend). A job like /sync.
 - POST /shutdown -> stops the worker (Blender exits); always waits.
 
 How /sync stays exact: every op runs as units (one per feature group, shape_apply.plan_units) whose reads
@@ -250,6 +253,8 @@ class Worker:
                     job.result = self.load(job.body)
                 elif job.kind == "sync":
                     job.result = self.sync(job.body)
+                elif job.kind == "check":
+                    job.result = self.check(job.body)
                 elif job.kind == "shutdown":
                     job.result = {"ok": True}
                     self.running = False
@@ -459,6 +464,22 @@ class Worker:
                         affected |= f
                         grew = True
         return affected, rerun
+
+    def check(self, body):
+        """course_check on the shaped course (the shaped meshes are only here and in the FBX)."""
+        if self.app is None:
+            raise HttpError(409, "nothing loaded (or the last sync failed): POST /load first")
+        import importlib
+        import course_check
+        importlib.reload(course_check)  # an edit to the check applies without reloading the course
+        self.set_status(phase="check")
+        report = course_check.check(body.get("boundary"), float(body.get("marginM", 50)), body.get("sidecar"),
+                                    bool(body.get("tjunctions", False)))
+        out = body.get("out") or os.path.join(os.path.dirname(self.status["conformed"] or bpy.data.filepath), "course-check-blender.json")
+        with open(out, "w", encoding="utf-8") as f:
+            json.dump(report, f, indent=1)
+        report["report"] = out
+        return report
 
     def sync(self, body):
         if self.app is None:
@@ -710,7 +731,7 @@ def make_handler(worker):
             if not self.allowed():
                 return
             parts = urllib.parse.urlsplit(self.path)
-            kind = {"/load": "load", "/sync": "sync", "/shutdown": "shutdown"}.get(parts.path)
+            kind = {"/load": "load", "/sync": "sync", "/check": "check", "/shutdown": "shutdown"}.get(parts.path)
             if kind is None:
                 self.send_json(404, {"error": "unknown path " + self.path})
                 return

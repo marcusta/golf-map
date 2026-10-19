@@ -1078,6 +1078,38 @@ export class ShapingService {
         return result;
     }
 
+    /**
+     * `POST <route>` on the worker as a job (`/check`): the answer names it, `/status` is polled until
+     * it is done and its `result` is returned. A worker that answers with the result itself is taken
+     * as it is. Same tolerance for a silent worker as `sync`; no course is loaded or switched here.
+     */
+    async workerRun(
+        route: string, body: unknown, opts: { timeoutMs?: number; onPhase?: (phase: string | null) => void } = {},
+    ): Promise<unknown> {
+        const timeoutMs = opts.timeoutMs ?? this.timeouts.syncMs;
+        const started = await this.post(route, body, this.timeouts.startMs);
+        const id = jobIdOf(started);
+        if (id === null) return started;
+        let lostAt: number | null = null;
+        const done = await this.waitFor(
+            (s) => {
+                if (lost(s)) {
+                    lostAt ??= Date.now();
+                    return Date.now() - lostAt >= this.timeouts.unreachableMs;
+                }
+                lostAt = null;
+                return s.job === null || s.job.id !== id || s.job.state !== 'running';
+            },
+            timeoutMs, `the shaping worker to finish ${route}`, s => opts.onPhase?.(s.phase));
+        if (lostAt !== null) {
+            throw new ConflictError(`The shaping worker stopped answering during ${route} (job ${id}): ${done.error ?? 'unreachable'}`);
+        }
+        const job = done.job?.id === id ? done.job : await this.jobById(id);
+        if (!job) throw new ConflictError(`The shaping worker forgot the ${route} job ${id}`);
+        if (job.state === 'failed') throw new ConflictError(`Shaping worker ${route} failed: ${job.error ?? 'see its log'}`);
+        return job.result;
+    }
+
     /** `GET /job/<id>`; null when the worker does not know it (or cannot be asked). */
     private async jobById(id: string): Promise<ShapingWorkerJob | null> {
         try {

@@ -1199,6 +1199,40 @@ Bridge:
   scene not refreshed yet): 69 by object, 352 by the report's Unity coordinates; `goto object=Spline_hole_18_1c_Bunker_-_Mesh`
   framed the bunker from its coordinates (`resolvedBy: unity`).
 
+A course check's report (`course-check.json`, next section) loads the same way: its places are spots, labelled
+`[severity type] note`.
+
+## Course check (is the course whole?)
+
+`golfmap.course.check` / `GolfMap > Check course (gaps, seams, colliders)` (`GolfMapCourseCheck.cs`): read-only, the
+built course as the ball meets it - the course meshes (`Spline_*`, `Gap_Issue_*`, not water planes) through their
+**colliders**. Run it after any refresh, before a course build; `bun run course:check -- <course>` (server
+`CourseCheckService`, the board's Check row) writes the boundary file, runs it and opens the findings in Review.
+
+- **Where**: inside the course boundary (the largest ring of `<export folder>/<prefix>-oob.json`, golfmap-oob-v1,
+  EPSG:3006 rings written from the drawn `oob` features) and `marginM` (50) round it; `all=true` checks every mesh,
+  `hole=N` that hole's meshes and 40 m round them.
+- **Objects**: an enabled, non-convex MeshCollider whose bounds are what is drawn (5 cm), no NaN, a surface name
+  (`GolfMapSurfaces.Classify`, `Concrete` for roads), no mesh twice in one place, no OPCD `Gap_Issue` marker, no
+  upside-down face that is the top surface (Unity's rays skip back faces, so does the ball).
+- **Seams**: every open edge of every mesh (welded within 1 mm: FBX normal/UV splits are not edges) probed 2 cm outside,
+  every 0.5 m. Ground at the same height (1 cm beyond the slope) is fine; else a **step** (warn, error from 5 cm), or
+  a **crack** measured outward to the next ground (error when wider than the ball, 4.27 cm). Info only: a bunker's
+  sand up to 6 cm under its blend ring (`step-lip`: Bunker Studio leaves it all round every bunker), another mesh
+  running on under the edge, and a step or crack under a wall's stones or a prop (`*-hidden`).
+- **Ray grid** (`cell`, 0.5 m) over the area: misses not joined to the area's edge are **gaps** (error; what is under
+  them is named, the terrain or nothing); two meshes within 2 cm of each other over 1 m2 or more are an **overlap**
+  (z-fighting; single rays are blend edges lying over their neighbour, info).
+- Findings cluster within 1.5 m, rank error > warn > info, and go to `<export folder>/course-check.json`
+  (`golfmap-course-check-v1`, with `changedPlaces` for Review). `without=<mesh,...>` checks as if those meshes were
+  gone: the proof that it finds a hole. Upside-down faces under 0.01 m2 in one place (a cut's slivers) are a warning.
+
+Omberg 2026-10-19 (943 meshes, OOB + 50 m = 0.88 km2, 3.5 M rays, 0.86 M seam probes, 20-27 s): no gaps; 11 errors (open
+steps up to 26 cm along the rough by hole 9's creek and in hole 14's lake mesh, upside-down faces on a rock slab, a 5 cm
+crack at hole 9's lake blend), 51 warnings (1-5 cm steps, mostly road blends against rough; two slivers of upside-down
+faces on a gravel road), 76 bunker lips and 48 steps under walls as info. `without=Spline_hole_3_110_Green_-_Mesh` gave one 372 m2 gap with the terrain under it.
+The Blender half: `blender/tools/course_check.py` (blender/README.md "Course check").
+
 ## Creeks (R.A.M.)
 
 `GolfMap > Creeks > Import creeks (R.A.M.)` (`GolfMapCreeks.cs`, bridge `golfmap.creeks.import

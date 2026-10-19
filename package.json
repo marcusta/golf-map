@@ -21,6 +21,7 @@
         "gspro:update": "bun scripts/gspro-export.ts update",
         "photo": "bun scripts/cleaned-photo.ts",
         "gspro:bisect": "bun scripts/gspro-bisect.ts",
+        "course:check": "bun scripts/course-check.ts",
         "zones": "bun scripts/vegetation-zones.ts",
         "grass:zones": "bun scripts/grass-zones.ts",
         "vegetation:rules": "bun scripts/vegetation-rules.ts",

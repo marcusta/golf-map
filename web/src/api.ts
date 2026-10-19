@@ -31,6 +31,7 @@ import { createVegetationRulesClient } from '../../shared/api/vegetation-rules.g
 import { createPhotosClient } from '../../shared/api/photos.gen';
 import { createShapingClient } from '../../shared/api/shaping.gen';
 import { createPhotoCleanupClient } from '../../shared/api/photo-cleanup.gen';
+import { createCourseCheckClient } from '../../shared/api/course-check.gen';
 
 export { ApiError } from '@basics/core/client/api-error';
 
@@ -77,4 +78,5 @@ export const api = {
     photos: createPhotosClient(API_BASE),
     shaping: createShapingClient(API_BASE),
     photoCleanup: createPhotoCleanupClient(API_BASE),
+    courseCheck: createCourseCheckClient(API_BASE),
 };

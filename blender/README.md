@@ -1432,6 +1432,27 @@ Measured on Vreta (`vreta_svg_1985.conformed.blend`, 776 meshes; 32 ops, 106 uni
 Determinism: after each of those syncs, the all-mesh positions and colour hashes equal a fresh full apply of the
 same layers with the cache off, and switching back gives the original hashes byte for byte.
 
+## Course check
+
+`tools/course_check.py`: the Blender half of Unity's `golfmap.course.check` (unity/README.md "Course check"), read-only,
+exact, naming Blender objects: seam steps (border vertices of two meshes coincident in XY at heights more than 1 cm
+apart, `shape_apply.seam_check`; error from 5 cm; a bunker's sand up to 6 cm under its own ring is its lip, info),
+T-junctions off their edge (`--tjunctions`, `shape_apply.tjunction_check`), upside-down faces that are on top (a
+`scene.ray_cast` from above meets them first), NaN vertices; totals of non-manifold edges and degenerate faces. Only
+inside the course boundary (`--boundary <prefix>-oob.json`, the largest ring) and `--margin` (50 m) round it. Same
+report format as Unity's (`golfmap-course-check-v1`, `layer: blender`, Unity and EPSG:3006 positions, `changedPlaces`
+for Review), default `course-check-blender.json` beside the .blend.
+
+- On a .blend (OPCD's build, the conformed cache): `blender -b <file> --python blender/tools/course_check.py --
+  --boundary <export>/<prefix>-oob.json`. Omberg svg_110 conformed (782 meshes in the area, 12 s): 0 seam gaps in 1126
+  pairs, 108 degenerate faces, no flipped faces - OPCD's build and the conform are whole; what Unity finds comes later.
+  `--tjunctions` adds 190 s there (30 objects, every T-junction under 1 cm off its edge).
+- On the shaped course: the worker's `POST /check {boundary?, marginM?, tjunctions?, out?}` (a job like `/sync`).
+  The shaped meshes exist only in the worker and in the FBX - shape_apply never saves the .blend. It reloads
+  course_check.py on every call. Omberg shaped (936 meshes, 15 s): still 0 seam gaps in 1410 pairs - the steps Unity
+  finds there are open edges with no coincident partner (border vertices without one: 4 714 before shaping, 26 725
+  after) - and 36 places of upside-down faces left by the cuts, all but a few slivers under 0.01 m2 (warnings).
+
 ## Planned
 
 A bunker lip tool on top of the Afrod operators, with Bunker Studio's preview, validate
