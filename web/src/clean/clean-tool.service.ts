@@ -69,6 +69,7 @@ import { PhotoImportClient, PhotoImportError, cleanedPhotoExportUrl, importSumma
 import { workerRetouchEngine, type Changed, type RetouchEngine, type RetouchEngineFactory } from './retouch-engine';
 import { canvasStampView, type StampSurfaceView, type StampViewFactory } from './stamp-canvas-view';
 import { CleanupAreasController } from './cleanup-areas.controller';
+import { PhotoCleanupController } from './photo-cleanup.controller';
 import { canvasCursor } from '../editor/canvas-cursor';
 
 /** Interaction-claim id for the Clean tool (also its registry id). */
@@ -192,6 +193,8 @@ interface ActiveStroke {
  */
 export class CleanToolService {
     readonly areas = new CleanupAreasController();
+    /** Hole-by-hole cleanup; an apply changes the photo under the engine, so it reloads. */
+    readonly holeCleanup = new PhotoCleanupController(() => this.refreshInfo({ resync: true }));
 
     setMode(mode: CleanMode): void {
         if (this.areas.kind.peek() || (this.mode.peek() === 'areas' && this.areas.busy.peek()) || this.phase.peek() !== 'idle') return;
@@ -304,6 +307,7 @@ export class CleanToolService {
         this.ctx = ctx;
         this.courseId = ctx.courseId;
         this.areas.activate(ctx);
+        this.holeCleanup.activate(ctx);
         ctx.track(effect(() => this.areas.enabled.set(this.mode.get() === 'areas')));
         ctx.track(canvasCursor(ctx.map, () =>
             this.mode.get() === 'areas' && this.areas.kind.get() ? 'crosshair' : ''));
@@ -345,6 +349,7 @@ export class CleanToolService {
     deactivate(): void {
         const ctx = this.ctx;
         this.areas.deactivate();
+        this.holeCleanup.deactivate();
         this.cancelStroke();
         this.cancelFrame();
         ctx?.features?.resetModeView();

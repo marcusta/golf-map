@@ -26,7 +26,7 @@ const tpl = template(`
         <div bind="areasSection" class="stamp-section" data-testid="cleanup-areas-controls">
             <h4 class="section-title">Cleanup areas</h4>
             <div bind="areaDrawingHint" class="mode-hint" role="status" data-testid="cleanup-area-drawing-hint"></div>
-            <div class="mode-hint">Green: eligible for cleanup where a tee, fairway, rough or green is mapped. Purple: cleaned whatever is mapped there, or nothing. Orange: keep unchanged, even inside green or purple. These boundaries guide external cleanup; they do not restrict the stamp or manual mask tools.</div>
+            <div class="mode-hint">Green: eligible for cleanup where a tee, fairway, rough or green is mapped. Purple: cleaned whatever is mapped there, or nothing. Orange: keep unchanged, even inside green or purple. These boundaries decide where Clean holes works; the brush tools ignore them.</div>
             <div class="mode-row">
                 <button bind="includeAreaBtn" type="button" class="small-btn" data-testid="cleanup-area-include">Area to clean</button>
                 <button bind="forceAreaBtn" type="button" class="small-btn" data-testid="cleanup-area-force" title="Clean all ground here, regardless of course features">Clean everything</button>
@@ -78,6 +78,17 @@ const tpl = template(`
             <button bind="undoBtn" type="button" class="small-btn" data-testid="undo-btn">Undo last session</button>
         </div>
         <div class="mode-hint" data-testid="unity-apply-hint"><b>Update photo</b> is in the command bar: it puts the cleaned photo onto the course meshes in Unity.</div>
+        <details bind="holesSection" class="external-section holes-section" data-testid="hole-cleanup">
+            <summary class="section-title" title="Paints trees, shadows, players and paths out of the mapped tees, fairways, roughs and greens inside your cleanup areas, hole by hole, on a copy. Look at each hole, untick any with a defect, apply the rest as one undo step.">Clean holes <span bind="holesSummary" class="holes-summary"></span></summary>
+            <div class="mode-row">
+                <input bind="holesInput" class="holes-input" placeholder="All holes" title="Holes to clean, e.g. 1-9 or 3,5; empty = every hole" data-testid="hole-cleanup-holes">
+                <button bind="holesRunBtn" type="button" class="small-btn" data-testid="hole-cleanup-run" title="About 30-60 s a hole. Nothing in the photo changes until you apply.">Run</button>
+            </div>
+            <div bind="holesStep" class="ext-line" data-testid="hole-cleanup-step"></div>
+            <div bind="holesList" class="holes-list" data-testid="hole-cleanup-list"></div>
+            <button bind="holesApplyBtn" type="button" class="accept-btn" data-testid="hole-cleanup-apply"></button>
+            <div bind="holesMessage" class="ext-message" data-testid="hole-cleanup-message"></div>
+        </details>
         <div class="external-section" data-testid="external-edit">
             <h4 class="section-title">Edit in an image editor</h4>
             <div class="ext-line">The cleaned photo is one 8192 × 8192 px image. Download it, edit it, and import the result: any image of that size becomes the cleaned photo.</div>
@@ -358,6 +369,32 @@ export class CleanPanelComponent extends Component {
                 &.show { display: block; }
             }
 
+            & .holes-section > summary { cursor: pointer; margin: 0; }
+            & .holes-summary { font-weight: normal; color: ${t('color-text-secondary')}; font-size: 0.72rem; }
+            & .holes-input { flex: 1; min-width: 0; ${panelInput()} }
+            & .holes-list {
+                display: flex;
+                flex-direction: column;
+                gap: ${s('xs')};
+                max-height: 28rem;
+                overflow-y: auto;
+                &:empty { display: none; }
+            }
+            & .hole-row {
+                display: flex;
+                flex-direction: column;
+                gap: 2px;
+                font-size: 0.72rem;
+                color: ${t('color-text-secondary')};
+                & label { display: flex; align-items: center; gap: ${s('xs')}; cursor: pointer; }
+                & .hole-name { color: ${t('color-text-primary')}; font-weight: 600; }
+                & .hole-bad { color: var(--data-bad); }
+                & .hole-warn { color: var(--data-risk); cursor: help; }
+                & img { width: 100%; border-radius: ${t('radius-sm')}; cursor: zoom-in; }
+                &.skipped img { opacity: 0.4; }
+            }
+            & .holes-section > .accept-btn:empty { display: none; }
+
             ${busyAndNotice()}
 
             ${hintsFooter('clean-panel__hints')}
@@ -372,7 +409,8 @@ export class CleanPanelComponent extends Component {
         const noSelection = () => areaLocked() || !areas.selected.get();
         const modeLocked = () => areas.busy.get() || !!areas.kind.get() || this.tool.phase.get() !== 'idle';
         const tool = this.tool;
-        const isLive = () => tool.mode.get() === 'clone' || tool.mode.get() === 'heal';
+        const holes = tool.holeCleanup;
+        const isLive =() => tool.mode.get() === 'clone' || tool.mode.get() === 'heal';
         const modeBtn = (mode: CleanMode) => ({
             onclick: () => tool.setMode(mode), disabled: modeLocked,
             className: () => `mode-btn${tool.mode.get() === mode ? ' active' : ''}`,
@@ -563,6 +601,46 @@ export class CleanPanelComponent extends Component {
                 textContent: () => this.tool.notice.get() ?? '',
                 className: () => this.tool.notice.get() ? 'notice show' : 'notice',
             },
+            holesSection: {
+                // Opened while a run is going or waiting to be applied.
+                open: () => { const j = holes.job.get(); return !!j && (j.status === 'running' || (j.status === 'succeeded' && !j.applied)); },
+            },
+            holesSummary: {
+                textContent: () => {
+                    const j = holes.job.get();
+                    if (!j) return '';
+                    if (j.status === 'running') return '· running';
+                    return j.applied ? '· applied' : j.status === 'succeeded' ? '· to review' : '· failed';
+                },
+            },
+            holesInput: {
+                value: () => holes.holes.get(),
+                oninput: (e: Event) => holes.holes.set((e.target as HTMLInputElement).value),
+                disabled: () => holes.busy.get() || holes.job.get()?.status === 'running',
+            },
+            holesRunBtn: {
+                onclick: () => void holes.start(),
+                disabled: () => holes.busy.get() || holes.job.get()?.status === 'running',
+            },
+            holesStep: { textContent: () => holes.job.get()?.step ?? '' },
+            holesApplyBtn: {
+                textContent: () => {
+                    const j = holes.job.get();
+                    if (!j || j.status !== 'succeeded' || j.applied) return '';
+                    const n = holes.accepted().length;
+                    return `Apply ${n} hole${n === 1 ? '' : 's'}`;
+                },
+                title: () => 'Writes the ticked holes into the cleaned photo as one undo step',
+                onclick: () => void holes.apply(),
+                disabled: () => !holes.canApply() || tool.phase.get() !== 'idle',
+            },
+            holesMessage: {
+                textContent: () => holes.message.get()?.text ?? '',
+                className: () => {
+                    const m = holes.message.get();
+                    return m ? `ext-message show${m.kind === 'error' ? ' error' : ''}` : 'ext-message';
+                },
+            },
             hintBlock: {
                 textContent: () => tool.mode.get() === 'areas'
                     ? 'Drag to trace, or click corners. Finish area / Enter saves; Ctrl/Cmd-drag pans; Escape cancels. Keep unchanged always wins.'
@@ -582,6 +660,59 @@ export class CleanPanelComponent extends Component {
             select.replaceChildren(option('Select an area', ''));
             for (const a of doc?.areas ?? []) select.append(option(`${{ include: 'Clean', force: 'Clean everything', exclude: 'Keep' }[a.kind]}: ${a.name}`, a.id));
             select.value = selected;
+        }));
+
+        // One row per hole of the shown run: a tick to apply it, what it
+        // found, and its before | after image (click: full size).
+        const list = frag.querySelector<HTMLElement>('[data-testid="hole-cleanup-list"]')!;
+        this.track(effect(() => {
+            const job = holes.job.get();
+            const skipped = holes.skipped.get();
+            const k = (n: number) => (n >= 10_000 ? `${Math.round(n / 1000)}k` : n.toLocaleString('en-US'));
+            list.replaceChildren(...(job?.holes ?? []).map((h) => {
+                const row = document.createElement('div');
+                row.className = `hole-row${skipped.has(h.hole) ? ' skipped' : ''}`;
+                row.dataset.hole = String(h.hole);
+                const label = document.createElement('label');
+                const tick = document.createElement('input');
+                tick.type = 'checkbox';
+                const changes = h.status === 'done' && h.changedPx > 0;
+                tick.checked = changes && !skipped.has(h.hole);
+                tick.disabled = !changes || job!.status !== 'succeeded' || !!job!.applied;
+                tick.onchange = () => holes.toggle(h.hole, tick.checked);
+                const name = document.createElement('span');
+                name.className = 'hole-name';
+                name.textContent = `Hole ${h.hole}`;
+                const what = document.createElement('span');
+                if (h.status === 'failed') {
+                    what.className = 'hole-bad';
+                    what.textContent = 'failed';
+                    what.title = h.error ?? '';
+                } else {
+                    what.textContent = h.status === 'done' ? `${k(h.changedPx)} px changed` : h.status === 'running' ? 'cleaning…' : 'waiting';
+                    what.title = h.status === 'done' ? `${h.scopePx.toLocaleString('en-US')} px in scope, ${h.targetPx.toLocaleString('en-US')} px found, ${h.seconds} s` : '';
+                }
+                label.append(tick, name, what);
+                if (h.warnings.length) {
+                    const warn = document.createElement('span');
+                    warn.className = 'hole-warn';
+                    warn.textContent = '⚠';
+                    warn.title = h.warnings.join('\n');
+                    label.append(warn);
+                }
+                row.append(label);
+                const url = h.status === 'done' && h.changedPx > 0 ? holes.imageUrl(h.hole) : null;
+                if (url) {
+                    const img = document.createElement('img');
+                    img.loading = 'lazy';
+                    img.src = url;
+                    img.alt = `Hole ${h.hole} before and after`;
+                    img.title = 'Before | after. Click for full size';
+                    img.onclick = () => window.open(url, '_blank');
+                    row.append(img);
+                }
+                return row;
+            }));
         }));
 
         // Keep the undo row fresh when the panel (re)opens.

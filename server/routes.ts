@@ -24,6 +24,8 @@ import { createMapBuildApi } from './api/map-build.api';
 import { createCleanedPhotoApi } from './api/cleaned-photo.api';
 import { createCleanupAreasApi } from './api/cleanup-areas.api';
 import { createCleanedPhotoFileRoutes } from './api/cleaned-photo.routes';
+import { createPhotoCleanupApi } from './api/photo-cleanup.api';
+import { createPhotoCleanupFileRoutes } from './api/photo-cleanup.routes';
 import { createHydroApi } from './api/hydro.api';
 import { createOsmApi } from './api/osm.api';
 import { createTerrainEditsApi } from './api/terrain-edits.api';
@@ -130,6 +132,9 @@ export function mountApiRoutes(app: Hono, services: Services, opts: { mode: Serv
         // Cleaned photo download + image upload (hand-mounted: a file
         // stream and a raw request body, which `mount()` cannot carry).
         app.route('/api', createCleanedPhotoFileRoutes(cleanedPhotoService));
+        // Hole-by-hole photo cleanup + its review images (a raw PNG route).
+        mount(app, '/api', createPhotoCleanupApi(services.photoCleanupService));
+        app.route('/api', createPhotoCleanupFileRoutes(services.photoCleanupService));
         mount(app, '/api', createHydroApi(hydroService));
         mount(app, '/api', createOsmApi(osmService));
         mount(app, '/api', createTerrainEditsApi(terrainEditsService));

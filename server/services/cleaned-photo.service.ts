@@ -423,6 +423,18 @@ export class CleanedPhotoService {
         }
     }
 
+    /**
+     * The cleaned photo file, made from the pristine photo first when the
+     * site has never been cleaned: what a hole cleanup job works on a copy
+     * of. `mtimeMs` tells a later step whether the photo changed since.
+     */
+    async photoFile(courseId: string): Promise<{ siteId: string; path: string; mtimeMs: number }> {
+        return this.enqueue(courseId, async (site) => {
+            const cleaned = await this.ensureCleaned(site);
+            return { siteId: site.siteId, path: cleaned, mtimeMs: (await stat(cleaned)).mtimeMs };
+        });
+    }
+
     /** The upload's image kind by its first bytes, within the size cap. */
     private async importKind(tmpPath: string): Promise<string> {
         let size: number;

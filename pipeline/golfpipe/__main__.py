@@ -23,6 +23,8 @@ Commands:
   cleaned-replace   Any image of the cleaned photo's pixel size (or an undo snapshot) -> the cleaned photo + retile under what changed
   cleaned-patch     Rectangles of finished pixels (the Clean tool's strokes) written into the cleaned photo + retile under them
   cleaned-export    The cleaned photo -> PNG, JPEG or raw RGB bytes
+  cleanup-hole      One hole's trees, shadows, players and paths painted out of a working copy of the cleaned photo
+  cleanup-compose   The accepted holes' changed pixels -> one transparent PNG for cleaned-replace
   tile-ortho        GeoTIFF -> WebP XYZ tile pyramid
   tile-terrain      GeoTIFF (DEM) -> Terrain-RGB PNG XYZ tile pyramid
   canopy            Lidar -> canopy / canopy-color / surface tile pyramids + manifest update (--trees-out: tree polygons too)
@@ -55,6 +57,7 @@ from golfpipe import dem_edit
 from golfpipe import detect_trees
 from golfpipe import detect_water
 from golfpipe import grid_dem as grid_dem_mod
+from golfpipe import hole_cleanup
 from golfpipe import hydro
 from golfpipe import lake_plane
 from golfpipe import sources
@@ -418,6 +421,30 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--cleaned", required=True, help="the cleaned photo")
     p.add_argument("--out", required=True, help="the image file to write")
     p.add_argument("--format", dest="format", choices=cleaned.EXPORT_FORMATS, default="png", help="png (lossless; default), jpg (q95) or rgb (raw bytes, 3 per pixel)")
+
+    p = sub.add_parser(
+        "cleanup-hole",
+        help="Paint trees, shadows, players and paths out of one hole of a working copy of the cleaned photo "
+             "(golfpipe/hole_cleanup.py); writes the hole's review files and prints its result as JSON",
+    )
+    p.add_argument("--work", required=True, help="working copy of the cleaned photo (GeoTIFF), changed in place")
+    p.add_argument("--features", required=True, help="the course's features: GeoJSON (WGS84) with properties.type and properties.hole")
+    p.add_argument("--areas", required=True, help="the site's cleanup areas as stored: JSON [{kind, ring}] (WGS84)")
+    p.add_argument("--hole", type=int, required=True, help="hole number")
+    p.add_argument("--region", help="the hole's saved map view (JSON {center, span}); omit for the box round its own features")
+    p.add_argument("--out", required=True, help="folder for the hole's files (photo/filled/changed/review/detect/overlay .png, hole.json)")
+    p.add_argument("--weights", help="LaMa TorchScript checkpoint path (default: $GOLFPIPE_LAMA_WEIGHTS)")
+    p.add_argument("--device", help="torch device (default: auto)")
+    p.add_argument("--photocraft", help="photocraft-cli executable (default: $GOLFPIPE_PHOTOCRAFT_CLI, else ../crafts/photocraft beside golf-map); 'none' fills every surface with LaMa")
+
+    p = sub.add_parser(
+        "cleanup-compose",
+        help="The accepted holes' changed pixels as one transparent PNG of the photo's size, for cleaned-replace; prints it as JSON",
+    )
+    p.add_argument("--job", required=True, help="the cleanup job folder (its h<n>/ folders)")
+    p.add_argument("--holes", required=True, help="comma-separated hole numbers, in the order they were cleaned")
+    p.add_argument("--size", type=int, default=cleaned.CLEANED_SIZE, help=f"pixels per side (default {cleaned.CLEANED_SIZE})")
+    p.add_argument("--out", required=True, help="the RGBA PNG to write")
 
     p = sub.add_parser("tile-ortho", help="Tile an orthophoto GeoTIFF into an XYZ WebP pyramid")
     p.add_argument("--input", required=True, help="input orthophoto GeoTIFF (any CRS)")
@@ -976,6 +1003,29 @@ def main(argv: list[str] | None = None) -> int:
         elif args.command == "cleaned-export":
             cleaned.cmd_cleaned_export(Path(args.cleaned), Path(args.out), fmt=args.format)
 
+        elif args.command == "cleanup-hole":
+            from golfpipe.inpaint import LamaInpainter
+            import json as _json
+
+            if args.photocraft == "none":
+                photocraft = None
+            else:
+                photocraft = Path(args.photocraft) if args.photocraft else hole_cleanup.default_photocraft()
+            doc = hole_cleanup.clean_hole(
+                Path(args.work), hole_cleanup.load_features(Path(args.features)), hole_cleanup.load_areas(Path(args.areas)),
+                args.hole, _json.loads(args.region) if args.region else None, Path(args.out),
+                LamaInpainter(args.weights, device=args.device), photocraft,
+                progress=lambda msg: print(msg, file=sys.stderr, flush=True),
+            )
+            commands._emit_json(doc)
+
+        elif args.command == "cleanup-compose":
+            try:
+                holes = [int(v) for v in args.holes.split(",") if v.strip()]
+            except ValueError:
+                parser.error("--holes must be comma-separated hole numbers")
+            commands._emit_json(hole_cleanup.compose(Path(args.job), holes, args.size, Path(args.out)))
+
         elif args.command == "tile-ortho":
             commands.cmd_tile_ortho(
                 Path(args.input), Path(args.out),
@@ -1173,6 +1223,9 @@ def main(argv: list[str] | None = None) -> int:
         print(f"error: {exc}", file=sys.stderr)
         return 1
     except clean_ortho.CleanOrthoError as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return 1
+    except hole_cleanup.HoleCleanupError as exc:
         print(f"error: {exc}", file=sys.stderr)
         return 1
     except patches.PatchError as exc:

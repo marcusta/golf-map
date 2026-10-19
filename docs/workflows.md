@@ -163,7 +163,7 @@ Left from the patch-log model this replaced (2026-10-08), safe to delete by hand
 
 ### AI cleanup of trees, shadows, players and paths
 
-Drawing the cleanup areas and running the per-hole cleanup (LaMa + PhotoCraft) that cleaned Vreta: [photo-cleanup.md](photo-cleanup.md).
+Drawing the cleanup areas and the hole-by-hole cleanup (Clean photo › Clean holes, `bun run photo -- clean|accept`) that cleaned Vreta: [photo-cleanup.md](photo-cleanup.md).
 
 ## 7. A rock slab (berghäll) in the ground
 

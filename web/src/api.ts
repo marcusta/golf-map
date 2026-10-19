@@ -30,6 +30,7 @@ import { createZoneTypesClient } from '../../shared/api/zone-types.gen';
 import { createVegetationRulesClient } from '../../shared/api/vegetation-rules.gen';
 import { createPhotosClient } from '../../shared/api/photos.gen';
 import { createShapingClient } from '../../shared/api/shaping.gen';
+import { createPhotoCleanupClient } from '../../shared/api/photo-cleanup.gen';
 
 export { ApiError } from '@basics/core/client/api-error';
 
@@ -75,4 +76,5 @@ export const api = {
     vegetationRules: createVegetationRulesClient(API_BASE),
     photos: createPhotosClient(API_BASE),
     shaping: createShapingClient(API_BASE),
+    photoCleanup: createPhotoCleanupClient(API_BASE),
 };

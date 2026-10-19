@@ -54,6 +54,10 @@ export interface FakeRunnerOptions {
     fail?: (command: string) => boolean;
     /** Whether a `cleaned-replace` of an uploaded image finds a difference (default yes). */
     importChanges?: () => boolean;
+    /** `cleanup-hole` fails for these holes. */
+    failHole?: (hole: number) => boolean;
+    /** Pixels `cleanup-hole` reports changed for a hole (default 100 x its number). */
+    holeChanges?: (hole: number) => number;
 }
 
 export function fakeRunner(opts: FakeRunnerOptions): PipelineRunner {
@@ -91,6 +95,24 @@ export function fakeRunner(opts: FakeRunnerOptions): PipelineRunner {
             if (!snapshot && !(opts.importChanges?.() ?? true)) return ok({ changed: false, changedPixels: 0, size: 8192 });
             await writeFile(cleaned!, snapshot ? await readFile(image) : `image ${path.extname(image)} of ${(await readFile(image)).length} bytes`);
             return ok({ changed: true, changedPixels: 5000, size: 8192, bounds3006: CHANGE_BOUNDS_3006, tiles: 30 });
+        }
+        if (command === 'cleanup-hole') {
+            // A cleaned hole: its review files and what it found, `changedPx`
+            // from `holeChanges` (default 100 per hole number).
+            const hole = Number(argValue(args, '--hole'));
+            const out = argValue(args, '--out')!;
+            if (opts.failHole?.(hole)) return { code: 1, stdout: '', stderr: `hole ${hole}: progress\nerror: hole ${hole} lies outside the photo` };
+            await mkdir(out, { recursive: true });
+            for (const name of ['review', 'photo', 'filled', 'detect', 'overlay', 'changed']) await writeFile(path.join(out, `${name}.png`), TINY_PNG);
+            const changedPx = opts.holeChanges?.(hole) ?? 100 * hole;
+            const doc = { hole, window: { x0: 0, y0: 0, w: 1, h: 1 }, scopePx: 1000 * hole, targetPx: 2 * changedPx, changedPx, seconds: 1.5, warnings: [], perSurface: {} };
+            await writeFile(path.join(out, 'hole.json'), JSON.stringify(doc));
+            return ok(doc);
+        }
+        if (command === 'cleanup-compose') {
+            const out = argValue(args, '--out')!;
+            await writeFile(out, TINY_PNG);
+            return ok({ file: out, holes: argValue(args, '--holes')!.split(',').map(Number), changedPixels: 1 });
         }
         if (command === 'cleaned-export') {
             const out = argValue(args, '--out')!;

@@ -25,6 +25,7 @@ import { MapBuildService } from './map-build.service';
 import { GsproExportService } from './gspro-export.service';
 import { CleanedPhotoService } from './cleaned-photo.service';
 import { CleanupAreasService } from './cleanup-areas.service';
+import { PhotoCleanupService } from './photo-cleanup.service';
 import { HydroService } from './hydro.service';
 import { OsmService } from './osm.service';
 import { TerrainEditsService } from './terrain-edits.service';
@@ -144,6 +145,8 @@ export function createServices(db: Kysely<Database>, config: ServicesConfig = {}
         mapBuildService,
         cleanedPhotoService,
         cleanupAreasService: new CleanupAreasService(db),
+        // Hole-by-hole photo cleanup on a copy, accepted holes applied as one undo step (`bun run photo -- clean`).
+        photoCleanupService: new PhotoCleanupService({ db, cleanedPhoto: cleanedPhotoService, dataDir }),
         hydroService,
         osmService,
         terrainEditsService,
