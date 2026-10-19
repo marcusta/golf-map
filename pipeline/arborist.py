@@ -394,7 +394,7 @@ def apply_look(item: dict, rules: list[dict], also: str = "") -> None:
     """The species file's `treeSettings` / `plantSettings` rules. Every rule one of whose `match`
     strings the item's name (or `also`, its Arborist species) contains ("*" = all) is merged, later ones winning key by key, and
     the result applied once: tint / barkTint ("#rrggbb", the leaf / bark tint itself), else
-    tint1 / tint2 / bark1 (colours carried over from Unity), else tintCap / barkCap (the brightest the default tint may be; 1 = leave it), saturation, brightness, smoothness, ao,
+    tint1 / tint2 / bark1 (colours carried over from Unity), else tintCap / barkCap (the brightest the default tint may be; 1 = leave it), saturation, brightness, smoothness, ao, mainColor / occlusion (the Lake Plants shader),
     even (true: the second leaf tone = the first), lodFactor, renderDistance, scale, sampleDistance, shadows, billboardTint / billboardBrightness. Arborist's default tints are near white, far too bright under a course's
     own light; a grey tint makes leaves muddy, so a tint is normally a green."""
     look: dict = {}
@@ -428,6 +428,10 @@ def apply_look(item: dict, rules: list[dict], also: str = "") -> None:
                 prop["FloatValue"] = look["smoothness"]
             elif name == "AOPower" and "ao" in look:
                 prop["FloatValue"] = look["ao"]
+            elif name == "MainColor" and "mainColor" in look:  # the Lake Plants shader (Arb_Standard) has this one colour
+                prop["ColorValue"] = _hex_colour(look["mainColor"])
+            elif name == "OcclusionStrength" and "occlusion" in look:
+                prop["FloatValue"] = look["occlusion"]
     if look.get("even"):
         # One leaf tone instead of the shader's healthy/dry pair, which mottles the crown.
         for block in blocks:

@@ -561,9 +561,22 @@
       "match": [
         "LakePlants_"
       ],
-      "comment": "Omberg hole 9's pond plants (2026-10-19): the Lake Plants shader has no leaf tint; its default reads pale cream in sun (white from the sun side). Brightness -0.03 (an offset: -0.08 turns the pads grey) and saturation 1.5 give green pads, brown old ones, white flowers.",
+      "comment": "Omberg hole 9's pond plants (2026-10-19). The Lake Plants shader (Arb_Standard) has one colour (MainColor), saturation, brightness (an offset: -0.05 turns plants grey), smoothness (no visible effect) and OcclusionStrength. Reeds, flags and flowers: brightness -0.03, saturation 1.5.",
       "brightness": -0.03,
       "saturation": 1.5
+    },
+    {
+      "match": [
+        "LakePlants_Water_Lily_",
+        "LakePlants_Lily_Pad_Group",
+        "LakePlants_Lily_Pad_Cluster",
+        "LakePlants_Duckweed"
+      ],
+      "comment": "The pads (not the flowers) read pale cream in sun and from a low angle: the textures hold tan old pads and the sky reflects off flat pads. A green MainColor, saturation 3 and OcclusionStrength 3 give green pads top-down and from low (2026-10-19).",
+      "brightness": -0.02,
+      "saturation": 3,
+      "mainColor": "#4a9a30",
+      "occlusion": 3
     }
   ],
   "plantSettings": [
