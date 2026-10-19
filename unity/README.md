@@ -1558,7 +1558,9 @@ each chunk with LODs and one simplified collider.
   then `golfmap.walls.bake only=<id>`. Hand moves last until the next build of that wall, as before.
 - The result per wall: `stones`, `trisBefore`, `trisLod`, `collidersBefore` -> `colliders`, `colliderTris`, `culled`
   (ground / inside / hidden) and `seconds` (export / blender / import).
-- Props built of many stones in one mesh (Omberg's stone bridges) bake at build time instead: `bake: true` on the asset in its props spec; `build_props.py` drops the hidden parts, writes `<id>_LOD0..` and `<id>_collider` into the FBX and `lods: {count, lodM, cullM, lastLodShadows}` + `colliderMesh` into `props.json`; `golfmap.props.place` sets the LODGroup heights from `lodM` and puts the MeshCollider on the collider child (its renderer off). No ground culling there, so the look and shadows stay as built. Omberg's six bridges 2026-10-19: 251,372 -> 101,736 tris (LOD0), colliders 35,602 tris.
+- Props built of many stones in one mesh (Omberg's stone bridges) bake at build time instead: `bake: true` on the asset in its props spec; `build_props.py` drops the hidden parts, writes `<id>_LOD0..` and `<id>_collider` into the FBX and `lods: {count, lodM, cullM, lastLodShadows}` + `colliderMesh` into `props.json`; `golfmap.props.place` sets the LODGroup heights from `lodM` and puts the MeshCollider on the collider child (its renderer off). No ground culling there, so the look and shadows stay as built. Omberg's six bridges 2026-10-19: 251,372 -> 101,736 tris (LOD0), colliders 35,602 tris. The LOD1 collider lies
+  0.6 cm from the visible surface on average (95% within 2.5 cm, a ball's radius; where it differs it is mostly inside
+  the stone, between bumps); LOD2 would be 3 cm / 10 cm, too rough to bounce off.
 - Blender: `GOLFMAP_BLENDER`, else Blender 4.5's default install. The script comes from the project's
   `GolfMapTools/blender-walls/` (outside Assets), copied there by `unity_sync push` from `blender/walls/`
   (`unity/install.json`).
