@@ -498,23 +498,29 @@ export class TerrainGeneratorsService {
      * which road-grades smooths. Overlapping polygons are one lot (`pavedLots`).
      * A polygon too long and thin to be an area (an old road corridor drawn or
      * imported as an outline) is skipped and counted: a road is graded along
-     * its centerline, not smoothed as a lot.
+     * its centerline, not smoothed as a lot. Where a centerline crosses water
+     * (a pond or creek feature) it is a bridge: the line is cut there and that
+     * stretch is not graded, so the water's dig stays under the bridge.
      */
     private async featureRoads(courseId: string): Promise<{ lines: object[]; areas: object[]; skipped: number; merged: number }> {
-        const features = (await this.courseFeatures.listByCourse(courseId)).filter(f => f.type === 'path' && !f.generated);
+        const all = await this.courseFeatures.listByCourse(courseId);
+        const features = all.filter(f => f.type === 'path' && !f.generated);
+        const water = all.filter(f => (f.type === 'water' || f.type === 'water_creek') && f.geometry.rings.length > 0)
+            .map(f => flattenRing(f.geometry.rings[0], 0.1, f.geometry.curveType).map(([x, y]) => ({ x, y })));
         const lines: object[] = [];
         const pieces: PavedPiece[] = [];
         const r2 = (v: number) => Math.round(v * 100) / 100;
         for (const f of features) {
             if (f.geometry.centerline) {
-                const line = flattenCenterline(f.geometry.centerline.points, 0.1);
-                let lengthM = 0;
-                for (let i = 1; i < line.length; i++) lengthM += Math.hypot(line[i].x - line[i - 1].x, line[i].y - line[i - 1].y);
-                lines.push({
-                    type: 'Feature',
-                    properties: { id: FEATURE_ORIGIN_REF + f.id, highway: '', road_class: 'road', widthM: f.geometry.centerline.widthM, lengthM: Math.round(lengthM * 10) / 10 },
-                    geometry: { type: 'LineString', coordinates: line.map(q => [r2(q.x), r2(q.y)]) },
-                });
+                for (const line of offWater(flattenCenterline(f.geometry.centerline.points, 0.1), water)) {
+                    let lengthM = 0;
+                    for (let i = 1; i < line.length; i++) lengthM += Math.hypot(line[i].x - line[i - 1].x, line[i].y - line[i - 1].y);
+                    lines.push({
+                        type: 'Feature',
+                        properties: { id: FEATURE_ORIGIN_REF + f.id, highway: '', road_class: 'road', widthM: f.geometry.centerline.widthM, lengthM: Math.round(lengthM * 10) / 10 },
+                        geometry: { type: 'LineString', coordinates: line.map(q => [r2(q.x), r2(q.y)]) },
+                    });
+                }
                 continue;
             }
             const rings = f.geometry.rings.map(ring => flattenRing(ring, 0.1, f.geometry.curveType));
@@ -705,6 +711,40 @@ function compactness(ring: Array<[number, number]>): number {
         perimeter += Math.hypot(x2 - x1, y2 - y1);
     }
     return perimeter > 0 ? (4 * Math.PI * Math.abs(area / 2)) / (perimeter * perimeter) : 0;
+}
+
+/** A road's stretches off the water: sampled every BRIDGE_STEP_M, cut where a sample lies in a water ring (a bridge),
+ * runs shorter than BRIDGE_MIN_RUN_M dropped. A road that never meets water comes back as it was. */
+const BRIDGE_STEP_M = 0.25;
+const BRIDGE_MIN_RUN_M = 1;
+function offWater(line: { x: number; y: number }[], water: { x: number; y: number }[][]): { x: number; y: number }[][] {
+    const wet = (p: { x: number; y: number }) => water.some(ring => pointInRing(p, ring));
+    const dense: { x: number; y: number; wet: boolean }[] = [];
+    for (let i = 0; i < line.length; i++) {
+        const a = line[i], b = line[i + 1];
+        dense.push({ ...a, wet: wet(a) });
+        if (!b) break;
+        const n = Math.floor(Math.hypot(b.x - a.x, b.y - a.y) / BRIDGE_STEP_M);
+        for (let k = 1; k < n; k++) {
+            const q = { x: a.x + ((b.x - a.x) * k) / n, y: a.y + ((b.y - a.y) * k) / n };
+            dense.push({ ...q, wet: wet(q) });
+        }
+    }
+    if (!dense.some(p => p.wet)) return [line];
+    const runs: { x: number; y: number }[][] = [];
+    let run: { x: number; y: number }[] = [];
+    const flush = () => {
+        let len = 0;
+        for (let i = 1; i < run.length; i++) len += Math.hypot(run[i].x - run[i - 1].x, run[i].y - run[i - 1].y);
+        if (run.length >= 2 && len >= BRIDGE_MIN_RUN_M) runs.push(run);
+        run = [];
+    };
+    for (const p of dense) {
+        if (p.wet) flush();
+        else run.push({ x: p.x, y: p.y });
+    }
+    flush();
+    return runs;
 }
 
 /** A waterfall's lip within this of a creek's outline is on that creek (m). */

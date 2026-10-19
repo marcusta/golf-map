@@ -365,6 +365,33 @@ test('road grades follow the course\'s own paths: lines as corridors, paved area
     expect((area!.geometry.coordinates as number[][][])[0]).toHaveLength(5);
 });
 
+test('road grades leave a bridge ungraded: a path line is cut where it crosses a pond', async () => {
+    const lines: string[] = [];
+    const { runner } = recordingRunner();
+    const t = await setup(async (args, cwd) => {
+        if (args[2] === 'road-grades') lines.push(await readFile(args[args.indexOf('--centerlines') + 1], 'utf8'));
+        return runner(args, cwd);
+    });
+    await buildSite(t);
+    const X = 530000, Y = 6487000;
+    const road = await t.courseFeatures.create({
+        courseId: TEST_COURSE_ID, type: 'path',
+        geometry: { crs: 'EPSG:3006', rings: [], centerline: { points: [{ x: X, y: Y }, { x: X + 40, y: Y }], widthM: 2 } },
+    });
+    // a pond across the middle, 6 m wide
+    await t.courseFeatures.create({ courseId: TEST_COURSE_ID, type: 'water', geometry: { crs: 'EPSG:3006', rings: [{ points: [
+        { x: X + 17, y: Y - 10 }, { x: X + 23, y: Y - 10 }, { x: X + 23, y: Y + 10 }, { x: X + 17, y: Y + 10 },
+    ] }] } });
+    await t.svc.generate(TEST_COURSE_ID, 'road-grades');
+    const doc = JSON.parse(lines[0]!) as { features: Array<{ properties: Record<string, unknown>; geometry: { coordinates: number[][] } }> };
+    expect(doc.features.map(f => f.properties.id)).toEqual([`feature:${road.id}`, `feature:${road.id}`]);
+    const [west, east] = doc.features.map(f => f.geometry.coordinates);
+    expect(west![0]).toEqual([X, Y]);
+    expect(west!.at(-1)![0]).toBeLessThanOrEqual(X + 17);
+    expect(east![0]![0]).toBeGreaterThanOrEqual(X + 23);
+    expect(east!.at(-1)).toEqual([X + 40, Y]);
+});
+
 test('road grades merge overlapping paved polygons into one lot; a road outline drawn into a lot is left out', async () => {
     const lines: string[] = [];
     const { runner } = recordingRunner();
