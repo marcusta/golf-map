@@ -1,0 +1,28 @@
+{
+ "format": "golfmap-props-spec-v1",
+ "comment": "Omberg's tee markers (Marcus, 2026-10-19): granite setts (gatsten) painted in the tee's colour - white, yellow, blue, red, orange (Junior), grey (Par 3). One split-faced sett each, ~15 x 14 x 13 cm, the paint over the stone's grain. GSPro sets them out per tee from the scene's CourseOverrides (TeeMarkerWhite/Yellow/Blue/Red/Junior/Par3, two markers TeeMarkerWidth apart); golfmap.teemarkers.install makes the prefabs and fills those slots. Colours are sRGB albedo kept under ~180 (the course scene lights sunlit faces at ~1.7x). Build: blender -b --factory-startup --python blender/tools/build_props.py -- --spec docs/gspro/ombergs-golfklubb/tee-markers/tee-markers.json --out data/omberg-tee-markers/build --preview",
+ "origin": [0, 0],
+ "materials": {
+  "sett_white": {"texture": "granite:170,170,166:0:0:0", "tile": [4.0, 4.0], "smoothness": 0.25},
+  "sett_yellow": {"texture": "granite:190,158,36:0:0:0", "tile": [4.0, 4.0], "smoothness": 0.25},
+  "sett_blue": {"texture": "granite:34,64,138:0:0:0", "tile": [4.0, 4.0], "smoothness": 0.25},
+  "sett_red": {"texture": "granite:152,32,30:0:0:0", "tile": [4.0, 4.0], "smoothness": 0.25},
+  "sett_orange": {"texture": "granite:196,98,30:0:0:0", "tile": [4.0, 4.0], "smoothness": 0.25},
+  "sett_grey": {"texture": "granite:108,110,112:0:0:0", "tile": [4.0, 4.0], "smoothness": 0.25}
+ },
+ "assets": {
+  "tee_sett_white": {"category": "prop", "collider": "none", "parts": [{"kind": "boulder", "sx": 0.15, "sy": 0.14, "sz": 0.13, "seed": 71, "exponent": 10.0, "lumps": 0.25, "seg": 20, "rings": 12, "mat": "sett_white",
+   "flats": [{"dir": [1, 0, 0], "at": 0.9, "keep": 0.35}, {"dir": [-1, 0, 0], "at": 0.9, "keep": 0.35}, {"dir": [0, 1, 0], "at": 0.9, "keep": 0.35}, {"dir": [0, -1, 0], "at": 0.9, "keep": 0.35}, {"dir": [0, 0, 1], "at": 0.92, "keep": 0.3}, {"dir": [0, 0, -1], "at": 0.9, "keep": 0.2}]}]},
+  "tee_sett_yellow": {"category": "prop", "collider": "none", "parts": [{"kind": "boulder", "sx": 0.15, "sy": 0.14, "sz": 0.13, "seed": 72, "exponent": 10.0, "lumps": 0.25, "seg": 20, "rings": 12, "mat": "sett_yellow",
+   "flats": [{"dir": [1, 0, 0], "at": 0.9, "keep": 0.35}, {"dir": [-1, 0, 0], "at": 0.9, "keep": 0.35}, {"dir": [0, 1, 0], "at": 0.9, "keep": 0.35}, {"dir": [0, -1, 0], "at": 0.9, "keep": 0.35}, {"dir": [0, 0, 1], "at": 0.92, "keep": 0.3}, {"dir": [0, 0, -1], "at": 0.9, "keep": 0.2}]}]},
+  "tee_sett_blue": {"category": "prop", "collider": "none", "parts": [{"kind": "boulder", "sx": 0.15, "sy": 0.14, "sz": 0.13, "seed": 73, "exponent": 10.0, "lumps": 0.25, "seg": 20, "rings": 12, "mat": "sett_blue",
+   "flats": [{"dir": [1, 0, 0], "at": 0.9, "keep": 0.35}, {"dir": [-1, 0, 0], "at": 0.9, "keep": 0.35}, {"dir": [0, 1, 0], "at": 0.9, "keep": 0.35}, {"dir": [0, -1, 0], "at": 0.9, "keep": 0.35}, {"dir": [0, 0, 1], "at": 0.92, "keep": 0.3}, {"dir": [0, 0, -1], "at": 0.9, "keep": 0.2}]}]},
+  "tee_sett_red": {"category": "prop", "collider": "none", "parts": [{"kind": "boulder", "sx": 0.15, "sy": 0.14, "sz": 0.13, "seed": 74, "exponent": 10.0, "lumps": 0.25, "seg": 20, "rings": 12, "mat": "sett_red",
+   "flats": [{"dir": [1, 0, 0], "at": 0.9, "keep": 0.35}, {"dir": [-1, 0, 0], "at": 0.9, "keep": 0.35}, {"dir": [0, 1, 0], "at": 0.9, "keep": 0.35}, {"dir": [0, -1, 0], "at": 0.9, "keep": 0.35}, {"dir": [0, 0, 1], "at": 0.92, "keep": 0.3}, {"dir": [0, 0, -1], "at": 0.9, "keep": 0.2}]}]},
+  "tee_sett_orange": {"category": "prop", "collider": "none", "parts": [{"kind": "boulder", "sx": 0.15, "sy": 0.14, "sz": 0.13, "seed": 75, "exponent": 10.0, "lumps": 0.25, "seg": 20, "rings": 12, "mat": "sett_orange",
+   "flats": [{"dir": [1, 0, 0], "at": 0.9, "keep": 0.35}, {"dir": [-1, 0, 0], "at": 0.9, "keep": 0.35}, {"dir": [0, 1, 0], "at": 0.9, "keep": 0.35}, {"dir": [0, -1, 0], "at": 0.9, "keep": 0.35}, {"dir": [0, 0, 1], "at": 0.92, "keep": 0.3}, {"dir": [0, 0, -1], "at": 0.9, "keep": 0.2}]}]},
+  "tee_sett_grey": {"category": "prop", "collider": "none", "parts": [{"kind": "boulder", "sx": 0.15, "sy": 0.14, "sz": 0.13, "seed": 76, "exponent": 10.0, "lumps": 0.25, "seg": 20, "rings": 12, "mat": "sett_grey",
+   "flats": [{"dir": [1, 0, 0], "at": 0.9, "keep": 0.35}, {"dir": [-1, 0, 0], "at": 0.9, "keep": 0.35}, {"dir": [0, 1, 0], "at": 0.9, "keep": 0.35}, {"dir": [0, -1, 0], "at": 0.9, "keep": 0.35}, {"dir": [0, 0, 1], "at": 0.92, "keep": 0.3}, {"dir": [0, 0, -1], "at": 0.9, "keep": 0.2}]}]}
+ },
+ "instances": []
+}

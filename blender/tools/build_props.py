@@ -262,10 +262,14 @@ def main():
     for d in (models, texdir):
         os.makedirs(d, exist_ok=True)
     only = set(x for x in a.only.split(",") if x)
-    # spec-level materials: finished pictures (a sign face per hole), paths relative to the spec
+    # spec-level materials: finished pictures (a sign face per hole, `image`, paths relative to the spec) or one of
+    # the kit's generated textures in a spec's own colour (`texture`, e.g. "granite:170,170,166:0:0:0", tiled `tile` m)
     kit.SPEC_DIR = os.path.dirname(os.path.abspath(a.spec))
     for name, m in spec.get("materials", {}).items():
-        kit.MATERIALS[name] = ("image:" + m["image"], (1.0, 1.0), None, m.get("smoothness", 0.3), 0.0)
+        if "texture" in m:
+            kit.MATERIALS[name] = (m["texture"], tuple(m.get("tile", (4.0, 4.0))), None, m.get("smoothness", 0.3), m.get("metallic", 0.0))
+        else:
+            kit.MATERIALS[name] = ("image:" + m["image"], (1.0, 1.0), None, m.get("smoothness", 0.3), 0.0)
 
     sc = reset_scene()
     # geometry first, so only the materials some asset uses get their textures generated

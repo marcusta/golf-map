@@ -362,6 +362,16 @@ namespace GolfMap.Editor
             return outp;
         }
 
+        // A props build installed in its own folder (<folder>props.json, Models/, Textures/): its materials made and
+        // its models imported as the props are, by asset id - for tools that make prefabs from them (tee markers).
+        internal static Dictionary<string, GameObject> ImportModels(string folder)
+        {
+            List<Mat> mats; List<Asset> assets; List<Inst> insts;
+            Load(folder + "props.json", out mats, out assets, out insts);
+            var matAssets = BuildMaterials(folder, mats);
+            return assets.ToDictionary(a => a.id, a => Model(folder, a, matAssets, true));
+        }
+
         static GameObject Model(string folder, Asset a, Dictionary<string, Material> mats, bool settings)
         {
             if (!string.IsNullOrEmpty(a.prefab))
