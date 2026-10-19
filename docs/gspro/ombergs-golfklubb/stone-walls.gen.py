@@ -196,8 +196,8 @@ WALLS = [
              "line (photo, 2026-10-19)."},
     # Hole 9, fall E (Marcus 2026-10-19): the stone sill the upper pond 576's water falls over into 573, 5 m west of the
     # bridge; the ground is the terrain edit sill:h9-fall-e (flat at the upper water, 0.8 m wide), the line its west edge.
-    {"id": "h9-fall-e-sill", "style": "wall", "beyondM": 0.1,   # the face up to the sill only: the bay behind it is water
-     "line": [(477735.95, 6457801.85), (477735.5, 6457805.5), (477735.05, 6457809.15)],
+    {"id": "h9-fall-e-sill", "style": "wall", "beyondM": 0.1, "capM": 0.25,   # up to the sill and a little over (Marcus: much higher); the bay behind is water
+     "line": [(477736.13, 6457800.36), (477735.5, 6457805.5), (477734.87, 6457810.64)],   # 1.5 m into both banks (Marcus: wider)
      "note": "Hole 9: the stone sill of fall E between the upper pond (576) and 573, west of the bridge (photo from the west)."},
     {"id": "p77-north-tip", "feature": "4530bf16-35ec-4c82-b78b-f139db337b9e",
      "start": (477675.8, 6457494.0), "via": (477683.8, 6457497.0), "end": (477694.5, 6457487.4),
