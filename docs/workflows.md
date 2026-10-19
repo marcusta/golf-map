@@ -161,15 +161,9 @@ Files, under `data/sources/<siteId>/`: `ortho-<vintage>.cleaned.tif` (the photo)
 Left from the patch-log model this replaced (2026-10-08), safe to delete by hand once the cleaned photo looks right: `ortho-<vintage>.patched.tif`, `patches/`, `exports/`, `sim-frame.json`. A site that had a `.patched.tif` got its cleaned photo from it, so those edits are in the photo.
 
 
-### Boundaries for AI photo cleanup
+### AI cleanup of trees, shadows, players and paths
 
-Clean photo › **Areas** stores the cleanup scope separately from course features and photo edits. **Area to clean** includes ground, and cleanup there is limited to the mapped tees, fairways, roughs and greens. **Clean everything** includes ground and cleans all of it, whatever course feature is mapped there or none (trees standing just outside a drawn rough, for example). **Keep unchanged** excludes ground, regardless of drawing order and of either other kind. With no included areas, nothing is eligible. The green preview is the union of both including kinds with every protected area cut out; purple on top of it marks the Clean everything part; orange marks protected ground. These boundaries guide external cleanup, not the manual stamp or inpainting tools.
-
-Choose **Area to clean**, **Clean everything** or **Keep unchanged**; the map cursor becomes a crosshair. Drag to trace a boundary or click separate corners, then **Finish area** (or Enter) to save. Left-drag draws while a draft is active; Ctrl/Cmd-drag pans. The panel shows the number of corners placed. Backspace removes the last corner and Escape cancels a draft. Select a saved area to rename, redraw or delete it. **Undo area change** restores the previous set during the current editing session. Areas persist in the server database, belong to the site's shared photo, and are visible to every course on that site. Concurrent changes are rejected rather than overwritten; cancel the draft and **Reload areas** before retrying.
-
-**Download cleanup boundary** exports the effective WGS84 MultiPolygon as GeoJSON, including protected holes, as the feature with `properties.type` `cleanup`. When a Clean everything area is drawn, a second feature of type `cleanup-force` holds the part of it to clean regardless of course features (protected ground cut out of it too). The cleanup skill can pass this file directly to `cleanup.py maps --cleanup-aoi <file> --aoi-crs EPSG:4326`, along with the original image, course surface geometry and the image's exact EPSG:3006 frame. It must not use this boundary's bounding box as the image frame. This only defines where edits are allowed; no image generation runs when saving or downloading a boundary. Review the composed result, import it through **Import a photo**, then **Update photo** as above.
-
-Authenticated builder APIs: `GET /api/cleanup-areas?courseId=<id>` reads the versioned source areas; `POST /api/cleanup-areas` saves `{courseId, version, areas}`; `GET /api/cleanup-areas/export?courseId=<id>` returns the effective GeoJSON. The export carries `siteId` and `version` so a cleanup job can record exactly which saved scope it used.
+Drawing the cleanup areas and running the per-hole cleanup (LaMa + PhotoCraft) that cleaned Vreta: [photo-cleanup.md](photo-cleanup.md).
 
 ## 7. A rock slab (berghäll) in the ground
 

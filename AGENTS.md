@@ -48,6 +48,7 @@ External paths (Vreta is the test course; nothing in code may hardcode it):
 - Auth: cookie sessions; no signup — `create-user` CLI. Tile routes are public.
 - `docs/`: feature proposals and decisions (`decisions-*.md`, `feature-*.md`); read the relevant one before touching the planner/strategy layer or a feature it covers.
 - Language: everything in the repo is English — code, identifiers, comments, commit messages, docs, skills. Chat with Marcus is in Swedish. He describes terrain, groundwork and vegetation in Swedish (`stenröse`, `berghäll`, `slänt`); when such a term maps to an English one used in code or tools (fringe, rough, cut-out), give both the first time, and ask when unsure what a Swedish term refers to on the ground.
+- Photo cleanup — removing trees, shadows, players and paths from the ortho photo before it goes onto the Unity meshes, and how to draw the cleanup areas: [docs/photo-cleanup.md](docs/photo-cleanup.md).
 - Cross-area workflows (terrain round-trip and order of operations, new vegetation zone → Unity, Unity script edit + sync, re-placing props/walls without losing hand edits, editing the cleaned ortho photo in an image editor, a rock slab / berghäll in the ground, stepped ponds and waterfalls): [docs/workflows.md](docs/workflows.md) — read before any of them.
 
 ## This machine (Windows 11, native, no WSL)
