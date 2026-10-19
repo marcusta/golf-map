@@ -112,8 +112,9 @@ namespace GolfMap.Editor
                 var like = all.FirstOrDefault(g => g.name == likeName && g.activeInHierarchy && g.GetComponent<MeshFilter>() != null);
                 if (like == null) throw new InvalidOperationException(path + ": plane " + name + ": no active plane '" + likeName + "' to copy.");
                 float surface = like.GetComponent<Renderer>().bounds.max.y;
-                var xz = o.Array("vertices").Cast<List<object>>().Select(q => new Vector2(Convert.ToSingle(q[0]), Convert.ToSingle(q[1]))).ToList();
-                var tris = o.Array("triangles").Select(Convert.ToInt32).ToList();
+                Func<object, double> num = v => { var n = v as GolfMapJsonNumber; if (n == null) throw new InvalidOperationException(path + ": plane " + name + ": a number was expected."); return n.Value; };
+                var xz = o.Array("vertices").Cast<List<object>>().Select(q => new Vector2((float)num(q[0]), (float)num(q[1]))).ToList();
+                var tris = o.Array("triangles").Select(v => (int)Math.Round(num(v))).ToList();
                 if (tris.Count % 3 != 0 || tris.Any(i => i < 0 || i >= xz.Count)) throw new InvalidOperationException(path + ": plane " + name + ": bad triangles.");
                 report.Add(new Dictionary<string, object> { { "name", name }, { "like", likeName }, { "surfaceY", Round(surface) }, { "vertices", xz.Count }, { "triangles", tris.Count / 3 } });
                 if (dryRun) continue;

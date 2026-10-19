@@ -196,7 +196,7 @@ WALLS = [
              "line (photo, 2026-10-19)."},
     # Hole 9, fall E (Marcus 2026-10-19): the stone sill the upper pond 576's water falls over into 573, 5 m west of the
     # bridge; the ground is the terrain edit sill:h9-fall-e (flat at the upper water, 0.8 m wide), the line its west edge.
-    {"id": "h9-fall-e-sill", "style": "wall",
+    {"id": "h9-fall-e-sill", "style": "wall", "beyondM": 0.1,   # the face up to the sill only: the bay behind it is water
      "line": [(477735.95, 6457801.85), (477735.5, 6457805.5), (477735.05, 6457809.15)],
      "note": "Hole 9: the stone sill of fall E between the upper pond (576) and 573, west of the bridge (photo from the west)."},
     {"id": "p77-north-tip", "feature": "4530bf16-35ec-4c82-b78b-f139db337b9e",
@@ -512,7 +512,7 @@ def main():
         length = sum(math.dist(toe[i], toe[i + 1]) for i in range(len(toe) - 1))
         print("%-16s %3d stations, %5.1f m along the foot" % (w["id"], len(toe), length))
         walls.append({"id": w["id"], "note": w["note"], "seed": sum(map(ord, w["id"])), "toe": toe, "lip": lip,
-                      **({"style": w["style"]} if "style" in w else {})})
+                      **{k: v for k, v in w.items() if k not in ("id", "note", "feature", "start", "via", "end", "line")}})  # style and any setting
     spec = {"format": "golfmap-walls-v1", "source": "docs/gspro/ombergs-golfklubb/stone-walls.gen.py", "stonesFolder": STONES_FOLDER,
             "physicMaterial": PHYSIC_MATERIAL, "stoneSets": STONE_SETS, "defaults": DEFAULTS, "styles": STYLES,
             "walls": walls, "boulders": H1_BOULDERS + H2_BOULDERS + BOX_BOULDERS + BIRCH_BOULDERS, "placedColors": {}}
