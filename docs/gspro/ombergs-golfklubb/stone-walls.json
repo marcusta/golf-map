@@ -91,6 +91,7 @@
  },
  "defaults": {
   "style": "rose",
+  "bake": true,
   "ground": true,
   "faceDeg": 55,
   "baseInM": 0.1,
@@ -1629,8 +1630,7 @@
      6457158.26
     ]
    ],
-   "style": "pondwall",
-   "bake": true
+   "style": "pondwall"
   },
   {
    "id": "p77-south-west",

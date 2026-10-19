@@ -1550,6 +1550,9 @@ each chunk with LODs and one simplified collider.
   `physicMaterial` on the chunk, static) and `<wall>/Stones` (the stones, inactive: the source of the next bake).
   Meshes: `<course>/Walls/Baked/<wall>.asset`. Work files: `GolfMapSpelunk/wall-bake/<Course>_<wall>.in.json` (what
   Unity sent), `.out.json` + `.out.bin` (what Blender made), `.out.log` (Blender's output).
+- Omberg bakes every wall (`bake` in the generator's `DEFAULTS`, 2026-10-19): 8 walls, 2,042 stones, 1,118,544 tris
+  -> LOD0 399,826 / LOD1 139,904 / LOD2 39,959, 2,042 mesh colliders -> 43; ~25 s in all. At 64 m and 150 m the
+  baked walls cannot be told from the stones.
 - Look: the same as the stones close up except in the sun on the top edges, which come out a little brighter (Omberg
   h14, 2026-10-19). OPCD's course meshes cast no shadows (`CastShadows: Off`), so the loose stones' buried backs shadowed
   the wall through the bank; the bake drops them. Before/after: `docs/gspro/ombergs-golfklubb/wall-bake-h14-before-after.png`.

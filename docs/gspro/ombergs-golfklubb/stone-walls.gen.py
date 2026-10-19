@@ -65,6 +65,7 @@ LINE_LIP_IN_M = 0.15    # ... and the top edge this far back, on the plateau
 
 DEFAULTS = {
     "style": "rose",
+    "bake": True,         # merged in Blender into chunks with LODs and one collider each (GolfMapWallBake; Marcus 2026-10-19)
     "ground": True,       # the bank raised into a steep stone face (the dug bank under it is 32 deg)
     "faceDeg": 55,
     "baseInM": 0.1,       # the face starts this far in from the foot
@@ -204,7 +205,6 @@ STYLES = {
 # face, `bun run terrain:wall`), the top edge LINE_LIP_IN_M back on the plateau.
 WALLS = [
     {"id": "h14-pond-edge", "style": "pondwall", "feature": "b2388429-8a29-41d6-9396-559dcfd5f18c",
-     "bake": True,  # merged into chunks with LODs and one collider each (GolfMapWallBake), the first wall tried 2026-10-19
      "start": (477383.2, 6457119.8), "via": (477339.1, 6457149.0), "end": (477358.0, 6457157.5),
      "note": "Hole 14 pond: the stone wall from the east tip along the whole south side (Marcus's photo, 2026-10-19), "
              "round the west tip (the creek's outlet) and along the north edge to E 477358 (2025 and 2023 orthos)."},
