@@ -33,12 +33,12 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 
 SITES = {
     # hole 6's creek (feature 575), the two old bridges on the way to the single-bunker green; the first one of the reference photo
-    "omberg_stone_bridge_h6a": dict(hole=6, e=477447.4, n=6457784.8, yawDeg=154.0, style="mound", length=9.0, width=3.2, height=1.3, seed=11, active=True,
+    "omberg_stone_bridge_h6a": dict(hole=6, e=477447.4, n=6457784.8, yawDeg=154.0, style="arch", length=7.0, width=2.6, height=1.2, seed=11, active=True,
                                     note="creek 575, deck 6.5 x 3.5 m in the ortho, creek WSW-ENE"),
-    "omberg_stone_bridge_h6b": dict(hole=6, e=477521.1, n=6457810.1, yawDeg=180.0, style="mound", length=9.5, width=3.2, height=1.4, seed=23, active=True,
+    "omberg_stone_bridge_h6b": dict(hole=6, e=477521.1, n=6457810.1, yawDeg=180.0, style="arch", length=7.0, width=2.6, height=1.3, seed=23, active=True,
                                     note="creek 575, deck 6.7 x 3.3 m, creek W-E, a parapet strip on the east side"),
     # candidates: ask Marcus first
-    "omberg_stone_bridge_h9c": dict(hole=9, e=477635.0, n=6457827.0, yawDeg=27.0, style="mound", length=7.5, width=3.0, height=1.2, seed=31, active=True,
+    "omberg_stone_bridge_h9c": dict(hole=9, e=477635.0, n=6457827.0, yawDeg=27.0, style="arch", length=6.5, width=2.6, height=1.2, seed=31, active=True,
                                     note="creek 575 where it enters hole 9's west pond (pale slab 5 x 3 m); not the 'bridge at hole 9's green' (sill E)"),
     "omberg_stone_bridge_h17": dict(hole=17, e=477672.6, n=6457220.5, yawDeg=69.0, style="arch", length=6.5, width=2.4, height=1.1, seed=41, active=True,
                                     note="replaces omberg_creek_bridge_17 (creek-bridge.json, 4.8 m on bearing 69) - Marcus 2026-10-19: the arch bridge on 17"),
