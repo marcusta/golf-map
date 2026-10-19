@@ -227,6 +227,20 @@ t('a swap to a model the file has no item for makes the item and reloads Arboris
     expect(after.edits.find(e => e.id === f.bush.id).model).toBe(ELM.id);
 }, 60_000);
 
+t('yM puts an added or moved tree at that world height and does not ask Arborist for the ground (a lily on the water)', async () => {
+    const f = await fixture();
+    const r = await f.svc.edit(f.course, null, { op: 'add', model: BUSH.id, at: [-40, 260], heightM: 3, yM: 13.37 });
+    const id = r.after!.id;
+    expect(f.calls.filter(c => c.command === 'ground')).toEqual([]);
+    expect((await f.read()).placements.find(p => p.id === id)!.y).toBe(13.37);
+    await f.svc.edit(f.course, { id }, { op: 'move', by: [1, 0], yM: 13.4 });
+    expect(f.calls.filter(c => c.command === 'ground')).toEqual([]);
+    expect((await f.read()).placements.find(p => p.id === id)).toMatchObject({ x: -39, y: 13.4 });
+    await f.svc.edit(f.course, { id }, { op: 'move', by: [1, 0] });
+    expect(f.calls.filter(c => c.command === 'ground')).toHaveLength(1);
+    expect((await f.read()).placements.find(p => p.id === id)!.y).toBe(12.5);
+}, 60_000);
+
 t('an added tree stands on Arborist\'s ground with an id of its own; a dry run and a VSP tree change nothing', async () => {
     const f = await fixture();
     const dry = await f.svc.edit(f.course, { id: f.bush.id }, { op: 'move', to: [10, 10] }, { dryRun: true });

@@ -12,12 +12,12 @@
 //
 // <op>:
 //   show                    print the tree, change nothing
-//   move --to <x,z> | --by <dx,dz>        world metres (x east, z north); the ground height from Arborist
+//   move --to <x,z> | --by <dx,dz> [--y <m>]   world metres (x east, z north); the ground height from Arborist, or --y (absolute world y)
 //   resize <factor> | --height <m> [--width <m>]
 //   rotate <degrees> | --yaw <degrees>    turn by, or to a heading
 //   delete
 //   swap <model>            another model, the same height (arborist:<label> or the label)
-//   add <model> --at <x,z> [--height <m>] [--width <m>] [--yaw <degrees>]
+//   add <model> --at <x,z> [--height <m>] [--width <m>] [--yaw <degrees>] [--y <m>]   --y: absolute world y instead of the ground (a lily on the water)
 import {
     ArboristEditService, type ArboristPlayer, type EditResult, type TreeChange, type TreeTarget, type TreeView,
 } from '../server/services/arborist-edit.service';
@@ -33,12 +33,12 @@ export function editUsage(): string {
         'usage: bun run arborist -- edit <course> <op> [value] (--id <id> | --near <x,z> | --pick [<u,v>] | --picked) [options] [--dry-run] [--json]',
         '',
         '  show                                  the tree, nothing changed',
-        '  move --to <x,z> | --by <dx,dz>        world metres, x east, z north',
+        '  move --to <x,z> | --by <dx,dz> [--y <m>]   world metres, x east, z north; --y = absolute world y, not the ground',
         '  resize <factor> | --height <m> [--width <m>]',
         '  rotate <degrees> | --yaw <degrees>    turn by, or to a heading',
         '  delete',
         '  swap <model>                          another model at the same height (arborist:<label> or <label>)',
-        '  add <model> --at <x,z> [--height <m>] [--width <m>] [--yaw <deg>]   (no tree)',
+        '  add <model> --at <x,z> [--height <m>] [--width <m>] [--yaw <deg>] [--y <m>]   (no tree; --y = absolute world y, not the ground)',
         '',
         '--picked         the tree marked in Arborist: point at it there and press P (Esc unmarks)',
         '--pick           the tree under the mouse in Arborist; --pick 0.5,0.5 the one in the middle of the picture',
@@ -68,7 +68,7 @@ export function parseEditArgs(argv: string[]): EditArgs | { error: string } {
             if (v !== undefined && /^-?[\d.]+,-?[\d.]+$/.test(v)) { flags.set(a, v); i++; } else flags.set(a, true);
             continue;
         }
-        if (!['--id', '--near', '--to', '--by', '--height', '--width', '--yaw', '--at'].includes(a)) return { error: `unknown option ${a}` };
+        if (!['--id', '--near', '--to', '--by', '--height', '--width', '--yaw', '--at', '--y'].includes(a)) return { error: `unknown option ${a}` };
         const v = argv[i + 1];
         if (v === undefined || (v.startsWith('--'))) return { error: `${a} needs a value` };
         flags.set(a, v);
@@ -85,7 +85,7 @@ export function parseEditArgs(argv: string[]): EditArgs | { error: string } {
         const n = Number(v);
         return Number.isFinite(n) ? n : NaN;
     };
-    for (const f of ['--height', '--width', '--yaw']) if (Number.isNaN(num(f))) return { error: `${f} needs a number` };
+    for (const f of ['--height', '--width', '--yaw', '--y']) if (Number.isNaN(num(f))) return { error: `${f} needs a number` };
 
     const targets = ['--id', '--near', '--pick', '--picked'].filter(f => flags.has(f));
     if (targets.length > 1) return { error: 'name the tree one way: --id, --near, --pick or --picked' };
@@ -120,7 +120,7 @@ export function parseEditArgs(argv: string[]): EditArgs | { error: string } {
             if (to && 'error' in to) return to;
             if (by && 'error' in by) return by;
             if (!to === !by) return { error: 'move needs --to <x,z> or --by <dx,dz>' };
-            change = to ? { op, to: to as [number, number] } : { op, by: by as [number, number] };
+            change = to ? { op, to: to as [number, number], yM: num('--y') } : { op, by: by as [number, number], yM: num('--y') };
             break;
         }
         case 'resize': {
@@ -145,7 +145,7 @@ export function parseEditArgs(argv: string[]): EditArgs | { error: string } {
             if (!value) return { error: 'add needs a model' };
             const at = pair(flags.get('--at'), '--at');
             if ('error' in at) return at;
-            change = { op: 'add', model: model(value)!, at, heightM: num('--height'), crownWidthM: num('--width'), yaw: num('--yaw') };
+            change = { op: 'add', model: model(value)!, at, heightM: num('--height'), crownWidthM: num('--width'), yaw: num('--yaw'), yM: num('--y') };
         }
     }
     return { course, target, change, dryRun: flags.has('--dry-run'), json: flags.has('--json') };

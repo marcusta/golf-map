@@ -67,12 +67,12 @@ export type TreeTarget =
 
 export type TreeChange =
     | { op: 'show' }
-    | { op: 'move'; to?: [number, number]; by?: [number, number] }
+    | { op: 'move'; to?: [number, number]; by?: [number, number]; yM?: number }
     | { op: 'resize'; factor?: number; heightM?: number; crownWidthM?: number }
     | { op: 'rotate'; by?: number; yaw?: number }
     | { op: 'delete' }
     | { op: 'swap'; model: string }
-    | { op: 'add'; model: string; at: [number, number]; heightM?: number; crownWidthM?: number; yaw?: number };
+    | { op: 'add'; model: string; at: [number, number]; heightM?: number; crownWidthM?: number; yaw?: number; yM?: number };
 
 /** One planted tree as Unity's planter wrote it (golfmap-placements-v1); world metres. */
 export interface Placement {
@@ -366,9 +366,11 @@ export class ArboristEditService {
             ({ placement: before, item, found } = await this.resolve(ctx, target, player));
         }
 
-        // The ground under a moved or new tree, from Arborist's own colliders.
+        // The ground under a moved or new tree, from Arborist's own colliders, unless `yM` says where (a water lily floats on the water surface).
         let ground: number | null = null;
-        if ((change.op === 'move' || change.op === 'add') && player) {
+        if ((change.op === 'move' || change.op === 'add') && change.yM !== undefined) {
+            ground = change.yM;
+        } else if ((change.op === 'move' || change.op === 'add') && player) {
             const [x, z] = change.op === 'add' ? change.at : change.to ?? [before!.x + (change.by?.[0] ?? 0), before!.z + (change.by?.[1] ?? 0)];
             const hit = await player.call('ground', { x, z }, SMALL_CALL_SEC);
             if (hit?.hit) ground = Number(hit.y);

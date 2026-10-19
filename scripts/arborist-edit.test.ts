@@ -23,6 +23,10 @@ describe('the edit command line', () => {
         expect(parse('omberg add arborist:CE_Plants_buckthorn-bush --at 100,200 --height 2.4')).toMatchObject({
             target: null, change: { op: 'add', model: 'arborist:CE_Plants_buckthorn-bush', at: [100, 200], heightM: 2.4 },
         });
+        expect(parse('omberg add LakePlants_Water_Lily_03 --at 731.5,1081 --width 5.2 --y 20.388')).toMatchObject({
+            target: null, change: { op: 'add', model: 'arborist:LakePlants_Water_Lily_03', at: [731.5, 1081], crownWidthM: 5.2, yM: 20.388 },
+        });
+        expect(parse('omberg move --to 1,2 --y 20.4 --near 1,1')).toMatchObject({ change: { op: 'move', to: [1, 2], yM: 20.4 } });
     });
 
     test('what is wrong is said', () => {
@@ -32,6 +36,7 @@ describe('the edit command line', () => {
         expect(parse('omberg move --by 2 --picked')).toEqual({ error: expect.stringContaining('--by needs <a,b>') });
         expect(parse('omberg delete --picked --id x')).toEqual({ error: expect.stringContaining('one way') });
         expect(parse('omberg add bush --at 1,2 --picked')).toEqual({ error: expect.stringContaining('add makes a new tree') });
+        expect(parse('omberg add bush --at 1,2 --y high')).toEqual({ error: '--y needs a number' });
         expect(parse('omberg resize 0 --picked')).toEqual({ error: expect.stringContaining('above 0') });
         expect(parse('omberg rotate --picked')).toEqual({ error: expect.stringContaining('rotate needs') });
         expect(parse('omberg delete --picked --fast')).toEqual({ error: 'unknown option --fast' });

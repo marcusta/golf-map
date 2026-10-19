@@ -556,6 +556,14 @@
       "billboardDesat": 0.594,
       "billboardNormal": 0.3,
       "billboardCalibrated": true
+    },
+    {
+      "match": [
+        "LakePlants_"
+      ],
+      "comment": "Omberg hole 9's pond plants (2026-10-19): the Lake Plants shader has no leaf tint; its default reads pale cream in sun (white from the sun side). Brightness -0.03 (an offset: -0.08 turns the pads grey) and saturation 1.5 give green pads, brown old ones, white flowers.",
+      "brightness": -0.03,
+      "saturation": 1.5
     }
   ],
   "plantSettings": [
