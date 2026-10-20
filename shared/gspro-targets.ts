@@ -11,7 +11,7 @@
 // `changedSince`; the server owns the terrain-edit side).
 
 export const GSPRO_TARGET_IDS = [
-    'terrain', 'photo', 'shapes', 'meshes', 'vegetation', 'trees', 'buildings', 'props', 'creeks', 'waterfalls', 'course-file',
+    'terrain', 'photo', 'shapes', 'meshes', 'vegetation', 'trees', 'buildings', 'props', 'creeks', 'roads', 'waterfalls', 'course-file',
 ] as const;
 
 export type GsproTargetId = (typeof GSPRO_TARGET_IDS)[number];
@@ -116,6 +116,13 @@ export const GSPRO_TARGETS: readonly GsproTarget[] = [
         description: 'The creeks as R.A.M. splines at the water surface, imported in Unity.',
         manual: null,
         featureTypes: ['water_creek'],
+    },
+    {
+        id: 'roads',
+        label: 'R.A.M. roads',
+        description: 'Roads drawn as R.A.M. splines on the ground meshes (render R.A.M.), built in Unity.',
+        manual: null,
+        featureTypes: ['path'],
     },
     {
         id: 'waterfalls',

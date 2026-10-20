@@ -46,7 +46,7 @@ const StartInput = Type.Object({
     kind: Type.Union([
         Type.Literal('svg'), Type.Literal('ortho'), Type.Literal('outer-ortho'),
         Type.Literal('dem'), Type.Literal('unity-terrain'), Type.Literal('unity-sculpt'), Type.Literal('unity-ortho'), Type.Literal('hillshade'), Type.Literal('trees'), Type.Literal('buildings'),
-        Type.Literal('zones'), Type.Literal('vegetation'), Type.Literal('vegetation-update'), Type.Literal('arborist'), Type.Literal('creeks'), Type.Literal('waterfalls'), Type.Literal('gkd'),
+        Type.Literal('zones'), Type.Literal('vegetation'), Type.Literal('vegetation-update'), Type.Literal('arborist'), Type.Literal('creeks'), Type.Literal('ramroads'), Type.Literal('waterfalls'), Type.Literal('gkd'),
     ]),
     /** `ortho`: a `source` file name from `orthoSources`. */
     source: Type.Optional(Type.String()),
@@ -80,12 +80,28 @@ const StartInput = Type.Object({
      * and the panel asks before spending the minutes.
      */
     plantIfNeeded: Type.Optional(Type.Boolean()),
-    /** Render even when the output's input fingerprint says nothing it reads has changed (`dem`, `ortho`, `outer-ortho`, `unity-terrain`, `unity-ortho`, `trees`, `buildings`, `zones`, `creeks`, `waterfalls`, `vegetation`). */
+    /** Render even when the output's input fingerprint says nothing it reads has changed (`dem`, `ortho`, `outer-ortho`, `unity-terrain`, `unity-ortho`, `trees`, `buildings`, `zones`, `creeks`, `ramroads`, `waterfalls`, `vegetation`). */
     force: Type.Optional(Type.Boolean()),
 });
 
 const JobInput = Type.Object({
     jobId: Type.String(),
+});
+
+/** `gspro.py ramroads-propose`'s rules, with the distance to play overridden. */
+const RamRoadsProposalInput = Type.Object({
+    courseId: Type.String(),
+    /** How far from play a road must stay to be proposed, metres; omitted = the pipeline default (30). */
+    minDistanceM: Type.Optional(Type.Number({ minimum: 0, maximum: 1000 })),
+});
+
+/** Draw these paths as R.A.M. splines (`ram`) or as OPCD meshes again (`opcd`, the attribute cleared). */
+const RoadRenderInput = Type.Object({
+    courseId: Type.String(),
+    featureIds: Type.Array(Type.String({ minLength: 1 }), { minItems: 1, maxItems: 500 }),
+    render: Type.Union([Type.Literal('ram'), Type.Literal('opcd')]),
+    /** Say what would change; nothing written. */
+    dryRun: Type.Optional(Type.Boolean()),
 });
 
 // --- API descriptor ---
@@ -197,6 +213,22 @@ export function createGsproExportApi(svc: GsproExportService) {
             path: '/gspro-export/current',
             fn: (input: Static<typeof CourseInput>) => svc.current(input.courseId),
             schema: CourseInput,
+            middleware: mw,
+        },
+        /** Which paths could be R.A.M. roads (far from play, a centerline), which already are, and the rejected ones with why. Writes nothing. */
+        ramRoadsProposal: {
+            method: 'GET' as const,
+            path: '/courses/:courseId/gspro/ram-roads/proposal',
+            fn: (input: Static<typeof RamRoadsProposalInput>) => svc.proposeRamRoads(input.courseId, { minDistanceM: input.minDistanceM }),
+            schema: RamRoadsProposalInput,
+            middleware: mw,
+        },
+        /** Set (`ram`) or clear (`opcd`) the paths' `render` attribute; one path that cannot take it fails the call (409) and nothing is written. */
+        setRoadRender: {
+            method: 'POST' as const,
+            path: '/courses/:courseId/gspro/ram-roads/render',
+            fn: (input: Static<typeof RoadRenderInput>) => svc.setRoadRender(input.courseId, input.featureIds, input.render, { dryRun: input.dryRun }),
+            schema: RoadRenderInput,
             middleware: mw,
         },
     };

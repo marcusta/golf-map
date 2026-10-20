@@ -65,7 +65,7 @@ import type { CoursesService } from './courses.service';
 import { DIG_WATER_LEVELS_SOURCE, type MapBuildService } from './map-build.service';
 import {
     buildingsExportFileName, courseSlug, creeksExportFileName, demExportFileName, demSidecarName, ensureDir,
-    failure, meshTextureFileName, reportLines, savedLine, statOrNull, treesExportFileName, venvPython,
+    failure, meshTextureFileName, ramRoadsExportFileName, reportLines, savedLine, statOrNull, treesExportFileName, venvPython,
     waterfallsExportFileName, zonesExportFileName,
     type GsproExportService, type GsproOrthoSource, type TerrainKind,
 } from './gspro-export.service';
@@ -415,6 +415,8 @@ export class GsproSyncService {
             }
             case 'creeks':
                 return mtimeIso(ctx.file(creeksExportFileName(ctx.courseName)));
+            case 'roads':
+                return mtimeIso(ctx.file(ramRoadsExportFileName(ctx.courseName)));
             case 'waterfalls':
                 return mtimeIso(ctx.file(waterfallsExportFileName(ctx.courseName)));
             case 'course-file':
@@ -599,6 +601,14 @@ export class GsproSyncService {
                     : null;
             case 'creeks':
                 return ctx.siteId ? null : noMap;
+            case 'roads': {
+                if (!ctx.siteId) return noMap;
+                // Without a road set to R.A.M. there is nothing to build (and a project without GolfMapRamRoads.cs would fail).
+                const ram = await this.db.selectFrom('course_features').select(({ fn }) => fn.countAll<number>().as('n'))
+                    .where('course_id', '=', ctx.courseId).where('type', '=', 'path')
+                    .where('attributes_json', 'like', '%"render":"ram"%').executeTakeFirst();
+                return Number(ram?.n ?? 0) > 0 ? null : 'No road is set to R.A.M.: Propose on this row, or bun run ramroads -- <course> propose';
+            }
             case 'waterfalls':
                 return ctx.siteId ? null : noMap;
             case 'course-file':
@@ -811,6 +821,7 @@ export class GsproSyncService {
             case 'buildings': return this.updateBuildings(rec, ctx, unity, id);
             case 'props': return this.updateProps(rec, ctx, unity, id);
             case 'creeks': return this.updateCreeks(rec, ctx, unity, id);
+            case 'roads': return this.updateRoads(rec, ctx, unity, id);
             case 'waterfalls': return this.updateWaterfalls(rec, ctx, unity, id);
             case 'course-file': return this.updateCourseFile(rec, ctx, id);
         }
@@ -904,6 +915,9 @@ export class GsproSyncService {
         }
         if (await has(creeksExportFileName(ctx.courseName))) {
             out.push({ what: 'creeks', run: () => this.exports.exportCreeks(ctx.courseId, force) });
+        }
+        if (await has(ramRoadsExportFileName(ctx.courseName))) {
+            out.push({ what: 'R.A.M. roads', run: () => this.exports.exportRamRoads(ctx.courseId, force) });
         }
         if (await has(waterfallsExportFileName(ctx.courseName))) {
             out.push({ what: 'waterfalls', run: () => this.exports.exportWaterfalls(ctx.courseId, force) });
@@ -1254,6 +1268,20 @@ export class GsproSyncService {
     }
 
     /**
+     * R.A.M. roads: the spline file of the paths with render=ram, then the
+     * splines built on the ground meshes in Unity (`golfmap.ramroads.build`).
+     */
+    private async updateRoads(rec: JobRecord, ctx: SyncContext, unity: UnityTarget, id: (s: string) => string): Promise<string[]> {
+        rec.phases.begin(id('file'), 'gspro.py ramroads');
+        const exported = await this.exports.exportRamRoads(ctx.courseId, { force: ctx.force });
+        rec.phases.end(id('file'), 'done', path.basename(exported.path));
+        const report = [...exported.report];
+        await this.intoUnity(rec, unity, id('unity'), 'R.A.M. roads',
+            [{ what: 'R.A.M. roads', command: 'golfmap.ramroads.build', args: {} }], report);
+        return report;
+    }
+
+    /**
      * Waterfalls: the lips-and-levels file, then the falling water built in
      * Unity (`golfmap.waterfalls.build`; an editor without that command fails
      * the phase with the bridge's own message).
@@ -1491,6 +1519,7 @@ export function targetPhases(target: GsproTargetId): ReadonlyArray<readonly [str
         case 'buildings': return [['files', 'Building files'], ['unity', 'Buildings into Unity']];
         case 'props': return [['spec', 'Props spec'], ['models', 'Prop models (Blender)'], ['unity', 'Props into Unity']];
         case 'creeks': return [['file', 'Creeks file'], ['unity', 'Creeks into Unity']];
+        case 'roads': return [['file', 'R.A.M. roads file'], ['unity', 'R.A.M. roads into Unity']];
         case 'waterfalls': return [['file', 'Waterfalls file'], ['unity', 'Waterfalls into Unity']];
         case 'course-file': return [['gkd', 'GreenKeeper course file']];
     }

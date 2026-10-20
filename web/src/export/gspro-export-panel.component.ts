@@ -36,6 +36,7 @@ import {
 } from './gspro-sync.service';
 import { JobPhasesComponent } from './job-phases.component';
 import { CourseCheckService, checkStatusLabel, checkStatusTitle } from './course-check.service';
+import { RamRoadsService, candidateLabel, roadName } from './ram-roads.service';
 import {
     SVG_FEATURE_TYPES, COURSE_WIDE, NO_FILTER, svgFeatures, matchSvgFilter, variantFileName, landmarksOf, nearLabel, shapeName,
     type SvgExclusionFilter, type SvgStatusFilter,
@@ -203,7 +204,7 @@ const TABS = [
     { id: 'terrain', label: 'Terrain', targets: ['terrain'] },
     { id: 'photo', label: 'Photo', targets: ['photo'] },
     { id: 'course', label: 'Course', targets: ['shapes', 'meshes'] },
-    { id: 'nature', label: 'Nature', targets: ['vegetation', 'trees', 'creeks', 'waterfalls'] },
+    { id: 'nature', label: 'Nature', targets: ['vegetation', 'trees', 'creeks', 'roads', 'waterfalls'] },
     { id: 'buildings', label: 'Buildings', targets: ['buildings', 'props'] },
     { id: 'greenkeeper', label: 'GreenKeeper', targets: ['course-file'] },
     { id: 'details', label: 'Course details', targets: [] },
@@ -345,6 +346,33 @@ const PANES: Record<TabId, string> = {
         </div>`,
 };
 
+/**
+ * The R.A.M. roads row's Propose step (RamRoadsService): one line until
+ * proposed - Propose and the min distance - then the candidates to tick, the
+ * already-R.A.M. and left-out roads as one line each (details in the title),
+ * and Accept.
+ */
+const ROADS_PROPOSE_TIP = 'Propose roads to draw as R.A.M. splines in Unity instead of OPCD road meshes: centerline roads '
+    + 'at least this far from play, not bridges. Accept sets them to R.A.M.; they leave the SVG, so build it in OPCD next.';
+const roadsPropose = `
+    <div bind="roadsPropose" class="gspro-export__propose" data-testid="gspro-roads-propose">
+        <div class="gspro-export__row">
+            <button bind="roadsProposeRun" type="button" class="gspro-export__small gspro-export__fit" title="${ROADS_PROPOSE_TIP}"
+                data-testid="gspro-roads-propose-run">Propose</button>
+            <label class="gspro-export__check" title="Only roads at least this far from play">
+                <input bind="roadsMinDistance" type="number" min="0" step="5" data-testid="gspro-roads-min-distance" /> m from play
+            </label>
+            <span bind="roadsSummary" class="hint" data-testid="gspro-roads-summary"></span>
+        </div>
+        <ul bind="roadsCandidates" class="gspro-export__features" data-testid="gspro-roads-candidates"></ul>
+        <div bind="roadsAlready" class="hint gspro-export__oneline" data-testid="gspro-roads-already"></div>
+        <div bind="roadsRejected" class="hint gspro-export__oneline" data-testid="gspro-roads-rejected"></div>
+        <button bind="roadsAccept" type="button" class="gspro-export__small gspro-export__primary gspro-export__fit"
+            data-testid="gspro-roads-accept"></button>
+        <div bind="roadsDone" class="hint gspro-export__warn" data-testid="gspro-roads-done"></div>
+        <div bind="roadsError" class="hint gspro-export__blocked gspro-export__oneline" data-testid="gspro-roads-error"></div>
+    </div>`;
+
 /** One target's row: the stale marker, the label, the status line and Update. */
 const boardRow = (id: GsproTargetId) => {
     const { label, description } = gsproTarget(id);
@@ -361,6 +389,7 @@ const boardRow = (id: GsproTargetId) => {
         <div bind="builds_${id}" class="hint gspro-export__note gspro-export__builds" data-testid="gspro-builds-${id}"></div>
         <div bind="manual_${id}" class="hint gspro-export__manual" data-testid="gspro-manual-${id}"></div>
         <div bind="blocked_${id}" class="hint gspro-export__blocked" data-testid="gspro-blocked-${id}"></div>
+        ${id === 'roads' ? roadsPropose : ''}
     </div>`;
 };
 
@@ -714,6 +743,16 @@ export class GsproExportPanelComponent extends Component {
                 & .gspro-export__build.failed { color: ${t('color-status-negative')}; }
                 & .gspro-export__build.last-good { font-weight: 600; text-decoration: underline; }
             }
+            /* The R.A.M. roads row's Propose step: one line until proposed. */
+            & .gspro-export__propose {
+                display: flex;
+                flex-direction: column;
+                gap: ${s('xs')};
+                padding-left: calc(10px + ${s('sm')});
+                & .gspro-export__small { flex: none; align-self: flex-start; }
+                & input[type=number] { width: 4rem; font-size: 0.72rem; }
+                & .gspro-export__features { max-height: 160px; }
+            }
 
             /* The update job, in the footer: one line, its phases, each target's report. */
             & .gspro-export__sync {
@@ -1033,6 +1072,7 @@ export class GsproExportPanelComponent extends Component {
     private sync = this.inject(GsproSyncService);
     /** The Course tab's Check row: is the built course whole. */
     private check = this.inject(CourseCheckService);
+    private ramRoads = this.inject(RamRoadsService);
     private features = this.inject(FeaturesService);
     private courseDetail = this.inject(CourseDetailService);
     private mapSvc = this.inject(MapService);
@@ -1277,6 +1317,79 @@ export class GsproExportPanelComponent extends Component {
         };
     }
 
+    /** The R.A.M. roads row's Propose step: Propose, the min distance, the one-line summaries, Accept. */
+    private roadsBindings(): Record<string, (() => unknown) | Record<string, unknown>> {
+        const roads = this.ramRoads;
+        const proposal = () => roads.proposal.get();
+        return {
+            roadsProposeRun: {
+                disabled: () => roads.busy.get() || !this.openCourseId(),
+                onclick: () => {
+                    const id = this.openCourseId();
+                    if (id) void roads.propose(id);
+                },
+            },
+            roadsMinDistance: {
+                value: () => String(roads.minDistanceM.get()),
+                onchange: (e: Event) => {
+                    const input = e.target as HTMLInputElement;
+                    const value = Number(input.value);
+                    if (input.value.trim() !== '' && Number.isFinite(value) && value >= 0) roads.minDistanceM.set(value);
+                    else input.value = String(roads.minDistanceM.peek());
+                },
+            },
+            roadsSummary: () => {
+                const p = proposal();
+                if (roads.busy.get() && !p) return 'Proposing…';
+                if (!p) return '';
+                const n = p.candidates.length;
+                return n ? `${n} road${n === 1 ? '' : 's'} proposed` : 'No road to propose';
+            },
+            roadsAlready: {
+                textContent: () => {
+                    const n = proposal()?.already.length ?? 0;
+                    return n ? `${n} already R.A.M.` : '';
+                },
+                title: () => (proposal()?.already ?? [])
+                    .map(road => (typeof road === 'number' ? roadName(road, '') : roadName(null, road))).join(', '),
+            },
+            roadsRejected: {
+                textContent: () => {
+                    const n = proposal()?.rejected.length ?? 0;
+                    return n ? `${n} left out` : '';
+                },
+                title: () => (proposal()?.rejected ?? []).map(r => `${roadName(r.featureNo, r.featureId)}: ${r.reason}`).join('\n'),
+            },
+            roadsAccept: {
+                className: () => (proposal()?.candidates.length
+                    ? 'gspro-export__small gspro-export__primary gspro-export__fit'
+                    : 'gspro-export__small gspro-export__primary gspro-export__fit hidden'),
+                textContent: () => {
+                    const n = roads.ticked.get().size;
+                    return `Accept ${n} road${n === 1 ? '' : 's'}`;
+                },
+                disabled: () => roads.busy.get() || roads.ticked.get().size === 0,
+                onclick: () => {
+                    const id = this.openCourseId();
+                    if (!id) return;
+                    void roads.accept(id).then(ok => {
+                        if (!ok) return;
+                        // The roads left the SVG: the board's Course shapes row goes stale, and the
+                        // editor's copies must carry the new render before the next attribute write.
+                        void this.sync.refresh(id);
+                        void this.features.reloadOrLoad(id);
+                    });
+                },
+            },
+            roadsDone: () => {
+                const n = roads.accepted.get();
+                if (n === null) return '';
+                return `${n} road${n === 1 ? '' : 's'} set to R.A.M. — build the SVG in OPCD next`;
+            },
+            roadsError: { textContent: () => roads.error.get(), title: () => roads.error.get() },
+        };
+    }
+
     /** True when one of the tab's rows is out of date (and can be updated). */
     private tabStale(tab: typeof TABS[number]): boolean {
         return tab.targets.some(id => {
@@ -1316,6 +1429,7 @@ export class GsproExportPanelComponent extends Component {
             closeSide: { onclick: () => this.closeDialog() },
             ...this.rowBindings(),
             ...this.checkBindings(),
+            ...this.roadsBindings(),
             // --- The board's head: Unity, the shaping worker, Update all stale ---
             unityChip: {
                 textContent: () => this.sync.unityLabel(),
@@ -1987,6 +2101,34 @@ export class GsproExportPanelComponent extends Component {
             },
             f => f.id,
         );
+
+        // The R.A.M. roads proposal: one line per candidate, ticked = set to R.A.M. on Accept.
+        this.$each(
+            this.ref(frag, 'roadsCandidates'),
+            () => this.ramRoads.proposal.get()?.candidates ?? [],
+            (c, _i, track) => {
+                const li = document.createElement('li');
+                li.className = 'gspro-export__feature';
+                li.dataset.testid = 'gspro-roads-candidate';
+                const label = document.createElement('label');
+                label.className = 'gspro-export__check';
+                label.title = [c.reason, `${c.widthM} m wide`, c.touches.length ? `meets path ${c.touches.join(', ')}` : '']
+                    .filter(Boolean).join(' · ');
+                const box = document.createElement('input');
+                box.type = 'checkbox';
+                box.onchange = () => this.ramRoads.toggle(c.featureId, box.checked);
+                label.append(box, candidateLabel(c));
+                li.append(label);
+                track(effect(() => { box.checked = this.ramRoads.ticked.get().has(c.featureId); }));
+                return li;
+            },
+            c => c.featureId,
+        );
+        // Another course folds the step away.
+        this.track(effect(() => {
+            this.svc.courseId.get();
+            this.ramRoads.reset();
+        }));
 
         // The course's tee sets: which of GSPro's eight each is exported as,
         // and which of its two ratings GSPro shows. Rows are kept per set.

@@ -86,6 +86,8 @@ import {
 } from './export-fingerprint';
 import { FeatureHistoryService, type CodeVersion } from './feature-history.service';
 import { CourseFeaturesService } from './course-features.service';
+import type { CourseFeature, FeatureAttributes } from './course-features.service';
+import { PATH_RENDER_ATTRIBUTE, PATH_RENDERS, isPathRender, pathRenderError, type PathRender } from '../../shared/features/path-render';
 import { ZoneTypesService } from './zone-types.service';
 import {
     CREEK_BANKS, VEGETATION_GENERATORS, VEGETATION_RULES_FILE, generateVegetation, readRuleDefaults, vegetationRulesArgs,
@@ -157,7 +159,7 @@ export interface GsproExportResult {
 }
 
 /** What an export job produces. */
-export type GsproExportKind = 'svg' | 'ortho' | 'outer-ortho' | 'dem' | 'unity-terrain' | 'unity-sculpt' | 'unity-ortho' | 'hillshade' | 'trees' | 'buildings' | 'zones' | 'vegetation' | 'vegetation-update' | 'arborist' | 'creeks' | 'waterfalls' | 'gkd';
+export type GsproExportKind = 'svg' | 'ortho' | 'outer-ortho' | 'dem' | 'unity-terrain' | 'unity-sculpt' | 'unity-ortho' | 'hillshade' | 'trees' | 'buildings' | 'zones' | 'vegetation' | 'vegetation-update' | 'arborist' | 'creeks' | 'ramroads' | 'waterfalls' | 'gkd';
 
 /** A request to start one export; which fields matter depends on `kind`. */
 export interface GsproExportRequest {
@@ -198,7 +200,7 @@ export interface GsproExportRequest {
     /**
      * Render even when the output's inputs are unchanged
      * (export-fingerprint.ts): `dem`, `ortho`, `outer-ortho`, `unity-terrain`,
-     * `unity-ortho`, `trees`, `buildings`, `zones`, `creeks`, `waterfalls`, `vegetation`.
+     * `unity-ortho`, `trees`, `buildings`, `zones`, `creeks`, `ramroads`, `waterfalls`, `vegetation`.
      */
     force?: boolean;
 }
@@ -586,6 +588,52 @@ export function holesExportFileName(courseName: string): string {
 /** The request's forest-floor fields as `renderOrtho` options; undefined when not asked for. */
 function floorOptions(r: GsproExportRequest): ForestFloorOptions | undefined {
     return r.forestFloor ? { color: r.floorColor, mix: r.floorMix } : undefined;
+/** `Vreta` -> `vreta-inner-ramroads.json` (unity-ramroads-v1, the render=ram paths as R.A.M. splines; inner terrain only). */
+export function ramRoadsExportFileName(courseName: string): string {
+    return `${courseSlug(courseName)}-inner-ramroads.json`;
+}
+
+/**
+ * How far past the inner square the R.A.M. roads run (`gspro.py ramroads --reach-m`), metres: on the outer
+ * terrain they snap onto the Unity terrain; cut at the edge they would fade out right at the square's border.
+ */
+export const RAM_ROADS_REACH_M = 200;
+
+/** One path `gspro.py ramroads-propose` suggests drawing as a R.A.M. spline. */
+export interface RamRoadCandidate {
+    featureId: string;
+    /** Null for a feature without a number (a generated one). */
+    featureNo: number | null;
+    surface: string;
+    widthM: number;
+    lengthM: number;
+    /** How far the road's corridor stays from play (greens, tees, fairways, semi rough, bunkers), metres; null with no play drawn. */
+    distanceToPlayM: number | null;
+    /** The roads it meets at its ends: their feature numbers (an id for one without a number). */
+    touches: Array<number | string>;
+    reason: string;
+}
+
+/** `gspro.py ramroads-propose`'s answer (golfmap-ramroads-proposal-v1): which paths could become R.A.M. roads. */
+export interface RamRoadsProposal {
+    format: string;
+    course: { id: string; name: string };
+    /** The rules the proposal went by (min distance to play, surfaces, play types, end join), as the pipeline reports them. */
+    rules: Record<string, unknown>;
+    candidates: RamRoadCandidate[];
+    /** The paths already render=ram: feature numbers (an id for one without a number). */
+    already: Array<number | string>;
+    rejected: Array<{ featureNo: number | null; featureId: string; reason: string }>;
+}
+
+/** What `setRoadRender` did (or, with `dryRun`, would do), by feature id. */
+export interface RoadRenderResult {
+    render: PathRender;
+    changed: string[];
+    unchanged: string[];
+    dryRun: boolean;
+}
+
 }
 
 /** The request's tint fields as `renderOrtho` options; undefined when no tint was asked for. */
@@ -2156,6 +2204,109 @@ export class GsproExportService {
         const course = await this.courses.get(courseId);
         if (!course.siteId) throw new ConflictError('This course has no built map on this machine — build its map first');
         const terrain = await this.resolveTerrain(courseId, 'export the GSPro waterfalls for');
+    /**
+     * The course's R.A.M. roads for the inner terrain
+     * (`<dir>/<course>-inner-ramroads.json`, unity-ramroads-v1, what
+     * `golfmap.ramroads.build` builds the splines from): each `path` with
+     * render=ram (shared/features/path-render.ts) as its centerline in the
+     * creeks' plot frame, its width, surface and the colour the photo has
+     * under it, written by `gspro.py ramroads`. The splines lie on the OPCD
+     * ground meshes, so no heightmap is read. `--ortho` is the site's newest
+     * raw orthophoto (not the cleaned one: that has the roads painted out);
+     * without one the file has no photo colours.
+     */
+    async exportRamRoads(courseId: string, opts: { force?: boolean } = {}): Promise<GsproExportResult> {
+        const course = await this.courses.get(courseId);
+        if (!course.siteId) throw new ConflictError('This course has no built map on this machine — build its map first');
+        const terrain = await this.resolveTerrain(courseId, 'export the GSPro R.A.M. roads for');
+        const dir = await this.exportDir(courseId);
+        const raw = (await this.orthoSources(courseId)).find(s => !s.cleaned);
+        const ortho = raw ? path.join(this.sourcesDir(course.siteId), raw.source) : null;
+        const out = path.join(dir, ramRoadsExportFileName(course.name));
+        return this.runIfChanged('GSPro R.A.M. roads', [
+            path.join(this.pipelineDir, 'gspro.py'), 'ramroads',
+            '--square-3006', terrainArg(terrain.inner),
+            '--course', courseId,
+            '--out', out,
+            '--reach-m', String(RAM_ROADS_REACH_M),
+            ...(ortho ? ['--ortho', ortho] : []),
+        ], out, {
+            files: [ortho],
+            values: { features: await this.history.latestStamp(courseId) },
+        }, opts.force);
+    }
+
+    /**
+     * Which paths could be drawn as R.A.M. splines instead of OPCD meshes,
+     * by the pipeline's rules (`gspro.py ramroads-propose`: far enough from
+     * play, a surface R.A.M. draws, a centerline): the candidates, the ones
+     * already render=ram and the rejected ones with why. Writes nothing;
+     * `setRoadRender` takes the ones a person accepts.
+     */
+    async proposeRamRoads(courseId: string, opts: { minDistanceM?: number } = {}): Promise<RamRoadsProposal> {
+        await this.courses.get(courseId);
+        if (opts.minDistanceM !== undefined && !(Number.isFinite(opts.minDistanceM) && opts.minDistanceM >= 0)) {
+            throw new ConflictError('minDistanceM must be a number of metres, 0 or more');
+        }
+        const work = await mkdtemp(path.join(os.tmpdir(), 'ramroads-propose-'));
+        try {
+            const out = path.join(work, 'proposal.json');
+            const args = [
+                path.join(this.pipelineDir, 'gspro.py'), 'ramroads-propose',
+                '--course', courseId,
+                '--out', out,
+            ];
+            if (opts.minDistanceM !== undefined) args.push('--min-distance-m', String(opts.minDistanceM));
+            const { code, stdout, stderr } = await this.runner(args, this.pipelineDir);
+            if (code !== 0) throw failure('Proposing R.A.M. roads', code, stdout, stderr);
+            return JSON.parse(await readFile(out, 'utf8')) as RamRoadsProposal;
+        } finally {
+            await rm(work, { recursive: true, force: true });
+        }
+    }
+
+    /**
+     * Sets the `render` attribute of these `path` features of the course:
+     * `ram` (a R.A.M. spline in Unity, left out of the SVG) or `opcd` (the
+     * key cleared: an OPCD mesh again). Every id must be a hand-drawn or
+     * imported path of the course that can take it (pathRenderError) — one
+     * that cannot fails the whole call and nothing is written. `dryRun`
+     * says what would change. The SVG and the R.A.M. roads file pick the
+     * change up on their next update (the board's Shapes and R.A.M. roads rows).
+     */
+    async setRoadRender(courseId: string, featureIds: readonly string[], render: PathRender, opts: { dryRun?: boolean } = {}): Promise<RoadRenderResult> {
+        if (!isPathRender(render)) throw new ConflictError(`render must be one of ${PATH_RENDERS.join(', ')}`);
+        await this.courses.get(courseId);
+        const ids = [...new Set(featureIds)];
+        if (ids.length === 0) throw new ConflictError('Name the roads to change');
+        const features = new CourseFeaturesService(this.db);
+        const byId = new Map((await features.listByCourse(courseId)).map(f => [f.id, f]));
+        const missing = ids.filter(id => !byId.has(id));
+        if (missing.length) throw new NotFoundError(`Not features of this course: ${missing.join(', ')}`);
+        const changed: CourseFeature[] = [];
+        const unchanged: string[] = [];
+        for (const id of ids) {
+            const f = byId.get(id)!;
+            const name = f.no !== null ? `path_${f.no}` : id;
+            if (f.type !== 'path') throw new ConflictError(`${name} is a ${f.type}, not a path`);
+            if (f.generated) throw new ConflictError(`${name} is generated: the next pipeline run replaces it, and its render with it`);
+            const problem = pathRenderError(render, f.type, f.geometry.centerline, f.attributes?.surface);
+            if (problem) throw new ConflictError(`${name}: ${problem}`);
+            const stored = f.attributes?.[PATH_RENDER_ATTRIBUTE];
+            if (render === 'ram' ? stored === 'ram' : stored === undefined) unchanged.push(id);
+            else changed.push(f);
+        }
+        if (!opts.dryRun && changed.length) {
+            await features.updateMany(changed.map((f) => {
+                const attributes: FeatureAttributes = { ...f.attributes };
+                if (render === 'ram') attributes[PATH_RENDER_ATTRIBUTE] = 'ram';
+                else delete attributes[PATH_RENDER_ATTRIBUTE];
+                return { id: f.id, version: f.version, attributes: Object.keys(attributes).length ? attributes : null };
+            }));
+        }
+        return { render, changed: changed.map(f => f.id), unchanged, dryRun: opts.dryRun === true };
+    }
+
         const dir = await this.exportDir(courseId);
         const dem = path.join(this.sourcesDir(course.siteId), 'dem.tif');
         if (!await statOrNull(dem)) throw new ConflictError(`No raw DEM for this course's site (${dem}) — build its map first`);
@@ -2310,6 +2461,7 @@ export class GsproExportService {
     private async exportDir(courseId: string): Promise<string> {
         const { dir } = await this.settings(courseId);
         await ensureDir(dir);
+            case 'ramroads': return this.exportRamRoads(courseId, force);
         return dir;
     }
 
@@ -2781,6 +2933,7 @@ function arboristAfterFailure(arborist: ArboristResult | null): string {
 
 function firstLine(text: string): string {
     return text.split('\n')[0] ?? '';
+        case 'ramroads': return 'R.A.M. roads';
 }
 
 /**

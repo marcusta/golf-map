@@ -440,6 +440,7 @@ test('with no record, "last updated" comes from the files each target writes', a
     const trees = await write('linkan-inner-trees.json');
     const buildings = await write('linkan-inner-buildings.json');
     const creeks = await write('linkan-inner-creeks.json');
+    const ramRoads = await write('linkan-inner-ramroads.json');
     const waterfalls = await write('linkan-inner-waterfalls.json');
     const layers = path.join(await t.shaping.layersDir(TEST_COURSE_ID), '00-global.gen.json');
     await mkdir(path.dirname(layers), { recursive: true });
@@ -464,6 +465,7 @@ test('with no record, "last updated" comes from the files each target writes', a
     expect(row(s, 'trees').lastRun).toBe(await mtimeIso(trees));
     expect(row(s, 'buildings').lastRun).toBe(await mtimeIso(buildings));
     expect(row(s, 'creeks').lastRun).toBe(await mtimeIso(creeks));
+    expect(row(s, 'roads').lastRun).toBe(await mtimeIso(ramRoads));
     expect(row(s, 'waterfalls').lastRun).toBe(await mtimeIso(waterfalls));
     expect(row(s, 'course-file').lastRun).toBe(await mtimeIso(gkd));
     // The props manifest is in the Unity project, so without an editor there is nothing to read —
@@ -641,6 +643,36 @@ test('the creeks chain writes the file and imports it in Unity', async () => {
     expect(t.editor!.calls.map(c => c.command)).toEqual(['golfmap.course', 'golfmap.creeks.import']);
     expect(job.results[0]!.report).toContain('Unity (linkan_v4): golfmap.creeks.import — Imported 13 creeks');
     expect(job.phases.map(p => [p.id, p.status])).toEqual([['creeks:file', 'done'], ['creeks:unity', 'done']]);
+});
+
+test('the R.A.M. roads chain writes the file from the raw photo and builds the splines in Unity', async () => {
+    const t = await setup({ unity: true });
+    const sources = await buildSite(t, ['dem.tif', 'ortho-orto-l2-2025.tif', 'ortho-orto-l2-2025.cleaned.tif']);
+    await new CourseFeaturesService(t.db).create({
+        courseId: TEST_COURSE_ID, holeId: null, type: 'path',
+        geometry: { crs: 'EPSG:3006', rings: [], centerline: { points: [{ x: 529400, y: 6487400 }, { x: 529460, y: 6487400 }], widthM: 3 } },
+        attributes: { surface: 'gravel', render: 'ram' },
+    });
+
+    const started = await t.svc.update(TEST_COURSE_ID, 'roads');
+    await t.svc.whenIdle(TEST_COURSE_ID);
+    const job = t.svc.job(started.id);
+    expect(job.error).toBeNull();
+    // The splines lie on the ground meshes: no heightmap first.
+    expect(t.pipeline.commands()).toEqual(['ramroads']);
+    const args = t.pipeline.calls[0]!;
+    expect(flag(args, '--ortho')).toBe(path.join(sources, 'ortho-orto-l2-2025.tif'));
+    expect(flag(args, '--out')).toBe(path.join(t.exportDir, 'linkan-inner-ramroads.json'));
+    expect(t.editor!.calls.map(c => [c.command, c.args.save])).toEqual([['golfmap.course', undefined], ['golfmap.ramroads.build', true]]);
+    expect(job.results[0]!.report).toContain('Unity (linkan_v4): golfmap.ramroads.build — golfmap.ramroads.build ok');
+    expect(job.phases.map(p => [p.id, p.status])).toEqual([['roads:file', 'done'], ['roads:unity', 'done']]);
+    expect(row(await t.svc.status(TEST_COURSE_ID), 'roads').lastRun).toBe(job.startedAt!);
+});
+
+test('the R.A.M. roads row is blocked while no road is set to R.A.M.', async () => {
+    const t = await setup();
+    await buildSite(t);
+    expect(row(await t.svc.status(TEST_COURSE_ID), 'roads').blocked).toContain('No road is set to R.A.M.');
 });
 
 test('the waterfalls chain writes the file and builds the falls in Unity', async () => {

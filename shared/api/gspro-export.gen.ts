@@ -28,13 +28,29 @@ export interface GsproOrthoSource {
 export interface GsproExportJob {
     id: string;
     courseId: string;
-    kind: 'svg' | 'ortho' | 'outer-ortho' | 'dem' | 'unity-terrain' | 'unity-sculpt' | 'unity-ortho' | 'hillshade' | 'trees' | 'buildings' | 'zones' | 'vegetation' | 'vegetation-update' | 'arborist' | 'creeks' | 'waterfalls' | 'gkd';
+    kind: 'svg' | 'ortho' | 'outer-ortho' | 'dem' | 'unity-terrain' | 'unity-sculpt' | 'unity-ortho' | 'hillshade' | 'trees' | 'buildings' | 'zones' | 'vegetation' | 'vegetation-update' | 'arborist' | 'creeks' | 'ramroads' | 'waterfalls' | 'gkd';
     label: string;
     status: 'running' | 'succeeded' | 'failed';
     startedAt: string;
     finishedAt: null | string;
     result: null | GsproExportResult;
     error: null | string;
+}
+
+export interface RamRoadsProposal {
+    format: string;
+    course: { id: string; name: string };
+    rules: Record<string, unknown>;
+    candidates: RamRoadCandidate[];
+    already: (string | number)[];
+    rejected: ({ featureNo: null | number; featureId: string; reason: string })[];
+}
+
+export interface RoadRenderResult {
+    render: 'ram' | 'opcd';
+    changed: string[];
+    unchanged: string[];
+    dryRun: boolean;
 }
 
 export interface TerrainSquare {
@@ -49,6 +65,17 @@ export interface GsproExportResult {
     report: string[];
     needsPlanting?: boolean;
     reason?: string;
+}
+
+export interface RamRoadCandidate {
+    featureId: string;
+    featureNo: null | number;
+    surface: string;
+    widthM: number;
+    lengthM: number;
+    distanceToPlayM: null | number;
+    touches: (string | number)[];
+    reason: string;
 }
 
 export interface SquareBox {
@@ -75,9 +102,11 @@ export interface GsproExportApi {
     readGkdRatings(input: { courseId: string }): Promise<GsproExportSettings>;
     terrain(input: { courseId: string }): Promise<CourseTerrain>;
     orthoSources(input: { courseId: string }): Promise<GsproOrthoSource[]>;
-    start(input: { force?: boolean; source?: string; collection?: string; terrain?: 'inner' | 'outer'; darken?: number; tint?: boolean; tintOpacity?: number; forestFloor?: boolean; floorColor?: string; floorMix?: number; removeBuildings?: boolean; excludeFeatureIds?: string[]; variant?: string; zoneIds?: string[]; plantIfNeeded?: boolean; courseId: string; kind: 'svg' | 'ortho' | 'outer-ortho' | 'dem' | 'unity-terrain' | 'unity-sculpt' | 'unity-ortho' | 'hillshade' | 'trees' | 'buildings' | 'zones' | 'vegetation' | 'vegetation-update' | 'arborist' | 'creeks' | 'waterfalls' | 'gkd' }): Promise<GsproExportJob>;
+    start(input: { force?: boolean; source?: string; collection?: string; terrain?: 'inner' | 'outer'; darken?: number; tint?: boolean; tintOpacity?: number; forestFloor?: boolean; floorColor?: string; floorMix?: number; removeBuildings?: boolean; excludeFeatureIds?: string[]; variant?: string; zoneIds?: string[]; plantIfNeeded?: boolean; courseId: string; kind: 'svg' | 'ortho' | 'outer-ortho' | 'dem' | 'unity-terrain' | 'unity-sculpt' | 'unity-ortho' | 'hillshade' | 'trees' | 'buildings' | 'zones' | 'vegetation' | 'vegetation-update' | 'arborist' | 'creeks' | 'ramroads' | 'waterfalls' | 'gkd' }): Promise<GsproExportJob>;
     job(input: { jobId: string }): Promise<GsproExportJob>;
     current(input: { courseId: string }): Promise<null | GsproExportJob>;
+    ramRoadsProposal(input: { minDistanceM?: number; courseId: string }): Promise<RamRoadsProposal>;
+    setRoadRender(input: { dryRun?: boolean; courseId: string; featureIds: string[]; render: 'ram' | 'opcd' }): Promise<RoadRenderResult>;
 }
 
 export function createGsproExportClient(baseUrl: string): GsproExportApi {
@@ -137,6 +166,21 @@ export function createGsproExportClient(baseUrl: string): GsproExportApi {
                 if (v !== undefined) params.set(k, String(v));
             const qs = params.toString();
             return apiFetch({ method: 'GET', url: `${baseUrl}/gspro-export/current${qs ? '?' + qs : ''}` });
+        },
+        async ramRoadsProposal(input) {
+            const pathParams = new Set(['courseId']);
+            const params = new URLSearchParams();
+            for (const [k, v] of Object.entries(input as any))
+                if (!pathParams.has(k) && v !== undefined) params.set(k, String(v));
+            const qs = params.toString();
+            return apiFetch({ method: 'GET', url: `${baseUrl}/courses/${input.courseId}/gspro/ram-roads/proposal${qs ? '?' + qs : ''}` });
+        },
+        async setRoadRender(input) {
+            const pathParams = new Set(['courseId']);
+            const body: Record<string, unknown> = {};
+            for (const [k, v] of Object.entries(input as any))
+                if (!pathParams.has(k)) body[k] = v;
+            return apiFetch({ method: 'POST', url: `${baseUrl}/courses/${input.courseId}/gspro/ram-roads/render`, body });
         },
     };
 }

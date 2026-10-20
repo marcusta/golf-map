@@ -5,10 +5,13 @@ import { _reset } from '@basics/core/client/error-report';
 import { GsproExportPanelComponent } from '../src/export/gspro-export-panel.component';
 import { GsproExportService } from '../src/export/gspro-export.service';
 import { GsproSyncService } from '../src/export/gspro-sync.service';
-import type { GsproExportApi, GsproExportSettings, GsproOrthoSource, CourseTerrain, GsproExportJob } from '../../shared/api/gspro-export.gen';
+import type {
+    GsproExportApi, GsproExportSettings, GsproOrthoSource, CourseTerrain, GsproExportJob, RamRoadsProposal,
+} from '../../shared/api/gspro-export.gen';
 import type { GsproSyncApi, GsproSyncJob, GsproTargetStatus, JobPhase } from '../../shared/api/gspro-sync.gen';
 import { GSPRO_TARGETS, type GsproTargetId } from '../../shared/gspro-targets';
 import { FeaturesService } from '../src/draw/features.service';
+import { RamRoadsService, type RamRoadsClient } from '../src/export/ram-roads.service';
 import type { CourseFeature, CourseFeaturesApi } from '../../shared/api/course-features.gen';
 
 // Render smoke for the GSPro dialog — its tabs, each with its targets' rows and
@@ -206,6 +209,7 @@ const BOARD = (): GsproTargetStatus[] => [
     row({ id: 'buildings' }),
     row({ id: 'props', note: '3 hand-placed props are kept on update' }),
     row({ id: 'creeks' }),
+    row({ id: 'roads' }),
     row({ id: 'waterfalls' }),
     row({ id: 'course-file' }),
 ];
@@ -272,6 +276,39 @@ function fakeSyncApi(opts: { targets?: GsproTargetStatus[]; statusJob?: GsproSyn
     return { api, updates };
 }
 
+/** The roads proposal the server would make: two candidates, one road already R.A.M., two left out. */
+const PROPOSAL = (): RamRoadsProposal => ({
+    format: 'golfmap.ram-roads-proposal/1',
+    course: { id: 'course-1', name: 'Vreta' },
+    rules: { minDistanceM: 30 },
+    candidates: [
+        { featureId: 'f38', featureNo: 38, surface: 'gravel', widthM: 4, lengthM: 465.2, distanceToPlayM: 41.4, touches: [12], reason: 'far from play' },
+        { featureId: 'f40', featureNo: 40, surface: 'asphalt', widthM: 6, lengthM: 120, distanceToPlayM: 75, touches: [], reason: 'far from play' },
+    ],
+    already: [12],
+    rejected: [
+        { featureNo: 7, featureId: 'f7', reason: 'no centerline' },
+        { featureNo: null, featureId: 'abcdef0123456789', reason: '12 m from play' },
+    ],
+});
+
+/** The roads half of the server: the proposal, and what Accept set. */
+function fakeRamRoads() {
+    const proposals: (number | undefined)[] = [];
+    const renders: { featureIds: string[]; render: string }[] = [];
+    const client: RamRoadsClient = {
+        async ramRoadsProposal({ minDistanceM }) {
+            proposals.push(minDistanceM);
+            return PROPOSAL();
+        },
+        async setRoadRender({ featureIds, render, dryRun }) {
+            renders.push({ featureIds, render });
+            return { render, changed: featureIds, unchanged: [], dryRun: !!dryRun };
+        },
+    };
+    return { client, proposals, renders };
+}
+
 async function mount(dir: string | null = null, run?: () => never, sources?: GsproOrthoSource[], terrain?: CourseTerrain | null,
     syncOpts?: Parameters<typeof fakeSyncApi>[0]) {
     const { api, orthoCalls, outerCalls, demCalls, unityTerrainCalls, hillshadeCalls, treesCalls, zonesCalls, floorCalls, gkdCalls, metaCalls, gkd } = fakeApi(dir, run, sources, terrain);
@@ -280,9 +317,11 @@ async function mount(dir: string | null = null, run?: () => never, sources?: Gsp
     const { api: syncApi, updates } = fakeSyncApi(syncOpts);
     const sync = new GsproSyncService(syncApi, 1, 60_000);
     di.set(GsproSyncService, sync);
+    const roads = fakeRamRoads();
+    di.set(RamRoadsService, new RamRoadsService(roads.client));
     const host = document.createElement('div');
     new GsproExportPanelComponent({}).mount(host);
-    return { host, svc, sync, updates, orthoCalls, outerCalls, demCalls, unityTerrainCalls, hillshadeCalls, treesCalls, zonesCalls, floorCalls, gkdCalls, metaCalls, gkd };
+    return { host, svc, sync, updates, roads, orthoCalls, outerCalls, demCalls, unityTerrainCalls, hillshadeCalls, treesCalls, zonesCalls, floorCalls, gkdCalls, metaCalls, gkd };
 }
 
 /** The dialog opens for a course and the board's first read lands. */
@@ -369,10 +408,10 @@ test('the dialog is tabs of rows: a row per target in tab order, with its time a
     const dialog = host.querySelector('[data-testid=gspro-dialog]') as HTMLElement;
     expect(dialog.querySelector('h3')!.textContent).toBe('GSPro');
     const rows = [...host.querySelectorAll('[data-testid^=gspro-row-]')];
-    // Every target once, grouped by tab: Nature takes the creeks and the waterfalls in with vegetation and trees.
+    // Every target once, grouped by tab: Nature takes the creeks, the R.A.M. roads and the waterfalls in with vegetation and trees.
     expect(rows.map(r => r.getAttribute('data-testid')).sort()).toEqual(GSPRO_TARGETS.map(t => `gspro-row-${t.id}`).sort());
     expect(rows.map(r => r.querySelector('.gspro-export__blabel')!.textContent!.trim().split(' ')[0]))
-        .toEqual(['Terrain', 'Photo', 'Course', 'Meshes', 'Vegetation', 'Trees', 'Creeks', 'Waterfalls', 'Buildings', 'Props', 'Course']);
+        .toEqual(['Terrain', 'Photo', 'Course', 'Meshes', 'Vegetation', 'Trees', 'Creeks', 'R.A.M.', 'Waterfalls', 'Buildings', 'Props', 'Course']);
 
     const status = (id: string) => host.querySelector(`[data-testid=gspro-status-${id}]`)!.textContent;
     expect(status('terrain')).toBe('2 h ago · up to date');
@@ -526,7 +565,7 @@ test('each tab shows its own rows, files and settings, and a tab with a stale ro
     expect(pane('course').querySelector('[data-testid=gspro-row-meshes]')).not.toBeNull();
     expect(pane('course').querySelector('[data-testid=gspro-run-svg]')).not.toBeNull();
     expect(pane('course').textContent).toContain('docs/gspro/Vreta/shaping');
-    for (const id of ['vegetation', 'trees', 'creeks', 'waterfalls']) expect(pane('nature').querySelector(`[data-testid=gspro-row-${id}]`)).not.toBeNull();
+    for (const id of ['vegetation', 'trees', 'creeks', 'roads', 'waterfalls']) expect(pane('nature').querySelector(`[data-testid=gspro-row-${id}]`)).not.toBeNull();
     expect(pane('nature').querySelector('.gspro-export__run-inner-zones')).not.toBeNull();
     expect(pane('nature').querySelector('.gspro-export__run-inner-trees')).not.toBeNull();
     expect(pane('nature').querySelector('.gspro-export__run-creeks')).not.toBeNull();
@@ -1054,4 +1093,66 @@ test('the Shapes row shows what OPCD made of each recent SVG export, the last go
     // No other row has a builds line.
     const lines = [...host.querySelectorAll('[data-testid^=gspro-builds-]')].filter(n => n.innerHTML !== '');
     expect(lines.map(n => n.getAttribute('data-testid'))).toEqual(['gspro-builds-shapes']);
+});
+
+test('the R.A.M. roads row updates like the others and folds its Propose step to one line', async () => {
+    const { host, svc, updates } = await mount();
+    await open(svc);
+
+    const row = host.querySelector('[data-testid=gspro-row-roads]')!;
+    expect(row.querySelector('.gspro-export__blabel')!.textContent!.trim()).toStartWith('R.A.M. roads');
+    expect(host.querySelector('[data-testid=gspro-status-roads]')!.textContent).toBe('2 h ago · up to date');
+    (host.querySelector('[data-testid=gspro-update-roads]') as HTMLButtonElement).click();
+    await new Promise(r => setTimeout(r, 20));
+    expect(updates).toEqual(['roads']);
+
+    // Folded: Propose and the min distance (30 m), nothing else shown.
+    const step = row.querySelector('[data-testid=gspro-roads-propose]')!;
+    expect((step.querySelector('[data-testid=gspro-roads-min-distance]') as HTMLInputElement).value).toBe('30');
+    expect(step.querySelectorAll('[data-testid=gspro-roads-candidate]').length).toBe(0);
+    expect(step.querySelector('[data-testid=gspro-roads-accept]')!.className).toContain('hidden');
+    for (const id of ['summary', 'already', 'rejected', 'done', 'error']) {
+        expect(step.querySelector(`[data-testid=gspro-roads-${id}]`)!.textContent).toBe('');
+    }
+});
+
+test('Propose lists the candidates ticked, one line each; Accept sets the ticked ones to R.A.M. and says what is next', async () => {
+    const { host, svc, roads } = await mount();
+    await open(svc);
+    const step = host.querySelector('[data-testid=gspro-roads-propose]')!;
+    const q = (id: string) => step.querySelector(`[data-testid=gspro-roads-${id}]`) as HTMLElement;
+
+    const distance = q('min-distance') as HTMLInputElement;
+    distance.value = '40';
+    distance.dispatchEvent(new Event('change'));
+    (q('propose-run') as HTMLButtonElement).click();
+    await new Promise(r => setTimeout(r, 0));
+    expect(roads.proposals).toEqual([40]);
+
+    const lines = [...step.querySelectorAll('[data-testid=gspro-roads-candidate]')];
+    expect(lines.map(l => l.textContent)).toEqual([
+        'path 38 · gravel · 465 m · 41 m from play',
+        'path 40 · asphalt · 120 m · 75 m from play',
+    ]);
+    const boxes = lines.map(l => l.querySelector('input') as HTMLInputElement);
+    expect(boxes.map(b => b.checked)).toEqual([true, true]);
+    expect(q('summary').textContent).toBe('2 roads proposed');
+    // Already-R.A.M. and left-out roads: one line each, the details in the title.
+    expect(q('already').textContent).toBe('1 already R.A.M.');
+    expect(q('already').title).toBe('path 12');
+    expect(q('rejected').textContent).toBe('2 left out');
+    expect(q('rejected').title).toBe('path 7: no centerline\npath abcdef01: 12 m from play');
+
+    boxes[1]!.checked = false;
+    boxes[1]!.dispatchEvent(new Event('change'));
+    const accept = q('accept') as HTMLButtonElement;
+    expect(accept.className).not.toContain('hidden');
+    expect(accept.textContent).toBe('Accept 1 road');
+    accept.click();
+    await new Promise(r => setTimeout(r, 0));
+    expect(roads.renders).toEqual([{ featureIds: ['f38'], render: 'ram' }]);
+    expect(q('done').textContent).toBe('1 road set to R.A.M. — build the SVG in OPCD next');
+    // The step folds back to its one line.
+    expect(step.querySelectorAll('[data-testid=gspro-roads-candidate]').length).toBe(0);
+    expect(q('accept').className).toContain('hidden');
 });

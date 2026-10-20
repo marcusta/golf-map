@@ -1,6 +1,6 @@
 # Unity tool notes (agent-facing)
 
-Per-tool behaviour notes moved out of unity/AGENTS.md. They complement [unity/README.md](../unity/README.md), which has the user-facing sections (Bunker Materials, Cart paths, Vertex paint, FBX sync, Creeks, Water planes, Course props, Stone walls); read the matching section there too.
+Per-tool behaviour notes moved out of unity/AGENTS.md. They complement [unity/README.md](../unity/README.md), which has the user-facing sections (Bunker Materials, Cart paths, Vertex paint, FBX sync, Creeks, R.A.M. roads, Water planes, Course props, Stone walls); read the matching section there too.
 
 Saving: every command takes `save=false` (`GolfMapSceneSave.cs`, README "Saving what a command changed"). With
 `save: true` the open dirty scenes and `AssetDatabase.SaveAssets()` are saved **after** the command has succeeded
@@ -119,6 +119,13 @@ GSPro's water is a MeshCollider on the spline itself, on R.A.M.'s own mesh, with
 import widens control points / moves ends until no edge vertex hangs over lower ground (a ball would roll under it);
 the row's `gaps` must read `gaps 0, open 0`.
 See [README.md](../unity/README.md#creeks-ram).
+
+R.A.M. roads (`render=ram` paths, `GolfMapRamRoads.cs`): `golfmap.ramroads.build` draws `<prefix>-inner-ramroads.json`
+as one RamSpline per road on the course meshes, each in its surface's look from `<course>/RAM Roads/ram-roads.json`
+(the truth; the `<material> (<surface>).mat` copies are rebuilt every run). `golfmap.ramroads.tint` matches each surface's
+rendered colour to the export's `surfaces.<surface>.orthoRgb` (top-down captures with the main camera's post-processing)
+and writes tint/brightness into the spec. Never regenerate a road from R.A.M.'s inspector (it snaps onto its own
+collider); re-run the build. See [README.md](../unity/README.md#ram-roads).
 
 Lake water planes: `GolfMap > Waterplanes` (`GolfMapWaterplanes.cs`, bridge `golfmap.waterplanes.build`) does OPCD's Blender
 "Add Water Plane" in Unity from the scene's `*_Water_Base_Lake_-_Mesh`, or one selected mesh of any name (`Build for selected

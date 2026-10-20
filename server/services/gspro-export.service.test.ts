@@ -13,6 +13,7 @@ import {
     terrainTextureFileName, TERRAIN_TEXTURE_DARKEN, meshTextureFileName, TERRAIN_TINT_OPACITY, MESH_TEXTURE_SOFTEN_M, MESH_TEXTURE_SIZE, OUTER_TERRAIN_GRADE, treesExportFileName, OUTER_TREES_DIR, OUTER_TREES_RESOLUTION_M,
     ORTHO_EXPORT_SIZE, ORTHO_EXPORT_QUALITY, DEM_EXPORT_RESOLUTION_M, OUTER_DEM_SOURCE, OUTER_LIDAR_DIR, type ExportRunner,
     buildingsExportFileName, BUILDINGS_SURVEY_SOURCE, OUTER_DEM_EDITED_SOURCE, describeRequest, zonesExportFileName, creeksExportFileName, waterfallsExportFileName,
+    ramRoadsExportFileName, RAM_ROADS_REACH_M,
     ZONES_LAYOUT_CHANGED_EXIT, OUTER_VEGETATION_IS_ARBORIST, diffZoneContents,
 } from './gspro-export.service';
 import { TerrainEditsService } from './terrain-edits.service';
@@ -1382,6 +1383,107 @@ test('the waterfalls export reads the raw DEM and the inner sidecar, and is skip
     });
     await t.svc.exportWaterfalls(TEST_COURSE_ID);
     expect(w.commands()).toEqual(['waterfalls']);
+});
+
+/** A drawn road: a centerline `path` of the test course. */
+function centerlineRoad(features: CourseFeaturesService, attributes: Record<string, string> = { surface: 'gravel' }) {
+    return features.create({
+        courseId: TEST_COURSE_ID, holeId: null, type: 'path', attributes,
+        geometry: { crs: 'EPSG:3006', rings: [], centerline: { points: [{ x: 529400, y: 6487400 }, { x: 529460, y: 6487400 }], widthM: 3 } },
+    });
+}
+
+test('the R.A.M. roads export takes the newest raw photo (never the cleaned one), no heightmap, and is skipped until a feature changes', async () => {
+    const w = writingRunner();
+    const t = await setup(w.runner);
+    const sourcesDir = await buildSite(t, ['ortho-orto-l2-2023.tif', 'ortho-orto-l2-2025.tif', 'ortho-orto-l2-2025.cleaned.tif']);
+    const dir = await mkdtemp(path.join(os.tmpdir(), 'gspro-out-'));
+    await t.svc.setDir(TEST_COURSE_ID, dir);
+
+    const job = await t.svc.start(TEST_COURSE_ID, { kind: 'ramroads' });
+    expect(job.label).toBe('R.A.M. roads');
+    await t.svc.whenIdle(TEST_COURSE_ID);
+    const res = t.svc.job(job.id).result!;
+    expect(res.path).toBe(path.join(dir, 'linkan-inner-ramroads.json'));
+    expect(w.commands()).toEqual(['ramroads']);
+    const args = w.calls[0]!;
+    expect(flag(args, '--square-3006')).toBe(squareArg(GEOREF_INNER));
+    expect(flag(args, '--course')).toBe(TEST_COURSE_ID);
+    expect(flag(args, '--ortho')).toBe(path.join(sourcesDir, 'ortho-orto-l2-2025.tif'));
+    expect(args).not.toContain('--dem');
+    // The roads run on past the inner square onto the outer terrain instead of fading out at its border.
+    expect(flag(args, '--reach-m')).toBe(String(RAM_ROADS_REACH_M));
+    expect(ramRoadsExportFileName('Vreta Kloster')).toBe('vreta-kloster-inner-ramroads.json');
+
+    // Nothing it reads has changed: skipped. A road set to R.A.M. renders it again.
+    w.calls.length = 0;
+    expect((await t.svc.exportRamRoads(TEST_COURSE_ID)).report[0]).toMatch(/^unchanged: /);
+    await centerlineRoad(new CourseFeaturesService(t.db), { surface: 'gravel', render: 'ram' });
+    await t.svc.exportRamRoads(TEST_COURSE_ID);
+    expect(w.commands()).toEqual(['ramroads']);
+});
+
+test('the R.A.M. roads export without a raw photo passes no --ortho; without a built map it is refused', async () => {
+    const w = writingRunner();
+    const t = await setup(w.runner);
+    await expect(t.svc.exportRamRoads(TEST_COURSE_ID)).rejects.toThrow(/no built map/);
+    await buildSite(t, ['ortho-orto-l2-2025.cleaned.tif']);
+    await t.svc.setDir(TEST_COURSE_ID, await mkdtemp(path.join(os.tmpdir(), 'gspro-out-')));
+    await t.svc.exportRamRoads(TEST_COURSE_ID);
+    expect(w.calls[0]).not.toContain('--ortho');
+});
+
+test('the R.A.M. roads proposal runs gspro.py ramroads-propose and returns its JSON; a failing run is a 409', async () => {
+    const proposal = {
+        format: 'golfmap-ramroads-proposal-v1', course: { id: TEST_COURSE_ID, name: 'Linkan' }, rules: { minDistanceM: 45 },
+        candidates: [{ featureId: 'f1', featureNo: 12, surface: 'gravel', widthM: 3, lengthM: 220, distanceToPlayM: 61, touches: [14], reason: 'gravel, 61 m from play, meets path 14 at its ends' }],
+        already: [7], rejected: [{ featureNo: 3, featureId: 'f3', reason: '4 m from play (tee 9)' }],
+    };
+    const calls: string[][] = [];
+    let code = 0;
+    const t = await setup(async (args) => {
+        calls.push(args);
+        if (code === 0) await writeFile(flag(args, '--out')!, JSON.stringify(proposal));
+        return { code, stdout: '', stderr: code ? 'Traceback: boom' : '' };
+    });
+    expect(await t.svc.proposeRamRoads(TEST_COURSE_ID, { minDistanceM: 45 })).toEqual(proposal);
+    expect(calls[0]![1]).toBe('ramroads-propose');
+    expect(flag(calls[0]!, '--course')).toBe(TEST_COURSE_ID);
+    expect(flag(calls[0]!, '--min-distance-m')).toBe('45');
+    // The temporary answer file is gone again.
+    expect(existsSync(flag(calls[0]!, '--out')!)).toBe(false);
+    await t.svc.proposeRamRoads(TEST_COURSE_ID);
+    expect(calls[1]).not.toContain('--min-distance-m');
+    code = 1;
+    await expect(t.svc.proposeRamRoads(TEST_COURSE_ID)).rejects.toBeInstanceOf(ConflictError);
+    await expect(t.svc.proposeRamRoads(TEST_COURSE_ID, { minDistanceM: -1 })).rejects.toBeInstanceOf(ConflictError);
+});
+
+test('setRoadRender sets and clears render on the course\'s centerline paths; a dry run writes nothing, one bad id writes nothing', async () => {
+    const t = await setup(recordingRunner().runner);
+    const features = new CourseFeaturesService(t.db);
+    const a = await centerlineRoad(features);
+    const b = await centerlineRoad(features, { surface: 'asphalt', render: 'ram' });
+    const ring = { points: [{ x: 529400, y: 6487400 }, { x: 529420, y: 6487400 }, { x: 529420, y: 6487420 }] };
+    const polygonPath = await features.create({ courseId: TEST_COURSE_ID, holeId: null, type: 'path', geometry: { crs: 'EPSG:3006', rings: [ring] } });
+    const bunker = await features.create({ courseId: TEST_COURSE_ID, holeId: null, type: 'bunker', geometry: { crs: 'EPSG:3006', rings: [ring] } });
+
+    const dry = await t.svc.setRoadRender(TEST_COURSE_ID, [a.id, b.id], 'ram', { dryRun: true });
+    expect(dry).toEqual({ render: 'ram', changed: [a.id], unchanged: [b.id], dryRun: true });
+    expect((await features.findById(a.id)).attributes).toEqual({ surface: 'gravel' });
+
+    expect((await t.svc.setRoadRender(TEST_COURSE_ID, [a.id, b.id], 'ram')).changed).toEqual([a.id]);
+    expect((await features.findById(a.id)).attributes).toEqual({ surface: 'gravel', render: 'ram' });
+
+    // Back to OPCD clears the key.
+    expect((await t.svc.setRoadRender(TEST_COURSE_ID, [b.id], 'opcd')).changed).toEqual([b.id]);
+    expect((await features.findById(b.id)).attributes).toEqual({ surface: 'asphalt' });
+
+    // A path with no centerline, a bunker or another course's id fails the whole call.
+    await expect(t.svc.setRoadRender(TEST_COURSE_ID, [b.id, polygonPath.id], 'ram')).rejects.toThrow(/centerline/);
+    await expect(t.svc.setRoadRender(TEST_COURSE_ID, [bunker.id], 'ram')).rejects.toThrow(/not a path/);
+    await expect(t.svc.setRoadRender(TEST_COURSE_ID, ['nope'], 'ram')).rejects.toBeInstanceOf(NotFoundError);
+    expect((await features.findById(b.id)).attributes).toEqual({ surface: 'asphalt' });
 });
 
 

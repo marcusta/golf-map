@@ -30,6 +30,7 @@
         "features:union": "bun scripts/features-union.ts",
         "water:edge": "bun scripts/water-edge.ts",
         "water:steps": "bun scripts/water-steps.ts",
+        "ramroads": "bun scripts/ram-roads.ts",
         "trees:photo": "bun scripts/trees-photo.ts",
         "water:import": "bun scripts/water-import.ts",
         "shaping": "bun scripts/shaping-apply.ts",

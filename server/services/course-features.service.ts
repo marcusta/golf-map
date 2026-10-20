@@ -9,6 +9,7 @@ import { ROUGHS_LAYER, isRoughsLayerType, stackKey, drawScopeRanks, type Feature
 import { PATH_SURFACE_ATTRIBUTE, PATH_SURFACES, isPathSurface } from '../../shared/features/path-surface';
 import { centerlineError, centerlineGeometry } from '../../shared/features/centerline';
 import { pathTransitionsError, type PathTransition } from '../../shared/features/path-transitions';
+import { PATH_RENDER_ATTRIBUTE, pathRenderError } from '../../shared/features/path-render';
 import { bankVegProblem, takesBankVeg } from '../../shared/features/creek-vegetation';
 import { ZONE_BLENDS, ZONE_BLEND_ATTRIBUTE, ZONE_EXTRA_PALETTES_ATTRIBUTE, parseZonePalettes } from '../../shared/features/zone-layers';
 import { zoneHeightProblem } from '../../shared/features/zone-height';
@@ -697,6 +698,8 @@ function assertValidCreate(input: CreateFeatureInput): void {
     const transitionProblem = pathTransitionsError(input.attributes?.pathTransitions, input.geometry.centerline, input.type, input.attributes?.surface);
     if (transitionProblem) throw new InvalidFeatureError(transitionProblem);
     if (Array.isArray(input.attributes?.pathTransitions) && input.attributes.pathTransitions.length && input.geometry.crs !== 'EPSG:3006') throw new InvalidFeatureError('pathTransitions requires EPSG:3006 geometry');
+    const renderProblem = pathRenderError(input.attributes?.[PATH_RENDER_ATTRIBUTE], input.type, input.geometry.centerline, input.attributes?.surface);
+    if (renderProblem) throw new InvalidFeatureError(renderProblem);
     if (input.type === 'vegetation_zone') assertValidVegetationZoneAttributes(input.attributes);
     if (input.type === TREE_AREA_TYPE) assertValidTreeAreaAttributes(input.attributes);
     if (input.type === 'path') assertValidPathAttributes(input.attributes);
@@ -1020,6 +1023,8 @@ export class CourseFeaturesService {
         const transitionProblem = pathTransitionsError(nextAttributes?.pathTransitions, nextGeometry.centerline, nextType, nextAttributes?.surface);
         if (transitionProblem) throw new InvalidFeatureError(transitionProblem);
         if (Array.isArray(nextAttributes?.pathTransitions) && nextAttributes.pathTransitions.length && nextGeometry.crs !== 'EPSG:3006') throw new InvalidFeatureError('pathTransitions requires EPSG:3006 geometry');
+        const renderProblem = pathRenderError(nextAttributes?.[PATH_RENDER_ATTRIBUTE], nextType, nextGeometry.centerline, nextAttributes?.surface);
+        if (renderProblem) throw new InvalidFeatureError(renderProblem);
         const currentLayer = toLayer(row.layer);
         let nextLayer: FeatureLayer;
         let nextHoleId = input.holeId !== undefined ? input.holeId : row.hole_id;

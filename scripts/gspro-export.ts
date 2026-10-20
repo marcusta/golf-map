@@ -10,7 +10,7 @@
 //
 // `status` prints the course's folders, terrains, ortho sources and files,
 // then the STATUS BOARD: one row per target (Terrain, Photo, Course shapes,
-// Meshes, Vegetation, Trees, Buildings, Props, Creeks, Waterfalls, Course file) with when
+// Meshes, Vegetation, Trees, Buildings, Props, Creeks, R.A.M. roads, Waterfalls, Course file) with when
 // it was last updated, what has changed since, whether it is stale, why it
 // cannot run, the row's own note (Props: the hand-placed props an update keeps)
 // and the manual step that follows it — plus the open Unity editors and the
@@ -32,6 +32,8 @@
 //   unity-sculpt[:inner|:outer]   what was sculpted in Unity since, back as that terrain's sculpt layer (golfmap.terrain.capture)
 //   unity-ortho                   the inner orthophoto (--source, e.g. the .cleaned.tif), then its -meshes file onto the Unity course meshes (golfmap.orthos.apply)
 //   creeks                   the creeks as R.A.M. splines at the water surface (inner; needs the inner dem)
+//   ramroads                 the paths with render=ram as R.A.M. splines on the ground meshes (inner; colours from
+//                            the newest raw photo). Which roads: bun run ramroads -- <course> propose|set|list
 //   waterfalls               the falls' lips, water levels above and below and flow (inner; levels not set read from the lidar)
 //   gkd                      GreenKeeper's <scene>.GKD into the course's GSPro folder (--course-dir <folder>
 //                            sets it, like the panel does); needs the inner dem exported first
@@ -75,7 +77,7 @@ import { GSPRO_TARGET_IDS, isGsproTargetId, gsproTarget, type GsproTargetId } fr
 import type { JobPhase } from '../server/services/job-phases';
 
 const ROOT = path.resolve(import.meta.dir, '..');
-const KINDS: GsproExportKind[] = ['svg', 'ortho', 'outer-ortho', 'dem', 'unity-terrain', 'unity-sculpt', 'unity-ortho', 'hillshade', 'trees', 'buildings', 'zones', 'creeks', 'waterfalls', 'gkd', 'arborist'];
+const KINDS: GsproExportKind[] = ['svg', 'ortho', 'outer-ortho', 'dem', 'unity-terrain', 'unity-sculpt', 'unity-ortho', 'hillshade', 'trees', 'buildings', 'zones', 'creeks', 'ramroads', 'waterfalls', 'gkd', 'arborist'];
 const TERRAIN_KINDS = new Set<GsproExportKind>(['dem', 'unity-terrain', 'unity-sculpt', 'hillshade', 'trees', 'buildings', 'zones']);
 
 function usage(message?: string): never {

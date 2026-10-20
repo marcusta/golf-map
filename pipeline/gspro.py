@@ -7274,6 +7274,421 @@ def cmd_waterfalls(bbox, db_path: Path, course_ident: str, dem_path: Path, sidec
         print(f"  skipped {line}")
 
 
+# --- ramroads: render=ram paths as R.A.M. road splines ------------------------
+# A path with render=ram (shared/features/path-render.ts) is left out of the SVG
+# (`_is_ram_road`) and drawn in Unity by golfmap.ramroads.build along its
+# centerline, draped on the OPCD ground meshes (GolfMapRamRoads.cs). `ramroads`
+# gives Unity that line in the creeks' frame (plot metres from the inner
+# square's south-west corner, x east, z north; no height, the spline lies on the
+# meshes) and, with an ortho, the road's sunlit colour on the photo so its look
+# can be tinted to it. `ramroads-propose` says which drawn roads would suit it.
+UNITY_RAMROADS_FORMAT = "unity-ramroads-v1"
+RAMROADS_PROPOSAL_FORMAT = "golfmap-ramroads-proposal-v1"
+RAMROAD_DEFAULT_SURFACE = "gravel"      # GolfMapRamRoads.Load's default too
+RAMROAD_POINT_SPACING_M = 2.5           # control points this far apart: R.A.M. snaps the vertices between them
+RAMROAD_MIN_LENGTH_M = 1.0              # less of the road than this inside the square is not written
+RAMROAD_ORTHO_ERODE_M = 0.6             # the corridor shrunk by this before its pixels are read: no verge in the colour
+RAMROAD_SHADOW_FRACTION = 0.35          # the darkest share of those pixels by luma is shadow (trees, banks) and dropped
+RAMROAD_ORTHO_PAD_M = 2.0               # the pixel window read round a road's bounds
+# shared/features/centerline.ts CENTERLINE_FLATTEN_TOLERANCE_M and FLATTEN_MAX_TURN_RAD (3 degrees)
+CENTERLINE_FLATTEN_TOL_M = 0.05
+CENTERLINE_FLATTEN_MAX_TURN_RAD = 3 * math.pi / 180
+# ramroads-propose. R.A.M. draws a loose road well (a band with soft edges); a
+# hard one keeps its kerbs (shape_kerb in Blender), so it stays an OPCD mesh.
+RAMROAD_LOOSE_SURFACES = ("gravel", "dirt", GRAVEL_TRACK_SURFACE)   # isLoosePathSurface
+RAMROAD_HARD_SURFACES = SHAPING_KERB_SURFACES
+RAMROAD_PLAY_TYPES = ("green", "tee", "fairway", "semi_rough", "bunker")
+RAMROAD_MIN_PLAY_DISTANCE_M = 30.0      # nearer play a ball lands on the road often: the OPCD mesh plays it truer
+# R.A.M. has no junctions: another road may meet a R.A.M. road only within this
+# of one of its ends (the end fades out over the other road).
+RAMROAD_END_JOIN_M = 3.0
+RAMROAD_TOUCH_M = 0.25                  # corridors closer than this meet
+RAMROAD_PROPOSE_FLATTEN_M = 0.1         # outline tolerance for the distance and meeting tests
+
+
+def _flatten_centerline(points: list[dict], tol: float = CENTERLINE_FLATTEN_TOL_M) -> list[Pt]:
+    """The curve through a centerline's control points as one polyline: a port
+    of shared/features/centerline.ts flattenCenterline (chord-scaled
+    Catmull-Rom, `corner` points sharp, each span split until it is within
+    `tol` and turns at most 3 degrees), so the R.A.M. spline runs where the app
+    draws the road. `_transition_centerline` lacks the turn limit."""
+    pts: list[dict] = []
+    for p in points:
+        if not pts or math.hypot(p["x"] - pts[-1]["x"], p["y"] - pts[-1]["y"]) > 1e-6:
+            pts.append(p)
+    n = len(pts)
+    xy = [(float(p["x"]), float(p["y"])) for p in pts]
+    if n < 2:
+        return xy
+    lengths = [math.dist(a, b) for a, b in zip(xy, xy[1:])]
+
+    def tangent(i: int) -> Pt | None:
+        if i == 0 or i == n - 1 or pts[i].get("corner"):
+            return None
+        dx, dy = xy[i + 1][0] - xy[i - 1][0], xy[i + 1][1] - xy[i - 1][1]
+        d = math.hypot(dx, dy)
+        return None if d < 1e-9 else (dx / d, dy / d)
+
+    def reach(i: int) -> float:
+        return min(lengths[i - 1], lengths[i]) / 3
+
+    def turn(c: tuple) -> float:
+        p0, p3 = c[0], c[3]
+        apart = lambda a, b: math.hypot(b[0] - a[0], b[1] - a[1]) > 1e-9
+        s = next((q for q in c[1:] if apart(p0, q)), None)
+        e = next((q for q in (c[2], c[1], c[0]) if apart(q, p3)), None)
+        if s is None or e is None:
+            return 0.0
+        h1, h2 = math.atan2(s[1] - p0[1], s[0] - p0[0]), math.atan2(p3[1] - e[1], p3[0] - e[0])
+        return abs(((h2 - h1 + 3 * math.pi) % (2 * math.pi)) - math.pi)
+
+    out: list[Pt] = [xy[0]]
+
+    def flatten(c: tuple, depth: int = 0) -> None:
+        p0, p1, p2, p3 = c
+        dx, dy = p3[0] - p0[0], p3[1] - p0[1]
+        chord = math.hypot(dx, dy)
+        def off(q: Pt) -> float:
+            return math.dist(q, p0) if chord < 1e-9 else abs((q[0] - p0[0]) * dy - (q[1] - p0[1]) * dx) / chord
+        if depth >= 12 or (max(off(p1), off(p2)) <= tol and turn(c) <= CENTERLINE_FLATTEN_MAX_TURN_RAD):
+            out.append(p3)
+            return
+        mid = lambda a, b: ((a[0] + b[0]) / 2, (a[1] + b[1]) / 2)
+        p01, p12, p23 = mid(p0, p1), mid(p1, p2), mid(p2, p3)
+        p012, p123 = mid(p01, p12), mid(p12, p23)
+        m = mid(p012, p123)
+        flatten((p0, p01, p012, m), depth + 1)
+        flatten((m, p123, p23, p3), depth + 1)
+
+    for i in range(n - 1):
+        a, b, d = xy[i], xy[i + 1], lengths[i]
+        chord = ((b[0] - a[0]) / d, (b[1] - a[1]) / d)
+        ta, tb = tangent(i), tangent(i + 1)
+        ha = (ta[0] * reach(i), ta[1] * reach(i)) if ta else (chord[0] * d / 3, chord[1] * d / 3)
+        hb = (tb[0] * reach(i + 1), tb[1] * reach(i + 1)) if tb else (chord[0] * d / 3, chord[1] * d / 3)
+        flatten((a, (a[0] + ha[0], a[1] + ha[1]), (b[0] - hb[0], b[1] - hb[1]), b))
+    return out
+
+
+def _resample_line(line, spacing: float) -> np.ndarray:
+    """(K, 2) points evenly along a shapely LineString about `spacing` apart, both ends kept (K >= 2)."""
+    count = max(1, int(round(line.length / spacing)))
+    return np.asarray([line.interpolate(line.length * i / count).coords[0][:2] for i in range(count + 1)])
+
+
+def _ramroad_corridor(geom: dict, line, tol: float):
+    """A road's corridor in EPSG:3006: its rings (the server derives them from
+    the centerline), or the flattened centerline `line` buffered by half the
+    width when it has none."""
+    shape = _feature_shape(geom, tol) if geom.get("rings") else None
+    if shape is None and line is not None:
+        shape = line.buffer(float(geom["centerline"]["widthM"]) / 2)
+    return shape
+
+
+def _load_course_paths(db_path: Path, course_ident: str,
+                       types: tuple[str, ...] = ROADS_TYPES) -> tuple[sqlite3.Row, list[sqlite3.Row]]:
+    """The course and its features of `types` (id, type, feature_no, source,
+    geometry_json, attributes_json) by feature number. A database from before
+    the server's numbering or source columns reads them as NULL."""
+    conn = _open_course_db(db_path)
+    course = _resolve_course(conn, course_ident)
+    cols = {r[1] for r in conn.execute("PRAGMA table_info(course_features)")}
+    number = "feature_no" if "feature_no" in cols else "NULL"
+    source = "source" if "source" in cols else "NULL"
+    attrs = "attributes_json" if "attributes_json" in cols else "NULL"
+    rows = conn.execute(
+        f"SELECT id, type, {number} AS feature_no, {source} AS source, geometry_json, {attrs} AS attributes_json "
+        f"FROM course_features WHERE course_id = ? AND type IN ({', '.join('?' * len(types))}) "
+        f"ORDER BY feature_no IS NULL, feature_no, id", (course["id"], *types)).fetchall()
+    conn.close()
+    return course, rows
+
+
+def _ortho_road_pixels(src, shape) -> np.ndarray:
+    """(N, 3) RGB pixels of an open EPSG:3006 ortho whose centres lie inside
+    `shape` shrunk by RAMROAD_ORTHO_ERODE_M (the verge left out); only a window
+    round it is read, and the photo's nodata is dropped."""
+    from rasterio.features import geometry_mask
+    from rasterio.windows import Window, from_bounds as window_from_bounds
+
+    none = np.zeros((0, 3), np.uint8)
+    inner = shape.buffer(-RAMROAD_ORTHO_ERODE_M) if shape is not None else None
+    if inner is None or inner.is_empty:
+        return none
+    x0, y0, x1, y1 = inner.bounds
+    pad = RAMROAD_ORTHO_PAD_M
+    win = window_from_bounds(x0 - pad, y0 - pad, x1 + pad, y1 + pad, src.transform).round_offsets().round_lengths()
+    try:
+        win = win.intersection(Window(0, 0, src.width, src.height))
+    except Exception:  # rasterio WindowError: the road is off the photo
+        return none
+    if win.width < 1 or win.height < 1:
+        return none
+    rgb = src.read([1, 2, 3], window=win)
+    inside = geometry_mask([inner], out_shape=rgb.shape[1:], transform=src.window_transform(win), invert=True)
+    inside &= src.dataset_mask(window=win) > 0
+    return np.clip(rgb[:, inside].T, 0, 255).astype(np.uint8)
+
+
+def _sunlit_rgb(pixels: np.ndarray) -> tuple[list[int] | None, int]:
+    """The per-channel median sRGB of `pixels` once the darkest
+    RAMROAD_SHADOW_FRACTION by luma (shadow on the road) is dropped, and how
+    many pixels that median is of; (None, 0) for none."""
+    if len(pixels) == 0:
+        return None, 0
+    luma = pixels.astype(np.float64) @ np.array([0.299, 0.587, 0.114])
+    kept = pixels[np.argsort(luma, kind="stable")[int(len(pixels) * RAMROAD_SHADOW_FRACTION):]]
+    if len(kept) == 0:
+        return None, 0
+    return [int(round(float(v))) for v in np.median(kept, axis=0)], int(len(kept))
+
+
+def cmd_ramroads(db_path: Path, course_ident: str, out: Path, extent: Extent, ortho: Path | None = None,
+                 reach_m: float = 0.0) -> dict:
+    """Write a unity-ramroads-v1 file for the INNER terrain: one road per
+    render=ram `path` with a centerline, its line flattened as the app draws
+    it, cut to the square and resampled every RAMROAD_POINT_SPACING_M, in plot
+    metres. With `ortho` (an RGB GeoTIFF in EPSG:3006) each road and each
+    surface gets the sunlit median colour of its corridor on the photo.
+    `reach_m` keeps a road that far past the square's edge (on the outer
+    terrain), so it does not fade out at the edge of the course meshes."""
+    from shapely.geometry import LineString, box
+
+    e0, n0, e1, n1 = extent
+    course, rows = _load_course_paths(db_path, course_ident)
+    square = box(e0 - reach_m, n0 - reach_m, e1 + reach_m, n1 + reach_m)
+    src = None
+    if ortho is not None:
+        if not ortho.is_file():
+            raise SystemExit(f"error: no such ortho: {ortho}")
+        src = rasterio.open(ortho)
+        if src.crs is None or src.crs.to_epsg() != 3006 or src.count < 3:
+            src.close()
+            raise SystemExit(f"error: {ortho} must be an RGB GeoTIFF in EPSG:3006")
+    roads: list[dict] = []
+    skipped: list[str] = []
+    by_surface: dict[str, dict] = {}
+    try:
+        for r in rows:
+            attrs = _row_attributes(r)
+            if attrs.get("render") != RAM_RENDER:
+                continue
+            label = f"path {r['feature_no'] if r['feature_no'] is not None else r['id']}"
+            geom = json.loads(r["geometry_json"])
+            centerline = geom.get("centerline") or {}
+            if len(centerline.get("points") or []) < 2 or not centerline.get("widthM"):
+                skipped.append(f"{label}: render=ram but no centerline (R.A.M. draws the spline along it)")
+                continue
+            surface = str(attrs.get("surface") or RAMROAD_DEFAULT_SURFACE)
+            if surface == BRIDGE_SURFACE:
+                skipped.append(f"{label}: a bridge deck is a prop, not a road")
+                continue
+            flat = _flatten_centerline(centerline["points"])
+            if len(flat) < 2:
+                skipped.append(f"{label}: its centerline has under 2 distinct points")
+                continue
+            line = LineString(flat)
+            clipped = line.intersection(square)
+            if clipped.geom_type == "MultiLineString":
+                clipped = max(clipped.geoms, key=lambda g: g.length)
+            if clipped.is_empty or clipped.geom_type != "LineString" or clipped.length < RAMROAD_MIN_LENGTH_M:
+                skipped.append(f"{label}: outside the inner square" + (f" (+{reach_m:g} m)" if reach_m else ""))
+                continue
+            width = float(centerline["widthM"])
+            corridor = _ramroad_corridor(geom, line, ROADS_FLATTEN_M)
+            corridor = corridor.intersection(square) if corridor is not None else None
+            pixels = _ortho_road_pixels(src, corridor) if src is not None else np.zeros((0, 3), np.uint8)
+            rgb, used = _sunlit_rgb(pixels)
+            pts = _resample_line(clipped, RAMROAD_POINT_SPACING_M)
+            roads.append({
+                "id": f"path_{r['feature_no']}" if r["feature_no"] is not None else f"path_{r['id']}",
+                "featureId": r["id"],
+                "surface": surface,
+                "widthM": width,
+                "lengthM": round(float(clipped.length), 1),
+                "points": [[round(float(x - e0), 3), round(float(y - n0), 3)] for x, y in pts],
+                "orthoRgb": rgb,
+                "orthoPixels": used,
+            })
+            group = by_surface.setdefault(surface, {"roads": 0, "areaM2": 0.0, "pixels": []})
+            group["roads"] += 1
+            group["areaM2"] += float(corridor.area) if corridor is not None else width * clipped.length
+            group["pixels"].append(pixels)
+    finally:
+        if src is not None:
+            src.close()
+    surfaces = {}
+    for name in sorted(by_surface):
+        g = by_surface[name]
+        rgb, _ = _sunlit_rgb(np.concatenate(g["pixels"]))
+        surfaces[name] = {"roads": g["roads"], "areaM2": round(g["areaM2"], 1), "orthoRgb": rgb}
+    doc = {
+        "format": UNITY_RAMROADS_FORMAT,
+        "plot": {"crs": "EPSG:3006", "terrain": "inner", "originX": e0, "originY": n0, "sizeM": e1 - e0},
+        "roads": roads,
+        "surfaces": surfaces,
+    }
+    out.parent.mkdir(parents=True, exist_ok=True)
+    out.write_text(json.dumps(doc, indent=1), encoding="utf-8")
+    print(f"  wrote {out}  ({len(roads)} R.A.M. road(s) for {course['name']}, "
+          f"{sum(r['lengthM'] for r in roads):.0f} m"
+          + (f"; colours from {ortho.name})" if ortho is not None else "; no --ortho, no colours)"))
+    for road in roads:
+        print(f"  {road['id']}: {road['surface']}, {road['widthM']:g} m wide, {road['lengthM']:g} m, "
+              f"{len(road['points'])} points, ortho {road['orthoRgb']} of {road['orthoPixels']} px")
+    for line in skipped:
+        print(f"  skipped {line}")
+    return doc
+
+
+def _ramroad_meetings(line, corridor, other_line, other_shape) -> list[tuple[float, bool]] | None:
+    """Where another road meets this one: [(station on `line`, crossing)], or
+    None when the corridors do not touch. The meeting is where the two
+    centerlines cross (a crossing when the point is clear of the other road's
+    ends too), else where they come closest; a road without a centerline meets
+    along the stretch of `line` inside it, else at its nearest point."""
+    from shapely.ops import nearest_points
+
+    if corridor.distance(other_shape) > RAMROAD_TOUCH_M:
+        return None
+    if other_line is not None:
+        hits = shapely.get_coordinates(line.intersection(other_line))
+        if len(hits):
+            out = []
+            for x, y in hits:
+                q = shapely.Point(x, y)
+                s_other = other_line.project(q)
+                out.append((line.project(q), RAMROAD_END_JOIN_M < s_other < other_line.length - RAMROAD_END_JOIN_M))
+            return out
+        a, _ = nearest_points(line, other_line)
+        return [(line.project(a), False)]
+    inside = shapely.get_coordinates(line.intersection(other_shape))
+    if len(inside):
+        stations = [line.project(shapely.Point(x, y)) for x, y in inside]
+        return [(min(stations), False), (max(stations), False)]
+    a, _ = nearest_points(line, other_shape)
+    return [(line.project(a), False)]
+
+
+def ramroads_proposal(db_path: Path, course_ident: str, min_distance_m: float = RAMROAD_MIN_PLAY_DISTANCE_M) -> dict:
+    """golfmap-ramroads-proposal-v1: which of the course's paths would suit
+    R.A.M. A candidate has a centerline, a loose surface, its corridor at least
+    `min_distance_m` from every play surface, and no other road meeting it
+    except within RAMROAD_END_JOIN_M of its own ends (R.A.M. has no junctions).
+    Generated junction fillets are not roads here; bridge decks are rejected."""
+    from shapely.geometry import LineString
+
+    course, rows = _load_course_paths(db_path, course_ident, ROADS_TYPES + RAMROAD_PLAY_TYPES)
+    play = []
+    for r in rows:
+        if r["type"] in RAMROAD_PLAY_TYPES:
+            shape = _feature_shape(json.loads(r["geometry_json"]), RAMROAD_PROPOSE_FLATTEN_M)
+            if shape is not None:
+                play.append((r, shape))
+    play_shapes = np.array([s for _, s in play], dtype=object)
+    roads = []
+    for r in rows:
+        if r["type"] not in ROADS_TYPES or r["source"] == ROAD_JUNCTIONS_SOURCE:
+            continue
+        geom = json.loads(r["geometry_json"])
+        centerline = geom.get("centerline") or {}
+        line = None
+        if len(centerline.get("points") or []) >= 2 and centerline.get("widthM"):
+            flat = _flatten_centerline(centerline["points"])
+            line = LineString(flat) if len(flat) >= 2 else None
+        corridor = (_ramroad_corridor(geom, line, RAMROAD_PROPOSE_FLATTEN_M) if line is not None
+                    else _feature_shape(geom, RAMROAD_PROPOSE_FLATTEN_M))
+        roads.append({"row": r, "attrs": _row_attributes(r), "line": line, "corridor": corridor,
+                      "widthM": float(centerline["widthM"]) if line is not None else None})
+
+    def number(road: dict):
+        return road["row"]["feature_no"] if road["row"]["feature_no"] is not None else road["row"]["id"]
+
+    candidates, already, rejected = [], [], []
+    for road in roads:
+        r, attrs, line, corridor = road["row"], road["attrs"], road["line"], road["corridor"]
+        surface = attrs.get("surface")
+        if attrs.get("render") == RAM_RENDER:
+            already.append(number(road))
+            continue
+        if surface == BRIDGE_SURFACE:
+            rejected.append({"featureNo": r["feature_no"], "featureId": r["id"], "reason": "bridge deck (a prop)"})
+            continue
+        reasons: list[str] = []
+        if line is None:
+            reasons.append("no centerline")
+        if surface in RAMROAD_HARD_SURFACES:
+            reasons.append(f"{surface}: hard surface, keeps its kerbs in Blender")
+        elif surface is None:
+            reasons.append("no surface set")
+        elif surface not in RAMROAD_LOOSE_SURFACES:
+            reasons.append(f"{surface}: not a loose surface")
+        distance = None
+        if corridor is not None and len(play_shapes):
+            gaps = shapely.distance(corridor, play_shapes)
+            i = int(np.argmin(gaps))
+            distance = float(gaps[i])
+            if distance < min_distance_m:
+                near = play[i][0]
+                reasons.append(f"{distance:.0f} m from play ({near['type']}"
+                               + (f" {near['feature_no']})" if near["feature_no"] is not None else ")"))
+        touches: list = []
+        if line is not None and corridor is not None:
+            for other in roads:
+                if other is road or other["corridor"] is None:
+                    continue
+                meets = _ramroad_meetings(line, corridor, other["line"], other["corridor"])
+                if meets is None:
+                    continue
+                mid = [(s, crossing) for s, crossing in meets
+                       if RAMROAD_END_JOIN_M < s < line.length - RAMROAD_END_JOIN_M]
+                if mid:
+                    s, crossing = mid[0]
+                    reasons.append(f"{'crossed' if crossing else 'joined'} by path {number(other)} mid-way "
+                                   f"({s:.0f} m of {line.length:.0f} m)")
+                else:
+                    touches.append(number(other))
+        if reasons:
+            rejected.append({"featureNo": r["feature_no"], "featureId": r["id"], "reason": "; ".join(reasons)})
+            continue
+        candidates.append({
+            "featureId": r["id"], "featureNo": r["feature_no"], "surface": surface,
+            "widthM": road["widthM"], "lengthM": round(float(line.length), 1),
+            "distanceToPlayM": round(distance, 1) if distance is not None else None,
+            "touches": touches,
+            "reason": f"{surface}, " + (f"{distance:.0f} m from play" if distance is not None else "no play surfaces")
+                      + (f", meets path {', '.join(str(t) for t in touches)} at its ends" if touches
+                         else ", meets no other road"),
+        })
+    return {
+        "format": RAMROADS_PROPOSAL_FORMAT,
+        "course": {"id": course["id"], "name": course["name"]},
+        "rules": {"minDistanceM": min_distance_m, "surfaces": list(RAMROAD_LOOSE_SURFACES),
+                  "play": list(RAMROAD_PLAY_TYPES), "endJoinM": RAMROAD_END_JOIN_M},
+        "candidates": candidates,
+        "already": already,
+        "rejected": rejected,
+    }
+
+
+def cmd_ramroads_propose(db_path: Path, course_ident: str, out: Path | None = None,
+                         min_distance_m: float = RAMROAD_MIN_PLAY_DISTANCE_M) -> dict:
+    """`ramroads_proposal` written to `out` with a short report, or printed as JSON (nothing else) without one."""
+    doc = ramroads_proposal(db_path, course_ident, min_distance_m)
+    text = json.dumps(doc, indent=1, ensure_ascii=False)
+    if out is None:
+        print(text)
+        return doc
+    out.parent.mkdir(parents=True, exist_ok=True)
+    out.write_text(text, encoding="utf-8")
+    print(f"  wrote {out}  ({doc['course']['name']}: {len(doc['candidates'])} candidate(s), "
+          f"{len(doc['already'])} already R.A.M., {len(doc['rejected'])} rejected)")
+    for c in doc["candidates"]:
+        print(f"  candidate path {c['featureNo']}: {c['reason']}, {c['lengthM']:g} m")
+    return doc
+
+
 # --- Command: batch ---------------------------------------------------------
 # One export is five or six of the commands above over the same course and the
 # same square. As five processes they each pay the interpreter plus
@@ -7667,6 +8082,22 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--surface-offset", dest="surface_offset", type=float, default=0.0,
                    help="metres to raise (or lower, negative) every spline above the sampled water surface (default 0)")
 
+    p = sub.add_parser("ramroads", help="write a course's render=ram paths as R.A.M. road splines (unity-ramroads-v1) for the inner terrain")
+    _add_area(p)
+    p.add_argument("--db", default=str(DEFAULT_DB), help=f"app database (default {DEFAULT_DB})")
+    p.add_argument("--course", required=True, help="course id, or a name substring (e.g. Vreta)")
+    p.add_argument("--out", required=True, help="output unity-ramroads-v1 JSON path (<export folder>/<prefix>-inner-ramroads.json)")
+    p.add_argument("--ortho", help="an RGB ortho GeoTIFF in EPSG:3006 (sources/<site>/ortho-*.tif): each road's sunlit colour on it")
+    p.add_argument("--reach-m", dest="reach_m", type=float, default=0.0,
+                   help="keep each road this far past the square's edge, on the outer terrain (default 0: cut at the edge)")
+
+    p = sub.add_parser("ramroads-propose", help="say which of a course's paths would suit R.A.M. (loose, far from play, met only at its ends) as golfmap-ramroads-proposal-v1")
+    p.add_argument("--db", default=str(DEFAULT_DB), help=f"app database (default {DEFAULT_DB})")
+    p.add_argument("--course", required=True, help="course id, or a name substring (e.g. Vreta)")
+    p.add_argument("--min-distance-m", dest="min_distance_m", type=float, default=RAMROAD_MIN_PLAY_DISTANCE_M,
+                   help=f"how far a candidate's corridor stays from every play surface (default {RAMROAD_MIN_PLAY_DISTANCE_M:g} m)")
+    p.add_argument("--out", help="write the proposal here (default: print the JSON)")
+
     p = sub.add_parser("waterfalls", help="write a course's waterfalls (lips, water levels above and below, flow) as unity-waterfalls-v1 for the inner terrain")
     _add_area(p)
     p.add_argument("--db", default=str(DEFAULT_DB), help=f"app database (default {DEFAULT_DB})")
@@ -7802,6 +8233,9 @@ def main(argv: list[str] | None = None) -> int:
     if args.command == "holes":
         cmd_holes(args.course, Path(args.out), Path(args.db))
         return 0
+    if args.command == "ramroads-propose":
+        cmd_ramroads_propose(Path(args.db), args.course, Path(args.out) if args.out else None, args.min_distance_m)
+        return 0
     if args.command == "svg-shapes":
         for svg in args.svgs:
             out = write_shape_fingerprints(Path(svg))
@@ -7854,6 +8288,9 @@ def main(argv: list[str] | None = None) -> int:
     elif args.command == "creeks":
         cmd_creeks(bbox, Path(args.db), args.course, Path(args.dem), Path(args.sidecar), Path(args.out),
                    extent=extent, surface_offset_m=args.surface_offset)
+    elif args.command == "ramroads":
+        cmd_ramroads(Path(args.db), args.course, Path(args.out), extent, Path(args.ortho) if args.ortho else None,
+                     args.reach_m)
     elif args.command == "waterfalls":
         cmd_waterfalls(bbox, Path(args.db), args.course, Path(args.dem), Path(args.sidecar), Path(args.out), extent=extent)
     elif args.command == "gkd":

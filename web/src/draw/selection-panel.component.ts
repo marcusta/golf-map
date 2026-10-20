@@ -12,6 +12,7 @@ import type { CourseFeature } from '../../../shared/api/course-features.gen';
 import {
     PATH_SURFACE_ATTRIBUTE, PATH_SURFACE_LABELS, PATH_SURFACES, isLoosePathSurface, pathSurfaceOf, type PathSurface,
 } from '../../../shared/features/path-surface';
+import { PATH_RENDER_ATTRIBUTE, PATH_RENDERS, pathRender, pathRenderError, type PathRender } from '../../../shared/features/path-render';
 import { KERB_FILLETS_ATTRIBUTE, kerbFilletsOn } from '../../../shared/features/road-junctions';
 import { CAP_PRESETS, capPresetOf, resolveCap, type CapPresetId, type CenterlineCap } from '../../../shared/features/centerline';
 
@@ -57,6 +58,10 @@ const TREE_SPECIES_LIST_ID = 'tree-area-species-options';
 
 /** The surface picker's value for a selection whose paths disagree. */
 const MIXED_SURFACE = '__mixed';
+/** The render picker's value for a selection whose paths disagree. */
+const MIXED_RENDER = '__mixed';
+const PATH_RENDER_LABELS: Record<PathRender, string> = { opcd: 'OPCD mesh', ram: 'R.A.M. spline' };
+const PATH_RENDER_TIP = 'R.A.M.: drawn in Unity on the ground, out of the OPCD build. Needs a new OPCD build to take effect.';
 /** The waterfall style picker's value for waterfalls that disagree. */
 const MIXED_WATERFALL = '__mixed';
 const WATERFALL_STYLE_LABELS: Record<WaterfallStyle, string> = { sill: 'Sill', outlet: 'Outlet', cascade: 'Cascade', fountain: 'Fountain' };
@@ -161,6 +166,9 @@ const tpl = template(`
             <h4 bind="pathTitle" class="section-title"></h4>
             <label class="zone-field">Surface
                 <select bind="pathSurface" data-testid="path-surface-select"></select>
+            </label>
+            <label class="zone-field" title="${PATH_RENDER_TIP}" data-testid="path-render-field">Render
+                <select bind="pathRender" data-testid="path-render-select"></select>
             </label>
             <label bind="pathWidthField" class="zone-field path-width-field">Width (m)
                 <input bind="pathWidth" type="number" min="0.2" max="60" step="0.5" data-testid="path-width" />
@@ -902,6 +910,25 @@ export class SelectionPanelComponent extends Component {
             syncOptions(surfaceSelect, options, current);
         }));
 
+        // Render picker (shared/features/path-render.ts): OPCD mesh or R.A.M.
+        // spline; Mixed only while the selected paths disagree. Off while no
+        // selected path can be R.A.M. (a centerline road, not a bridge).
+        const renderSelect = this.ref(frag, 'pathRender') as HTMLSelectElement;
+        renderSelect.addEventListener('change', () => {
+            if (renderSelect.value !== MIXED_RENDER) this.savePathRender(renderSelect.value as PathRender);
+        });
+        this.track(effect(() => {
+            const current = this.pathRenderValue();
+            const options: [string, string][] = current === MIXED_RENDER ? [[MIXED_RENDER, 'Mixed']] : [];
+            for (const render of PATH_RENDERS) options.push([render, PATH_RENDER_LABELS[render]]);
+            syncOptions(renderSelect, options, current);
+            const paths = this.pathSelection();
+            const able = paths.filter(canRenderRam).length;
+            renderSelect.disabled = able === 0 && current === 'opcd';
+            renderSelect.title = renderSelect.disabled ? 'R.A.M. needs a road drawn as a centerline, not a bridge'
+                : able < paths.length ? `${able} of ${paths.length} paths can be R.A.M. (centerline roads, not bridges)` : '';
+        }));
+
         // Waterfall style picker: the four styles; Mixed only while the selected waterfalls disagree.
         const waterfallSelect = this.ref(frag, 'waterfallStyle') as HTMLSelectElement;
         waterfallSelect.addEventListener('change', () => {
@@ -1425,6 +1452,30 @@ export class SelectionPanelComponent extends Component {
         }
     }
 
+    /** The render picker's value: the paths' shared render, MIXED_RENDER when they differ. */
+    private pathRenderValue(): string {
+        const renders = new Set(this.pathSelection().map(f => pathRender(f.attributes)));
+        if (renders.size > 1) return MIXED_RENDER;
+        return renders.values().next().value ?? 'opcd';
+    }
+
+    /**
+     * Set the render on every selected path: `ram` writes the key on the paths
+     * that can take it (the rest are left alone), `opcd` (the default) drops it.
+     * `attributes` replaces the whole object server-side, so each path's other
+     * keys go along unchanged; a path already on that render is not written.
+     */
+    private savePathRender(render: PathRender): void {
+        for (const f of this.pathSelection()) {
+            if (pathRender(f.attributes) === render) continue;
+            if (render === 'ram' && !canRenderRam(f)) continue;
+            const attributes: Record<string, number | string | boolean> = { ...(f.attributes ?? {}) };
+            if (render === 'ram') attributes[PATH_RENDER_ATTRIBUTE] = render;
+            else delete attributes[PATH_RENDER_ATTRIBUTE];
+            void this.features.update(f.id, { attributes: Object.keys(attributes).length > 0 ? attributes : null });
+        }
+    }
+
     /** The editable rock slabs in the selection (others in a mixed selection are left alone). */
     private rockSelection(): CourseFeature[] {
         return this.features.editableSelectedFeatures.get().filter(f => f.type === ROCK_SLAB_TYPE);
@@ -1578,6 +1629,12 @@ function syncOptions(select: HTMLSelectElement, options: [string, string][], val
     } else if (select.value !== value) {
         select.value = value;
     }
+}
+
+/** A path that may be drawn as a R.A.M. spline: one with a centerline, not a bridge deck. */
+function canRenderRam(f: CourseFeature): boolean {
+    const surface = (f.attributes as Record<string, unknown> | null | undefined)?.[PATH_SURFACE_ATTRIBUTE];
+    return pathRenderError('ram', f.type, f.geometry.centerline, surface) === null;
 }
 
 function numberOf(e: Event, fallback: number): number {

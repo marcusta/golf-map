@@ -31,6 +31,22 @@ test('path transitions persist and validate against merged geometry and surface 
     await db.destroy();
 });
 
+test('render = ram only on a centerline path, on create and on the merged update', async () => {
+    const { db } = await createTestDb(seedCourse);
+    const svc = new CourseFeaturesService(db);
+    const geometry = { ...squareGeometry(), centerline: { points: [{ x: 0, y: 0 }, { x: 40, y: 0 }], widthM: 4 } };
+    const road = await svc.create({ courseId: TEST_COURSE_ID, type: 'path', geometry, attributes: { surface: 'gravel', render: 'ram' } });
+    expect((await svc.findById(road.id)).attributes?.render).toBe('ram');
+    await expect(svc.create({ courseId: TEST_COURSE_ID, type: 'path', geometry, attributes: { surface: 'gravel', render: 'spline' } })).rejects.toBeInstanceOf(InvalidFeatureError);
+    await expect(svc.create({ courseId: TEST_COURSE_ID, type: 'path', geometry: squareGeometry(), attributes: { surface: 'gravel', render: 'ram' } })).rejects.toBeInstanceOf(InvalidFeatureError);
+    await expect(svc.create({ courseId: TEST_COURSE_ID, type: 'fairway', geometry: squareGeometry(), attributes: { render: 'ram' } })).rejects.toBeInstanceOf(InvalidFeatureError);
+    expect((await svc.create({ courseId: TEST_COURSE_ID, type: 'path', geometry: squareGeometry(), attributes: { render: 'opcd' } })).attributes?.render).toBe('opcd');
+    await expect(svc.update(road.id, road.version, { type: 'fairway' })).rejects.toBeInstanceOf(InvalidFeatureError);
+    const back = await svc.update(road.id, road.version, { attributes: { surface: 'gravel' } });
+    expect(back.attributes?.render).toBeUndefined();
+    await db.destroy();
+});
+
 function squareGeometry(cx = 0, cy = 0, half = 5): FeatureGeometry {
     return {
         crs: 'EPSG:3006',

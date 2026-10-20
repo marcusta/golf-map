@@ -1342,6 +1342,77 @@ build succeeded, ["Saving what a command changed"](#saving-what-a-command-change
   runs in under the banks and blends. All red vertex colour, normals up, no UVs (the shader samples its waves in
   world XZ). Saved to `<course>/WaterPlanes/<key>_WaterPlane.asset`. On Vreta's `others_49` it gives the same
   21 502 vertices as OPCD's plane, 1 cm higher.
+## R.A.M. roads
+
+A path drawn with the attribute `render=ram` is left out of the SVG (`pipeline/gspro.py`, `_is_ram_road`): OPCD
+builds the ground under it as if there were no road, and Unity draws the road on that ground as a NatureManufacture
+R.A.M. spline (`GolfMapRamRoads.cs`). One `RamSpline` per road under **GolfMap RAM Roads**, named `RAM road <id>`.
+Good for gravel and dirt tracks whose edge is grass growing over gravel; the edge comes from the texture's alpha, not
+from geometry.
+
+**The export**: `<prefix>-inner-ramroads.json` (unity-ramroads-v1, `bun run gspro:export -- <course> ramroads`):
+per road `id`, `surface`, `widthM` and the centreline `points` in inner-plot metres (x east, z north), plus
+`orthoRgb` [r, g, b] (the road's median sunlit sRGB in the orthophoto) and `orthoPixels`; top-level
+`surfaces: {<surface>: {roads, areaM2, orthoRgb}}` is what the tint matches.
+
+**The looks spec**: `<course>/RAM Roads/ram-roads.json` (`golfmap-ramroads-looks-v1`, written with defaults on the
+first build, its `notes` explain the keys). Per surface (`gravel`, `dirt`, `gravel-track`, `asphalt`, `concrete`,
+`paving`, plus `default` for any other):
+
+| Key | Meaning |
+|---|---|
+| `profile` | a R.A.M. SplineProfile asset by name: its mesh settings and material. `Path RamSpline Profile` (M_Path: one worn strip), `Dirty Road RamSpline Profile` (M_Road: two wheel tracks with see-through grass between), `Road Profile` (R.A.M.'s asphalt with lines: a Standard opaque material, no alpha edge) |
+| `bandFraction` | the opaque share of the texture across (0–1]: the ribbon is `widthM / bandFraction` wide so the opaque band covers the drawn road. M_Path 0.54, M_Road ~0.78, Road Profile 1 (its `road_01_A` has no alpha) |
+| `tint`, `brightness` | `_MainRoadColor` (#rrggbb) and `_MainRoadBrightness`; on a Standard material `_Color` times brightness in linear light. `null` = the profile material's own |
+| `liftM` | how far the opaque band lies above the ground; the margins ramp down to it, so a rolling ball meets no step |
+| `endFadeM` | both ends fade out over this many metres by vertex alpha (a R.A.M. road running into an OPCD road melts into it) |
+| `vertsInShape`, `triangleDensity` | vertices across the ribbon; edge loops per control-point gap = 1/x |
+
+Defaults: gravel = Path profile, 0.54, `#f3ebff`, 0.563 (matched to the ortho on Omberg road 38); dirt = Path profile
+untinted; gravel-track = Dirty Road profile, 0.78; asphalt/concrete/paving = Road Profile, 1.0. One material copy per
+surface, `<course>/RAM Roads/<material> (<surface>).mat`, **rebuilt from the profile's material on every build: the spec
+is the truth, edits made to the copies by hand are lost.**
+
+**Build**: `golfmap.ramroads.build [file] [dryRun] [profile] [bandFraction] [liftM] [endFadeM] [triangleDensity]
+[vertsInShape] [tint] [brightness] [collider=true] [visible=true] [save]`. Each road wears its surface's look
+(fallback `default`); the look args override the spec for every road, this run only (the next build without them
+puts the spec back). Control points are raycast onto the Default layer's colliders, R.A.M. snaps every vertex between
+them. Roads no longer in the file are removed. `dryRun` lists roads, looks, material copies and missing profiles and
+changes nothing. No export at the default path: `{skipped}` instead of an error (the course refresh calls
+`GolfMapRamRoads.Build(dryRun)` as a step). `only=visible visible=false|true` hides or shows the ribbons without a
+build.
+
+**Tint**: `golfmap.ramroads.tint [surface] [dryRun] [iterations=3] [toleranceLevels=3] [points=4] [viewM=15]
+[pixels=384] [debug] [file] [save]` matches each surface's colour **as rendered** to the export's
+`surfaces.<surface>.orthoRgb` (compare a top-down render with the raw ortho, never the albedo). For every surface with
+roads in the scene, its own look in the spec and a target: a temporary camera straight down (narrow perspective from
+40 m, `viewM` square, the main camera's settings and post-processing, the scene's lighting, VSP off) renders a few
+points along its roads into a RenderTexture (never screen pixels). The pixels that count lie in the road's core (35 %
+of the width either side of the centreline, the faded ends and the vignetted view edges left out), where an ID render
+(the roads in flat magenta, effects off) sees the road, and sunlit; their per-channel median is the rendered colour.
+The linear-light gain to the target moves the tint (its largest channel at ff) and the brightness, the material is
+rebuilt and rendered again, until every channel is within `toleranceLevels` (iterate: blue barely follows the tint).
+The best step is kept: the spec is updated and the materials rebuilt unless `dryRun`, which changes nothing. The
+report gives per surface the target, rendered before/after, tint/brightness before/after, the pixels used and each
+step. `debug` writes each capture with its mask to `Temp/GolfMapRamRoads/`. The post-processing matters: Omberg's
+profile (post exposure +2.35, ACES) about doubles the road's brightness against a camera without it.
+
+**The ground under a road** is painted by the course-mesh paint: `paint.json` rule kind `road` paints the rough black
+under the drawn width (no Stix grass on the road); it is moving to Blender as the `golfmap.paint` op.
+
+**Collider**: a MeshCollider on R.A.M.'s own mesh with the surface's physic material from `Paths/path-surfaces.json`
+(GSPconcrete when the surface has none). It spans the whole ribbon, see-through margins included: a ball in the
+grass beside the road, within `(widthM / bandFraction - widthM) / 2` of its edge, gets the road's physics.
+
+> **Never regenerate a road from R.A.M.'s inspector** (moving a point, changing a setting, applying a profile): with
+> the road's collider on, R.A.M.'s snap lands on that collider and lifts the road onto itself, a little more every
+> time, and a profile applied there also puts the profile's material back. Re-run `golfmap.ramroads.build` instead; it
+> turns every R.A.M. road collider off while R.A.M. snaps and back on after.
+
+**Known limits**: no junctions (each road is its own spline; where two meet, both ends fade); no real kerb or
+thickness (the edge is the texture's alpha plus the material's `_AlphaNoise`); hard roads with kerbs (asphalt,
+concrete, paving) look better as OPCD/Blender path meshes, so leave `render=ram` to gravel and dirt.
+
 - **Rocks in the water**: a rock slab (`*_Rock_-_Mesh`, blender/README.md "Shaping: cut-outs", `rise`) that shares a
   vertex with the lake joins the plane (its triangles flattened in, so the water runs on round its foot and the rock
   stands through it), and every lake rim vertex within 2.5 m of a slab near the lake is left out of the level

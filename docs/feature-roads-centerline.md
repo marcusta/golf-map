@@ -24,6 +24,17 @@ The same features carry the width tapers where a road ends in a narrower one
 
 ### `attributes` on features
 
+`attributes.render` (shared/features/path-render.ts) says how a `path` becomes
+ground in GSPro: absent or `opcd` = an OPCD road mesh from the SVG; `ram` = a
+NatureManufacture R.A.M. spline lying on the OPCD ground meshes, built in
+Unity by `golfmap.ramroads.build` from `gspro.py ramroads`. The SVG leaves a
+render=ram road out, so OPCD builds the ground under it as if there were none.
+Create and update (the merged feature) refuse any other value, and `ram`
+anywhere but on a centerline `path` that is not a bridge deck. Set it with
+`bun run ramroads -- <course> set <featureNo>... ram|opcd` or
+`POST /api/courses/:courseId/gspro/ram-roads/render`; which roads suit it:
+`propose` (docs/gspro/export.md, R.A.M. roads).
+
 ### Drawable path transitions
 
 `attributes.pathTransitions` is an optional array (unset or empty means the existing path).
