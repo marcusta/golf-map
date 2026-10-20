@@ -60,10 +60,11 @@ namespace GolfMap.Editor
         static readonly System.Globalization.CultureInfo Inv = System.Globalization.CultureInfo.InvariantCulture;
 
         [BridgeCommand("golfmap.course.ready", "Make-ready check before a build: every object within marginM of the playing field (course meshes classed Tee/Fairway/Green/Semi/Rough/Bunker, rasterised 1 m and grown by marginM) has its colliders on with the GSPro physic material it should have, and nothing that must not collide does. Categories: VSP trees (From Prefab, trunk GSPwood + crown GSPleaves on the prefab, switched-off prefab colliders, ColliderDistanceFactor x PlantDistance >= 300 m, billboard-only items), bushes (VSP plants and shrub props over 0.5 m: GSPleaves; smaller plants: none), water planes and the Lux lake collider (non-convex MeshCollider, GSPwater; render-only Lux planes: none), R.A.M. creeks and waterfalls (GSPwater; particles: none), R.A.M. roads (surface physics from Paths/path-surfaces.json, else concrete/rough by road type), props buildings/structures/props/vehicles (physic material per asset: props.json `physics`, else keywords; markings: none), walls (spec physicMaterial), power-line poles (GSPwood; wires: none), course meshes (counted; creek bed GSPwater, slabs GSPstone, none = error), wispy rough/horizon/VSP grass (no collider), missing prefabs, paint previews left (fix: paint.clear), terrain colliders the build leaves out, unsaved scene. fix=true adds/enables colliders and sets physic materials (prefab and VSP package assets included, with undo); it never moves an object. Writes <export folder>/make-ready.json (golfmap-make-ready-v1).",
-            args = "fix=false (report only; true applies the fixes), marginM=40 (metres round the playing field), limit=60 (findings returned; the file has all), dryRun=false (as fix=false, and no file written), " + GolfMapSceneSave.Arg)]
+            args = "fix=false (report only; true applies the fixes), marginM=40 (metres round the playing field), limit=60 (findings returned; the file has all), dryRun=false (as fix=false, and no file written), removeMissingPrefabs=false (with fix: delete missing prefab instances, which are otherwise only reported), " + GolfMapSceneSave.Arg)]
         static IEnumerator Command(BridgeArgs a)
         {
             bool dryRun = a.Bool("dryRun", false);
+            removeMissingPrefabs = a.Bool("removeMissingPrefabs", false);
             var steps = Run(a.Bool("fix", false) && !dryRun, Mathf.Clamp((float)a.Number("marginM", 40), 0f, 500f), Math.Max(0, a.Int("limit", 60)), !dryRun);
             while (steps.MoveNext()) yield return steps.Current;
         }
@@ -203,6 +204,8 @@ namespace GolfMap.Editor
             public Vector3 at;
             public bool fixedNow;
         }
+
+        static bool removeMissingPrefabs;   // Command's arg; the menu leaves them
 
         sealed class Ctx
         {
@@ -1188,13 +1191,18 @@ namespace GolfMap.Editor
 
         static void SceneChecks(Ctx c, UnityEngine.SceneManagement.Scene scene, GameObject[] roots, bool wasDirty)
         {
-            // missing prefab instances (only the top of each)
-            foreach (var t in roots.SelectMany(r => r.GetComponentsInChildren<Transform>(true)))
+            // missing prefab instances (only the top of each); removeMissingPrefabs=true with fix deletes them (undo)
+            var missing = roots.SelectMany(r => r.GetComponentsInChildren<Transform>(true))
+                .Where(t => PrefabUtility.GetPrefabType(t.gameObject) == PrefabType.MissingPrefabInstance
+                    && !(t.parent != null && PrefabUtility.GetPrefabType(t.parent.gameObject) == PrefabType.MissingPrefabInstance))
+                .ToList();
+            foreach (var t in missing)
             {
-                if (PrefabUtility.GetPrefabType(t.gameObject) != PrefabType.MissingPrefabInstance) continue;
-                if (t.parent != null && PrefabUtility.GetPrefabType(t.parent.gameObject) == PrefabType.MissingPrefabInstance) continue;
                 c.Consider("scene", true);
-                c.Issue("scene", "error", PathOf(t.gameObject), "missing prefab instance: its prefab asset is gone", t.position);
+                var go = t.gameObject;
+                c.Issue("scene", "error", PathOf(go), "missing prefab instance: its prefab asset is gone", t.position,
+                    removeMissingPrefabs ? "deleted (removeMissingPrefabs)" : null,
+                    removeMissingPrefabs ? (Action)(() => { Undo.DestroyObjectImmediate(go); c.sceneChanged = true; }) : null);
             }
             // paint previews left: colour-only copies under <course>/PaintedMeshes/ that would ship in the build
             var restore = c.courseFolder + "PaintedMeshes/restore.json";
