@@ -9,6 +9,7 @@
     "Starts from the trees export (<prefix>-inner-trees.json) with the tree edits applied first: moved, added and deleted trees are routed where they now stand.",
     "Far rule: a tree both more than outsideOob metres outside the course boundary (the GKD's pOOB) and more than fromPlay metres from play (rough, semi, fairway, green, tee, bunker) is an Arborist billboard, whatever its model. Every tree inside the boundary is drawn by its own model's renderer.",
     "outerKeep thins the billboards outside the boundary, by distance band: [up to metres, share kept]; which trees go follows from their position, so every run leaves the same ones out.",
+    "The outer terrain (when it has a trees export) is routed too, into <prefix>-outer-routing.json: an Arborist billboard, or left out when lower than outerMinHeightM or thinned by outerKeep; never the course's VSP.",
     "Writes <export>/<prefix>-inner-routing.json (golfmap-routing-v1); Unity's planter puts into the course's VSP only the vsp models routed own, and arborist.py trees draws the rest."
   ],
   "groups": [
@@ -17,7 +18,8 @@
       "rules": [
         { "key": "routing.farBillboard.outsideOob", "value": 40, "unit": "m", "text": "Billboard beyond this outside the course boundary (pOOB) ..." },
         { "key": "routing.farBillboard.fromPlay", "value": 40, "unit": "m", "text": "... and beyond this from play (both must hold)." },
-        { "key": "routing.outerKeep", "value": null, "unit": "[m, share]", "text": "Share of the billboards kept outside the boundary, per distance band (null = beyond the last); none = every one kept." }
+        { "key": "routing.outerKeep", "value": null, "unit": "[m, share]", "text": "Share of the billboards kept outside the boundary, per distance band (null = beyond the last); none = every one kept." },
+        { "key": "routing.outerMinHeightM", "value": null, "unit": "m", "text": "The outer terrain plants no tree lower than this (left out); none = every height. Every outer tree is an Arborist billboard." }
       ]
     }
   ]

@@ -190,7 +190,14 @@ export class ArboristService {
     /** `arborist.py route` with the course's routing rules file; its counts come back as JSON (`--json`). */
     private async routeBy(course: ArboristCourse, rules: string, opts: { dryRun?: boolean }): Promise<RouteResult> {
         const file = path.join(course.exportDir, routingExportFileName(course.name, 'inner'));
-        return this.runRoute([...await this.routeInputs(course), '--rules', rules], file, opts);
+        const inner = await this.runRoute([...await this.routeInputs(course), '--rules', rules], file, opts);
+        // The outer terrain too, when it has a trees export: every tree there is an Arborist billboard or left out
+        // (lower than routing.outerMinHeightM, or thinned by outerKeep), so Unity's outer VSP stores none of them.
+        const outerTrees = path.join(course.exportDir, treesExportFileName(course.name, 'outer'));
+        if (!await statOrNull(outerTrees)) return inner;
+        const outerFile = path.join(course.exportDir, routingExportFileName(course.name, 'outer'));
+        const outer = await this.runRoute([...await this.routeInputs(course, 'outer'), '--rules', rules], outerFile, opts);
+        return { ...inner, report: [...inner.report, ...outer.report.map(l => l.replace(/^Trees routed/, 'Outer trees routed'))] };
     }
 
     private async runRoute(inputs: string[], file: string, opts: { dryRun?: boolean }): Promise<RouteResult> {
@@ -219,10 +226,10 @@ export class ArboristService {
     }
 
     /** What `arborist.py route` judges, checked: the inner trees export and its edits, the surface map, the GKD, the terrains. */
-    private async routeInputs(course: ArboristCourse): Promise<string[]> {
+    private async routeInputs(course: ArboristCourse, terrain: TerrainKind = 'inner'): Promise<string[]> {
         const slug = courseSlug(course.name);
-        const trees = path.join(course.exportDir, treesExportFileName(course.name, 'inner'));
-        if (!await statOrNull(trees)) throw new Error(`Trees not routed: no trees export yet (${trees}) - export the inner trees first`);
+        const trees = path.join(course.exportDir, treesExportFileName(course.name, terrain));
+        if (!await statOrNull(trees)) throw new Error(`Trees not routed: no trees export yet (${trees}) - export the ${terrain} trees first`);
         const surfaces = path.join(course.exportDir, surfacesExportFileName(course.name, 'inner'));
         if (!await statOrNull(surfaces)) throw new Error(`Trees not routed: no surface map (${surfaces}; golfmap.surfaces.export in Unity)`);
         if (!course.courseDir || !(await statOrNull(course.courseDir))?.isDirectory()) {
@@ -232,10 +239,10 @@ export class ArboristService {
         if (!gkd) throw new Error(`Trees not routed: no .GKD with the course boundary in ${course.courseDir}`);
         const square = await terrainsSquare(course.exportDir, slug);
         if (!square) throw new Error(`Trees not routed: no inner heightmap sidecar in ${course.exportDir} - export the inner heightmap first (it places the terrains)`);
-        const origin = await terrainOrigin(course.exportDir, slug, 'inner');
+        const origin = await terrainOrigin(course.exportDir, slug, terrain);
         const args = ['--trees', trees, '--surfaces', surfaces, '--gkd', path.join(course.courseDir, gkd),
             '--terrains-square', ...square.map(String), '--origin', String(origin.x), String(origin.z)];
-        const edits = path.join(course.exportDir, treeEditsFileName(course.name, 'inner'));
+        const edits = path.join(course.exportDir, treeEditsFileName(course.name, terrain));
         if (await statOrNull(edits)) args.push('--edits', edits);
         return args;
     }
@@ -315,7 +322,8 @@ export class ArboristService {
                 throw new Error(`Arborist trees not written: ${course.name} has routing rules but no routing yet (${routing}) - `
                     + 'route the trees (bun run arborist -- route <course>), then plant them in Unity');
             }
-            args.push('--routing', routing, '--rules', rules);
+            const outerRouting = path.join(course.exportDir, routingExportFileName(course.name, 'outer'));
+            args.push('--routing', routing, ...(await statOrNull(outerRouting) ? [outerRouting] : []), '--rules', rules);
         } else {
             const dropped = await this.dropRouting(course);
             if (dropped.length) {

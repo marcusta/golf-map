@@ -124,3 +124,24 @@ def test_trees_refuses_a_routing_made_with_other_rules(tmp_path):
     _rules(tmp_path, {"farBillboard": {"outsideOob": 10, "fromPlay": 80}})
     stale = _trees_command(tmp_path, "--routing", str(tmp_path / "routing.json"), "--rules", str(tmp_path / "vegetation-rules.json"))
     assert stale.returncode != 0 and "routed with other rules" in stale.stderr
+
+
+def test_outer_trees_are_billboards_or_left_out_never_own_and_short_ones_go(tmp_path):
+    """Marcus 2026-10-21: the outer terrain plants no tree lower than outerMinHeightM; every other outer tree is
+    an Arborist billboard (never the course's VSP), even one close to the play."""
+    _map(tmp_path)
+    trees = _write(tmp_path / "outer-trees.json", {"format": "unity-trees-v1", "plot": {"terrain": "outer"}, "trees": [
+        {"id": "tall-near", "x": 120.5, "z": 100.0, "h": 12.0, "r": 4.0, "k": 0},   # 10.5 m from the fairway
+        {"id": "short-far", "x": 195.5, "z": 100.0, "h": 3.2, "r": 1.5, "k": 1},
+        {"id": "edge", "x": 195.5, "z": 120.0, "h": 4.0, "r": 2.0, "k": 0}]})
+    edits = _write(tmp_path / "outer-edits.json", {"format": "golfmap-tree-edits-v1", "trees": "outer-trees.json",
+                                                   "edits": [{"id": "edge", "op": "modify", "x": 195.5, "z": 120.0, "ox": 195.5, "oz": 120.0, "heightM": 3.5}]})
+    rules = _rules(tmp_path, {**FAR, "outerMinHeightM": 4})
+    out = tmp_path / "outer-routing.json"
+    subprocess.run([sys.executable, str(PIPELINE / "arborist.py"), "route", "--trees", str(trees), "--surfaces", str(tmp_path / "s.json"),
+                    "--gkd", str(tmp_path / "c.GKD"), "--terrains-square", "0", "0", "200", "200", "--rules", str(rules),
+                    "--edits", str(edits), "--out", str(out)], check=True, cwd=PIPELINE, capture_output=True, text=True)
+    doc = json.loads(out.read_text(encoding="utf-8"))
+    # the near tree is a billboard on the outer terrain; 3.2 m is lower than 4 m; the edit resized "edge" to 3.5 m
+    assert doc["routes"] == {"tall-near": "billboard", "short-far": "out", "edge": "out"}
+    assert doc["rules"]["outerMinHeightM"] == 4

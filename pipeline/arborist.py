@@ -709,6 +709,10 @@ class Routing:
         self.outside_oob = float(far.get("outsideOob", BILLBOARD_OUTSIDE_OOB_M))
         self.from_play = float(far.get("fromPlay", BILLBOARD_FROM_PLAY_M))
         self.outer_keep = OuterKeep(spec.get("outerKeep"))
+        # The outer terrain plants no tree lower than this (Marcus 2026-10-21: the smallest trees add nothing to the
+        # horizon forest, and a sapling model there broke the outer planting). None: every height.
+        least = spec.get("outerMinHeightM")
+        self.outer_min_height = float(least) if least is not None else None
 
     @classmethod
     def of_rules_file(cls, path: Path) -> "Routing":
@@ -717,7 +721,19 @@ class Routing:
 
     def as_doc(self) -> dict:
         """The rules as a routing file records them (`rules`): what a later run compares its own rules with."""
-        return {"farBillboard": {"outsideOob": self.outside_oob, "fromPlay": self.from_play}, "outerKeep": self.outer_keep.bands}
+        doc = {"farBillboard": {"outsideOob": self.outside_oob, "fromPlay": self.from_play}, "outerKeep": self.outer_keep.bands}
+        if self.outer_min_height is not None:
+            doc["outerMinHeightM"] = self.outer_min_height
+        return doc
+
+    def route_outer(self, x: float, z: float, outside_m: float, height: float) -> tuple[str, str | None]:
+        """(the route, why it is left out) of an outer-terrain tree at world x, z, outside_m metres outside the
+        course boundary. It is never the course's VSP's: an Arborist billboard, or left out when lower than
+        outerMinHeightM or thinned by outerKeep."""
+        if self.outer_min_height is not None and height < self.outer_min_height:
+            return OUT, f"outerMinHeightM: {height:.1f} m, lower than {self.outer_min_height:g} m"
+        reason = self.outer_keep.leaves_out(x, z, outside_m)
+        return (OUT, reason) if reason else (BILLBOARD, None)
 
     def route(self, rule: "FarRule", x: float, z: float) -> tuple[str, str | None]:
         """(the route, why it is left out) of a tree at world x, z."""
@@ -752,7 +768,7 @@ def edited_stems(trees_doc: dict, edits_doc: dict | None) -> tuple[list[dict], l
     """The survey's stems ({id, x, z}, terrain-local) with the tree edits applied first, as Unity's planter applies
     them (GolfMapTreeEdits.Apply): add, delete, modify (moved) by id, else by the stem nearest the record's
     original position. Returns the stems and the warnings for records that matched nothing."""
-    stems = [{"id": t["id"], "x": float(t["x"]), "z": float(t["z"])} for t in trees_doc["trees"]]
+    stems = [{"id": t["id"], "x": float(t["x"]), "z": float(t["z"]), "h": float(t.get("h") or 0)} for t in trees_doc["trees"]]
     by_id = {}
     for s in stems:
         by_id.setdefault(s["id"], s)
@@ -762,7 +778,7 @@ def edited_stems(trees_doc: dict, edits_doc: dict | None) -> tuple[list[dict], l
 
     def add_stem(e: dict) -> None:
         """A stem the survey lacks, where the edit puts it (taken: no later record matches it by position)."""
-        s = {"id": e["id"], "x": float(e["x"]), "z": float(e["z"])}
+        s = {"id": e["id"], "x": float(e["x"]), "z": float(e["z"]), "h": float(e.get("heightM") or e.get("h") or 0)}
         stems.append(s)
         by_id[s["id"]] = s
         taken.add(id(s))
@@ -795,6 +811,8 @@ def edited_stems(trees_doc: dict, edits_doc: dict | None) -> tuple[list[dict], l
             removed.add(id(target))
             continue
         target["x"], target["z"] = float(e["x"]), float(e["z"])
+        if float(e.get("heightM") or 0) > 0:
+            target["h"] = float(e["heightM"])   # a resized tree is judged at its new height
         taken.add(id(target))
     return [s for s in stems if id(s) not in removed], warnings
 
@@ -833,9 +851,22 @@ def route_command(args) -> None:
     # The terrain's local metres to Unity's world (the inner terrain stands at the origin).
     ox, oz = args.origin
     judged = [s for s in stems if wanted is None or s["id"] in wanted]
-    square = covering_square(tuple(args.terrains_square), Path(args.surfaces), Path(args.gkd), [(s["x"] + ox, s["z"] + oz) for s in judged])
-    rule = FarRule(Path(args.surfaces), Path(args.gkd), square, rules.outside_oob, rules.from_play)
-    routed = {s["id"]: rules.route(rule, s["x"] + ox, s["z"] + oz)[0] for s in judged}
+    outer = (trees_doc.get("plot") or {}).get("terrain") == "outer"
+    boundary = [(c["x"], c["z"]) for c in (json.loads(Path(args.gkd).read_text(encoding="utf-8-sig")).get("pOOB") or {}).get("coords") or []]
+    if outer and len(boundary) >= 3:
+        # The outer terrain needs only the distance outside the course boundary (outerKeep), straight from the
+        # GKD's ring: no grid over the 5 km square, so the whole terrain routes in a second.
+        import shapely
+        ring = shapely.Polygon(boundary)
+        outside = shapely.distance(ring, shapely.points([(s["x"] + ox, s["z"] + oz) for s in judged])) if judged else []
+        routed = {s["id"]: rules.route_outer(s["x"] + ox, s["z"] + oz, float(d), s.get("h", 0.0))[0] for s, d in zip(judged, outside)}
+    else:
+        square = covering_square(tuple(args.terrains_square), Path(args.surfaces), Path(args.gkd), [(s["x"] + ox, s["z"] + oz) for s in judged])
+        rule = FarRule(Path(args.surfaces), Path(args.gkd), square, rules.outside_oob, rules.from_play)
+        if outer:   # no boundary ring: FarRule's stand-in (the playing field) gives the distance outside
+            routed = {s["id"]: rules.route_outer(s["x"] + ox, s["z"] + oz, rule.outside(s["x"] + ox, s["z"] + oz), s.get("h", 0.0))[0] for s in judged}
+        else:
+            routed = {s["id"]: rules.route(rule, s["x"] + ox, s["z"] + oz)[0] for s in judged}
     if base is None:
         routes = routed
     else:
@@ -883,14 +914,18 @@ def tree_policy(args, species_file: dict) -> "LegacyPolicy | RoutedPolicy":
     if not args.rules:
         sys.exit("--routing needs --rules (the course's vegetation-rules.json whose `routing` made it): "
                  "without them the outer catalogue would be drawn by the defaults, not the course's far rule and outerKeep")
-    doc = json.loads(Path(args.routing).read_text(encoding="utf-8-sig"))
-    if doc.get("format") != ROUTING_FORMAT:
-        sys.exit(f"{args.routing}: not a {ROUTING_FORMAT} file")
     rules = Routing.of_rules_file(Path(args.rules))
-    if doc.get("rules") != rules.as_doc():
-        sys.exit(f"{Path(args.routing).name} was routed with other rules ({json.dumps(doc.get('rules'))}) than {args.rules} has now "
-                 f"({json.dumps(rules.as_doc())}): route again (bun run arborist -- route <course>), then plant in Unity")
-    return RoutedPolicy(doc["routes"], args.routing, rules)
+    routes: dict[str, str] = {}
+    # One routing file per terrain (<prefix>-inner-routing.json, and -outer- when the outer terrain is routed too).
+    for path in args.routing:
+        doc = json.loads(Path(path).read_text(encoding="utf-8-sig"))
+        if doc.get("format") != ROUTING_FORMAT:
+            sys.exit(f"{path}: not a {ROUTING_FORMAT} file")
+        if doc.get("rules") != rules.as_doc():
+            sys.exit(f"{Path(path).name} was routed with other rules ({json.dumps(doc.get('rules'))}) than {args.rules} has now "
+                     f"({json.dumps(rules.as_doc())}): route again (bun run arborist -- route <course>), then plant in Unity")
+        routes.update(doc["routes"])
+    return RoutedPolicy(routes, ", ".join(args.routing), rules)
 
 
 def fit_lines(fitted: int, unfitted: int) -> list[str]:
@@ -1004,9 +1039,10 @@ class RoutedPolicy:
         return not outer
 
     def tree_route(self, placement: dict, outer: bool) -> str | None:
-        # The routing file is the inner terrain's: only its placements go where it says. What VSP holds, it draws.
+        # An outer placement goes where the outer terrain's routing says; one it does not name (no outer routing
+        # file) is decided here by the far rule and outerKeep. An inner one: what VSP holds, it draws.
         if outer:
-            return None
+            return self.routes.get(placement["id"])
         return OWN if placement["id"] in self.in_vsp else self.routes.get(placement["id"], OWN)
 
     def lists(self, entry: dict) -> bool:
@@ -1661,7 +1697,7 @@ def main() -> None:
     p.add_argument("--placements", nargs="*", help="<course>-<terrain>-placements.json of the export (golfmap-placements-v1, Unity's planter): the trees of Arborist models, drawn as placed; the VSP ones give the dump's trees their ids")
     p.add_argument("--models", help="the course's model library (models.json, golfmap-models-v1): an Arborist model's look")
     p.add_argument("--gkd", help="the course's .GKD for the boundary (default: the one in --course-dir)")
-    p.add_argument("--routing", help="<prefix>-inner-routing.json (golfmap-routing-v1, `route`): the inner placements go where it says; no \"vsp\" list, no trim. Needs --rules")
+    p.add_argument("--routing", nargs="+", help="<prefix>-<terrain>-routing.json files (golfmap-routing-v1, `route`; inner, and outer when routed): the placements go where they say; no \"vsp\" list, no trim. Needs --rules")
     p.add_argument("--rules", help="with --routing: the course's vegetation-rules.json, whose `routing` made the routing file; its far rule and outerKeep draw the outer catalogue")
     p.add_argument("--key-file")
     p = sub.add_parser("route", help="before planting: route each tree by id - own (its model's renderer), billboard (Arborist) or out - by the course's routing rules")
