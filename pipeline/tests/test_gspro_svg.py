@@ -734,6 +734,28 @@ def test_bridge_decks_are_props_not_ground_and_stay_out_with_their_fillets(tmp_p
     assert "bridge decks left out (props in Unity, not ground): 2 feature(s)" in capsys.readouterr().out
 
 
+def test_ram_roads_lie_on_the_ground_and_stay_out_of_the_svg(tmp_path, capsys):
+    """A path with render=ram is a R.A.M. spline in Unity on top of the ground
+    meshes: OPCD builds the rough under it, so the road has no shape of its own."""
+    feats = [
+        ("path", None, 0, [_rect(-30, -3, 0, 3)], "bezier"),    # an ordinary path
+        ("path", None, 1, [_rect(0, -2, 40, 2)], "bezier"),     # a R.A.M. road joining it
+    ]
+    db = tmp_path / "app.sqlite"
+    _make_db(db, feats)
+    conn = sqlite3.connect(db)
+    conn.executescript("ALTER TABLE course_features ADD COLUMN source TEXT;"
+                       "ALTER TABLE course_features ADD COLUMN source_ref TEXT;"
+                       "ALTER TABLE course_features ADD COLUMN attributes_json TEXT;")
+    conn.execute("""UPDATE course_features SET attributes_json = '{"surface":"gravel","render":"ram"}' WHERE id = 'feat-1'""")
+    conn.commit()
+    conn.close()
+    out = tmp_path / "course.svg"
+    gspro.cmd_svg(BBOX, out, db, "Testbana", None, 3, {}, "app")
+    assert _feature_ids(out) == ["feat-0"]
+    assert "R.A.M. roads left out (drawn in Unity on the ground, render=ram): 1 feature(s)" in capsys.readouterr().out
+
+
 def test_a_shape_that_collapsed_while_drawing_is_left_out_and_named(tmp_path, capsys):
     """A bunker of 8 points inside 0.4 x 0.15 m (a click that became a feature)
     breaks OPCD's Blender build; small road pieces (kerb fillets) are fine

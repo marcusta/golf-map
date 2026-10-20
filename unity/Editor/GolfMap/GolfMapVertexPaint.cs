@@ -132,6 +132,80 @@ namespace GolfMap.Editor
             public float scaleRed = 1f, scaleGreen = 1f, scaleBlue = 1f, scaleBlack = 1f;
         }
 
+        // kind 'road': the ground under the R.A.M. roads (the course's ramroads export, GolfMapRamRoads): `channel` (black:
+        // no Stix grass, the dirt base) with `strength` out to the road's half width less `insetM` from its centreline,
+        // fading to nothing over `fadeM` past that, so the rough's grass grows in over the road's alpha edge. `surfaces`
+        // are the mesh classes painted (default Rough, Deep).
+        sealed class RoadRule
+        {
+            public string id, channel;
+            public Color target;
+            public float strength, insetM, fadeM;
+            public HashSet<GolfMapSurfaces.Surface> surfaces = new HashSet<GolfMapSurfaces.Surface>();
+            public PointGrid line;      // the centrelines every RoadStepM, y = the road's half width there
+            public float reach;         // the widest half width + fadeM: no paint beyond it
+        }
+
+        const float RoadStepM = 0.25f;
+
+        static List<RoadRule> LoadRoadRules(string text, string path, GolfMapCourse course)
+        {
+            var root = GolfMapJsonDoc.ParseObject(text);
+            var rules = new List<RoadRule>();
+            var list = root.Array("rules") ?? new List<object>();
+            for (int i = 0; i < list.Count; i++)
+            {
+                var o = list[i] as GolfMapJsonObject;
+                if (o == null || o.String("kind") != "road") continue;
+                if (o["enabled"] is bool && !(bool)o["enabled"]) continue;
+                string where = path + " rules[" + i + "]";
+                var r = new RoadRule
+                {
+                    id = o.String("id") ?? ("rule" + i),
+                    channel = (o.String("channel") ?? "black").ToLowerInvariant(),
+                    strength = Mathf.Clamp01((float)o.Number("strength", 1)),
+                    insetM = (float)o.Number("insetM", 0.4),
+                    fadeM = (float)o.Number("fadeM", 1),
+                };
+                if (r.fadeM <= 0) throw new InvalidOperationException(where + ": fadeM must be > 0.");
+                r.target = ChannelColor(r.channel, where);
+                foreach (var sv in o.Array("surfaces") ?? new List<object> { "Rough", "Deep" })
+                {
+                    GolfMapSurfaces.Surface surface;
+                    try { surface = (GolfMapSurfaces.Surface)Enum.Parse(typeof(GolfMapSurfaces.Surface), Convert.ToString(sv), true); }
+                    catch (ArgumentException) { throw new InvalidOperationException(where + ": unknown surface '" + sv + "'."); }
+                    r.surfaces.Add(surface);
+                }
+                var roads = GolfMapRamRoads.Lines(course);
+                float widest = roads.Count == 0 ? 0 : roads.Max(x => x.Value);
+                r.reach = Mathf.Max(0.5f, widest / 2 - r.insetM + r.fadeM);
+                r.line = new PointGrid(r.reach);
+                foreach (var road in roads)
+                    for (int k = 1; k < road.Key.Count; k++)
+                    {
+                        Vector2 a = road.Key[k - 1], b = road.Key[k];
+                        int n = Mathf.Max(1, Mathf.CeilToInt(Vector2.Distance(a, b) / RoadStepM));
+                        for (int j = (k == 1 ? 0 : 1); j <= n; j++)
+                        {
+                            var q = Vector2.Lerp(a, b, j / (float)n);
+                            r.line.Add(new Vector3(q.x, road.Value / 2, q.y));
+                        }
+                    }
+                rules.Add(r);
+            }
+            return rules;
+        }
+
+        // Paint weight of a road rule at world point p.
+        static float RoadWeight(RoadRule r, Vector3 p)
+        {
+            Vector3 hit;
+            float d = r.line.NearestXZ(p, r.reach, out hit);
+            if (d == float.MaxValue) return 0;
+            float full = hit.y - r.insetM;  // hit.y = the half width there
+            return r.strength * (1f - Smooth(full, full + r.fadeM, d));
+        }
+
         static float Num(object o) { var n = o as GolfMapJsonNumber; return n == null ? 0f : (float)n.Value; }
 
         static List<ObjectRule> LoadObjectRules(string text, string path)
@@ -297,8 +371,8 @@ namespace GolfMap.Editor
                 var o = list[i] as GolfMapJsonObject;
                 string where = path + " rules[" + i + "]";
                 if (o == null) throw new InvalidOperationException(where + ": not an object.");
-                if (o.String("kind") == "object") continue;  // LoadObjectRules
-                if (o.String("kind") != "edge") throw new InvalidOperationException(where + ": kind must be 'edge' or 'object'.");
+                if (o.String("kind") == "object" || o.String("kind") == "road") continue;  // LoadObjectRules, LoadRoadRules
+                if (o.String("kind") != "edge") throw new InvalidOperationException(where + ": kind must be 'edge', 'object' or 'road'.");
                 if (o["enabled"] is bool && !(bool)o["enabled"]) continue;  // kept in the file, not painted
                 var r = new EdgeRule
                 {
@@ -443,6 +517,7 @@ namespace GolfMap.Editor
             var recipeText = exists ? File.ReadAllText(recipePath) : DefaultRecipe;
             var rules = LoadRules(recipeText, recipePath);
             var objectRules = LoadObjectRules(recipeText, recipePath);
+            var roadRules = LoadRoadRules(recipeText, recipePath, course);
             var meshFolder = folder + MeshFolder + "/";
             var records = LoadRecords(meshFolder + RestoreFile);
 
@@ -480,7 +555,7 @@ namespace GolfMap.Editor
             foreach (var f in allFilters.Where(f => f.name.Contains(BunkerBlendMarker) && (!scoped || filters.Contains(f) || near(f, reach))))
                 foreach (var p in BoundaryPoints(f)) bunkerEdge.Add(p);
 
-            var targets = new HashSet<GolfMapSurfaces.Surface>(rules.SelectMany(r => r.surfaces));
+            var targets = new HashSet<GolfMapSurfaces.Surface>(rules.SelectMany(r => r.surfaces).Concat(roadRules.SelectMany(r => r.surfaces)));
             var painted = new List<object>();
             var errors = new List<string>();
             var warnings = new List<string>();
@@ -553,6 +628,13 @@ namespace GolfMap.Editor
                             float d = ownEdge.NearestXZ(p, r.fadeM);
                             w = r.strength * (d == float.MaxValue ? 1f : Smooth(0, r.fadeM, d));
                         }
+                        if (w <= 0.001f) continue;
+                        var t = r.target; t.a = c.a; c = Color.Lerp(c, t, w);
+                    }
+                    foreach (var r in roadRules)
+                    {
+                        if (!r.surfaces.Contains(surface)) continue;
+                        float w = RoadWeight(r, p);
                         if (w <= 0.001f) continue;
                         var t = r.target; t.a = c.a; c = Color.Lerp(c, t, w);
                     }

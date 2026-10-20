@@ -3207,14 +3207,34 @@ def _read_exclude_ids(path: Path | None) -> set[str]:
 BRIDGE_SURFACE = "bridge"
 
 
-def _is_bridge_deck(row) -> bool:
+def _row_attributes(row) -> dict:
     raw = row["attributes_json"] if "attributes_json" in row.keys() else None
     if not raw:
-        return False
+        return {}
     try:
-        return json.loads(raw).get("surface") == BRIDGE_SURFACE
-    except (ValueError, AttributeError):
-        return False
+        attributes = json.loads(raw)
+    except ValueError:
+        return {}
+    return attributes if isinstance(attributes, dict) else {}
+
+
+def _is_bridge_deck(row) -> bool:
+    return _row_attributes(row).get("surface") == BRIDGE_SURFACE
+
+
+# A path with the attribute render=ram is drawn in Unity as a NatureManufacture
+# R.A.M. spline lying on the ground meshes (GolfMapRamRoads.cs): OPCD builds the
+# ground under it as if there were no road, so it has no shape in the SVG either.
+RAM_RENDER = "ram"
+
+
+def _is_ram_road(row) -> bool:
+    return row["type"] in ROADS_TYPES and _row_attributes(row).get("render") == RAM_RENDER
+
+
+def _left_out_of_svg(row) -> bool:
+    """A bridge deck or a R.A.M. road: a course feature, but no ground of its own in the SVG."""
+    return _is_bridge_deck(row) or _is_ram_road(row)
 
 
 # A surface smaller than this is a slip of the pen (a click or a drag that
@@ -3479,8 +3499,9 @@ def cmd_svg(bbox, out: Path, db_path: Path, course_ident: str,
     # never changes another's, and a new one never renames an older one.
     shapes = sorted((r for r in rows if r["type"] in fills), key=lambda r: (r["created_at"] or "", r["id"]))
     shape_ids = _shape_ids(shapes)
-    # Bridge decks are props, not ground (with their kerb fillets, like any excluded road).
+    # Bridge decks are props and R.A.M. roads lie on the ground: no ground of their own (with their kerb fillets, like any excluded road).
     rows, decks, _ = _exclude_rows(rows, {r["id"] for r in rows if _is_bridge_deck(r)}, set())
+    rows, ram_roads, _ = _exclude_rows(rows, {r["id"] for r in rows if _is_ram_road(r)}, set())
     rows, excluded, unknown_ids = _exclude_rows(rows, exclude_ids or set(), exclude_types or set())
     # A hair of slack: shapes drawn to the edge and snapped there are inside.
     square = box(e0, n0, e1, n1).buffer(SQUARE_EDGE_SLACK_M, join_style="mitre")
@@ -3692,6 +3713,8 @@ def cmd_svg(bbox, out: Path, db_path: Path, course_ident: str,
               f"dug in the DEM by creek-digs, R.A.M. water in Unity): {names}")
     if decks:
         print(f"  bridge decks left out (props in Unity, not ground): {sum(decks.values())} feature(s)")
+    if ram_roads:
+        print(f"  R.A.M. roads left out (drawn in Unity on the ground, render=ram): {sum(ram_roads.values())} feature(s)")
     if tiny:
         listed = ", ".join(f"{r['type']} {r['id']}" + (f" (hole {r['hole_number']})" if r["hole_number"] is not None else "")
                            for r in tiny)
@@ -3853,7 +3876,7 @@ def _course_mesh_shapes(db_path: Path, rows: list, fills: dict) -> tuple[list, o
     from shapely import STRtree
 
     def build() -> tuple[list, object]:
-        shapes = [s for r in rows if r["type"] in fills and not _is_bridge_deck(r)
+        shapes = [s for r in rows if r["type"] in fills and not _left_out_of_svg(r)
                   for s in [_row_shape(r, SHAPING_COURSE_SHAPE_FLATTEN_M)] if s is not None]
         return shapes, (STRtree(shapes) if shapes else None)
 
@@ -3881,7 +3904,7 @@ def shaping_global(db_path: Path, course_ident: str) -> tuple[dict, dict]:
     if tees:
         ops.append({"id": "tees", "op": "afrod.flattentees", "select": {"type": SHAPING_TEE_TYPE},
                     "params": dict(SHAPING_TEE_PARAMS)})
-    paths = [r for r in rows if r["type"] in ROADS_TYPES and not _is_bridge_deck(r)]
+    paths = [r for r in rows if r["type"] in ROADS_TYPES and not _left_out_of_svg(r)]
     stats["paths"] = len(paths)
     mixed = _mixed_road_shapes(rows) if paths else []
     stats["mixed_roads"] = len(mixed)
@@ -4161,7 +4184,7 @@ def _mixed_road_shapes(rows: list) -> list[str]:
     fills = GSPRO_FILLS
     shapes = sorted((r for r in rows if r["type"] in fills), key=lambda r: (r["created_at"] or "", r["id"]))
     shape_ids = _shape_ids(shapes)
-    rows, _, _ = _exclude_rows(rows, {r["id"] for r in rows if _is_bridge_deck(r)}, set())
+    rows, _, _ = _exclude_rows(rows, {r["id"] for r in rows if _left_out_of_svg(r)}, set())
     tiny = {r["id"] for r in _tiny_rows(rows, ROADS_FLATTEN_M, fills)}
     rows = [r for r in rows if r["id"] not in tiny]
     roads, _ = _merged_roads(rows, fills, ROADS_FLATTEN_M)
@@ -4377,7 +4400,7 @@ def shaping_features(db_path: Path, course_ident: str, library: Path | None = No
     ops = []
     for r in rows:
         surface = SHAPING_RECIPE_SURFACE.get(r["type"])
-        if surface is None or r["id"] not in shape_ids or _is_bridge_deck(r):
+        if surface is None or r["id"] not in shape_ids or _left_out_of_svg(r):
             continue
         if _is_narrow_creek(r, ROADS_FLATTEN_M) or r["id"] in into_water:
             stats["creeks_left_out"] += 1
