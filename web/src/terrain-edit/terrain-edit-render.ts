@@ -168,6 +168,7 @@ function terrainEditMarkGeojson(view: TerrainEditView): Feature[] {
             features.push({ type: 'Feature', properties: { role }, geometry: { type: 'LineString', coordinates: ringLngLat(ring) } });
         }
     }
+    if (view.paint) features.push(...paintGeojson(view.paint));
     if (view.waterSteps) {
         for (const piece of view.waterSteps.pieces) {
             if (piece.ring.length < 3) continue;
@@ -178,6 +179,21 @@ function terrainEditMarkGeojson(view: TerrainEditView): Feature[] {
             features.push({ type: 'Feature', properties: { role: 'steps-fall' }, geometry: { type: 'LineString', coordinates: fall.line.map(project) } });
         }
     }
+    return features;
+}
+
+/** Paint mode: the strokes in their channel colours (the one being drawn brighter) and the draft's points. */
+function paintGeojson(mark: NonNullable<TerrainEditView['paint']>): Feature[] {
+    const features: Feature[] = [];
+    for (const shape of mark.shapes) {
+        const props = { color: shape.color, draft: shape.draft, enabled: shape.enabled };
+        if (shape.kind === 'area' && shape.points.length >= 3) {
+            features.push({ type: 'Feature', properties: { role: 'paint-area', ...props }, geometry: { type: 'Polygon', coordinates: [ringLngLat(shape.points)] } });
+        } else if (shape.points.length >= 2) {
+            features.push({ type: 'Feature', properties: { role: 'paint-line', ...props }, geometry: { type: 'LineString', coordinates: shape.points.map(project) } });
+        }
+    }
+    for (const p of mark.points) features.push({ type: 'Feature', properties: { role: 'paint-point' }, geometry: { type: 'Point', coordinates: project(p) } });
     return features;
 }
 
@@ -290,7 +306,35 @@ function editLayers(): OverlayLayerSpec[] {
 }
 
 function draftLayers(): OverlayLayerSpec[] {
+    const paintOpacity = (draft: number, on: number, off: number) =>
+        ['case', ['get', 'draft'], draft, ['get', 'enabled'], on, off] as unknown as number;
     return [
+        {
+            // Paint mode: the strokes, filled (polygons, circles) or as their centrelines, in their channel colour.
+            id: 'terrain-edit-paint-fill',
+            type: 'fill',
+            filter: role('paint-area'),
+            paint: { 'fill-color': ['get', 'color'] as unknown as string, 'fill-opacity': paintOpacity(0.45, 0.3, 0.08) },
+        },
+        {
+            // A light casing, so a black (dirt) stroke shows on a dark map.
+            id: 'terrain-edit-paint-casing',
+            type: 'line',
+            filter: ['any', role('paint-area'), role('paint-line')] as FilterSpecification,
+            paint: { 'line-color': '#ffffff', 'line-width': 5, 'line-opacity': paintOpacity(0.7, 0.5, 0.2) },
+        },
+        {
+            id: 'terrain-edit-paint-outline',
+            type: 'line',
+            filter: ['any', role('paint-area'), role('paint-line')] as FilterSpecification,
+            paint: { 'line-color': ['get', 'color'] as unknown as string, 'line-width': 3, 'line-opacity': paintOpacity(1, 0.8, 0.3) },
+        },
+        {
+            id: 'terrain-edit-paint-points',
+            type: 'circle',
+            filter: role('paint-point'),
+            paint: { 'circle-radius': 4, 'circle-color': '#ffffff', 'circle-stroke-color': '#111827', 'circle-stroke-width': 1.5 },
+        },
         {
             // The edit under the pointer in the panel's list, or whose form is open.
             id: 'terrain-edit-draft-highlight',

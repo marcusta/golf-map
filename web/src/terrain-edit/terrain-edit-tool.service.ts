@@ -56,6 +56,7 @@ import { containingTopDown, DrawToolService } from '../draw/draw-tool.service';
 import { FEATURE_STYLES, type FeatureType } from '../draw/feature-palette';
 import { shapeName } from '../export/svg-exclusions';
 import { NO_RECIPE, SEED, ShapingService, surfaceOf } from './shaping.service';
+import { PaintToolService, type PaintMark } from './paint-tool.service';
 import {
     CREEK_DIG_PRESETS, DIG_ATTRIBUTES, DIG_GENERATOR_KINDS, WATER_DIG_PRESETS, type DigGeneratorKind,
 } from '../../../shared/features/dig-presets';
@@ -314,6 +315,8 @@ export interface TerrainEditView {
     pondEdge?: PondEdgeMark | null;
     /** "Find falls": the proposal on the map, null when none. */
     waterSteps?: WaterStepsMark | null;
+    /** Paint mode: the saved paint strokes and the one being drawn, null when off. */
+    paint?: PaintMark | null;
 }
 
 /**
@@ -466,6 +469,9 @@ export class TerrainEditToolService {
     /** Pointer position for the rubber band (see TerrainEditView.cursor). */
     readonly cursor = new Signal<Point | null>(null);
 
+    /** Paint mode (paint strokes on the course meshes): takes the map clicks while on (declared before `view`, which reads it). */
+    readonly paint: PaintToolService = di.get(PaintToolService);
+
     /** Renderable overlay state (persisted edits, the live draft, the pointer). */
     readonly view = new Computed<TerrainEditView>(() => {
         return {
@@ -478,6 +484,7 @@ export class TerrainEditToolService {
             selection: this.selectedFeatures.get().map(featureRings),
             pondEdge: this.pondEdgeMark(),
             waterSteps: this.waterStepsMark.get(),
+            paint: this.paint.mark.get(),
         };
     });
 
@@ -1211,6 +1218,7 @@ export class TerrainEditToolService {
         void this.shaping.loadRecipes();
         // A shaping job still running (the page reloaded, or the editor was closed meanwhile): follow it again.
         void this.shaping.resume(ctx.courseId);
+        this.paint.setCourse(ctx.courseId);
     }
 
     deactivate(): void {
@@ -1221,6 +1229,7 @@ export class TerrainEditToolService {
         this.hoveredId.set(null);
         this.selectedFeatureIds.set([]);
         this.waterSteps.set(null);
+        this.paint.cancel();
         this.ctx = null;
         this.ctxSignal.set(null);
         this.renderer = null;
@@ -1240,11 +1249,12 @@ export class TerrainEditToolService {
      * fall through instead of switching tools and discarding the outline.
      */
     isBusy(): boolean {
-        return this.state.draft.peek().length > 0;
+        return this.state.draft.peek().length > 0 || this.paint.draft.peek().length > 0;
     }
 
     /** ESC: cancel an in-progress draft (stay active) → deactivate. */
     onEscape(): boolean {
+        if (this.paint.cancel()) return true;
         if (this.state.draft.peek().length > 0) {
             this.state.disarm();
             this.state.arm(); // stay in draw mode for the next outline
@@ -1599,6 +1609,11 @@ export class TerrainEditToolService {
     private onClick(e: MapPointerEvent): void {
         // Interaction contract (map/interaction.ts): bail unless we hold the claim.
         if (this.ctx?.map.interactionMode.peek() !== TERRAIN_EDIT_TOOL_ID) return;
+        // Paint mode: the click is a paint stroke's point.
+        if (this.paint.active.peek()) {
+            this.paint.click(lngLatToSweref99tm(e.lngLat));
+            return;
+        }
         const draft = this.state.draft.peek();
         if (draft.length >= MIN_RING_POINTS && this.screenDistTo(draft[0], e.point) < CLOSE_RING_PX) {
             void this.closeDraft();
@@ -1631,6 +1646,10 @@ export class TerrainEditToolService {
      */
     private onMouseMove(e: MapPointerEvent): void {
         if (this.ctx?.map.interactionMode.peek() !== TERRAIN_EDIT_TOOL_ID) return;
+        if (this.paint.active.peek()) {
+            this.paint.move(e.originalEvent.buttons === 0 ? lngLatToSweref99tm(e.lngLat) : null);
+            return;
+        }
         if (this.state.draft.peek().length === 0 || e.originalEvent.buttons !== 0) {
             if (this.cursor.peek() !== null) this.cursor.set(null);
             return;
@@ -1650,6 +1669,15 @@ export class TerrainEditToolService {
     onKeyDown(e: KeyboardEvent): void {
         if (this.ctx?.map.interactionMode.peek() !== TERRAIN_EDIT_TOOL_ID) return;
         if (isTypingTarget(e.target)) return;
+        if (this.paint.active.peek()) {
+            // Paint mode: Backspace drops the last point, Enter saves the stroke.
+            if (e.key === 'Backspace' && this.paint.undoPoint()) e.preventDefault();
+            else if (e.key === 'Enter' && this.paint.pending.peek()) {
+                e.preventDefault();
+                void this.paint.save();
+            }
+            return;
+        }
         if (this.state.draft.peek().length === 0) return;
         const meta = e.metaKey || e.ctrlKey;
         const key = e.key.length === 1 ? e.key.toLowerCase() : e.key;

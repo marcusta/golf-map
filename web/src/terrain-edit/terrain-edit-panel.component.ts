@@ -26,6 +26,7 @@ import {
     type TerrainEditOp,
 } from './terrain-edit-tool.service';
 import type { TerrainEdit } from '../../../shared/api/terrain-edits.gen';
+import { PaintPanelComponent } from './paint-panel.component';
 import {
     BUNKER_DIG, CREEK_DIG_PRESETS, DEFAULT_CREEK_DIG_PRESET, DEFAULT_WATER_DIG_PRESET, WATER_DIG_PRESETS,
 } from '../../../shared/features/dig-presets';
@@ -81,6 +82,7 @@ const tpl = template(`
                 <span>Split into ponds</span>
             </label>
         </div>
+        <div bind="paintHost"></div>
         <div class="section">
             <h4 class="section-title">New edit</h4>
             <select bind="opSelect" class="input" data-testid="terrain-edit-op" aria-label="Operation">
@@ -770,6 +772,7 @@ export class TerrainEditPanelComponent extends Component {
             });
         }));
 
+        this.spawn(PaintPanelComponent, this.ref(frag, 'paintHost'));
         return frag;
     }
 

@@ -38,6 +38,7 @@ import { createGsproExportApi } from './api/gspro-export.api';
 import { createShapingApi } from './api/shaping.api';
 import { createGsproSyncApi } from './api/gspro-sync.api';
 import { createCourseCheckApi } from './api/course-check.api';
+import { createPaintApi } from './api/paint.api';
 import { createPublishApi } from './api/publish.api';
 import { createTapscoreBridgeApi } from './api/tapscore-bridge.api';
 import { createIngestRoutes } from './api/ingest.routes';
@@ -148,6 +149,7 @@ export function mountApiRoutes(app: Hono, services: Services, opts: { mode: Serv
         mount(app, '/api', createShapingApi(shapingService));
         mount(app, '/api', createGsproSyncApi(gsproSyncService));
         mount(app, '/api', createCourseCheckApi(services.courseCheckService));
+        mount(app, '/api', createPaintApi(services.paintService));
         mount(app, '/api', createPublishApi(publishService));
     } else {
         // --- Serve-only API: publish ingest (bearer-token, not cookie session) ---

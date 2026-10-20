@@ -34,6 +34,7 @@
         "water:import": "bun scripts/water-import.ts",
         "shaping": "bun scripts/shaping-apply.ts",
         "shaping:worker": "bun scripts/shaping-worker.ts",
+        "paint": "bun scripts/paint.ts",
         "arborist": "bun scripts/arborist.ts",
         "models": "bun scripts/models.ts",
         "opcd:build": "bun scripts/opcd-build.ts",

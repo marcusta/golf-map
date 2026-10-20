@@ -32,6 +32,7 @@ import { createPhotosClient } from '../../shared/api/photos.gen';
 import { createShapingClient } from '../../shared/api/shaping.gen';
 import { createPhotoCleanupClient } from '../../shared/api/photo-cleanup.gen';
 import { createCourseCheckClient } from '../../shared/api/course-check.gen';
+import { createPaintClient } from '../../shared/api/paint.gen';
 
 export { ApiError } from '@basics/core/client/api-error';
 
@@ -79,4 +80,5 @@ export const api = {
     shaping: createShapingClient(API_BASE),
     photoCleanup: createPhotoCleanupClient(API_BASE),
     courseCheck: createCourseCheckClient(API_BASE),
+    paint: createPaintClient(API_BASE),
 };
