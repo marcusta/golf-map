@@ -20,6 +20,7 @@
 //   steep part its fast, foamy flow (flowWaterfall). A `sill` fall starts on
 //   the crest `sillM` upstream of the lip; an `outlet` starts in the bank face
 //   just below the upper water (the water comes out from under a crossing);
+// - the water's MeshCollider on GSPwater (non-convex, on R.A.M.'s mesh), added once every fall stands;
 // - white water: two particle systems with R.A.M.'s waterfall particle
 //   materials, sized to the fall: foam over the lip, spray and foam where the
 //   water lands, both spread along the lip.
@@ -232,18 +233,51 @@ namespace GolfMap.Editor
                 }
             }
 
+            // The water's colliders last, once every fall stands: a fall's levels and ground are sampled by rays,
+            // which must not land on another fall's water.
+            int colliders = 0;
+            var colliderErrors = new List<object>();
+            if (!dryRun)
+                foreach (var t in root.GetComponentsInChildren<Transform>(true))
+                {
+                    var spline = t.name == "Water" ? t.GetComponent(splineType) : null;
+                    if (spline == null) continue;
+                    var error = WaterCollider(spline);
+                    if (error != null) colliderErrors.Add(error); else colliders++;
+                }
             if (!dryRun)
             {
                 Undo.CollapseUndoOperations(undoGroup);
                 EditorSceneManager.MarkSceneDirty(scene);
                 SceneView.RepaintAll();
             }
-            return new Dictionary<string, object>
+            var result = new Dictionary<string, object>
             {
                 { "file", file }, { "dryRun", dryRun }, { "falls", rows.Count }, { "profile", o.profile },
                 { "particles", o.particles }, { "material", material != null ? AssetDatabase.GetAssetPath(material) : null },
-                { "madeFrom", madeFrom }, { "rows", rows },
+                { "madeFrom", madeFrom }, { "waterColliders", colliders }, { "rows", rows },
             };
+            if (colliderErrors.Count > 0) result["colliderErrors"] = colliderErrors;
+            return result;
+        }
+
+        const string WaterPhysics = "Assets/Resources/Physics/GSPwater.physicMaterial";
+
+        // The GSPwater MeshCollider on a fall's water, non-convex, on the mesh R.A.M. built last (as GolfMapCreeks.WaterCollider):
+        // GSPro calls the ball wet there. Null, or what is wrong.
+        static string WaterCollider(Component spline)
+        {
+            var go = spline.gameObject;
+            var filter = go.GetComponent<MeshFilter>();
+            if (filter == null || filter.sharedMesh == null) return go.name + " under " + go.transform.parent.name + ": R.A.M. built no mesh";
+            var collider = go.GetComponent<MeshCollider>();  // not ??: a missing component is Unity's fake null
+            if (collider == null) collider = Undo.AddComponent<MeshCollider>(go);
+            else Undo.RecordObject(collider, "Build waterfalls");
+            collider.convex = false;
+            collider.sharedMesh = null;  // re-cook from the new mesh
+            collider.sharedMesh = filter.sharedMesh;
+            collider.sharedMaterial = AssetDatabase.LoadAssetAtPath<PhysicMaterial>(WaterPhysics);
+            return collider.sharedMaterial == null ? "No " + WaterPhysics + ": GSPro would not call the waterfall water." : null;
         }
 
         // A fountain: a jet heightM high at the middle of its line, falling back as spray, splash round its foot.

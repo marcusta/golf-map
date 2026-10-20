@@ -354,7 +354,7 @@ namespace GolfMap.Editor
         }
 
         // surface -> physic material asset path, from the course's path looks spec (what the OPCD path meshes collide with).
-        static Dictionary<string, string> SurfacePhysics(string courseFolder)
+        internal static Dictionary<string, string> SurfacePhysics(string courseFolder)
         {
             var map = new Dictionary<string, string>();
             var spec = courseFolder + "Paths/path-surfaces.json";

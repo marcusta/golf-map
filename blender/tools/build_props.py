@@ -5,6 +5,8 @@
 
 Spec (golfmap-props-spec-v1, e.g. docs/gspro/vreta/clubhouse-props.json):
   assets:    {id: {parts: [...], category: building|structure|prop|vehicle, collider: mesh|box|none,
+                   physics: GSPwood (optional: the GSPro physic material of its colliders, a name under
+                   Assets/Resources/Physics/ or an asset path; without it GolfMapMakeReady.AssetPhysics decides),
                    bake: true | {lods, lodM, cullM, colliderLod, rays, lastLodShadows}}}
   instances: [{asset, e, n, yawDeg, ground: max|min|centre, dz}]   e/n = EPSG:3006 metres,
              yawDeg = compass bearing of the asset's local +x axis
@@ -15,7 +17,7 @@ Writes into --out:
   Textures/*.png           generated albedo + normal maps (sized in metres, see props_kit.MATERIALS)
   Previews/<id>.png        (--preview) a lit render of each asset
   props.json               golfmap-props-v1 manifest for Unity: materials, assets (fbx, collider,
-                           bounds), instances - GolfMapProps.cs reads it
+                           physics, bounds), instances - GolfMapProps.cs reads it
 --layout also builds every instance in one scene around `origin` (flat ground, optional ortho
 image) and renders top and oblique views to Previews/layout_*.png, to check placement.
 
@@ -291,7 +293,7 @@ def main():
     used_mats = set()
     for aid, asset in spec["assets"].items():
         if "prefab" in asset:  # a Unity prefab from the course project: placed as is, nothing to build
-            manifest_assets[aid] = {k: asset[k] for k in ("prefab", "axis", "recolor") if k in asset}
+            manifest_assets[aid] = {k: asset[k] for k in ("prefab", "axis", "recolor", "physics") if k in asset}
             manifest_assets[aid].update(category=asset.get("category", "prop"), collider=asset.get("collider", "keep"))
             continue
         ob = kit.to_object(geos[aid], aid, table, texdir, lib)
@@ -302,6 +304,7 @@ def main():
             "bounds": bounds(ob), "tris": sum(len(p.vertices) - 2 for p in ob.data.polygons),
             "materials": [m.name for m in ob.data.materials],
         }
+        manifest_assets[aid].update({"physics": asset["physics"]} if "physics" in asset else {})
         export = ob
         if asset.get("bake") and not (only and aid not in only):
             opts = dict(BAKE_DEFAULTS, **(asset["bake"] if isinstance(asset["bake"], dict) else {}))

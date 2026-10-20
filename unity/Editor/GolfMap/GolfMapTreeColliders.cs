@@ -75,7 +75,7 @@ namespace GolfMap.Editor
             return new Dictionary<string, object> { { "dryRun", dryRun }, { "trees", report } };
         }
 
-        static GameObject FitPrefab(GolfMapCourse course, GameObject prefab, PhysicMaterial wood, PhysicMaterial leaves,
+        internal static GameObject FitPrefab(GolfMapCourse course, GameObject prefab, PhysicMaterial wood, PhysicMaterial leaves,
             float crownFrom, float crownRadius, float trunkRadius, bool dryRun, Dictionary<string, object> row)
         {
             bool model = PrefabUtility.GetPrefabType(prefab) == PrefabType.ModelPrefab;

@@ -3,7 +3,8 @@
 // the manual step does it: an FBX whose content changed gets its scene object
 // deleted and added again, like GSP > Add OPCD Meshes (instantiate under
 // course.meshParent, MeshCollider, then OPCD's own GameObject > Set Default
-// Materials), and only those objects; unchanged meshes are left alone.
+// Materials), and only those objects; unchanged meshes are left alone. A creek bed
+// (*_WaterBrook_-_Mesh) gets the GSPwater physic material after it (OPCD leaves it without).
 //   - Changed = the FBX file's size or time differs from the last sync
 //     (<course>/meshes-sync.json). The Blender FBX sync only rewrites meshes that
 //     changed; after OPCD's Batch Export every mesh is replaced. The first sync has nothing to compare
@@ -393,10 +394,35 @@ namespace GolfMap.Editor
             }
             Selection.objects = selection;
             result["passes"] = passes;
+            int brooks = BrookPhysics(objects);
+            if (brooks > 0) result["brookWater"] = brooks;
             result["left"] = left.Select(g => (object)g.name).ToList();
             if (left.Count > 0)
                 errors.Add(left.Count + " object(s) still wear their FBX material after OPCD's '" + SetDefaultMaterialsMenu + "' (e.g. " + left[0].name + ").");
             return result;
+        }
+
+        const string BrookMarker = "_WaterBrook_-_Mesh";
+        const string WaterPhysics = "Assets/Resources/Physics/GSPwater.physicMaterial";
+
+        // OPCD's Set Default Materials leaves a creek bed (Spline_*_WaterBrook_-_Mesh) without the water physic
+        // material: its MeshCollider gets GSPwater (what golfmap.course.ready checks), so the ball in the creek is wet.
+        // Returns how many changed.
+        static int BrookPhysics(IEnumerable<GameObject> objects)
+        {
+            var water = AssetDatabase.LoadAssetAtPath<PhysicMaterial>(WaterPhysics);
+            if (water == null) return 0;
+            int changed = 0;
+            foreach (var g in objects)
+            {
+                if (g == null || !g.name.EndsWith(BrookMarker, StringComparison.Ordinal)) continue;
+                var c = g.GetComponent<MeshCollider>();
+                if (c == null || c.sharedMaterial == water) continue;
+                Undo.RecordObject(c, "Creek bed physics");
+                c.sharedMaterial = water;
+                changed++;
+            }
+            return changed;
         }
 
         // A material that is a sub-asset of a model file: what a freshly instantiated FBX wears.
@@ -430,6 +456,7 @@ namespace GolfMap.Editor
             }
             var left = todo.Where(g => g != null && WearsFbxMaterial(g)).ToList();
             if (left.Count > 0) result["opcdMaterials"] = SetDefaultMaterials(left, errors);
+            else { int brooks = BrookPhysics(todo); if (brooks > 0) result["brookWater"] = brooks; }
             Selection.objects = new UnityEngine.Object[0];
             result["left"] = todo.Where(g => g != null && WearsFbxMaterial(g)).Select(g => (object)g.name).ToList();
             result["errors"] = errors;

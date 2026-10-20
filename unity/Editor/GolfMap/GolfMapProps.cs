@@ -6,8 +6,9 @@
 // 'GolfMap Props' at its EPSG:3006 position (inner DEM sidecar frame), on the surface the player
 // sees (highest collider under it: course meshes, else terrain), turned so the asset's Blender +x
 // axis points along the instance's compass yawDeg. Buildings/structures get MeshColliders, small
-// props box colliders or none, per the manifest. Placing replaces what the last place made, but
-// keeps every instance the user moved or rotated in Unity: each place records what it placed in
+// props box colliders or none, per the manifest; every collider gets its GSPro physic material: the asset's `physics`
+// (a name like GSPwood or an asset path), else by GolfMapMakeReady.AssetPhysics (the rule golfmap.course.ready checks).
+// Placing replaces what the last place made, but keeps every instance the user moved or rotated in Unity: each place records what it placed in
 // <props folder>/placed.json and the next one compares against it (GolfMapPropsPlaced.cs).
 // Unity 2018.2 / C# 6.
 using System;
@@ -68,7 +69,7 @@ namespace GolfMap.Editor
         // switches to k+1, cullM: the last LOD's (0: never culled), colliderMesh: the child the MeshCollider is made of.
         class Asset
         {
-            public string id, fbx, prefab, category, collider, axis, colliderMesh; public Vector3 bmin, bmax;
+            public string id, fbx, prefab, category, collider, axis, colliderMesh, physics; public Vector3 bmin, bmax;
             public List<string> materials = new List<string>(); public List<Recolor> recolor = new List<Recolor>();
             public int lodCount; public float[] lodM; public float cullM; public bool lastLodShadows;
         }
@@ -131,7 +132,7 @@ namespace GolfMap.Editor
             {
                 var o = ao.Object(k);
                 var b = o.Object("bounds");
-                var a = new Asset { id = k, fbx = o.String("fbx"), prefab = o.String("prefab"), category = o.String("category") ?? "prop", collider = o.String("collider") ?? "none" };
+                var a = new Asset { id = k, fbx = o.String("fbx"), prefab = o.String("prefab"), category = o.String("category") ?? "prop", collider = o.String("collider") ?? "none", physics = o.String("physics") };
                 if (b != null) { a.bmin = V3(b["min"]); a.bmax = V3(b["max"]); }
                 var ml = o.Array("materials");
                 if (ml != null) a.materials.AddRange(ml.Select(x => x as string).Where(x => x != null));
@@ -776,6 +777,8 @@ namespace GolfMap.Editor
             }
             Physics.SyncTransforms();
             var groups = new Dictionary<string, Transform>();
+            var physicsOf = new Dictionary<string, PhysicMaterial>();       // asset -> its colliders' physic material
+            var physicsRows = new Dictionary<string, object>();            // asset -> {physics, rule}, for the result
             var sb = new StringBuilder();
             sb.AppendLine("GolfMap props: " + manifest + "  " + DateTime.Now.ToString("s"));
             for (int i = 0; i < insts.Count; i++)
@@ -908,6 +911,23 @@ namespace GolfMap.Editor
                 }
                 else if (a.collider == "box")
                     foreach (var mf in go.GetComponentsInChildren<MeshFilter>()) mf.gameObject.AddComponent<BoxCollider>();
+                // GSPro's physic material on every collider it added or the prefab brought (keep): the asset's `physics`,
+                // else the same rule golfmap.course.ready checks (GolfMapMakeReady.AssetPhysics), decided once per asset
+                var colliders = go.GetComponentsInChildren<Collider>(true);
+                if (colliders.Length > 0)
+                {
+                    PhysicMaterial pm;
+                    if (!physicsOf.TryGetValue(a.id, out pm))
+                    {
+                        string rule;
+                        var name = GolfMapMakeReady.AssetPhysics(a.category, a.id, a.physics, a.materials, a.prefab, go, out rule);
+                        pm = GolfMapMakeReady.LoadPhysic(!string.IsNullOrEmpty(a.physics) ? a.physics : name);
+                        physicsOf[a.id] = pm;
+                        physicsRows[a.id] = new Dictionary<string, object> { { "physics", name }, { "rule", rule } };
+                        if (name != null && pm == null) warnings.Add(a.id + ": no physic material " + (a.physics ?? name) + " (its colliders keep theirs)");
+                    }
+                    if (pm != null) foreach (var col in colliders) col.sharedMaterial = pm;
+                }
                 foreach (var t in go.GetComponentsInChildren<Transform>(true))
                     GameObjectUtility.SetStaticEditorFlags(t.gameObject, StaticEditorFlags.BatchingStatic | StaticEditorFlags.OccludeeStatic | StaticEditorFlags.OccluderStatic | StaticEditorFlags.ReflectionProbeStatic);
             }
@@ -964,7 +984,7 @@ namespace GolfMap.Editor
                 { "axis", axis }, { "warnings", warnings }, { "report", GolfMapCourses.ReportPath(course, "props.txt") },
                 { "placedRecord", sidecar }, { "keepHandEdits", keepHandEdits }, { "kept", keptCount },
                 { "handPlaced", handPlaced }, { "specWon", specWon },
-                { "handAdded", handAddedRows }, { "droppedHand", droppedHand },
+                { "handAdded", handAddedRows }, { "droppedHand", droppedHand }, { "physics", physicsRows },
             };
             if (sidecarNote != null) result["placedRecordNote"] = sidecarNote;
             if (dryRun) result["rows"] = rows;

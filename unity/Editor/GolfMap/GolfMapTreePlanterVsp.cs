@@ -654,6 +654,9 @@ namespace GolfMap.Editor
                 item.EnableRuntimeSpawn = false;
                 // The tree prefabs carry their GSPro colliders (trunk capsules on GSPwood, crowns on GSPleaves).
                 item.ColliderType = ColliderType.FromPrefab;
+                // ... out to GSPro's 300 m from the camera (VSP's default factor 0.15 x PlantDistance is far less); a
+                // larger factor set by hand or by golfmap.course.ready stays
+                item.ColliderDistanceFactor = Mathf.Max(item.ColliderDistanceFactor, GolfMapMakeReady.ColliderFactor(system));
                 item.UseBillboards = forceBillboards;
                 if(forceBillboards)GolfMapVspRig.BillboardsOnly(item);
                 if(useBiome)SyncPrefabColours(item);
