@@ -49,6 +49,18 @@ namespace GolfMap.Editor
             return true;
         }
 
+        // Whether a terrain keeps its collider in the bundle: the inner one with terrainCollider=true, the outer plot with
+        // outerCollider=true, foliage / grasses terrains with foliageCollider / grassesCollider; default none (the ball
+        // plays on the course meshes, and a terrain poking up between heightmap samples must not catch it).
+        internal static bool KeepCollider(string terrain, BridgeArgs a)
+        {
+            var n = terrain.ToLowerInvariant();
+            if (n.Contains("outer") || n.Contains("plot")) return a.Bool("outerCollider", false);
+            if (n.Contains("foliage")) return a.Bool("foliageCollider", false);
+            if (n.Contains("grass")) return a.Bool("grassesCollider", false);
+            return a.Bool("terrainCollider", false);
+        }
+
         static string CoursesDir()
         {
             var saved = Resources.Load("OPCDThemes/Store/BuildCourseSaveLocation");
@@ -132,10 +144,22 @@ namespace GolfMap.Editor
             colliderSwitches &= SetIfPresent(builder, "GrassesColDisable", !a.Bool("grassesCollider", false));
             colliderSwitches &= SetIfPresent(builder, "FoliageColDisable", !a.Bool("foliageCollider", false));
             colliderSwitches &= SetIfPresent(builder, "OuterColDisable", !a.Bool("outerCollider", false));
+            // The 2025-12 builder has no switches: DisableTerrains reads Terrains + TerrainToggles ("Disable <terrain>
+            // Collider"), which only the build window fills in - left empty, the colliders stayed in the bundle.
+            var terrains = UnityEngine.Object.FindObjectsOfType<Terrain>();
+            var keep = terrains.Select(t => KeepCollider(t.name, a)).ToArray();
+            bool toggles = !colliderSwitches && SetIfPresent(builder, "Terrains", terrains)
+                && SetIfPresent(builder, "TerrainToggles", keep.Select(k => !k).ToArray());
             Set(builder, "MyScene", asset);
             Set(builder, "gspdir", dir);
             var started = DateTime.Now;
             builder.GetMethod("DisableTerrains", BindingFlags.Static | BindingFlags.Public | BindingFlags.NonPublic).Invoke(null, null);
+            // what goes into the bundle: each terrain's collider after DisableTerrains
+            var terrainColliders = terrains.ToDictionary(t => t.name, t =>
+            {
+                var c = t.GetComponent<TerrainCollider>();
+                return (object)(c == null ? "none" : c.enabled ? "on" : "off");
+            });
             var colliders = UnityEngine.Object.FindObjectOfType<AwesomeTechnologies.ColliderSystem.ColliderSystemPro>();
             if (colliders) colliders.enabled = true;
             string failure = null;
@@ -165,7 +189,10 @@ namespace GolfMap.Editor
                 { "file", file }, { "megabytes", Math.Round(info.Length / 1048576.0, 1) }, { "written", info.LastWriteTime.ToString("s") },
                 { "seconds", Math.Round((DateTime.Now - started).TotalSeconds) }, { "scene", scene.path }, { "sceneDirtyAfter", SceneManager.GetActiveScene().isDirty },
             };
-            if (!colliderSwitches) result["colliderSwitches"] = "not in this BuildCourseDLL: its DisableTerrains decides the terrain colliders";
+            result["terrainColliders"] = terrainColliders;
+            if (!colliderSwitches && !toggles) result["colliderSwitches"] = "neither switches nor TerrainToggles in this BuildCourseDLL: its DisableTerrains decides the terrain colliders";
+            var wrong = terrains.Where((t, i) => (string)terrainColliders[t.name] == (keep[i] ? "off" : "on")).Select(t => t.name).ToList();
+            if (wrong.Count > 0) result["warning"] = "terrain collider not as asked: " + string.Join(", ", wrong.ToArray());
             if (statusFile != null) result["statusFile"] = statusFile;
             WriteStatus(statusFile, false, begun, "done", result);
             return result;

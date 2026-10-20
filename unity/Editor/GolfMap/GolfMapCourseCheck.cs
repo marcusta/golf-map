@@ -45,6 +45,7 @@ namespace GolfMap.Editor
         const float ClusterM = 1.5f;
         const float SliverM2 = 0.01f;
         const float TerrainOverM = 0.02f;  // the Unity terrain this far over the course mesh is what the ball meets
+        static List<string> terrainCollidersKept = new List<string>();   // terrains whose collider the build keeps (Command's args)
         static readonly System.Globalization.CultureInfo Inv = System.Globalization.CultureInfo.InvariantCulture;      // upside-down faces under this much area in one place are a warning
         static readonly float[] CrackSteps = { 0.05f, 0.1f, 0.2f, 0.5f, 1f };
         static readonly Regex HoleRe = new Regex("^Spline_hole_(\\d+)_", RegexOptions.Compiled);
@@ -97,9 +98,10 @@ namespace GolfMap.Editor
         }
 
         [BridgeCommand("golfmap.course.check", "Read-only: is the built course whole as the ball meets it? Course meshes through their colliders: missing/convex colliders, collider not what is drawn, NaN, unknown surface names, duplicates, OPCD Gap_Issue markers, upside-down top faces (rays and the ball see through them); every open mesh edge probed 2 cm outside for steps and cracks (crack width measured, wider than the ball = error); a ray grid over the course for gaps (no course mesh, what is under) and overlaps (two meshes within 2 cm). Clustered findings ranked error/warn/info, written to <export folder>/course-check.json (GolfMap > Review opens it: golfmap.review.load).",
-            args = "cell=0.5 (grid metres), boundary (golfmap-oob-v1 file: EPSG:3006 rings, the largest is the course boundary; default <export folder>/<prefix>-oob.json, written by bun run course:check), marginM=50 (checked beyond the boundary), all=false (ignore the boundary), hole (only that hole's meshes and 40 m round them), without (comma-separated mesh names checked as if gone: proves the check finds a hole), seams=true, grid=true, write=true, limit=60 (findings returned)")]
+            args = "cell=0.5 (grid metres), boundary (golfmap-oob-v1 file: EPSG:3006 rings, the largest is the course boundary; default <export folder>/<prefix>-oob.json, written by bun run course:check), marginM=50 (checked beyond the boundary), all=false (ignore the boundary), hole (only that hole's meshes and 40 m round them), without (comma-separated mesh names checked as if gone: proves the check finds a hole), seams=true, grid=true, write=true, limit=60 (findings returned), terrainCollider=false, outerCollider=false (as golfmap.course.build: a terrain over the course mesh is an error only when its collider goes into the bundle, else info)")]
         static IEnumerator Command(BridgeArgs a)
         {
+            terrainCollidersKept = UnityEngine.Object.FindObjectsOfType<Terrain>().Where(t => GolfMapCourseBuild.KeepCollider(t.name, a)).Select(t => t.name).ToList();
             var boundary = a.Bool("all", false) ? null : a.String("boundary") ?? DefaultBoundary();
             var steps = Run(Mathf.Clamp((float)a.Number("cell", 0.5), 0.1f, 5f), a.String("hole"), a.Bool("seams", true), a.Bool("grid", true), a.Bool("write", true),
                 (float)a.Number("marginM", 50), boundary, (int)a.Number("limit", 60), a.Strings("without").SelectMany(x => x.Split(',')).Select(x => x.Trim()).Where(x => x.Length > 0).ToList());
@@ -741,9 +743,12 @@ namespace GolfMap.Editor
                             + (max > BallM ? ": the ball can drop into it" : ": it shows, the ball rolls over it");
                         break;
                     case "terrain-above":
-                        f.metric = max; f.severity = "error";
-                        f.note = "the Unity terrain up to " + (max * 100).ToString("0", Inv) + " cm over the course mesh at " + list.Count
-                            + " grid points: its collider is what the ball meets - golfmap.terrain.conform puts it under the meshes";
+                        // the build leaves the terrain colliders out by default (golfmap.course.build): then the ball never meets it
+                        bool kept = terrainCollidersKept.Count > 0;
+                        f.metric = max; f.severity = kept ? "error" : "info";
+                        f.note = "the Unity terrain up to " + (max * 100).ToString("0", Inv) + " cm over the course mesh at " + list.Count + " grid points"
+                            + (kept ? ": its collider goes into the bundle (" + string.Join(", ", terrainCollidersKept.ToArray()) + ") and is what the ball meets - golfmap.terrain.conform puts it under the meshes"
+                                    : ": harmless in GSPro, the build leaves the terrain collider out");
                         break;
                     case "step-lip":
                         f.metric = max; f.severity = "info";
