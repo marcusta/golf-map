@@ -57,6 +57,19 @@ export const SUMMARY_FORMAT = 'golfmap-make-ready-summary-v1';
 export const READY_MARGIN_M = 40;
 /** A bush wants a collider when it is taller AND wider than this (m). */
 export const BUSH_COLLIDER_M = 0.5;
+
+/**
+ * Soft plants a ball goes through whatever their size (Marcus 2026-10-20): reeds, rushes, flags, ferns, sprigs,
+ * heather, grasses. Only woody bushes (juniper, pine, buckthorn, willow, boxwood ...) want GSPleaves. Same words as
+ * GolfMapMakeReady.SoftPlant in Unity.
+ */
+const SOFT_PLANT_WORDS = ['reed', 'rush', 'sedge', 'typha', 'cattail', 'flag', 'iris', 'fern', 'bracken',
+    'bilberry', 'blueberry', 'lingonberry', 'heather', 'grass', 'vass', 'igelknopp', 'svardslilja', 'ormbunke', 'blabar'];
+
+export function isSoftPlant(...names: (string | undefined)[]): boolean {
+    const n = names.filter(Boolean).join(' ').toLowerCase().replace(/[-_\s]/g, '');
+    return SOFT_PLANT_WORDS.some(w => n.includes(w));
+}
 /** What the playing field is in the surface map (pipeline/arborist.py FarRule.PLAY). */
 export const PLAY_CLASSES = ['rough', 'semi', 'fairway', 'green', 'tee', 'bunker'] as const;
 /** The suffix of a billboard-only Arborist item (arborist.py FAR_SUFFIX). */
@@ -685,7 +698,7 @@ export function checkArborist(doc: ArboristDoc, ctx: ArboristCheckContext): Arbo
                     else t.ok++;
                     continue;
                 }
-                if (!noCollider) { t.ok++; continue; }
+                if (!noCollider || isSoftPlant(name, item.Address)) { t.ok++; continue; }
                 if (!size) { fault(info.VegetationItemID!, item, 'unsized', d, at); continue; }
                 const sx = Math.max(Math.abs(inst.Scale?.x ?? 1), Math.abs(inst.Scale?.z ?? 1)), sy = Math.abs(inst.Scale?.y ?? 1);
                 if (size.heightM * sy > BUSH_COLLIDER_M && size.widthM * sx > BUSH_COLLIDER_M) fault(info.VegetationItemID!, item, 'bush', d, at);

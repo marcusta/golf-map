@@ -14,8 +14,15 @@ import { ShapingService } from './shaping.service';
 import { CourseCheckService, UNITY_REPORT } from './course-check.service';
 import type { UnityBridge } from './unity-bridge';
 import {
-    MakeReadyService, PlayDistance, READY_SUMMARY, UNITY_READY_REPORT, type ArboristDoc, type MakeReadyJob,
+    MakeReadyService, PlayDistance, READY_SUMMARY, UNITY_READY_REPORT, isSoftPlant, type ArboristDoc, type MakeReadyJob,
 } from './make-ready.service';
+
+test('soft plants a ball goes through need no collider; woody bushes do', () => {
+    for (const soft of ['LakePlants_BurReed_Clump_03', 'LakePlants_Yellow_Flag_01', 'LakePlants_Bulrush_02', 'Forest_fern_01_1',
+        'Woodland bilberry - tall', 'Woodland heath - heather']) expect(isSoftPlant(soft)).toBe(true);
+    for (const bush of ['MountainEnv_bush_dwarf_pine_big_04', 'CE_Plants_buckthorn-bush', 'MeadowEnv_bush_grey_willow_01', 'Boxwood Round', 'Juniper'])
+        expect(isSoftPlant(bush)).toBe(false);
+});
 
 const cleanup: Array<() => void | Promise<void>> = [];
 afterEach(async () => {

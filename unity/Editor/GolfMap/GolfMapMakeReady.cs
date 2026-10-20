@@ -550,6 +550,17 @@ namespace GolfMap.Editor
             }
         }
 
+        // Soft plants a ball goes through, whatever their size (Marcus 2026-10-20): reeds, rushes, flags, ferns, sprigs,
+        // heather and grasses. Only woody bushes over BushM (juniper, pine, buckthorn, willow, boxwood ...) get GSPleaves.
+        static readonly string[] SoftWords = { "reed", "rush", "sedge", "typha", "cattail", "flag", "iris", "fern", "bracken",
+            "bilberry", "blueberry", "lingonberry", "heather", "grass", "vass", "igelknopp", "svardslilja", "ormbunke", "blabar" };
+
+        internal static bool SoftPlant(string name)
+        {
+            var n = (name ?? "").ToLowerInvariant().Replace("-", "").Replace("_", "").Replace(" ", "");
+            return SoftWords.Any(w => n.Contains(w));
+        }
+
         static void PlantItem(Ctx c, ItemUse u, string key, PhysicMaterial leaves, HashSet<GameObject> prefabsSeen)
         {
             var i = u.item; var pkg = u.package;
@@ -559,6 +570,12 @@ namespace GolfMap.Editor
             float sy = u.maxScaleY > 0 ? u.maxScaleY : i.MaxScale * i.ScaleMultiplier.y * i.YScale;
             float height = size.y * sy, width = Mathf.Max(size.x, size.z) * sxz;
             string dims = Math.Round(height, 2) + " m tall, " + Math.Round(width, 2) + " m wide";
+            if (SoftPlant(key + " " + (i.VegetationPrefab ? i.VegetationPrefab.name : "")))
+            {
+                if (i.ColliderType != ColliderType.Disabled)
+                    c.Issue("bushes", "warn", key, "a soft plant (" + dims + ") with a " + i.ColliderType + " collider: a ball goes through reeds, ferns and sprigs, it should have none", u.at);
+                return;
+            }
             if (height <= BushM || width <= BushM)
             {
                 if (i.ColliderType != ColliderType.Disabled)
