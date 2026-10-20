@@ -1295,6 +1295,15 @@ The Blender half: `blender/tools/course_check.py` (blender/README.md "Course che
   - A side or end that never meets a bank (flat ground, a creek into another creek) keeps the
     export's width or end. It is counted as `open`, and the report's `check` list gives its plot x, z. Where the
     ground beside a creek is not below the water, dig the creek deeper in golf-map.
+- **Water for GSPro, no gap at the edge**: each spline gets a MeshCollider on R.A.M.'s own mesh with the
+  `GSPwater` physic material (no extra mesh). That mesh must reach the ground on every side: where an edge of the
+  water hangs over lower ground, a ball rolls under it onto the bed and never touches water. So after R.A.M. builds
+  the mesh, every edge vertex (both sides of every loop, both end loops) more than 2 cm above the ground under it,
+  and not over a lake, is a gap. Its control point is widened on that side (the centre moved that way by half), or
+  the end point moved on along the line, out to where the ground has risen 2 cm above the water plus 0.2 m. Then the
+  spline is built again, up to 4 rounds. Each row's `gaps` says what was left (`gaps`, `open` = no ground above the
+  water within `searchM`, with `openAt`) and what was moved (`widened`, `endsMoved`). A creek's collider is not
+  ground: the fit and the lake checks leave the `Creek ` objects out.
 - **Refit after a remodel**: the fit reads the scene, so rebuild the scene first, then run both steps again. The
   order: edit the creeks → **Dig creeks** → **Update terrain** → Blender meshes +
   `golfmap.meshes.sync` → **Export creeks** (the lines, `bun run gspro:export -- <course> creeks`) →

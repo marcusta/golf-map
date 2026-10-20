@@ -51,6 +51,14 @@ also counts along the creek past where it reaches the lake.
 The other joints: creek 21b15d21 into pond 235 shows no edge. Hole 3's creeks (572/574) end in banks, not ponds, and keep R.A.M.'s
 pale profile water. Fall E at bridge h9e is hidden by the bridge.
 
+**One water for every creek** (2026-10-20, Marcus): all five creeks (572, 574, 575, 566 and hole 17's brook) wear
+`Creek water (hole 17).mat` through `ramWaterMaterial` on the feature. Tune that one material to change them all.
+
+**GSPwater colliders** (2026-10-20): until then Omberg's R.A.M. creeks had no collider at all, so the ball landed on the bed.
+Every creek now has the GSPwater MeshCollider on its own R.A.M. mesh, and the import closed the edges that hung over lower
+ground: creek 575 3 points widened, hole 3's creeks 12 and 18 (4 rounds), hole 17's brook and 21b15d21 none. All five: 0 gaps,
+0 open.
+
 **Where the black stops, per side** (feature `hole_17_233`, attributes `grassBelowLeftM` 0.3 and `grassBelowRightM` 0.2, left/right looking
 downstream = looking north there: left = west): the paint rule `creek-bed` names the creek (`creek`), the creeks export carries the two numbers, and the
 paint takes them per side of the creek's line (`belowM` 0.1 is the fallback, `softM` 0.08 the blend). `grassFrom: rough` gives the brook mesh the nearest

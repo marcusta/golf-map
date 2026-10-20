@@ -48,6 +48,12 @@
 // A side or end that never meets a bank (a creek into another creek, flat
 // ground) keeps the export's width or end and is counted "open".
 //
+// GSPro's water is a collider: each spline gets a MeshCollider on R.A.M.'s
+// own mesh with the GSPwater physic material. Before that, every edge vertex
+// of the built mesh that hangs over lower ground widens its control point on
+// that side (or moves the end on) until the edge meets the ground, so no ball
+// rolls under the water's edge (see CloseGaps).
+//
 // The report compares each creek's exported surface with the ground under it
 // (the highest collider straight down: the course meshes) and gives the fit.
 //
@@ -241,8 +247,11 @@ namespace GolfMap.Editor
                 splineType.GetField("snapToTerrain").SetValue(spline, false);
                 if (profile != null) ApplyProfile(spline, splineType, profile, profileType);
                 splineType.GetMethod("GenerateSpline").Invoke(spline, new object[] { null });
+                row["gaps"] = CloseGaps(spline, splineType, fit);
                 int faded = FadeIntoLakes(spline, splineType, fit.pondFadeM);
                 if (faded > 0) row["lakeFadeVertices"] = faded;
+                var colliderError = WaterCollider(spline);
+                if (colliderError != null) row["colliderError"] = colliderError;
                 EditorUtility.SetDirty(spline);
                 imported.Add(go);
                 if (c.water == "lake" || c.water == "profile") perCreek[go] = c.water;
@@ -933,12 +942,147 @@ namespace GolfMap.Editor
             return false;
         }
 
-        // Is (x, z) over a water plane (their MeshColliders)?
+        // Is (x, z) over a lake's water plane (their MeshColliders; not a creek's own water collider)?
         static bool OverLake(Vector2 p)
         {
             foreach (var h in Physics.RaycastAll(new Vector3(p.x, 10000f, p.y), Vector3.down, 20000f, ~0, QueryTriggerInteraction.Ignore))
-                if (GolfMapWaterplanes.IsWaterPlane(h.collider.name)) return true;
+                if (GolfMapWaterplanes.IsWaterPlane(h.collider.name) && !h.collider.name.StartsWith(NamePrefix, StringComparison.Ordinal)) return true;
             return false;
+        }
+
+        // The water GSPro sees is a collider: a MeshCollider on the R.A.M. spline itself with R.A.M.'s own mesh and the
+        // GSPwater physic material (the usual extra component on a R.A.M. creek; R.A.M. never touches it). The mesh must
+        // reach the ground all round: where an edge of the water hangs over lower ground, a ball rolls under it onto the
+        // bed and never touches water. CloseGaps checks every edge vertex of the built mesh, both sides of every loop and
+        // both end loops: one more than GapM above the ground under it (and not over a lake, whose plane takes the ball)
+        // is a gap. The control point the loop belongs to is widened on that side (its centre moved that way by half), or
+        // an end point moved on along the line, out to where the ground has risen MeetM above the water and BuryM on, and
+        // the spline built again, up to CloseRounds times. A gap with no ground above the water within searchM is `open`.
+        const string WaterPhysics = "Assets/Resources/Physics/GSPwater.physicMaterial";
+        const float GapM = 0.02f, MeetM = 0.02f, BuryM = 0.2f, ReachStepM = 0.1f;
+        const int CloseRounds = 4;
+
+        static Dictionary<string, object> CloseGaps(Component spline, Type splineType, FitOptions o)
+        {
+            var go = spline.gameObject;
+            var field = splineType.GetField("controlPoints");
+            var pts = (List<Vector4>)field.GetValue(spline);
+            int n = pts.Count, widened = 0, moved = 0, rounds = 0;
+            var open = new List<object>();
+            int gaps = 0, openGaps = 0;
+            for (; ; rounds++)
+            {
+                var filter = go.GetComponent<MeshFilter>();
+                var mesh = filter != null ? filter.sharedMesh : null;
+                int per = (int)splineType.GetField("vertsInShape").GetValue(spline);
+                if (mesh == null || per < 2 || mesh.vertexCount % per != 0 || mesh.vertexCount / per < 2)
+                    return new Dictionary<string, object> { { "error", "no R.A.M. mesh" } };
+                int loops = mesh.vertexCount / per;
+                var w = mesh.vertices.Select(v => go.transform.TransformPoint(v)).ToArray();
+                var centre = new Vector2[loops];
+                for (int l = 0; l < loops; l++)
+                {
+                    Vector3 sum = Vector3.zero;
+                    for (int j = 0; j < per; j++) sum += w[l * per + j];
+                    centre[l] = new Vector2(sum.x / per, sum.z / per);
+                }
+                var side = new float[n, 2];
+                var end = new float[2];
+                gaps = openGaps = 0;
+                open.Clear();
+                Func<Vector3, Vector2, float> need = (v, dir) =>
+                {
+                    var p = new Vector2(v.x, v.z);
+                    float g = GroundAt(p);
+                    if ((!float.IsNaN(g) && g >= v.y - GapM) || OverLake(p)) return 0;
+                    gaps++;
+                    float reach = Reach(v, dir, o.searchM);
+                    if (float.IsNaN(reach))
+                    {
+                        openGaps++;
+                        if (open.Count < 12) open.Add(new Dictionary<string, object> { { "x", Math.Round(v.x, 1) }, { "z", Math.Round(v.z, 1) } });
+                        return 0;
+                    }
+                    return reach;
+                };
+                for (int l = 0; l < loops; l++)
+                {
+                    int i = 0;
+                    for (int k = 1; k < n; k++) if ((XZ(pts[k]) - centre[l]).sqrMagnitude < (XZ(pts[i]) - centre[l]).sqrMagnitude) i = k;
+                    var right = Right(pts, i);
+                    foreach (int j in new[] { 0, per - 1 })
+                    {
+                        var v = w[l * per + j];
+                        var inner = w[l * per + (j == 0 ? 1 : per - 2)];
+                        float m = need(v, new Vector2(v.x - inner.x, v.z - inner.z));
+                        if (m <= 0) continue;
+                        int s = Vector2.Dot(new Vector2(v.x, v.z) - XZ(pts[i]), right) >= 0 ? 1 : 0;
+                        side[i, s] = Mathf.Max(side[i, s], m);
+                    }
+                }
+                for (int e = 0; e < 2; e++)
+                {
+                    int l = e == 0 ? 0 : loops - 1, inward = e == 0 ? 1 : loops - 2;
+                    var dir = centre[l] - centre[inward];
+                    for (int j = 0; j < per; j++) end[e] = Mathf.Max(end[e], need(w[l * per + j], dir));
+                }
+                bool any = end[0] > 0 || end[1] > 0;
+                for (int i = 0; i < n && !any; i++) any = side[i, 0] > 0 || side[i, 1] > 0;
+                if (!any || rounds == CloseRounds) break;
+
+                var next = new List<Vector4>(pts);
+                for (int i = 0; i < n; i++)
+                {
+                    if (side[i, 0] <= 0 && side[i, 1] <= 0) continue;
+                    var c = XZ(pts[i]) + Right(pts, i) * ((side[i, 1] - side[i, 0]) / 2f);
+                    next[i] = new Vector4(c.x, pts[i].y, c.y, pts[i].w + side[i, 0] + side[i, 1]);
+                    widened++;
+                }
+                for (int e = 0; e < 2; e++)
+                {
+                    if (end[e] <= 0) continue;
+                    int i = e == 0 ? 0 : n - 1, inward = e == 0 ? 1 : n - 2;
+                    var p = XZ(next[i]) + (XZ(next[i]) - XZ(next[inward])).normalized * end[e];
+                    next[i] = new Vector4(p.x, next[i].y, p.y, next[i].w);
+                    moved++;
+                }
+                field.SetValue(spline, pts = next);
+                splineType.GetMethod("GenerateSpline").Invoke(spline, new object[] { null });
+            }
+            var result = new Dictionary<string, object> { { "gaps", gaps }, { "open", openGaps }, { "widened", widened }, { "endsMoved", moved }, { "rounds", rounds } };
+            if (open.Count > 0) result["openAt"] = open;
+            return result;
+        }
+
+        // The GSPwater MeshCollider on the spline, on the mesh R.A.M. built last.
+        static string WaterCollider(Component spline)
+        {
+            var go = spline.gameObject;
+            var filter = go.GetComponent<MeshFilter>();
+            var collider = go.GetComponent<MeshCollider>();  // not ??: a missing component is Unity's fake null
+            if (collider == null) collider = Undo.AddComponent<MeshCollider>(go);
+            else Undo.RecordObject(collider, "Import creeks");
+            collider.sharedMesh = null;  // re-cook from the new mesh
+            collider.sharedMesh = filter != null ? filter.sharedMesh : null;
+            collider.sharedMaterial = AssetDatabase.LoadAssetAtPath<PhysicMaterial>(WaterPhysics);
+            return collider.sharedMaterial == null ? "No " + WaterPhysics + ": GSPro would not call the creek water." : null;
+        }
+
+        // From a water edge vertex v along `dir` (level): how far until the ground has risen MeetM above the water, then
+        // BuryM on; at once if a lake's plane is met. NaN when neither within searchM.
+        static float Reach(Vector3 v, Vector2 dir, float searchM)
+        {
+            if (dir.sqrMagnitude < 1e-8f) return float.NaN;
+            dir.Normalize();
+            var from = new Vector2(v.x, v.z);
+            for (float s = ReachStepM; s <= searchM; s += ReachStepM)
+            {
+                var q = from + dir * s;
+                if (OverLake(q)) return s;
+                float g = GroundAt(q);
+                if (!float.IsNaN(g) && g >= v.y + MeetM) return s + BuryM;
+            }
+            return float.NaN;
         }
 
         // How far (x, z) lies inside a lake: the nearest point off the water planes, looked for in rings StepM apart; maxM
@@ -1013,8 +1157,10 @@ namespace GolfMap.Editor
             var d = new List<float>();
             foreach (var p in points)
             {
-                RaycastHit hit;
-                if (Physics.Raycast(new Vector3(p.x, p.y + 200f, p.z), Vector3.down, out hit, 400f)) d.Add(hit.point.y - p.y);
+                // The creeks' own water colliders are not ground.
+                var hits = Physics.RaycastAll(new Vector3(p.x, p.y + 200f, p.z), Vector3.down, 400f)
+                    .Where(h => !h.collider.name.StartsWith(NamePrefix, StringComparison.Ordinal)).ToList();
+                if (hits.Count > 0) d.Add(hits.Max(h => h.point.y) - p.y);
             }
             if (d.Count == 0) return null;
             d.Sort();
@@ -1029,7 +1175,8 @@ namespace GolfMap.Editor
             foreach (Dictionary<string, object> r in (List<object>)result["rows"])
                 sb.AppendLine("  " + r["id"] + ": " + r["status"] + ", " + r["points"] + " points, " + r["lengthM"] + " m, fall " + r["fallM"] + " m, "
                     + r["profile"] + ", ground above export surface " + GolfMapJson.Serialize(r["groundAboveExportSurfaceM"], false)
-                    + (r.ContainsKey("fit") ? ", fit " + GolfMapJson.Serialize(r["fit"], false) : ""));
+                    + (r.ContainsKey("fit") ? ", fit " + GolfMapJson.Serialize(r["fit"], false) : "")
+                    + (r.ContainsKey("collider") ? ", collider " + GolfMapJson.Serialize(r["collider"], false) : ""));
             File.WriteAllText(GolfMapCourses.ReportPath(course, "creeks.txt"), sb.ToString());
         }
     }

@@ -115,6 +115,9 @@ the lakes' AQUAS water by default (`water=lake`: `<course>/Creeks/Creek water (l
 material, probe anchored to the nearest lake's); `golfmap.creeks.water water=lake|profile` switches the look without a refit.
 A feature's `ramWaterMaterial` (asset path) overrides the look for that creek. An end at a lake runs `pondFadeM` (2 m) past the
 shore and fades out there by R.A.M.'s vertex colour alpha, so no hard edge shows on the pond (`pondFadeM=0`: off).
+GSPro's water is a MeshCollider on the spline itself, on R.A.M.'s own mesh, with `GSPwater` (Marcus: no extra mesh). The
+import widens control points / moves ends until no edge vertex hangs over lower ground (a ball would roll under it);
+the row's `gaps` must read `gaps 0, open 0`.
 See [README.md](../unity/README.md#creeks-ram).
 
 Lake water planes: `GolfMap > Waterplanes` (`GolfMapWaterplanes.cs`, bridge `golfmap.waterplanes.build`) does OPCD's Blender
