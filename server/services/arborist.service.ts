@@ -29,7 +29,8 @@
 //   wrapper key           <dataDir>/arborist-wrapper.key, never in the repo
 //                         (GOLFMAP_ARBORIST_KEY overrides)
 import * as path from 'node:path';
-import { readFile, readdir, rm, stat } from 'node:fs/promises';
+import { readFile, readdir, rm, stat, writeFile } from 'node:fs/promises';
+import { loadModelLibrary, modelLibraryText } from '../../shared/vegetation/tree-models';
 import {
     courseSlug, placementsExportFileName, routingExportFileName, statOrNull, surfacesExportFileName, treeEditsFileName, treesExportFileName,
     zonesExportFileName, type ExportRunner, type TerrainKind,
@@ -311,8 +312,14 @@ export class ArboristService {
             if (await statOrNull(file)) placements.push(file);
         }
         if (placements.length) args.push('--placements', ...placements);
-        const models = this.docs(course, 'models.json');
-        if (await statOrNull(models)) args.push('--models', models);
+        // The course's model library resolved (the shared library with the course's overrides and own models),
+        // written beside the export for arborist.py: the course's models.json alone holds only its overrides.
+        const library = loadModelLibrary(path.dirname(this.docs(course, 'models.json')));
+        if (library.models.length) {
+            const models = path.join(course.exportDir, `${courseSlug(course.name)}-models.resolved.json`);
+            await writeFile(models, modelLibraryText(library));
+            args.push('--models', models);
+        }
         // A routed course: the routing decided before planting who draws each tree, so the placements go where it
         // says and nothing is trimmed in Unity afterwards.
         const rules = await this.routingRules(course);

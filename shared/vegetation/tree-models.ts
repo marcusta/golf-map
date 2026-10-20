@@ -2,12 +2,20 @@
 // and Unity's GolfMapPalette.Load read it. One module for the server (Planting rules), the scripts
 // (bun run models) and the Unity tooling's node scripts (unity/tree-models.mjs re-exports it).
 //
-//   docs/gspro/<course>/models.json   golfmap-models-v1: every model the course can draw. A model is
-//                                     {id, species, renderer, heightM, crownWidthM, kind, form, look?,
-//                                     unity?}; id = 'arborist:<catalogue label>' or 'vsp:<Unity prefab>'
-//                                     (model-id.ts), renderer = what draws it, which must be the id's own
-//                                     (a library saying otherwise is refused); unity = the prefab's
-//                                     guid/path/assetType/catalogueGuid/originalPath for a vsp model.
+//   docs/gspro/model-library.json     golfmap-model-library-v1: the shared model library, every model any
+//                                     course can draw. A model is {id, species, renderer, heightM,
+//                                     crownWidthM, kind, form, look?, unity?}; id = 'arborist:<catalogue
+//                                     label>' or 'vsp:<Unity prefab>' (model-id.ts), renderer = what draws
+//                                     it, which must be the id's own (a library saying otherwise is
+//                                     refused); unity = the prefab's guid/path/assetType/catalogueGuid/
+//                                     originalPath for a vsp model; look = its base look.
+//   docs/gspro/<course>/models.json   golfmap-models-v1: the course's overrides. An entry whose id is in the
+//                                     shared library is deep-merged onto it (a look tuned to the course's
+//                                     light; `disabled: true` leaves the model out of the course); any
+//                                     other entry is a course-only model, complete. A course without the
+//                                     file inherits the whole shared library. loadModelLibrary resolves
+//                                     the two (shared order, then the course-only models); that resolved
+//                                     library is what Unity's copy holds (model-sync.ts).
 //   docs/gspro/<course>/palette.json  golfmap-tree-palette-v1: rules, species weights and looks, and
 //                                     assets[] = {model, enabled, selectionWeight?}: references to models.
 //                                     It never names a renderer.
@@ -17,8 +25,8 @@
 // prefab's (none for an Arborist model); `key` is what the matcher hashes and breaks ties on - the
 // prefab guid, else the model id - so a palette moved into a library matches exactly as before.
 //
-// The rules for a new model (kinds, forms, catalogue labels trimmed, the first of a duplicated label)
-// are the same in Unity's GolfMapModels.cs; keep the two equal.
+// A new model's rules (kinds, forms, catalogue labels trimmed, the first of a duplicated label) live only
+// here: Unity's Palette panel runs `bun run models -- add` (scripts/models.ts).
 import fs from 'node:fs';
 import path from 'node:path';
 import { ARBORIST, VSP, modelId, parseModelId, type Renderer } from './model-id';
@@ -26,6 +34,9 @@ import { ARBORIST, VSP, modelId, parseModelId, type Renderer } from './model-id'
 export { RENDERERS, parseModelId, modelId, modelLabel } from './model-id';
 
 export const MODELS_FORMAT = 'golfmap-models-v1';
+export const SHARED_LIBRARY_FORMAT = 'golfmap-model-library-v1';
+/** The shared library's file name, in the course docs root (docs/gspro/) beside the course folders. */
+export const SHARED_LIBRARY_FILE = 'model-library.json';
 export const PALETTE_FORMAT = 'golfmap-tree-palette-v1';
 export const MODEL_KINDS = ['broadleaf', 'conifer'] as const;
 export const MODEL_FORMS = ['tree', 'shrub'] as const;
@@ -46,7 +57,13 @@ export interface LibraryModel {
     unity?: UnityPrefab;
 }
 
-export interface ModelLibrary { format: string; models: LibraryModel[] }
+export interface ModelLibrary { format: string; models: LibraryModel[]; [key: string]: unknown }
+
+/** A course file's entry: an override of a shared model (any subset of its fields, `disabled`), or a course-only model. */
+export type ModelOverride = Partial<LibraryModel> & { id: string; disabled?: boolean; [key: string]: unknown };
+
+/** A course's models.json as written: its overrides and course-only models. */
+export interface CourseModels { format: string; models: ModelOverride[]; [key: string]: unknown }
 
 /** A palette's assets[] entry: a reference ({model, enabled, selectionWeight}) or the inline prefab form. */
 export type PaletteAsset = Record<string, unknown> & { model?: string; enabled?: boolean; selectionWeight?: number; name?: string; guid?: string };
@@ -79,20 +96,92 @@ export interface CatalogueModel { label: string; heightM: number; crownWidthM: n
 
 const readJson = (file: string) => JSON.parse(fs.readFileSync(file, 'utf8').replace(/^﻿/, ''));
 
-/** The course's model library (empty when it has none yet). Refuses a model whose renderer is not its id's, and an id twice. */
-export function loadModelLibrary(courseDocsDir: string): ModelLibrary {
-    const file = path.join(courseDocsDir, 'models.json');
-    if (!fs.existsSync(file)) return { format: MODELS_FORMAT, models: [] };
-    const doc = readJson(file);
-    if (doc.format !== MODELS_FORMAT || !Array.isArray(doc.models)) throw Error(`Invalid model library ${file}: format must be ${MODELS_FORMAT}`);
+/** Every entry has an id, no id twice, and a renderer (when given) that is its id's. */
+function checkModels(models: ModelOverride[], file: string): void {
     const seen = new Set<string>();
-    for (const m of doc.models as LibraryModel[]) {
+    for (const m of models) {
         const { renderer } = parseModelId(m.id);
         if (m.renderer !== undefined && m.renderer !== renderer) throw Error(`Model ${m.id} in ${file} says renderer '${m.renderer}', but its id is ${renderer}'s`);
         if (seen.has(m.id)) throw Error(`Model ${m.id} is in ${file} twice`);
         seen.add(m.id);
     }
+}
+
+/** The shared library's file for a course docs folder (or the docs root itself): <docs root>/model-library.json. */
+export function sharedLibraryFile(courseDocsDir: string): string {
+    return path.join(path.dirname(path.resolve(courseDocsDir)), SHARED_LIBRARY_FILE);
+}
+
+/** The shared library in `docsRoot` (empty when there is none). */
+export function loadSharedLibrary(docsRoot: string): ModelLibrary {
+    const file = path.join(docsRoot, SHARED_LIBRARY_FILE);
+    if (!fs.existsSync(file)) return { format: SHARED_LIBRARY_FORMAT, models: [] };
+    const doc = readJson(file);
+    if (doc.format !== SHARED_LIBRARY_FORMAT || !Array.isArray(doc.models)) throw Error(`Invalid shared model library ${file}: format must be ${SHARED_LIBRARY_FORMAT}`);
+    checkModels(doc.models, file);
     return doc;
+}
+
+/** The course's own models.json as written (overrides and course-only models); empty when it has none. */
+export function loadCourseModels(courseDocsDir: string): CourseModels {
+    const file = path.join(courseDocsDir, 'models.json');
+    if (!fs.existsSync(file)) return { format: MODELS_FORMAT, models: [] };
+    const doc = readJson(file);
+    if (doc.format !== MODELS_FORMAT || !Array.isArray(doc.models)) throw Error(`Invalid model library ${file}: format must be ${MODELS_FORMAT}`);
+    checkModels(doc.models, file);
+    return doc;
+}
+
+const isObject = (v: unknown): v is Record<string, unknown> => typeof v === 'object' && v !== null && !Array.isArray(v);
+
+/** `over` onto `base`: objects merge key by key, anything else replaces; null removes the key. */
+export function deepMerge<T extends Record<string, unknown>>(base: T, over: Record<string, unknown>): T {
+    const out: Record<string, unknown> = { ...base };
+    for (const [k, v] of Object.entries(over)) {
+        if (v === null) delete out[k];
+        else if (isObject(v) && isObject(out[k])) out[k] = deepMerge(out[k] as Record<string, unknown>, v);
+        else out[k] = v;
+    }
+    return out as T;
+}
+
+/**
+ * A course's library: each shared model with the course's override deep-merged onto it (`disabled` ones
+ * left out), in the shared library's order, then the course-only models in the course file's order. The
+ * course file's other top-level keys (its comment) come along.
+ */
+export function resolveModelLibrary(shared: ModelLibrary, course: CourseModels): ModelLibrary {
+    const overrides = new Map(course.models.map((m) => [m.id, m]));
+    const models: LibraryModel[] = [];
+    for (const base of shared.models) {
+        const over = overrides.get(base.id);
+        if (over?.disabled) continue;
+        const { disabled: _off, ...change } = over ?? { id: base.id };
+        models.push(over ? deepMerge(base as unknown as Record<string, unknown>, change) as unknown as LibraryModel : base);
+    }
+    const sharedIds = new Set(shared.models.map((m) => m.id));
+    for (const m of course.models) {
+        if (sharedIds.has(m.id)) continue;
+        const { disabled, ...model } = m;
+        if (disabled) throw Error(`Model ${m.id} is disabled in the course's models.json but is not in the shared library (${SHARED_LIBRARY_FILE})`);
+        models.push(model as LibraryModel);
+    }
+    const { models: _ignored, format: _format, ...rest } = course;
+    return { format: MODELS_FORMAT, ...rest, models };
+}
+
+/**
+ * The course's model library, resolved: the shared library (<docs root>/model-library.json) with the
+ * course's models.json over it. Empty when neither exists. Refuses a model whose renderer is not its id's,
+ * and an id twice in either file.
+ */
+export function loadModelLibrary(courseDocsDir: string): ModelLibrary {
+    return resolveModelLibrary(loadSharedLibrary(path.dirname(path.resolve(courseDocsDir))), loadCourseModels(courseDocsDir));
+}
+
+/** The resolved library as the file Unity's copy (and arborist.py --models) gets. */
+export function modelLibraryText(library: ModelLibrary): string {
+    return JSON.stringify(library, null, 2) + '\n';
 }
 
 /** One palette asset resolved through the library (by id). Throws when it refers to a model the library lacks. */
@@ -158,11 +247,37 @@ export function addArboristModel(library: ModelLibrary, { id, species, kind = 'b
     if ((library.models ?? []).some((m) => m.id === id)) throw Error(`${id} is already in the model library`);
     const model: LibraryModel = { id, species, renderer, heightM: size.heightM, crownWidthM: size.crownWidthM, kind, form };
     if (look) model.look = look;
-    return { library: { ...library, format: MODELS_FORMAT, models: [...(library.models ?? []), model] }, model };
+    return { library: { ...library, format: library.format ?? MODELS_FORMAT, models: [...(library.models ?? []), model] }, model };
 }
 
-export function writeModelLibrary(courseDocsDir: string, library: ModelLibrary): void {
+/** The course's own models.json (overrides and course-only models). */
+export function writeModelLibrary(courseDocsDir: string, library: ModelLibrary | CourseModels): void {
     fs.writeFileSync(path.join(courseDocsDir, 'models.json'), JSON.stringify(library, null, 2) + '\n');
+}
+
+/** The shared library (<docs root>/model-library.json). */
+export function writeSharedLibrary(docsRoot: string, library: ModelLibrary): void {
+    fs.writeFileSync(path.join(docsRoot, SHARED_LIBRARY_FILE), JSON.stringify({ ...library, format: SHARED_LIBRARY_FORMAT }, null, 2) + '\n');
+}
+
+/**
+ * A course entry moved into the shared library: an override is deep-merged onto its shared model (every
+ * course without its own override then gets it), a course-only model joins the shared library; either way
+ * it leaves the course file. Refuses a model the course file does not have and a `disabled` entry. The
+ * course's own resolved library is unchanged. Writes nothing.
+ */
+export function promoteModel(shared: ModelLibrary, course: CourseModels, id: string): { shared: ModelLibrary; course: CourseModels; model: LibraryModel; joined: boolean } {
+    const entry = course.models.find((m) => m.id === id);
+    if (!entry) throw Error(`${id} is not in the course's models.json (nothing to promote)`);
+    if (entry.disabled) throw Error(`${id} is disabled in the course: that stays the course's own`);
+    const at = shared.models.findIndex((m) => m.id === id);
+    const model = at >= 0 ? deepMerge(shared.models[at] as unknown as Record<string, unknown>, entry) as unknown as LibraryModel : entry as LibraryModel;
+    const models = at >= 0 ? shared.models.map((m, i) => (i === at ? model : m)) : [...shared.models, model];
+    return {
+        shared: { ...shared, format: SHARED_LIBRARY_FORMAT, models },
+        course: { ...course, models: course.models.filter((m) => m.id !== id) },
+        model, joined: at < 0,
+    };
 }
 
 /** A palette file read with the model library beside it (models.json in the same folder). */

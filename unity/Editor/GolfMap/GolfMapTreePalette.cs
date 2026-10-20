@@ -4,10 +4,12 @@
 // file. The panel sits beside the Inner | Outer panels, its draft lives on the inner
 // planter, and the preview counts every area that has a survey loaded.
 //
-// The file stays the source of truth and is edited from both sides. The tab works
-// on a draft (GolfMapPalette keeps every key it does not model), writes it back
-// on Save, and reloads when the file changes on disk - silently while the draft
-// is clean, with a prompt once it is not. The preview re-runs the matcher over
+// The repo's docs/gspro/<course>/palette.json is the source of truth; the course
+// folder's copy is generated from it (bun run models -- sync). The tab works on a
+// draft of that copy (GolfMapPalette keeps every key it does not model); Save hands
+// the draft to the repo's `bun run models -- palette`, which checks it, writes the
+// repo's file and syncs it back here. It reloads when the file changes on disk -
+// silently while the draft is clean, with a prompt once it is not. The preview re-runs the matcher over
 // the loaded survey with the draft, so a weight can be judged by the mix it
 // actually produces before anything is planted: weights are preferences, and a
 // species only wins a stem it fits.
@@ -32,7 +34,6 @@ namespace GolfMap.Editor
         string newSpecies = "";
         string arboristLabel = "", arboristSpecies = "", arboristAddNote = "";
         bool arboristConifer;
-        const string CataloguePref = "GolfMap.ArboristCatalogueSizes";   // data/arborist/catalog-sizes.json of the golf-map repo
         [SerializeField] bool showRules, showAssets = true;
         [SerializeField] Vector2 assetScroll;
 
@@ -128,12 +129,22 @@ namespace GolfMap.Editor
             // The look materials are assets and may have been tuned outside this panel: record them as they are now.
             var course = GolfMapCourses.For(component);
             foreach (var group in draft.species) foreach (var look in group.looks) GolfMapLooks.Capture(course, draft, group.name, look);
-            GolfMapPalette.Save(draftPath, draft, draftDoc);
-            diskText = draftText = GolfMapPalette.Text(draft, draftDoc);
+            var text = GolfMapPalette.Text(draft, draftDoc);
+            // A course's palette.json is the repo's (bun run models -- palette writes it and syncs it here); a
+            // palette file of another name (an area's own Biome JSON) is this project's alone and saved in place.
+            bool repoPalette = Path.GetFileName(draftPath) == "palette.json";
+            if (repoPalette)
+            {
+                if (string.IsNullOrEmpty(course.exportPrefix)) { paletteNote = "Not saved: the course has no Export Prefix (the repo's docs/gspro/<prefix>/ folder)."; return; }
+                try { GolfMapModels.SavePalette(GolfMapModels.RepoRoot(), course.exportPrefix, draftPath, text); }
+                catch (Exception e) { paletteNote = "Not saved: " + e.Message; return; }
+            }
+            else GolfMapPalette.Save(draftPath, draft, draftDoc);
+            diskText = draftText = text;
             draftStamp = File.GetLastWriteTimeUtc(draftPath);
             draftDirty = false; diskChanged = false;
             if (GolfMapCourses.Owns(draftPath)) AssetDatabase.ImportAsset(draftPath);
-            paletteNote = "Saved " + draftPath + ". Planted trees are unchanged until the next Plant.";
+            paletteNote = "Saved " + (repoPalette ? "the repo's docs/gspro/" + course.exportPrefix + "/palette.json and " : "") + draftPath + ". Planted trees are unchanged until the next Plant.";
         }
 
         string DraftProblem()
@@ -332,21 +343,21 @@ namespace GolfMap.Editor
             DrawAddArborist();
         }
 
-        // An Arborist model from Arborist's catalogue joins the course's model library (models.json beside the
-        // palette, sized from the catalogue's first LOD; bun run models -- add does the same on the repo's copy)
-        // and the draft palette refers to it. Save the palette to plant it.
+        // An Arborist model from Arborist's catalogue joins the course's model library: the repo's
+        // `bun run models -- add` (sized from the catalogue's first LOD) writes docs/gspro/<course>/models.json and
+        // syncs it beside the palette, and the draft palette refers to it. Save the palette to plant it.
         void DrawAddArborist()
         {
             EditorGUILayout.LabelField(new GUIContent("Add Arborist model", "A model of Arborist's catalogue: Arborist draws its trees, the course's VSP never holds them."), EditorStyles.miniBoldLabel);
-            string catalogue = EditorPrefs.GetString(CataloguePref, "");
+            string repo = GolfMapModels.RepoRoot();
             using (new EditorGUILayout.HorizontalScope())
             {
-                EditorGUILayout.LabelField(new GUIContent("Catalogue", "Arborist's model sizes: data/arborist/catalog-sizes.json in the golf-map repo"), GUILayout.Width(70));
-                EditorGUILayout.LabelField(string.IsNullOrEmpty(catalogue) ? "(pick catalog-sizes.json)" : catalogue, EditorStyles.miniLabel);
+                EditorGUILayout.LabelField(new GUIContent("Repo", "The golf-map repo: its bun run models writes models.json and palette.json (Add and Save here run it)"), GUILayout.Width(70));
+                EditorGUILayout.LabelField(string.IsNullOrEmpty(repo) ? "(pick the golf-map repo)" : repo, EditorStyles.miniLabel);
                 if (GUILayout.Button("...", GUILayout.Width(30)))
                 {
-                    var picked = EditorUtility.OpenFilePanel("Arborist catalogue sizes (catalog-sizes.json)", string.IsNullOrEmpty(catalogue) ? "" : Path.GetDirectoryName(catalogue), "json");
-                    if (!string.IsNullOrEmpty(picked)) EditorPrefs.SetString(CataloguePref, picked);
+                    var picked = EditorUtility.OpenFolderPanel("The golf-map repo", repo ?? "", "");
+                    if (!string.IsNullOrEmpty(picked)) EditorPrefs.SetString(GolfMapModels.RepoPref, picked);
                 }
             }
             using (new EditorGUILayout.HorizontalScope())
@@ -354,15 +365,19 @@ namespace GolfMap.Editor
                 arboristLabel = EditorGUILayout.TextField(new GUIContent("Label", "Arborist's catalogue label, e.g. CE_DA_Forest_Tree_16018"), arboristLabel);
                 arboristSpecies = EditorGUILayout.TextField(arboristSpecies, GUILayout.Width(70)).Trim().ToLowerInvariant();
                 arboristConifer = GUILayout.Toggle(arboristConifer, new GUIContent("conifer", "Off: broadleaf"), GUILayout.Width(60));
-                using (new EditorGUI.DisabledScope(string.IsNullOrEmpty(catalogue) || arboristLabel.Trim().Length == 0 || arboristSpecies.Length == 0))
+                using (new EditorGUI.DisabledScope(string.IsNullOrEmpty(repo) || arboristLabel.Trim().Length == 0 || arboristSpecies.Length == 0))
                     if (GUILayout.Button("Add", GUILayout.Width(44)))
                     {
                         try
                         {
-                            var asset = GolfMapModels.AddArborist(GolfMapModels.PathBeside(draftPath), arboristLabel, arboristSpecies, arboristConifer ? "conifer" : "broadleaf", "tree", catalogue);
+                            var prefix = GolfMapCourses.For(component).exportPrefix;
+                            if (string.IsNullOrEmpty(prefix)) throw new Exception("The course has no Export Prefix (the repo's docs/gspro/<prefix>/ folder).");
+                            var asset = GolfMapModels.AddArborist(repo, prefix, draftPath, arboristLabel, arboristSpecies, arboristConifer ? "conifer" : "broadleaf", "tree");
+                            var libraryPath = GolfMapModels.PathBeside(draftPath);
+                            if (GolfMapCourses.Owns(libraryPath)) AssetDatabase.ImportAsset(libraryPath);
                             asset.enabled = true;
                             draft.assets.Add(asset);
-                            arboristAddNote = "Added " + asset.model + " (" + asset.heightM.ToString("0.0") + " x " + asset.crownWidthM.ToString("0.0") + " m) to " + GolfMapModels.PathBeside(draftPath) + ". Save the palette to plant it.";
+                            arboristAddNote = "Added " + asset.model + " (" + asset.heightM.ToString("0.0") + " x " + asset.crownWidthM.ToString("0.0") + " m) to the repo's docs/gspro/" + prefix + "/models.json and " + libraryPath + ". Save the palette to plant it.";
                             arboristLabel = ""; GUI.changed = true; GUI.FocusControl(null);
                         }
                         catch (Exception e) { arboristAddNote = e.Message; }

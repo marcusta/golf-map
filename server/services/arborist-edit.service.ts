@@ -27,6 +27,7 @@ import { mkdtemp, open, readFile, rename, rm, writeFile } from 'node:fs/promises
 import {
     courseSlug, placementsExportFileName, routingExportFileName, statOrNull, treeEditsFileName, treesExportFileName, type ExportRunner,
 } from './gspro-export.service';
+import { SHARED_LIBRARY_FILE, loadModelLibrary } from '../../shared/vegetation/tree-models';
 import { ArboristService, terrainOrigin, terrainsSquare, type ArboristCourse } from './arborist.service';
 
 /** The trees package's items: the id of item `variant` follows from its name (pipeline/arborist.py tree_item). */
@@ -468,9 +469,11 @@ export class ArboristEditService {
             placements.push({ file, terrain, header, placements: list });
         }
         if (!placements.length) throw new Error(`no placements in ${course.exportDir}: plant the trees in Unity once (it writes <prefix>-inner-placements.json)`);
+        // The course's library resolved: the shared model-library.json with the course's models.json over it.
         const modelsFile = this.docs(course, 'models.json');
-        if (!await statOrNull(modelsFile)) throw new Error(`no model library at ${modelsFile}`);
-        const models = new Map((JSON.parse(await readFile(modelsFile, 'utf8')).models as TreeModel[]).map(m => [m.id, m]));
+        const library = loadModelLibrary(path.dirname(modelsFile));
+        if (!library.models.length) throw new Error(`no model library at ${modelsFile} (nor a shared ${SHARED_LIBRARY_FILE})`);
+        const models = new Map((library.models as unknown as TreeModel[]).map(m => [m.id, m]));
         const square = await terrainsSquare(course.exportDir, slug);
         if (!square) throw new Error(`no inner heightmap sidecar in ${course.exportDir}: the terrains square is unknown`);
         return { course, slug, dat, idsFile, ids, placements, models, square };
