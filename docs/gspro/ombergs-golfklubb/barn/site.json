@@ -1,0 +1,20 @@
+{
+  "name": "Omberg machine hall",
+  "dataDir": "../../../../data/omberg-barn",
+  "crop": "crop.json",
+  "origin": [
+    477985,
+    6458135,
+    100.0
+  ],
+  "assetPrefix": "omberg_barn_",
+  "groundAssets": [],
+  "osm": {
+    "omberg_barn_hall": "9000001",
+    "omberg_barn_red": "9000002"
+  },
+  "footprints": "../../../../data/omberg-barn/osm-buildings.json",
+  "categories": [
+    "building"
+  ]
+}
