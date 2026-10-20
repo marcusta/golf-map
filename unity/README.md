@@ -399,6 +399,31 @@ A record whose id no longer exists falls back to the nearest survey stem within 
 original position; unmatched records are reported and left in the file. There is no Unity
 undo for editor changes: use Reset to survey or the planting backups.
 
+### Arborist proxies
+
+Trees of `arborist:` models never go into VSP; they live only in
+`<prefix>-<terrain>-placements.json` and Arborist draws them in GSPro. `GolfMap > Trees > Show
+Arborist proxies` (or `golfmap.trees.proxies on=true terrain=inner`) draws each one in the
+Scene view as a stand-in: a trunk cylinder and a crown ellipsoid at the placement's
+`heightM` and `crownWidthM`, tinted by species (bushes and reeds are a crown from the
+ground, lily pads a flat disc). `GolfMapArboristProxies.cs` draws them with
+`Graphics.DrawMeshInstanced` for the Scene view camera only: no scene objects, nothing saved
+into the scene, nothing in a GSPro build.
+
+- What shows is the placements file with the terrain's tree edits laid over it (moved,
+  resized, turned, deleted and added Arborist trees as the next Plant places them). Both files
+  are watched; a change to either re-reads them. `reload=true` forces it; `x, z, radius` lists
+  the proxies near a point.
+- With the proxies on for the editor's terrain (the **Arborist proxies** toggle in the tree
+  editor), the Scene view tree editor picks a proxy like a VSP tree: move, rotate, resize
+  (the size becomes the drawn size, `sized`, with the shown model kept), Inspector fields,
+  Delete. Each change is only a record in the tree-edits file, the same one
+  `golfmap.trees.edit` writes; the proxy moves at once, VSP storage is untouched, nothing is
+  replanted. Plant and the Arborist export carry it into GSPro.
+- `golfmap.trees.proxies.drag id=<tree id> dx=<m>` drags one proxy with mouse events sent to the
+  Scene view (click, then the move handle's x arrow), as a hand does; the tree editor must be
+  editing.
+
 ### Refreshing after a material edit
 
 `GolfMap > Refresh vegetation from materials` (`GolfMapVegetationRefresh.cs`)

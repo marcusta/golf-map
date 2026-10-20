@@ -12,6 +12,13 @@
 // Every change is applied to VSP storage at once and recorded in the edits
 // file next to the survey (GolfMapTreeEdits.cs), so replanting keeps it.
 // No Unity undo: use "Reset selected to survey" or the planting backups.
+//
+// Trees Arborist draws are not in VSP; with the Arborist proxies on for this
+// terrain (GolfMapArboristProxies.cs) their stand-ins are picked, moved, turned,
+// resized and deleted here the same way. Such a change is only an edit record
+// (golfmap.trees.edit's: position, a drawn size with the model kept, rotation,
+// delete) and the proxy follows at once; the next Plant and Arborist export
+// carry it into GSPro.
 using System;
 using System.Collections.Generic;
 using System.Globalization;
@@ -60,6 +67,11 @@ namespace GolfMap.Editor
         readonly Dictionary<string, Vector3> dragBaseScale = new Dictionary<string, Vector3>();
         static readonly Color StemColour = new Color(0.3f, 1f, 0.4f, 0.35f);
         static readonly Color SelectedColour = new Color(1f, 0.85f, 0.1f, 1f);
+        // Selected Arborist proxies by tree id (never together with VSP trees), their drag start and the Inspector fields.
+        readonly List<string> proxySelection = new List<string>();
+        readonly Dictionary<string, Vector3> proxyDragStart = new Dictionary<string, Vector3>();
+        readonly Dictionary<string, Vector2> proxyDragSize = new Dictionary<string, Vector2>();   // drawn height, crown width
+        float proxyFieldH, proxyFieldW, proxyFieldRot; string proxyFieldsFor = "";
 
         void OnDisable() { StopEditing(); }
 
@@ -87,6 +99,8 @@ namespace GolfMap.Editor
             if (GUILayout.Button("Stop editing")) { StopEditing(); return; }
             EditorGUILayout.HelpBox("Editing in the Scene view while this object is selected. Selecting something else pauses the editor; select \"" + component.name + "\" again to continue.", MessageType.None);
             showStems = EditorGUILayout.Toggle("Show stems near camera", showStems);
+            bool proxiesOn = EditorGUILayout.Toggle(new GUIContent("Arborist proxies", "Stand-ins for the trees Arborist draws (GolfMap > Trees > Show Arborist proxies); pick and edit them like VSP trees."), ProxiesHere);
+            if (proxiesOn != ProxiesHere) { GolfMapArboristProxies.Set(proxiesOn, RoleKey); proxySelection.Clear(); }
             addMode = EditorGUILayout.Toggle("Click adds a tree", addMode);
             var tool = Tools.current == Tool.Rotate ? Tool.Rotate : Tools.current == Tool.Scale ? Tool.Scale : Tool.Move;
             using (new EditorGUILayout.HorizontalScope())
@@ -105,7 +119,8 @@ namespace GolfMap.Editor
                 addHeight = EditorGUILayout.FloatField("Height (m)", addHeight);
                 addRadius = EditorGUILayout.FloatField("Crown radius (m)", addRadius);
             }
-            EditorGUILayout.LabelField("Selected", selection.Count + " tree(s)");
+            if (proxySelection.Count > 0) DrawProxyFields();
+            else EditorGUILayout.LabelField("Selected", selection.Count + " tree(s)");
             if (selection.Count == 1)
             {
                 var et = index[selection[0]];
@@ -205,7 +220,7 @@ namespace GolfMap.Editor
         {
             if (editing) Tools.hidden = false;
             if (editProbe != null) { editProbe.Dispose(); editProbe = null; }
-            index.Clear(); selection.Clear(); survey.Clear(); editing = false; addMode = false;
+            index.Clear(); selection.Clear(); proxySelection.Clear(); survey.Clear(); editing = false; addMode = false;
             editSystem = null; editPackage = null;
             SceneView.RepaintAll();
         }
@@ -362,7 +377,7 @@ namespace GolfMap.Editor
             catch (Exception e) { editStatus = what + " failed: " + e.Message; Debug.LogException(e); }
             finally
             {
-                try { SaveEdits(); } catch (Exception e) { editStatus += " Edits file not saved: " + e.Message; Debug.LogException(e); }
+                try { SaveEdits(); GolfMapArboristProxies.EditsWritten(editsPath); } catch (Exception e) { editStatus += " Edits file not saved: " + e.Message; Debug.LogException(e); }
                 MarkStorageDirty(); Repaint();
             }
         }
@@ -385,6 +400,7 @@ namespace GolfMap.Editor
 
         void DeleteSelected()
         {
+            if (selection.Count == 0 && proxySelection.Count > 0) { ProxyGuard("Delete", DeleteProxies); return; }   // records only, VSP untouched
             Guard("Delete", () =>
             {
                 foreach (var id in selection.ToList())
@@ -397,6 +413,7 @@ namespace GolfMap.Editor
                     index.Remove(id); loaded.trees.Remove(et.tree); biomeMatches.Remove(et.tree);
                 }
                 selection.Clear();
+                DeleteProxies();
             });
         }
 
@@ -480,22 +497,29 @@ namespace GolfMap.Editor
                 }
                 else
                 {
-                    var hit = PickAt(e.mousePosition, cam);
-                    if (!e.shift) selection.Clear();
+                    // The nearest stem on screen, a VSP tree or an Arborist proxy; one kind is selected at a time.
+                    float best = 14f;
+                    var hit = PickAt(e.mousePosition, cam, ref best);
+                    var proxyHit = ProxiesHere ? PickProxy(e.mousePosition, cam, ref best) : null;
+                    if (proxyHit != null) hit = null;
+                    if (hit != null || !e.shift) proxySelection.Clear();
+                    if (proxyHit != null || !e.shift) selection.Clear();
                     if (hit != null) { if (selection.Contains(hit.tree.id)) { if (e.shift) selection.Remove(hit.tree.id); } else selection.Add(hit.tree.id); }
-                    fieldsFor = "";
+                    if (proxyHit != null) { if (proxySelection.Contains(proxyHit.id)) { if (e.shift) proxySelection.Remove(proxyHit.id); } else proxySelection.Add(proxyHit.id); }
+                    fieldsFor = ""; proxyFieldsFor = "";
                 }
                 e.Use(); Repaint(); SceneView.RepaintAll();
             }
+            bool anySelected = selection.Count > 0 || proxySelection.Count > 0;
             if (e.type == EventType.KeyDown)
             {
-                if (e.keyCode == KeyCode.Delete && selection.Count > 0) { DeleteSelected(); e.Use(); }
-                else if (e.keyCode == KeyCode.Escape && selection.Count > 0) { selection.Clear(); e.Use(); Repaint(); SceneView.RepaintAll(); }
+                if (e.keyCode == KeyCode.Delete && anySelected) { DeleteSelected(); e.Use(); }
+                else if (e.keyCode == KeyCode.Escape && anySelected) { selection.Clear(); proxySelection.Clear(); e.Use(); Repaint(); SceneView.RepaintAll(); }
             }
             // Swallow Delete even with no tree selected: it must never delete the GolfMap Trees object.
             if ((e.type == EventType.ValidateCommand || e.type == EventType.ExecuteCommand) && (e.commandName == "SoftDelete" || e.commandName == "Delete"))
             {
-                if (e.type == EventType.ExecuteCommand && selection.Count > 0) DeleteSelected();
+                if (e.type == EventType.ExecuteCommand && anySelected) DeleteSelected();
                 e.Use();
             }
         }
@@ -523,11 +547,12 @@ namespace GolfMap.Editor
             return false;
         }
 
-        EditorTree PickAt(Vector2 mouse, Camera cam)
+        // The stored tree whose stem is nearest the mouse within `best` pixels (lowered to its distance), or null.
+        EditorTree PickAt(Vector2 mouse, Camera cam, ref float best)
         {
             var ray = HandleUtility.GUIPointToWorldRay(mouse);
             Vector3 camPos = cam.transform.position;
-            float best = 14f; EditorTree hit = null; const float range = 2500f;
+            EditorTree hit = null; const float range = 2500f;
             foreach (var et in index.Values)
             {
                 if (!et.stored) continue;
@@ -563,10 +588,12 @@ namespace GolfMap.Editor
                 Handles.DrawLine(et.position, top);
                 Handles.Label(top + Vector3.up, (et.prefab ? et.prefab.name : "?") + "  " + et.tree.h.ToString("0.0", CultureInfo.InvariantCulture) + " m", EditorStyles.whiteBoldLabel);
             }
+            if (ProxiesHere) DrawSelectedProxies();
         }
 
         void DrawHandles(Event e)
         {
+            if (proxySelection.Count > 0) { if (ProxiesHere) DrawProxyHandles(e); return; }
             if (selection.Count == 0) return;
             var trees = selection.Select(id => { EditorTree t; index.TryGetValue(id, out t); return t; }).Where(t => t != null && t.stored).ToList();
             if (trees.Count == 0) return;
@@ -653,6 +680,251 @@ namespace GolfMap.Editor
                     fieldsFor = "";
                 });
             }
+        }
+
+        // ---- Arborist proxies ------------------------------------------------
+        // A proxy edit is only a tree edit record, as golfmap.trees.edit writes it (GolfMapTreeEditsBridge.cs):
+        // VSP storage is not touched and nothing is replanted. The proxy shows the change at once.
+
+        bool ProxiesHere { get { return GolfMapArboristProxies.On && GolfMapArboristProxies.TerrainRole == RoleKey; } }
+        internal IList<string> SelectedProxyIds { get { return proxySelection; } }
+        internal string EditStatus { get { return editStatus; } }
+
+        List<GolfMapArboristProxies.Proxy> SelectedProxies()
+        {
+            return proxySelection.Select(id => GolfMapArboristProxies.Find(id)).Where(p => p != null).ToList();
+        }
+
+        GolfMapTree LoadedTree(string id) { return loaded == null ? null : loaded.trees.FirstOrDefault(t => t.id == id); }
+
+        // The proxy nearest the mouse within `best` pixels (lowered to its distance): its stem, or its crown's outline.
+        GolfMapArboristProxies.Proxy PickProxy(Vector2 mouse, Camera cam, ref float best)
+        {
+            var ray = HandleUtility.GUIPointToWorldRay(mouse);
+            Vector3 camPos = cam.transform.position;
+            GolfMapArboristProxies.Proxy hit = null; const float range = 2500f;
+            foreach (var p in GolfMapArboristProxies.All)
+            {
+                var d = p.position - camPos;
+                if (d.sqrMagnitude > range * range || Vector3.Dot(d, ray.direction) <= 0) continue;
+                Vector3 centre, size; float trunkH, trunkD;
+                GolfMapArboristProxies.Shape(p, out centre, out size, out trunkH, out trunkD);
+                float px = Mathf.Min(HandleUtility.DistanceToLine(p.position, p.position + Vector3.up * Mathf.Max(size.y, centre.y - p.position.y + size.y / 2)),
+                    HandleUtility.DistanceToCircle(centre, size.x / 2) + 6f);
+                if (px < best) { best = px; hit = p; }
+            }
+            return hit;
+        }
+
+        // The tree's edit record, made as golfmap.trees.edit makes it when the tree has none: from the survey's tree,
+        // or (a placement the loaded survey lacks) from the proxy's own place and drawn size with its model.
+        GolfMapTreeEdit ProxyRecord(GolfMapArboristProxies.Proxy p)
+        {
+            var existing = editFile.edits.FirstOrDefault(x => x.id == p.id);
+            if (existing != null) return existing;
+            var tree = LoadedTree(p.id);
+            var origin = terrain.transform.position;
+            var edit = new GolfMapTreeEdit { id = p.id, op = "modify" };
+            if (tree != null)
+            {
+                edit.ox = edit.x = tree.x; edit.oz = edit.z = tree.z; edit.h = tree.h; edit.r = tree.r; edit.k = tree.k; edit.bush = tree.bush;
+                treeEdits[tree] = edit;
+            }
+            else
+            {
+                edit.ox = edit.x = p.position.x - origin.x; edit.oz = edit.z = p.position.z - origin.z;
+                edit.h = p.heightM; edit.r = Mathf.Max(p.crownWidthM, 0.1f) / 2; edit.sized = true;
+                PinModel(edit, p);
+            }
+            editFile.edits.Add(edit);
+            return edit;
+        }
+
+        // A size named by hand keeps the model the proxy shows (else the fit might pick another for that size).
+        void PinModel(GolfMapTreeEdit edit, GolfMapArboristProxies.Proxy p)
+        {
+            if (!string.IsNullOrEmpty(edit.model) || string.IsNullOrEmpty(p.model)) return;
+            edit.model = p.model; edit.guid = "";
+            var asset = biome != null ? biome.assets.FirstOrDefault(a => a.model == p.model) : null;
+            if (asset != null) { edit.species = asset.species ?? ""; edit.k = GolfMapBiome.StemKind(new[] { asset }); }
+        }
+
+        void SetDrawnSize(GolfMapTreeEdit edit, GolfMapArboristProxies.Proxy p)
+        {
+            edit.h = p.heightM; edit.r = Mathf.Max(p.crownWidthM, 0.1f) / 2; edit.sized = true;
+            PinModel(edit, p);
+            var tree = LoadedTree(p.id); if (tree != null) { tree.h = edit.h; tree.r = edit.r; tree.k = edit.k; }
+        }
+
+        void ProxyGuard(string what, Action action)
+        {
+            try { action(); editStatus = what + " done (Arborist tree: the next Plant and Arborist export bring it to GSPro). " + editFile.edits.Count + " edit records."; }
+            catch (Exception e) { editStatus = what + " failed: " + e.Message; Debug.LogException(e); }
+            finally
+            {
+                try { SaveEdits(); GolfMapArboristProxies.EditsWritten(editsPath); } catch (Exception e) { editStatus += " Edits file not saved: " + e.Message; Debug.LogException(e); }
+                GolfMapArboristProxies.Changed(); Repaint();
+            }
+        }
+
+        // Inside DeleteSelected's Guard: the selected proxies' trees are not planted (an added tree's record is dropped).
+        void DeleteProxies()
+        {
+            foreach (var p in SelectedProxies())
+            {
+                var existing = editFile.edits.FirstOrDefault(x => x.id == p.id);
+                var tree = LoadedTree(p.id);
+                if (existing != null && existing.op == "add") { editFile.edits.Remove(existing); if (tree != null) treeEdits.Remove(tree); }
+                else ProxyRecord(p).op = "delete";
+                if (tree != null) { loaded.trees.Remove(tree); biomeMatches.Remove(tree); }
+                GolfMapArboristProxies.Remove(p.id);
+            }
+            proxySelection.Clear(); proxyFieldsFor = "";
+        }
+
+        void DrawProxyFields()
+        {
+            var proxies = SelectedProxies();
+            EditorGUILayout.LabelField("Selected", proxies.Count + " Arborist tree(s) (proxies)");
+            if (proxies.Count == 1)
+            {
+                var p = proxies[0];
+                if (proxyFieldsFor != p.id) { proxyFieldsFor = p.id; proxyFieldH = p.heightM; proxyFieldW = p.crownWidthM; proxyFieldRot = p.rotationY; }
+                EditorGUILayout.LabelField("Id", p.id);
+                EditorGUILayout.LabelField("Model", p.model + (p.edited ? "  (edited)" : ""));
+                EditorGUILayout.LabelField("Position", "x " + p.position.x.ToString("0.0", CultureInfo.InvariantCulture) + "  z " + p.position.z.ToString("0.0", CultureInfo.InvariantCulture));
+                proxyFieldH = EditorGUILayout.FloatField("Height (m)", proxyFieldH);
+                proxyFieldW = EditorGUILayout.FloatField("Crown width (m)", proxyFieldW);
+                proxyFieldRot = EditorGUILayout.FloatField("Rotation (deg)", proxyFieldRot);
+                using (new EditorGUILayout.HorizontalScope())
+                {
+                    if (GUILayout.Button("Apply")) ApplyProxyFields(p);
+                    if (GUILayout.Button("Delete")) DeleteSelected();
+                }
+            }
+            else if (proxies.Count > 1 && GUILayout.Button("Delete")) DeleteSelected();
+        }
+
+        void ApplyProxyFields(GolfMapArboristProxies.Proxy p)
+        {
+            ProxyGuard("Apply", () =>
+            {
+                if (!(proxyFieldW > 0) || !(proxyFieldH > 0 || (proxyFieldH == 0 && p.heightM == 0))) throw new Exception("Height and crown width must be positive.");
+                var edit = ProxyRecord(p);
+                if (proxyFieldH != p.heightM || proxyFieldW != p.crownWidthM) { p.heightM = proxyFieldH; p.crownWidthM = proxyFieldW; SetDrawnSize(edit, p); }
+                if (Mathf.Abs(Mathf.DeltaAngle(proxyFieldRot, p.rotationY)) > 0.001f || !edit.rotationSet) { p.rotationY = Mathf.Repeat(proxyFieldRot, 360); edit.rotation = p.rotationY; edit.rotationSet = true; }
+                p.edited = true; proxyFieldsFor = "";
+            });
+        }
+
+        void DrawSelectedProxies()
+        {
+            Handles.color = SelectedColour;
+            foreach (var p in SelectedProxies())
+            {
+                Vector3 centre, size; float trunkH, trunkD;
+                GolfMapArboristProxies.Shape(p, out centre, out size, out trunkH, out trunkD);
+                float r = size.x / 2;
+                var top = centre + Vector3.up * size.y / 2;
+                Handles.DrawWireDisc(p.position, Vector3.up, r);
+                Handles.DrawWireDisc(centre, Vector3.up, r);
+                Handles.DrawLine(p.position, top);
+                Handles.DrawLine(centre, centre + Quaternion.Euler(0, p.rotationY, 0) * Vector3.forward * r * 1.4f);   // facing
+                Handles.Label(top + Vector3.up, p.Label + "  " + p.heightM.ToString("0.0", CultureInfo.InvariantCulture) + " m", EditorStyles.whiteBoldLabel);
+            }
+        }
+
+        // As DrawHandles for VSP trees: a live preview on the proxies, the record written on mouse up.
+        void DrawProxyHandles(Event e)
+        {
+            var proxies = SelectedProxies();
+            if (proxies.Count == 0) return;
+            Vector3 centre = Vector3.zero; foreach (var p in proxies) centre += p.position; centre /= proxies.Count;
+            float size = HandleUtility.GetHandleSize(centre);
+            var tool = Tools.current == Tool.Rotate ? Tool.Rotate : Tools.current == Tool.Scale ? Tool.Scale : Tool.Move;
+            if (tool == Tool.Move)
+            {
+                EditorGUI.BeginChangeCheck();
+                var moved = Handles.PositionHandle(centre, Quaternion.identity);
+                if (EditorGUI.EndChangeCheck())
+                {
+                    if (!dragMove) { proxyDragStart.Clear(); foreach (var p in proxies) proxyDragStart[p.id] = p.position; dragMove = true; }
+                    var delta = moved - centre;
+                    foreach (var p in proxies) p.position += delta;
+                    GolfMapArboristProxies.Changed();
+                }
+            }
+            else if (tool == Tool.Rotate)
+            {
+                Handles.color = Color.red;
+                var first = proxies[0];
+                var current = Quaternion.Euler(0, first.rotationY, 0);
+                EditorGUI.BeginChangeCheck();
+                var rot = Handles.Disc(current, centre, Vector3.up, size * 1.2f, false, 5f);
+                if (EditorGUI.EndChangeCheck())
+                {
+                    float delta = Mathf.DeltaAngle(current.eulerAngles.y, rot.eulerAngles.y);
+                    foreach (var p in proxies) p.rotationY = Mathf.Repeat(p.rotationY + delta, 360);
+                    dragRotate = true; GolfMapArboristProxies.Changed();
+                }
+                Handles.color = SelectedColour;
+            }
+            else
+            {
+                // Y = height, X or Z = crown width, centre cube = both.
+                var current = new Vector3(dragFactorW, dragFactorH, dragFactorW);
+                EditorGUI.BeginChangeCheck();
+                var next = Handles.ScaleHandle(current, centre, Quaternion.identity, size * 1.5f);
+                if (EditorGUI.EndChangeCheck())
+                {
+                    bool uniform = next.x != current.x && next.y != current.y && next.z != current.z;
+                    float fh = uniform || next.y != current.y ? next.y : dragFactorH;
+                    float fw = uniform ? next.y : next.x != current.x ? next.x : next.z != current.z ? next.z : dragFactorW;
+                    dragFactorH = Mathf.Clamp(fh, 0.2f, 5f); dragFactorW = Mathf.Clamp(fw, 0.2f, 5f);
+                    if (!dragScale) { proxyDragSize.Clear(); foreach (var p in proxies) proxyDragSize[p.id] = new Vector2(p.heightM, p.crownWidthM); dragScale = true; }
+                    foreach (var p in proxies) { var b = proxyDragSize[p.id]; p.heightM = b.x * dragFactorH; p.crownWidthM = b.y * dragFactorW; }
+                    GolfMapArboristProxies.Changed();
+                }
+            }
+
+            bool released = e.rawType == EventType.MouseUp || (GUIUtility.hotControl == 0 && e.type == EventType.Repaint);
+            if (!released || !(dragMove || dragRotate || dragScale)) return;
+            bool move = dragMove, rotate = dragRotate, scale = dragScale;
+            dragMove = dragRotate = dragScale = false; dragFactorH = dragFactorW = 1;
+            var start = new Dictionary<string, Vector3>(proxyDragStart);
+            proxyDragStart.Clear(); proxyDragSize.Clear();
+            ProxyGuard(move ? "Move" : rotate ? "Rotate" : "Resize", () =>
+            {
+                var origin = terrain.transform.position;
+                if (move)
+                {
+                    var probe = new GolfMapTree();
+                    foreach (var p in proxies)
+                    {
+                        probe.x = p.position.x - origin.x; probe.z = p.position.z - origin.z;
+                        if (InsidePlot(probe)) continue;
+                        foreach (var u in proxies) { Vector3 back; if (start.TryGetValue(u.id, out back)) u.position = back; }
+                        throw new Exception("Tree " + p.id + " would leave the plot. Move reverted.");
+                    }
+                }
+                foreach (var p in proxies)
+                {
+                    var edit = ProxyRecord(p);
+                    if (move)
+                    {
+                        Vector3 from; float lift = start.TryGetValue(p.id, out from) ? p.position.y - from.y : 0;   // the green arrow: a ground offset
+                        edit.x = p.position.x - origin.x; edit.z = p.position.z - origin.z;
+                        bool meshHit; float ground = editProbe.Height(p.position, out meshHit);
+                        if (edit.ySet) edit.y += lift; else edit.dy += lift;
+                        p.position.y = edit.ySet ? edit.y : ground + edit.dy;
+                        var tree = LoadedTree(p.id); if (tree != null) { tree.x = edit.x; tree.z = edit.z; }
+                    }
+                    if (rotate) { edit.rotation = Mathf.Repeat(p.rotationY, 360); edit.rotationSet = true; }
+                    if (scale) SetDrawnSize(edit, p);
+                    p.edited = true;
+                }
+                proxyFieldsFor = "";
+            });
         }
     }
 }
