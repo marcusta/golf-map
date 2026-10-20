@@ -16,13 +16,14 @@
 //     list is a leftover of an older .blend (OPCD renumbers meshes when it regenerates
 //     the file): never added, reported with its objects; the Blender export deletes it.
 //     A record older than any FBX is ignored (OPCD's Batch Export bypasses it).
-// Vertex paint renders from mesh copies (GolfMapVertexPaint): after any add or
-// replace the paint is applied again, so the copies follow the new geometry. An
-// object showing a copy (renderer, and collider too once stone-wall ground reshaped
-// it) maps to its FBX through the paint's restore.json. The paint also reshapes
-// the ground under stone walls (GolfMapWallGround); the walls and boulders standing
-// on a replaced or added mesh are then built again (GolfMapWalls.RebuildOver), so
-// their stones meet it; the rest keep theirs, hand edits included.
+// The course meshes' shape and vertex paint are Blender's and come with the FBX (shaping layers 80-walls and
+// 90-paint): a sync never paints. An object re-added from a new FBX shows the FBX mesh, so its entry in the
+// paint's <course>/PaintedMeshes/restore.json (a temporary paint preview, the material it wore before a copy) is
+// dropped (GolfMapVertexPaint.Forget); an object still showing a preview copy maps to its FBX through the collider
+// (always the FBX mesh) or that record. With paint=true the materials are given again on what it re-added
+// (golfmap.paint.materials: creek beds, pond shores, wall stone; OPCD's Set Default Materials undoes them), and
+// the walls and boulders standing on a replaced or added mesh are built again (GolfMapWalls.RebuildOver), so their
+// stones meet it; the rest keep theirs, hand edits included.
 using System;
 using System.Collections.Generic;
 using System.IO;
@@ -39,7 +40,6 @@ namespace GolfMap.Editor
         const string StateFormat = "golfmap-meshes-sync-v2";
         const string StateFile = "meshes-sync.json";
         const string BlenderManifest = ".golfmap-fbx-sync.json";
-        const string PaintFile = "paint.json";
         const string SetDefaultMaterialsMenu = "GameObject/Set Default Materials";  // OPCD, SetMeshEditorDLL: acts on Selection.gameObjects
         const string GrassRendererType = "StixGames.GrassShader.GrassRenderer";
 
@@ -61,12 +61,12 @@ namespace GolfMap.Editor
         [MenuItem("GolfMap/Meshes/Rebuild all from FBX folder")]
         static void RebuildMenu()
         {
-            if (!EditorUtility.DisplayDialog("Rebuild course meshes", "Delete every course mesh object and add it again from the FBX folder (collider, OPCD Set Default Materials, vertex paint)?", "Rebuild", "Cancel")) return;
+            if (!EditorUtility.DisplayDialog("Rebuild course meshes", "Delete every course mesh object and add it again from the FBX folder (collider, OPCD Set Default Materials, course mesh materials)?", "Rebuild", "Cancel")) return;
             Log(Sync(false, true, true, null, null, true));
         }
 
-        [BridgeCommand("golfmap.meshes.sync", "Bring the scene's course meshes in step with the course's FBX folder (Blender export) the way deleting and re-adding them by hand does, but only where something changed: an FBX whose content changed since the last sync (file size+time) has its object deleted and added again, new FBX are added (under the course's mesh parent, MeshCollider, OPCD's Set Default Materials), objects that show no current FBX are stale (deleted with prune), then vertex paint is applied again. The first sync only records the scene (replaceAll rebuilds everything). FBX the Blender manifest does not list (leftovers of an older .blend) are never added. Marks the scene dirty; save=true saves it (and the assets it changed) once the sync has succeeded.",
-            args = "dryRun=false (plan only), prune=false (delete stale objects), paint=true, replaceAll=false, folder (under Assets; default: the course's meshFolder), parent (default: the course's meshParent), exclude (comma-separated FBX name prefixes; default: the course's meshExclude), " + GolfMapSceneSave.Arg)]
+        [BridgeCommand("golfmap.meshes.sync", "Bring the scene's course meshes in step with the course's FBX folder (Blender export) the way deleting and re-adding them by hand does, but only where something changed: an FBX whose content changed since the last sync (file size+time) has its object deleted and added again, new FBX are added (under the course's mesh parent, MeshCollider, OPCD's Set Default Materials), objects that show no current FBX are stale (deleted with prune); a re-added object's paint preview / material record is dropped (its new FBX carries Blender's paint), then (paint=true) golfmap.paint.materials runs on what it re-added and the stone walls on them are built again. The first sync only records the scene (replaceAll rebuilds everything). FBX the Blender manifest does not list (leftovers of an older .blend) are never added. Marks the scene dirty; save=true saves it (and the assets it changed) once the sync has succeeded.",
+            args = "dryRun=false (plan only), prune=false (delete stale objects), paint=true (course mesh materials and stone walls on what it re-added; never vertex paint), replaceAll=false, folder (under Assets; default: the course's meshFolder), parent (default: the course's meshParent), exclude (comma-separated FBX name prefixes; default: the course's meshExclude), " + GolfMapSceneSave.Arg)]
         static object Command(BridgeArgs a)
         {
             return Sync(a.Bool("dryRun", false), a.Bool("prune", false), a.Bool("paint", true), a.String("folder"), a.String("parent"), a.Bool("replaceAll", false), a.String("exclude"));
@@ -316,10 +316,19 @@ namespace GolfMap.Editor
                 foreach (var g in stale) if (g != null) Undo.DestroyObjectImmediate(g);
             Undo.CollapseUndoOperations(undoGroup);
 
-            // Painting reads the FBX colours, so it runs after the new objects exist.
-            if (paint && created.Count > 0 && File.Exists(courseFolder + PaintFile))
+            // A re-added object shows its new FBX mesh: a paint preview of the old one, or the material it wore before a
+            // material copy, no longer holds (OPCD's Set Default Materials dressed it afresh).
+            if (created.Count > 0)
             {
-                result["paint"] = Summary(GolfMapVertexPaint.Apply(false));
+                var forgotten = GolfMapVertexPaint.Forget(courseFolder, created.Where(g => g != null).Select(g => PathOf(g)));
+                if (forgotten.Count > 0) result["paintRecordsDropped"] = forgotten.Cast<object>().ToList();
+            }
+            // The materials read the FBX colours (the wall stone), so they come after the new objects exist.
+            if (paint && created.Count > 0)
+            {
+                var names = created.Where(g => g != null).Select(g => g.name).ToList();
+                try { result["materials"] = Summary(GolfMapVertexPaint.Materials(false, names)); }
+                catch (Exception e) { errors.Add("golfmap.paint.materials: " + e.Message); Debug.LogException(e); }
                 var walls = GolfMapWalls.RebuildOver(created);
                 if (walls != null) result["walls"] = walls;
             }
@@ -438,7 +447,7 @@ namespace GolfMap.Editor
 
         static Dictionary<string, object> Summary(Dictionary<string, object> paint)
         {
-            return paint.Where(kv => kv.Key != "meshes").ToDictionary(kv => kv.Key, kv => kv.Value);
+            return paint.Where(kv => kv.Key != "wearing").ToDictionary(kv => kv.Key, kv => kv.Value);
         }
 
         // Name -> fingerprint of what the current .blend exports (the Blender FBX sync's manifest); null without one.
@@ -454,8 +463,8 @@ namespace GolfMap.Editor
         }
 
         // The FBX (under folder) an object's mesh comes from: the collider keeps the
-        // FBX mesh when vertex paint has swapped the MeshFilter to a copy; when both
-        // show a copy under `painted` (stone-wall ground), the paint's record names it.
+        // FBX mesh when a paint preview has swapped the MeshFilter to a copy; when both
+        // show a copy under `painted` (an old stone-wall ground copy), the paint's record names it.
         static string SourceFbx(GameObject go, string folder, Dictionary<string, string> originals, string painted)
         {
             var collider = go.GetComponent<MeshCollider>();

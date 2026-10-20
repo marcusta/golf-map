@@ -42,7 +42,7 @@ import { writeAtomic } from './json-file';
  * and previewed, the layer is only generated into a temp file as a check. Flip to true (or GOLFMAP_PAINT_LAYER_LIVE=1)
  * when Unity's rule paint is gone.
  */
-export const PAINT_LAYER_LIVE = false;
+export const PAINT_LAYER_LIVE = true;
 
 export const PAINT_FORMAT = 'golfmap-paint-v1';
 export const PAINT_FILE = 'paint.json';

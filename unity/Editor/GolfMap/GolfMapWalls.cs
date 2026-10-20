@@ -45,7 +45,8 @@ namespace GolfMap.Editor
             public float courseStepM = 0.65f, followBank = 0.5f, proudFrac = 0.45f, leanDeg = 10f, spinDeg = 12f, sinkM = 0.15f, gapM = -0.12f,
                 topMarginM = 0.3f, minFaceM = 0.35f, fillMarginM = 0.35f, capM = 0.08f;
             public int maxFill = 3;
-            // the ground (GolfMapWallGround): reshape the course meshes on the bank into a terrace
+            // the ground: the course meshes on the bank reshaped into a terrace (Blender's golfmap.wall_ground, layer 80-walls,
+            // reads these settings through gspro.py shaping-walls; Unity only gives the bank its stone material, GolfMapWallGround)
             public bool ground = false;
             public float faceDeg = 60f, baseInM = 0.2f, beyondM = 0.5f, taperM = 1.5f, subdivideM = 0.35f, paintFeatherM = 0.25f;
             public string groundChannel = "blue";
@@ -214,7 +215,7 @@ namespace GolfMap.Editor
         static object Command(BridgeArgs a)
         {
             var only = a.Strings("only").SelectMany(s => s.Split(',')).Select(s => s.Trim()).Where(s => s.Length > 0).ToList();
-            return Build(a.String("file"), only.Count == 0 ? null : new HashSet<string>(only), a.Bool("dryRun", false), a.Int("variant", 0), a.String("profile"), true, a.Bool("bake", true));
+            return Build(a.String("file"), only.Count == 0 ? null : new HashSet<string>(only), a.Bool("dryRun", false), a.Int("variant", 0), a.String("profile"), a.Bool("bake", true));
         }
 
         [BridgeCommand("golfmap.walls.clear", "Delete the stones golfmap.walls.build placed ('GolfMap Walls', or only the named walls). Marks the scene dirty.", args = "only (wall ids, comma-separated), " + GolfMapSceneSave.Arg)]
@@ -356,7 +357,7 @@ namespace GolfMap.Editor
             return areas;
         }
 
-        // After golfmap.meshes.sync replaced or added course meshes (and the paint reshaped their ground): build again the
+        // After golfmap.meshes.sync replaced or added course meshes (whose bank ground Blender's golfmap.wall_ground shaped): build again the
         // walls and boulders standing on them, so their stones meet the new meshes. Walls elsewhere keep their stones, hand
         // edits included; a wall never built in this scene is not started. Null when there are no walls.
         internal static Dictionary<string, object> RebuildOver(IList<GameObject> changed)
@@ -364,7 +365,7 @@ namespace GolfMap.Editor
             var ids = WallsOver(changed);
             if (ids == null) return null;
             if (ids.Count == 0) return new Dictionary<string, object> { { "rebuilt", new List<object>() } };
-            var built = Build(null, new HashSet<string>(ids), false, 0, null, false);
+            var built = Build(null, new HashSet<string>(ids), false, 0, null);
             return new Dictionary<string, object> { { "rebuilt", ids.Cast<object>().ToList() }, { "placed", built["placed"] }, { "report", built["report"] } };
         }
 
@@ -688,7 +689,7 @@ namespace GolfMap.Editor
             return new Dictionary<string, object> { { "spec", file }, { "checked", checkedCount }, { "boulders", rows } };
         }
 
-        public static Dictionary<string, object> Build(string file, HashSet<string> only, bool dryRun, int variant, string profile, bool runPaint = true, bool bake = true)
+        public static Dictionary<string, object> Build(string file, HashSet<string> only, bool dryRun, int variant, string profile, bool bake = true)
         {
             var course = GolfMapCourses.Require();
             // read from the course now: importing the stones saves assets, which can leave `course` without a path
@@ -709,15 +710,8 @@ namespace GolfMap.Editor
             }
             var result = new Dictionary<string, object> { { "spec", file }, { "dryRun", dryRun }, { "variant", variant } };
             tintFolder = courseFolder + "Walls/Materials";
-            // walls with ground: the course meshes on their banks reshaped (and painted) first, through the vertex
-            // paint, which also redoes it after every mesh sync
-            if (runPaint && !dryRun && string.IsNullOrEmpty(profile) && walls.Any(w => w.s.ground))
-            {
-                var paint = GolfMapVertexPaint.Apply(false);
-                result["ground"] = paint.ContainsKey("ground") ? paint["ground"] : null;
-                var errors = paint["errors"] as List<string>;
-                if (errors != null && errors.Count > 0) result["paintErrors"] = errors;
-            }
+            // walls with ground: the bank under them is Blender's (golfmap.wall_ground, layer 80-walls) and comes with the
+            // FBX meshes, colliders included, so the stones measure the shaped ground as it is
             Physics.SyncTransforms();
 
             if (!string.IsNullOrEmpty(profile))
@@ -961,11 +955,11 @@ namespace GolfMap.Editor
 
         // A dry-stone wall: courses up the face, each a run of wall stones of about the course's height and 1.3-2.6
         // times as long, their flattest side out and set faceProudM (give or take faceJitterM) proud of the face's
-        // plane: faceDeg from the horizontal, rising from baseInM in from the foot (the plane the ground reshaping
-        // builds). Beds follow the batter. The top course is cut down to end capM over the plateau, or left out
-        // where that leaves less than minTopCourseM; the reshaped face, painted stone, shows there.
+        // plane: faceDeg from the horizontal, rising from baseInM in from the foot (the plane Blender's golfmap.wall_ground
+        // shapes the ground to). Beds follow the batter. The top course is cut down to end capM over the plateau, or left
+        // out where that leaves less than minTopCourseM; the reshaped face, painted stone, shows there.
         // A cliff (style "cliff", a klippa) is built the same way from big angular blocks, but its ground was
-        // sharpened through the bank's mid-height point with the face angle varying along it (GolfMapWallGround), so
+        // sharpened through the bank's mid-height point with the face angle varying along it (Blender's golfmap.wall_ground), so
         // each block's plane is moved in or out to meet the sharpened mesh at the block's mid height.
         static List<Placement> PlanWall(Wall w, List<Stone> stones, int variant)
         {

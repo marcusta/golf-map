@@ -114,9 +114,12 @@ def test_cli_writes_the_layer(tmp_path, capsys):
             assert set(op) == {"id", "op", "rule"}
 
 
-def test_missing_paint_json(tmp_path):
-    with pytest.raises(SystemExit, match="no "):
-        sp.cmd_shaping_paint(tmp_path)
+def test_missing_paint_json_writes_no_layer_and_removes_a_stale_one(tmp_path):
+    stale = tmp_path / "shaping" / sp.OUT_FILE
+    stale.parent.mkdir()
+    stale.write_text("{}", encoding="utf-8")
+    assert sp.cmd_shaping_paint(tmp_path) is None
+    assert not stale.exists()
 
 
 def test_omberg_paint_json_generates():

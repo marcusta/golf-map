@@ -6,7 +6,7 @@ Read first for foliage/material problems: [tree rendering fixes](../docs/tree-re
 
 ## Pointers
 
-- Feature docs (terrain importer, spelunk, tree planter, palette editor, zones, buildings, bunkers, cart paths, vertex paint, FBX sync, creeks, water planes, props, stone walls): [README.md](README.md). Biome planting walkthrough: [MANUAL-PLANTING.md](MANUAL-PLANTING.md). Prefab catalogue: [CATALOGUE.md](CATALOGUE.md).
+- Feature docs (terrain importer, spelunk, tree planter, palette editor, zones, buildings, bunkers, cart paths, vertex paint (materials, previews), FBX sync, creeks, water planes, props, stone walls): [README.md](README.md). Biome planting walkthrough: [MANUAL-PLANTING.md](MANUAL-PLANTING.md). Prefab catalogue: [CATALOGUE.md](CATALOGUE.md).
 - Per-tool agent notes (bunker/paint/path rules, sync, refresh, creeks, props, walls, zone CLI, palette bridge): [docs/unity-tool-notes.md](../docs/unity-tool-notes.md).
 - Grass (where it grows, palette, loop): `.claude/skills/grass-planting/SKILL.md`; palette-building facts in its `references/unity-grass-palette.md`.
 - Multi-step loops (Update terrain / Pull from Unity / conform order, zones → plant, props/walls hand-edit capture before re-place): [docs/workflows.md](../docs/workflows.md).
@@ -33,7 +33,7 @@ Kept inline (tool behaviour, bites while editing the tools):
 - **FBX sync**: an overwritten FBX does not update its scene object in place (old geometry, z-fighting); `golfmap.meshes.sync` deletes and re-adds the object. Test sync changes with real geometry changes, checked in the scene.
 - **Water planes**: `Spline_*`-named but not ground; keep `IsWaterPlane` out of every ground/course-mesh filter.
 - **Stone walls**: two styles, `wall` (dry-stone, flat-faced stones) and `rose` (stenröse, heap of rounded stones); both wanted, Vreta tee walls are real walls. Capture stones moved by hand as `pose` in the generator before any rebuild.
-- **Vertex paint**: write paint into mesh copies under `<course>/PaintedMeshes/`; the FBX meshes stay untouched. Stix rough grass reads only the red channel.
+- **Vertex paint**: Unity never moves or adds course-mesh vertices and paints them only as temporary previews (colour-only copies under `<course>/PaintedMeshes/`, gone at the next FBX import); rules and wall ground are Blender layers 80-walls / 90-paint (`gspro.py shaping-walls` / `shaping-paint`). Unity keeps the materials (`golfmap.paint.materials`: creek bed, pond shore, wall stone). Stix rough grass reads only the red channel.
 - **Path materials**: change the spec `<course>/Paths/path-surfaces.json`; built materials are rebuilt from it.
 - **No course names in code**: paths, scene and terrain names come from the active `GolfMapCourse` (`GolfMapCourses.Require()` / `.For(component)`).
 

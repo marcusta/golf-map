@@ -910,19 +910,28 @@ export class ShapingService {
         return reportLines(stdout);
     }
 
-    /** `gspro.py shaping-global` into the course's layer folder; its report lines. */
+    /**
+     * The course's generated layers into its layer folder; their report lines: `gspro.py shaping-global` (00-global,
+     * 10-features from the database), then from the course's docs folder `shaping-walls` (80-walls: the ground under
+     * the stone walls, stone-walls.json) and `shaping-paint` (90-paint: the vertex paint, paint.json).
+     */
     private async writeLayers(courseId: string, layersDir: string): Promise<string[]> {
         await ensureDir(layersDir);
-        const args = [
-            path.join(this.pipelineDir, 'gspro.py'), 'shaping-global',
-            '--course', courseId,
-            '--out-dir', layersDir,
-            '--library', this.recipeLibrary,
-        ];
-        if (this.dbPath) args.push('--db', this.dbPath);
-        const { code, stdout, stderr } = await this.runner(args, this.pipelineDir);
-        if (code !== 0) throw failure('Shaping layers (gspro.py shaping-global)', code, stdout, stderr);
-        return reportLines(stdout);
+        const gspro = path.join(this.pipelineDir, 'gspro.py');
+        const courseDir = path.dirname(layersDir);
+        const global = [gspro, 'shaping-global', '--course', courseId, '--out-dir', layersDir, '--library', this.recipeLibrary];
+        if (this.dbPath) global.push('--db', this.dbPath);
+        const lines: string[] = [];
+        for (const [name, args] of [
+            ['shaping-global', global],
+            ['shaping-walls', [gspro, 'shaping-walls', '--course-dir', courseDir, '--out-dir', layersDir]],
+            ['shaping-paint', [gspro, 'shaping-paint', '--course-dir', courseDir, '--out-dir', layersDir]],
+        ] as const) {
+            const { code, stdout, stderr } = await this.runner([...args], this.pipelineDir);
+            if (code !== 0) throw failure(`Shaping layers (gspro.py ${name})`, code, stdout, stderr);
+            lines.push(...reportLines(stdout));
+        }
+        return lines;
     }
 
     /**

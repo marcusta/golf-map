@@ -12,11 +12,12 @@
 //   - meshes saved to <course>/Lake/, materials <course>/Lake/<name> near.mat and far.mat, made
 //     once from Lux's 'water cristal clear gerstner' demo and tuned for a calm clear lake; a
 //     rebuild keeps them, so a material tuned by hand survives.
-// golfmap.lake.bed lightens the bed near the shore: its OPCD lake meshes get <course>/Lake/<name> bed.mat
-// (their OPCD material with OPCD's bunker sand in the red channel, tinted light beige) and red vertex paint
-// within bandM of the shore, fading out over fadeM (the file's shore distance grid, islands included):
-// the bright shallows of a clear lake. It runs in every golfmap.course.refresh after the water planes,
-// since OPCD's Set Default Materials and the FBX sync undo both.
+// golfmap.lake.bed gives the bed its light shallows' material: its OPCD lake meshes get <course>/Lake/<name> bed.mat
+// (their OPCD material with OPCD's bunker sand in the red channel, tinted light beige). The red vertex paint it
+// draws, within bandM of the shore and fading out over fadeM, is Blender's (paint.json `lakebed`, the golfmap.paint
+// op of layer 90-paint): Unity no longer paints or copies the bed meshes, and puts back the copies it made before
+// (RestoreBedCopies). It runs in every golfmap.course.refresh after the water planes, since OPCD's Set Default
+// Materials undoes the material.
 // The names carry "WaterPlane": golfmap.waterplanes.build then treats the lake as covered and
 // leaves its OPCD lake mesh alone; the planes it had built there before (at the wrong level for a
 // lake whose mesh ends out in the dug bed) are switched off here, not deleted.
@@ -338,14 +339,16 @@ namespace GolfMap.Editor
         }
 
         // ---- The bed: a light band of sand in the shallows ----
+        //
+        // The band itself is paint, and Blender's: paint.json's `lakebed` (golfmap.paint op, layer 90-paint) paints the
+        // bed meshes red within bandM of the shore into the FBX. Unity only gives them the material that draws that red
+        // as sand. It made painted copies under <course>/Lake/Bed/ before; any still shown go back to their FBX mesh
+        // here and in golfmap.paint.restore (RestoreBedCopies).
 
         const string BedSuffix = "_Water_Base_Lake_-_Mesh";
+        const string BedFolder = "Bed";
         const string SandMaterial = "Assets/Resources/Materials/Theme - Satellite/OPCD MAHS Sand Raked Dirt Lip_Sat.mat";
         const string LakeBedMaterial = "Assets/Resources/Materials/Theme - Satellite/OPCD MAHS Water Base Lake_Sat.mat";
-        const float AboveWaterKeepM = 0.3f;   // bed vertices higher than this over the water are bank: left as painted
-
-        [Serializable]
-        sealed class BedSettings { public float bandM = 25f, fadeM = 20f; }
 
         [Serializable]
         sealed class Original { public string obj = "", path = "", mesh = ""; }
@@ -353,8 +356,8 @@ namespace GolfMap.Editor
         [Serializable]
         sealed class Originals { public List<Original> entries = new List<Original>(); }
 
-        [BridgeCommand("golfmap.lake.bed", "Lighten a big lake's bed near the shore: its OPCD lake meshes (*" + BedSuffix + " under the water, in the lake-plane file's shore distance grid) get <course>/Lake/<name> bed.mat - their OPCD material with OPCD's bunker sand copied into the red channel, satellite and base blend off, tinted light beige - and red vertex paint within bandM of the shore, fading out over fadeM (islands and skerries are shore too), none at the foot of a cliff (the file's cliff grid). Painted mesh copies go to <course>/Lake/Bed/ (computed from the FBX colours every run). bandM/fadeM are kept in <course>/Lake/<name> bed.json for golfmap.course.refresh, which runs this after the water planes. Tune the colour with golfmap.lake.material which=bed.",
-            args = "bandM (default 25, or the kept value), fadeM (default 20, or the kept value), resetMaterial=false (make bed.mat again), dryRun=false, " + GolfMapSceneSave.Arg)]
+        [BridgeCommand("golfmap.lake.bed", "A big lake's bed material: its OPCD lake meshes (*" + BedSuffix + " reaching under the water, inside the lake-plane file's shore distance grid) get <course>/Lake/<name> bed.mat - their OPCD material with OPCD's bunker sand copied into the red channel, satellite and base blend off, tinted light beige. The light band of red paint near the shore that it draws as sand is Blender's (paint.json `lakebed`, the golfmap.paint op); old painted copies under <course>/Lake/Bed/ are put back to their FBX meshes. golfmap.course.refresh runs this after the water planes (OPCD's Set Default Materials undoes the material). Tune the colour with golfmap.lake.material which=bed.",
+            args = "resetMaterial=false (make bed.mat again), dryRun=false, " + GolfMapSceneSave.Arg)]
         static object BedCommand(BridgeArgs a)
         {
             var r = Bed(a.Bool("dryRun", false), a);
@@ -370,19 +373,8 @@ namespace GolfMap.Editor
             if (string.IsNullOrEmpty(file) || !File.Exists(file)) return null;
             var doc = JsonUtility.FromJson<PlaneDoc>(File.ReadAllText(file));
             var grid = doc.shoreDistance;
-            if (grid == null || grid.width == 0 || string.IsNullOrEmpty(grid.data)) throw new BridgeError(file + " has no shore distance grid: run golfpipe lake-plane again.");
+            if (grid == null || grid.width == 0 || grid.height == 0) throw new BridgeError(file + " has no shore distance grid: run golfpipe lake-plane again.");
             var folder = GolfMapCourses.Folder(course) + AssetFolder;
-            var bedFolder = folder + "/Bed";
-            var settingsPath = folder + "/" + doc.name + " bed.json";
-            var settings = File.Exists(settingsPath) ? JsonUtility.FromJson<BedSettings>(File.ReadAllText(settingsPath)) : new BedSettings();
-            if (a != null && a.Has("bandM")) settings.bandM = Mathf.Max(0f, (float)a.Number("bandM", 25));
-            if (a != null && a.Has("fadeM")) settings.fadeM = Mathf.Max(0.01f, (float)a.Number("fadeM", 20));
-            var dist = Convert.FromBase64String(grid.data);
-            if (dist.Length != grid.width * grid.height) throw new BridgeError(file + ": the shore grid's data is not width x height.");
-            // How much of a cliff the shore is (0-255): no sand at the foot of a cliff, the rock goes on down there.
-            var cliff = string.IsNullOrEmpty(grid.cliff) ? null : Convert.FromBase64String(grid.cliff);
-            if (cliff != null && cliff.Length != dist.Length) throw new BridgeError(file + ": the shore grid's cliff is not width x height.");
-            var cliffGrid = new ShoreGrid { x0 = grid.x0, z0 = grid.z0, cellM = grid.cellM, stepM = 1f / 255f, width = grid.width, height = grid.height };
             float gx1 = grid.x0 + grid.width * grid.cellM, gz1 = grid.z0 + grid.height * grid.cellM;
 
             var scene = EditorSceneManager.GetActiveScene();
@@ -395,81 +387,53 @@ namespace GolfMap.Editor
                     var b = r.bounds;
                     return b.min.y < doc.surfaceY && b.max.x > grid.x0 && b.min.x < gx1 && b.max.z > grid.z0 && b.min.z < gz1;
                 }).ToList();
-            var report = new Dictionary<string, object>
-            {
-                { "bandM", settings.bandM }, { "fadeM", settings.fadeM }, { "meshes", beds.Select(f => (object)f.gameObject.name).ToList() }, { "dryRun", dryRun },
-            };
+            var report = new Dictionary<string, object> { { "meshes", beds.Select(f => (object)f.gameObject.name).ToList() }, { "dryRun", dryRun } };
             if (dryRun || beds.Count == 0) return report;
 
-            EnsureFolder(bedFolder);
-            File.WriteAllText(settingsPath, JsonUtility.ToJson(settings, true));
-            var originalsPath = bedFolder + "/originals.json";
-            var originals = File.Exists(originalsPath) ? JsonUtility.FromJson<Originals>(File.ReadAllText(originalsPath)) : new Originals();
+            // old copies first, so the material is copied from what the FBX object wears
+            report["restoredCopies"] = RestoreBedCopies();
             var material = BedMaterial(folder + "/" + doc.name + " bed.mat", beds[0].GetComponent<MeshRenderer>().sharedMaterial, a != null && a.Bool("resetMaterial", false));
-
-            int painted = 0, verts = 0;
+            int changed = 0;
             foreach (var f in beds)
             {
-                var source = OriginalOf(f, bedFolder, originals);
-                var copy = UnityEngine.Object.Instantiate(source);
-                copy.name = source.name;
-                var v = source.vertices;
-                var c = source.colors;
-                if (c == null || c.Length != v.Length) c = Enumerable.Repeat(Color.black, v.Length).ToArray();
-                var t = f.transform;
-                for (int i = 0; i < v.Length; i++)
-                {
-                    var w = t.TransformPoint(v[i]);
-                    if (w.y > doc.surfaceY + AboveWaterKeepM) continue;
-                    float d = Sample(grid, dist, w.x, w.z);
-                    float k = d <= settings.bandM ? 1f : Mathf.Clamp01(1f - (d - settings.bandM) / settings.fadeM);
-                    if (cliff != null) { float cl = Sample(cliffGrid, cliff, w.x, w.z); if (cl < float.MaxValue) k *= 1f - Mathf.Clamp01(cl); }
-                    if (k <= 0f) continue;
-                    c[i] = Color.Lerp(c[i], new Color(1f, 0f, 0f, c[i].a), k);
-                    painted++;
-                }
-                verts += v.Length;
-                copy.colors = c;
-                f.sharedMesh = SaveMesh(copy, bedFolder + "/" + f.gameObject.name + ".asset");
-                f.GetComponent<MeshRenderer>().sharedMaterial = material;
-                EditorUtility.SetDirty(f);
+                var mr = f.GetComponent<MeshRenderer>();
+                if (mr.sharedMaterial == material) continue;
+                Undo.RecordObject(mr, "Lake bed material");
+                mr.sharedMaterial = material;
+                changed++;
             }
-            File.WriteAllText(originalsPath, JsonUtility.ToJson(originals, true));
-            EditorSceneManager.MarkSceneDirty(scene);
+            if (changed > 0) EditorSceneManager.MarkSceneDirty(scene);
             report["material"] = AssetDatabase.GetAssetPath(material);
-            report["verticesPainted"] = painted;
-            report["vertices"] = verts;
+            report["materialAssigned"] = changed;
             return report;
         }
 
-        // The mesh to paint from: the FBX mesh, remembered when the filter already holds our copy.
-        static Mesh OriginalOf(MeshFilter f, string bedFolder, Originals originals)
+        // Every MeshFilter that shows one of golfmap.lake.bed's old painted copies (<course>/Lake/Bed/) back to the FBX mesh
+        // recorded in its originals.json. Needs no lake-plane file. golfmap.paint.restore and golfmap.lake.bed call it.
+        public static Dictionary<string, object> RestoreBedCopies()
         {
-            var current = f.sharedMesh;
-            var path = AssetDatabase.GetAssetPath(current);
-            var entry = originals.entries.FirstOrDefault(e => e.obj == f.gameObject.name);
-            if (!path.StartsWith(bedFolder + "/", StringComparison.OrdinalIgnoreCase))
+            var course = GolfMapCourses.Require();
+            var bedFolder = GolfMapCourses.Folder(course) + AssetFolder + "/" + BedFolder;
+            var restored = new List<object>();
+            var errors = new List<object>();
+            var result = new Dictionary<string, object> { { "restored", restored }, { "errors", errors } };
+            if (!AssetDatabase.IsValidFolder(bedFolder)) return result;
+            var originalsPath = bedFolder + "/originals.json";
+            var originals = File.Exists(originalsPath) ? JsonUtility.FromJson<Originals>(File.ReadAllText(originalsPath)) : new Originals();
+            var scene = EditorSceneManager.GetActiveScene();
+            foreach (var f in scene.GetRootGameObjects().SelectMany(r => r.GetComponentsInChildren<MeshFilter>(true)))
             {
-                if (entry == null) { entry = new Original { obj = f.gameObject.name }; originals.entries.Add(entry); }
-                entry.path = path;
-                entry.mesh = current.name;
-                return current;
+                if (f.sharedMesh == null || !AssetDatabase.GetAssetPath(f.sharedMesh).StartsWith(bedFolder + "/", StringComparison.OrdinalIgnoreCase)) continue;
+                var entry = originals.entries.FirstOrDefault(e => e.obj == f.gameObject.name);
+                var original = entry == null ? null : AssetDatabase.LoadAllAssetsAtPath(entry.path).OfType<Mesh>().FirstOrDefault(m => m.name == entry.mesh);
+                if (original == null) { errors.Add(Path(f.gameObject) + ": shows a bed copy whose FBX mesh is not in " + originalsPath + " (re-sync the meshes: golfmap.meshes.sync)"); continue; }
+                Undo.RecordObject(f, "Restore lake bed copies");
+                f.sharedMesh = original;
+                EditorUtility.SetDirty(f);
+                restored.Add(Path(f.gameObject));
             }
-            if (entry == null) throw new BridgeError(f.gameObject.name + " holds a bed copy with no original on record: re-sync the meshes (golfmap.meshes.sync) and run again.");
-            var original = AssetDatabase.LoadAllAssetsAtPath(entry.path).OfType<Mesh>().FirstOrDefault(m => m.name == entry.mesh);
-            if (original == null) throw new BridgeError(f.gameObject.name + ": its original mesh " + entry.mesh + " is gone from " + entry.path + ": re-sync the meshes and run again.");
-            return original;
-        }
-
-        // Distance from the shore (m) at x, z, bilinear over the grid's cell centres; far out past its edges.
-        static float Sample(ShoreGrid g, byte[] data, float x, float z)
-        {
-            float fx = (x - g.x0) / g.cellM - 0.5f, fz = (z - g.z0) / g.cellM - 0.5f;
-            if (fx < 0 || fz < 0 || fx > g.width - 1 || fz > g.height - 1) return float.MaxValue;
-            int ix = Mathf.Min((int)fx, g.width - 2), iz = Mathf.Min((int)fz, g.height - 2);
-            float tx = fx - ix, tz = fz - iz;
-            Func<int, int, float> at = (cx, cz) => data[cz * g.width + cx] * g.stepM;
-            return Mathf.Lerp(Mathf.Lerp(at(ix, iz), at(ix + 1, iz), tx), Mathf.Lerp(at(ix, iz + 1), at(ix + 1, iz + 1), tx), tz);
+            if (restored.Count > 0) EditorSceneManager.MarkSceneDirty(scene);
+            return result;
         }
 
         // <course>/Lake/<name> bed.mat: the bed's OPCD lake material with OPCD's bunker sand in the red channel,

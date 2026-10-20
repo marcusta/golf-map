@@ -6,7 +6,8 @@
     "channel: red, green, blue or black. mode 'replace' (default) blends the vertex colour toward that channel: on rough anything but red then thins the Stix 3D grass (blade chance = red), and black shows the material's dirt base. mode 'overlay' (red, green or blue) raises that channel and keeps the others, so red and the Stix grass stay: a colour-only change of the ground under the blades (MAHS blends black, red, green, blue in that order, each by its own channel).",
     "widthM: how far from the edge the paint can reach; each spot reaches 35-100 % of it. strength: paint at the edge where the rule applies, 0-1. coverage: share of the edge where it applies at all, 0-1; the rest keeps its grass up to the edge. noiseM: length of those stretches. seed: change for a different pattern.",
     "enabled: false keeps a rule (and its tuning) without painting it. bunker-surround is off since 2026-09-29: on OPCD's rough material (OPCD MAHS Rough No Mowlines_Sat) blue and black both draw the dirt base (base index 4) with a root and twig detail (detail 20 / 22 at 0.5), so a band of either read as root streaks round every bunker (black until the morning, then blue overlay: same streaks). The rough stays clean up to the blend.",
-    "kind 'object' paints named meshes from their own border in: `match` is a substring of the object's name (a creek bed cut out by Blender's golfmap.cut_out, surface WaterBrook), `channel` is painted with `strength` where the vertex is `fadeM` or more inside the mesh and fades to nothing at its border. `material` (optional) gives the mesh a copy of the nearest rough's material (<course>/Creeks/) whose `channel` draws the albedo + normal (`tileM` metres a tile, `tint` multiplies the colour): black is the pebble bed, and black is no 3D grass (the Stix blade chance is the red channel). creek-bed: pebbles (NatureManufacture River Auto Material) in the black channel. With belowM the paint goes by depth instead: the grass level is the height of the mesh's nearest border vertex (within reachM), vertices less than belowM under it keep their colour (a grass lip at the top of the bank) and the paint is full from belowM + softM down. `creek` (an exported creek id) takes belowM per side from that creek feature's grassBelowLeftM / grassBelowRightM (looking downstream); `grassFrom: rough` gives the mesh the nearest rough's Stix grass components so its red lip grows 3D grass. `shoreM` is the opposite band: the channel is painted where the vertex is less than shoreM under the nearest border vertex (a pond bed: the border is the water's edge) and fades out over softM below. `material.base: self` copies the mesh's own material (<folder>/<material> (<name>).mat), `copyFromRough` takes a channel of the nearest rough's material (the shore band draws the rough's grass), `scaleRed|Green|Blue|Black` multiply a channel's overall colour (0.9 = a little darker). pond-shore-17-230 / 17-231 / 13-234: the three dug ponds (one shared lake material copy, Ponds/... (pond shore).mat)."
+    "kind 'object' paints named meshes from their own border in: `match` is a substring of the object's name (a creek bed cut out by Blender's golfmap.cut_out, surface WaterBrook), `channel` is painted with `strength` where the vertex is `fadeM` or more inside the mesh and fades to nothing at its border. `material` (optional) gives the mesh a copy of the nearest rough's material (<course>/Creeks/) whose `channel` draws the albedo + normal (`tileM` metres a tile, `tint` multiplies the colour): black is the pebble bed, and black is no 3D grass (the Stix blade chance is the red channel). creek-bed: pebbles (NatureManufacture River Auto Material) in the black channel. With belowM the paint goes by depth instead: the grass level is the height of the mesh's nearest border vertex (within reachM), vertices less than belowM under it keep their colour (a grass lip at the top of the bank) and the paint is full from belowM + softM down. `creek` (an exported creek id) takes belowM per side from that creek feature's grassBelowLeftM / grassBelowRightM (looking downstream); `grassFrom: rough` gives the mesh the nearest rough's Stix grass components so its red lip grows 3D grass. `shoreM` is the opposite band: the channel is painted where the vertex is less than shoreM under the nearest border vertex (a pond bed: the border is the water's edge) and fades out over softM below. `material.base: self` copies the mesh's own material (<folder>/<material> (<name>).mat), `copyFromRough` takes a channel of the nearest rough's material (the shore band draws the rough's grass), `scaleRed|Green|Blue|Black` multiply a channel's overall colour (0.9 = a little darker). pond-shore-17-230 / 17-231 / 13-234: the three dug ponds (one shared lake material copy, Ponds/... (pond shore).mat).",
+    "kind 'road' paints the ground under the R.A.M. roads (the course's <prefix>-inner-ramroads.json, GolfMapRamRoads): `channel` with `strength` out to the road's half width less `insetM` from its centreline, fading to nothing over `fadeM` past that. Black = no Stix grass under the road; the fade lets the rough's grass grow in over the road's alpha edge. `surfaces` default Rough, Deep."
   ],
   "rules": [
     {
@@ -116,6 +117,18 @@
         "scaleGreen": 0.9,
         "scaleBlue": 0.9
       }
+    },
+    {
+      "id": "ram-roads",
+      "kind": "road",
+      "surfaces": [
+        "Rough",
+        "Deep"
+      ],
+      "channel": "black",
+      "strength": 1,
+      "insetM": 0.4,
+      "fadeM": 1.0
     }
   ]
 }

@@ -117,12 +117,17 @@ def _layer_json(doc: dict) -> str:
     return re.sub(r"\[\s+(-?[\d.eE+-]+),\s+(-?[\d.eE+-]+)\s+\]", r"[\1, \2]", text) + "\n"
 
 
-def cmd_shaping_paint(course_dir: Path, out_dir: Path | None = None, out: Path | None = None) -> Path:
-    """Write <out_dir or course_dir/shaping>/90-paint.gen.json from <course_dir>/paint.json. Returns its path."""
+def cmd_shaping_paint(course_dir: Path, out_dir: Path | None = None, out: Path | None = None) -> Path | None:
+    """Write <out_dir or course_dir/shaping>/90-paint.gen.json from <course_dir>/paint.json. Returns its path; None
+    for a course without paint.json (a stale layer is removed: the shaping run calls this for every course)."""
     course_dir = Path(course_dir)
     src = course_dir / "paint.json"
     if not src.is_file():
-        raise SystemExit(f"error: no {src}")
+        stale = out or (Path(out_dir) if out_dir else course_dir / "shaping") / OUT_FILE
+        if stale.is_file():
+            stale.unlink()
+        print(f"No paint.json in {course_dir}: no paint layer")
+        return None
     try:
         paint = json.loads(src.read_text(encoding="utf-8"))
         rel = src.resolve().relative_to(REPO_ROOT).as_posix() if src.resolve().is_relative_to(REPO_ROOT) else str(src)

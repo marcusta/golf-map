@@ -14,9 +14,10 @@
 // cell size, terrain origin and size in world metres, class names, counts) and
 // a small colour preview PNG. pipeline/grass_zones.py --surfaces reads it.
 //
-// Rock: a course mesh the stone walls' ground reshaped draws its stone channel with a copy of its material under
-// <course>/Walls/ (GolfMapWallGround); its triangles painted mostly in that channel (blue) are Rock, not the mesh's
-// own class, so tall grass keeps off klippor and tee-wall faces.
+// Rock: a course mesh on a stone wall's bank (shaped and painted by Blender's golfmap.wall_ground) draws its stone
+// channel with a copy of its material under <course>/Walls/ (golfmap.paint.materials, GolfMapWallGround.StoneMaterial);
+// its triangles painted mostly in that channel (blue, or green on steep faces) are Rock, not the mesh's own class, so
+// tall grass keeps off klippor and tee-wall faces.
 //
 // Slab: a rock slab cut out of the course meshes into its own object (Blender shaping golfmap.cut_out,
 // Spline_<name>_Rock_-_Mesh). pipeline/grass_zones.py keeps the tall grass off it but for a ragged fringe over its

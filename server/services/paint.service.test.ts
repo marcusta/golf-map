@@ -139,8 +139,8 @@ const LINE = {
 
 const exists = (p: string) => stat(p).then(() => true, () => false);
 
-test('the switch is off: Unity still paints by rules', () => {
-    expect(PAINT_LAYER_LIVE).toBe(false);
+test('the switch is on: Blender paints the course meshes, Unity only previews', () => {
+    expect(PAINT_LAYER_LIVE).toBe(true);
 }, 60_000);
 
 test('a dry run fetches the meshes in the stroke box, computes the colours and sends the preview, writing nothing', async () => {
