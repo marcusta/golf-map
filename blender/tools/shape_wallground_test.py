@@ -141,7 +141,10 @@ def apply(op, i):
     assert len(runs) == 1, runs
     r = runs[0]
     print({k: r.get(k) for k in ("result", "error", "targets", "levels", "edgesHalved", "verticesAdded", "raised",
-                                 "lowered", "painted", "maxRaiseM", "maxLowerM", "profile", "tJunctions")})
+                                 "lowered", "painted", "maxRaiseM", "maxLowerM", "profile", "tJunctions", "weld")})
+    w = r.get("weld") or {}
+    check(w.get("tJunctions", 0) == 0 and w.get("edgesSplit", 0) == 0,
+          f"{op['id']}: both sides of the seam split alike (the weld found nothing to close: {w})")
     return r
 
 

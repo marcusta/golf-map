@@ -2511,8 +2511,15 @@ def plan_paint(ctx, op):
     return shape_paintop.plan_paint(ctx, op)
 
 
+def plan_wall_ground(ctx, op):
+    # golfmap.wall_ground (shape_wallground.py): one unit per wall; Unit and near_boxes lent to it
+    import shape_wallground as wg
+    return wg.plan_wall_ground(ctx, op, Unit, near_boxes)
+
+
 PLANNERS = {
     "golfmap.paint": plan_paint,
+    "golfmap.wall_ground": plan_wall_ground,
     "golfmap.creek_channel": plan_creek_channel,
     "golfmap.flatten_footprint": plan_flatten_footprint,
     "golfmap.split_surfaces": plan_split_surfaces,
@@ -6189,8 +6196,17 @@ def op_paint(ctx, op):
     return shape_paintop.op_paint(ctx, op)
 
 
+def op_wall_ground(ctx, op):
+    """golfmap.wall_ground (shape_wallground.py): the ground under a stone wall's bank, seam-safe; the weld and the
+    checks lent to it (so they key its code)."""
+    import shape_wallground as wg
+    units, problems = plan_units(ctx, op)
+    return wg.op_wall_ground(ctx, op, units, weld_tjunctions, slab_seam_check, tjunction_check), problems
+
+
 RUNNERS = {
     "golfmap.paint": op_paint,
+    "golfmap.wall_ground": op_wall_ground,
     "golfmap.creek_channel": op_creek_channel,
     "golfmap.split_surfaces": op_split_surfaces,
     "golfmap.cut_out": op_cut_out,
@@ -6749,7 +6765,8 @@ def path_surface_check(names, frame=None, svg_paths=None):
     return dict(tot, steepNz=PATH_STEEP_NZ, shadeDeg=PATH_SHADE_DEG, bumpM=PATH_BUMP_M, shortEdgeM=SLIVER_M, objects=out)
 
 
-CUT_OPS = ("afrod.cutcartpaths", "golfmap.weld_tjunctions", "golfmap.split_surfaces", "golfmap.cut_out")  # leave T-junctions to check
+CUT_OPS = ("afrod.cutcartpaths", "golfmap.weld_tjunctions", "golfmap.split_surfaces", "golfmap.cut_out",
+           "golfmap.wall_ground")  # leave T-junctions to check
 
 
 def cut_objects(ops_report):

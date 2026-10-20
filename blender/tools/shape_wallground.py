@@ -562,8 +562,9 @@ def spline_meshes():
     return [o for o in bpy.data.objects if o.type == "MESH" and o.name.startswith("Spline")]
 
 
-def _rect_of(op, frame, shape_coords):
+def _rect_of(op, frame):
     """The wall's XY box in the .blend (Unity's Bounds of toe, lip and outline + REACH_M + RECT_PAD_M)."""
+    import shape_coords
     pts = [shape_coords.to_blend(e, n, frame) for e, n in list(op["toe3006"]) + list(op["lip3006"])
            + list(op.get("outline3006") or [])]
     pad = REACH_M + RECT_PAD_M
@@ -585,8 +586,7 @@ def plan_wall_ground(ctx, op, unit_cls, near_boxes):
     """One unit per wall, named by the op id. Reads: every visible Spline mesh whose box meets the wall's box (the
     profile is measured on them, the shape moves them) and every mesh within 1 m of those (the weld afterwards).
     Region: the wall's box - outside it nothing moves but what the weld snaps along a written mesh's border."""
-    import shape_coords
-    rect = _rect_of(op, ctx.frame, shape_coords)
+    rect = _rect_of(op, ctx.frame)
     unit = unit_cls(op["id"], [], op.get("seed", 1),
                     lambda margin=0.0: near_boxes(ctx, candidates(ctx, rect, margin), 1.0 + margin))
     unit.region = rect
@@ -832,7 +832,7 @@ def wall_ground(ctx, op, weld, seam_check, tj_check):
     t0 = time.time()
     s = settings(op)
     run = {"feature": op["id"], "targets": [], "seed": op.get("seed", 1), "wall": op.get("wall") or op["id"]}
-    rect = _rect_of(op, ctx.frame, shape_coords)
+    rect = _rect_of(op, ctx.frame)
     names = candidates(ctx, rect)
     objs = [bpy.data.objects[n] for n in names]
     for o in objs:

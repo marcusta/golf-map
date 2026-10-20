@@ -7716,6 +7716,11 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--library", help="the shaping recipe library (default $GOLFMAP_RECIPE_LIBRARY, else "
                                      "blender/recipes/library.json)")
 
+    p = sub.add_parser("shaping-walls", help="write a course's generated stone-wall ground layer 80-walls.gen.json "
+                       "(one golfmap.wall_ground op per wall with ground) from its stone-walls.json")
+    p.add_argument("--course-dir", dest="course_dir", required=True, help="the course's docs folder (docs/gspro/<course>)")
+    p.add_argument("--out-dir", dest="out_dir", help="the layer folder (default <course-dir>/shaping)")
+
     import shaping_paint
     shaping_paint.add_parser(sub)   # shaping-paint --course-dir <docs/gspro/course> [--out-dir <shaping dir>] [--out <file>]
 
@@ -7783,6 +7788,10 @@ def main(argv: list[str] | None = None) -> int:
     if args.command == "shaping-global":
         cmd_shaping_global(Path(args.db), args.course, Path(args.out) if args.out else None,
                            Path(args.out_dir) if args.out_dir else None, Path(args.library) if args.library else None)
+        return 0
+    if args.command == "shaping-walls":
+        import shaping_walls
+        shaping_walls.write_shaping_walls(Path(args.course_dir), Path(args.out_dir) if args.out_dir else None)
         return 0
     if args.command == "shaping-paint":
         import shaping_paint
