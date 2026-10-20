@@ -36,6 +36,7 @@ import {
 } from './gspro-sync.service';
 import { JobPhasesComponent } from './job-phases.component';
 import { CourseCheckService, checkStatusLabel, checkStatusTitle } from './course-check.service';
+import { MakeReadyService, readyStatusLabel, readyStatusTitle } from './make-ready.service';
 import { RamRoadsService, candidateLabel, roadName } from './ram-roads.service';
 import {
     SVG_FEATURE_TYPES, COURSE_WIDE, NO_FILTER, svgFeatures, matchSvgFilter, variantFileName, landmarksOf, nearLabel, shapeName,
@@ -415,10 +416,34 @@ const checkRow = `
         <div bind="checkError" class="hint gspro-export__blocked gspro-export__oneline" data-testid="gspro-check-error"></div>
     </div>`;
 
+/**
+ * The Course tab's Ready row: make ready before a GSPro build (MakeReadyService
+ * — the Unity scene's colliders near play, the Arborist file, the course
+ * check). Not a target either; Fix lets Unity add what is missing.
+ */
+const READY_TIP = 'Ready for a GSPro build? Everything within 40 m of play must have a GSPro collider with the right material: '
+    + 'trees GSPwood (crowns GSPleaves), water GSPwater, roads GSPconcrete/GSPrough, buildings, bushes over 0.5 m GSPleaves, '
+    + 'stones GSPstone, timber GSPtimber, vehicles GSPconcrete. Also reads the Arborist file (report only) and counts the '
+    + 'course check. Same as bun run course:ready.';
+const READY_FIX_TIP = 'Make ready, and let Unity add the missing colliders and materials, then save the scene. '
+    + 'The Arborist file is never changed. Same as bun run course:ready -- --fix.';
+const readyRow = `
+    <div class="gspro-export__brow" data-testid="gspro-ready-row">
+        <div class="gspro-export__bmain">
+            <span bind="readyDot" class="gspro-export__dot"></span>
+            <div class="gspro-export__blabel" title="${READY_TIP}">Ready</div>
+            <div bind="readyStatus" class="gspro-export__bstatus" data-testid="gspro-status-ready"></div>
+            <button bind="readyRun" type="button" class="gspro-export__update gspro-export__run" data-testid="gspro-ready-run">Check</button>
+            <button bind="readyFix" type="button" class="gspro-export__update gspro-export__run" data-testid="gspro-ready-fix">Fix</button>
+        </div>
+        <div bind="readyPhases" class="gspro-export__note"></div>
+        <div bind="readyError" class="hint gspro-export__blocked gspro-export__oneline" data-testid="gspro-ready-error"></div>
+    </div>`;
+
 /** A tab's pane: its rows, then its files and settings. */
 const pane = (tab: typeof TABS[number]) => `
     <div bind="pane_${tab.id}" class="gspro-export__pane hidden" role="tabpanel" data-testid="gspro-pane-${tab.id}">
-        ${tab.targets.length ? `<div class="gspro-export__rows">${tab.targets.map(boardRow).join('')}${tab.id === 'course' ? checkRow : ''}</div>` : ''}
+        ${tab.targets.length ? `<div class="gspro-export__rows">${tab.targets.map(boardRow).join('')}${tab.id === 'course' ? checkRow + readyRow : ''}</div>` : ''}
         ${PANES[tab.id]}
     </div>`;
 
@@ -1072,6 +1097,8 @@ export class GsproExportPanelComponent extends Component {
     private sync = this.inject(GsproSyncService);
     /** The Course tab's Check row: is the built course whole. */
     private check = this.inject(CourseCheckService);
+    /** The Course tab's Ready row: make ready before a GSPro build. */
+    private ready = this.inject(MakeReadyService);
     private ramRoads = this.inject(RamRoadsService);
     private features = this.inject(FeaturesService);
     private courseDetail = this.inject(CourseDetailService);
@@ -1317,6 +1344,50 @@ export class GsproExportPanelComponent extends Component {
         };
     }
 
+    /** The Ready row: marker, one status line (details in its title), Check and Fix, the error. */
+    private readyBindings(): Record<string, (() => unknown) | Record<string, unknown>> {
+        const status = () => this.ready.status.get();
+        const start = (fix: boolean) => {
+            const id = this.openCourseId();
+            if (id) void this.ready.run(id, fix);
+        };
+        return {
+            readyDot: {
+                className: () => {
+                    const last = status()?.last;
+                    if (!last) return 'gspro-export__dot';
+                    return last.ready ? 'gspro-export__dot fresh' : 'gspro-export__dot stale';
+                },
+            },
+            readyStatus: {
+                textContent: () => {
+                    this.ready.tick.get();
+                    const job = this.ready.job.get();
+                    if (job?.status === 'running') return job.step;
+                    return readyStatusLabel(status());
+                },
+                title: () => readyStatusTitle(status()),
+            },
+            readyRun: {
+                disabled: () => this.ready.running.get() || !this.openCourseId(),
+                title: () => (this.ready.running.get() ? 'Make ready is running' : READY_TIP),
+                onclick: () => start(false),
+            },
+            readyFix: {
+                disabled: () => this.ready.running.get() || !this.openCourseId(),
+                title: () => (this.ready.running.get() ? 'Make ready is running' : READY_FIX_TIP),
+                onclick: () => start(true),
+            },
+            readyPhases: {
+                className: () => {
+                    const s = this.ready.job.get()?.status;
+                    return s === 'running' || s === 'failed' ? 'gspro-export__note' : 'gspro-export__note hidden';
+                },
+            },
+            readyError: { textContent: () => this.ready.error.get(), title: () => this.ready.error.get() },
+        };
+    }
+
     /** The R.A.M. roads row's Propose step: Propose, the min distance, the one-line summaries, Accept. */
     private roadsBindings(): Record<string, (() => unknown) | Record<string, unknown>> {
         const roads = this.ramRoads;
@@ -1429,6 +1500,7 @@ export class GsproExportPanelComponent extends Component {
             closeSide: { onclick: () => this.closeDialog() },
             ...this.rowBindings(),
             ...this.checkBindings(),
+            ...this.readyBindings(),
             ...this.roadsBindings(),
             // --- The board's head: Unity, the shaping worker, Update all stale ---
             unityChip: {
@@ -1935,12 +2007,20 @@ export class GsproExportPanelComponent extends Component {
             phases: () => this.check.job.get()?.phases ?? [],
             testid: 'gspro-check-phases',
         });
+        // The Ready row's phases while a run goes.
+        this.spawn(JobPhasesComponent, this.ref(frag, 'readyPhases'), {
+            phases: () => this.ready.job.get()?.phases ?? [],
+            testid: 'gspro-ready-phases',
+        });
         // The Check row's reports are re-read with the board (on open, every 30 s, after an update):
         // a Meshes update is what makes the last check "meshes changed since".
         this.track(effect(() => {
             this.sync.status.get();
             const id = this.sync.courseId.get();
-            if (id) void this.check.refresh(id);
+            if (id) {
+                void this.check.refresh(id);
+                void this.ready.refresh(id);
+            }
         }));
 
         // Each finished target's report, collapsed; the last one open, since
