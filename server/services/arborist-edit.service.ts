@@ -13,6 +13,9 @@
 //   <prefix>-<terrain>-tree-edits.json
 //                           the tree edit (the format golfmap.trees.edit writes), so the next plant
 //                           in Unity places it so. Unity is never called.
+//   <prefix>-inner-routing.json
+//                           on a routed course, the edited tree routed again where it now stands
+//                           (ArboristService.routeEdited: only its id, run beside the .dat's save).
 //
 // A tree is named by its tree id, as the point nearest to world x, z, or as what stands under the
 // mouse (or at a point of the picture) in Arborist (`veg.pick`), or the one marked there with the P key
@@ -21,8 +24,10 @@ import * as path from 'node:path';
 import * as os from 'node:os';
 import { createHash, randomUUID } from 'node:crypto';
 import { mkdtemp, open, readFile, rename, rm, writeFile } from 'node:fs/promises';
-import { courseSlug, placementsExportFileName, statOrNull, treeEditsFileName, treesExportFileName, type ExportRunner } from './gspro-export.service';
-import { terrainOrigin, terrainsSquare, type ArboristCourse } from './arborist.service';
+import {
+    courseSlug, placementsExportFileName, routingExportFileName, statOrNull, treeEditsFileName, treesExportFileName, type ExportRunner,
+} from './gspro-export.service';
+import { ArboristService, terrainOrigin, terrainsSquare, type ArboristCourse } from './arborist.service';
 
 /** The trees package's items: the id of item `variant` follows from its name (pipeline/arborist.py tree_item). */
 export const FAR_SUFFIX = ' (far)';
@@ -344,8 +349,12 @@ interface Context {
 export class ArboristEditService {
     /** One edit at a time per process; the lock file keeps two processes apart. */
     private queue: Promise<unknown> = Promise.resolve();
+    /** Routes an edited tree again on a routed course. */
+    private readonly arborist: ArboristService;
 
-    constructor(private readonly deps: ArboristEditDeps) {}
+    constructor(private readonly deps: ArboristEditDeps) {
+        this.arborist = new ArboristService({ dataDir: deps.dataDir, pipelineDir: deps.pipelineDir, courseDocsRoot: deps.courseDocsRoot, runner: deps.runner });
+    }
 
     private docs(course: ArboristCourse, file: string): string {
         return path.join(this.deps.courseDocsRoot, courseSlug(course.name), file);
@@ -429,7 +438,7 @@ export class ArboristEditService {
         await this.locked(ctx.dat, async () => {
             // An added tree's yaw is chosen here, so Unity must take it too (it would hash one of its own).
             result.saved.push(...await this.save(ctx, before, after, item, afterItem, change.op === 'rotate' || change.op === 'add',
-                change.op === 'move' || change.op === 'add' ? change.yM ?? null : undefined));
+                change.op === 'move' || change.op === 'add' ? change.yM ?? null : undefined, warnings));
         });
         result.saveSeconds = secondsSince(t1);
 
@@ -519,10 +528,30 @@ export class ArboristEditService {
         throw new Error(`no tree of an Arborist model ${where}${seen ? ` (there: ${seen} - lower vegetation or the course's own trees)` : ''}; point at its stem and try again`);
     }
 
-    /** The four files, in order; each line says what was written. */
-    private async save(ctx: Context, before: Placement | null, after: Placement | null, item: string | null, afterItem: string | null, turned: boolean, absoluteY?: number | null): Promise<string[]> {
+    /**
+     * The files, each line saying what was written: the .dat (`arborist.py edit`) and, on a routed course, the
+     * edited tree's route (from the edits as they will be) run side by side; then the ids, the placements, the
+     * tree edits and the routing. A failed .dat edit writes nothing; a routing that cannot run is a warning, and
+     * the routing then stays older than the edits (Unity's planter says so).
+     */
+    private async save(ctx: Context, before: Placement | null, after: Placement | null, item: string | null, afterItem: string | null,
+        turned: boolean, absoluteY: number | null | undefined, warnings: string[]): Promise<string[]> {
         const lines: string[] = [];
         const terrain = before ? terrainOf(ctx, before.id) : 'inner';
+        const id = (after ?? before)!.id;
+        const doc = ctx.placements.find(d => d.terrain === terrain) ?? ctx.placements[0]!;
+
+        // The tree edit: what the next plant in Unity places (written after the .dat).
+        const editsFile = path.join(ctx.course.exportDir, treeEditsFileName(ctx.course.name, doc.terrain));
+        const edits = await readEdits(editsFile, treesExportFileName(ctx.course.name, doc.terrain));
+        const survey = await surveyTree(path.join(ctx.course.exportDir, treesExportFileName(ctx.course.name, doc.terrain)), id);
+        const origin = await terrainOrigin(ctx.course.exportDir, ctx.slug, doc.terrain);
+        const existing = edits.edits.find(e => e.id === id) ?? null;
+        const record = editRecord(existing, survey, after, before, origin, after ? ctx.models.get(after.model) ?? null : null, turned, absoluteY);
+        const where = edits.edits.findIndex(e => e.id === id);
+        if (record) { if (where >= 0) edits.edits[where] = record; else edits.edits.push(record); }
+        else if (where >= 0) edits.edits.splice(where, 1);
+        const editsText = JSON.stringify(edits, null, 4);
 
         // The .dat: arborist.py edit.
         const op: Record<string, unknown> = { item: treeItemId(item ?? afterItem!) };
@@ -538,6 +567,7 @@ export class ArboristEditService {
             }
         } else op.delete = true;
         const tmp = await mkdtemp(path.join(os.tmpdir(), 'arborist-edit-'));
+        let routing: { text: string; line: string } | null = null;
         try {
             const opsFile = path.join(tmp, 'ops.json');
             await writeFile(opsFile, JSON.stringify({ ops: [op] }));
@@ -545,19 +575,22 @@ export class ArboristEditService {
             const args = [path.join(this.deps.pipelineDir, 'arborist.py'), 'edit', '--dat', ctx.dat, '--ops', opsFile,
                 '--terrains-square', ...ctx.square.map(String), '--key-file', key,
                 '--library', path.join(this.deps.dataDir, 'arborist', 'GolfMap library.biome'), '--species', this.docs(ctx.course, 'arborist-species.json')];
-            const { code, stdout, stderr } = await this.deps.runner(args, this.deps.pipelineDir, { timeoutMs: EDIT_TIMEOUT_MS });
-            if (code !== 0) {
-                const last = (stderr.trim() || stdout.trim() || `exit ${code}`).split('\n').filter(l => l.trim()).at(-1)!.trim();
+            const [dat, routed] = await Promise.all([
+                this.deps.runner(args, this.deps.pipelineDir, { timeoutMs: EDIT_TIMEOUT_MS }),
+                doc.terrain === 'inner' ? this.reroute(ctx, id, editsFile, editsText, tmp, warnings) : Promise.resolve(null),
+            ]);
+            if (dat.code !== 0) {
+                const last = (dat.stderr.trim() || dat.stdout.trim() || `exit ${dat.code}`).split('\n').filter(l => l.trim()).at(-1)!.trim();
                 throw new Error(`arboristdata.dat not changed: ${last}`);
             }
-            const done = JSON.parse(stdout.trim().split('\n').at(-1)!) as { newItems: string[] };
+            const done = JSON.parse(dat.stdout.trim().split('\n').at(-1)!) as { newItems: string[] };
             lines.push(`${ctx.dat}${done.newItems.length ? ` (new item ${done.newItems.join(', ')})` : ''}`);
+            routing = routed;
         } finally {
             await rm(tmp, { recursive: true, force: true });
         }
 
         // The ids: the tree's drawn entry.
-        const id = (after ?? before)!.id;
         const at = ctx.ids.drawn.findIndex(d => d.id === id);
         if (after) {
             const entry = { id, model: after.model, item: afterItem!, x: r3(after.x), z: r3(after.z) };
@@ -570,26 +603,41 @@ export class ArboristEditService {
         lines.push(ctx.idsFile);
 
         // The placements: what the next `gspro:export arborist` draws.
-        const doc = ctx.placements.find(d => d.terrain === terrain) ?? ctx.placements[0]!;
         const i = doc.placements.findIndex(p => p.id === id);
         if (after) { if (i >= 0) doc.placements[i] = after; else doc.placements.push(after); }
         else if (i >= 0) doc.placements.splice(i, 1);
         await writeAtomic(doc.file, placementsText(doc));
         lines.push(doc.file);
 
-        // The tree edit: what the next plant in Unity places.
-        const editsFile = path.join(ctx.course.exportDir, treeEditsFileName(ctx.course.name, doc.terrain));
-        const edits = await readEdits(editsFile, treesExportFileName(ctx.course.name, doc.terrain));
-        const survey = await surveyTree(path.join(ctx.course.exportDir, treesExportFileName(ctx.course.name, doc.terrain)), id);
-        const origin = await terrainOrigin(ctx.course.exportDir, ctx.slug, doc.terrain);
-        const existing = edits.edits.find(e => e.id === id) ?? null;
-        const record = editRecord(existing, survey, after, before, origin, after ? ctx.models.get(after.model) ?? null : null, turned, absoluteY);
-        const where = edits.edits.findIndex(e => e.id === id);
-        if (record) { if (where >= 0) edits.edits[where] = record; else edits.edits.push(record); }
-        else if (where >= 0) edits.edits.splice(where, 1);
-        await writeAtomic(editsFile, JSON.stringify(edits, null, 4));
+        await writeAtomic(editsFile, editsText);
         lines.push(`${editsFile} (${record ? `${record.op} ${id}` : `${id}'s record dropped`})`);
+        // After the edits, so the routing is not older than them.
+        if (routing) {
+            await writeAtomic(path.join(ctx.course.exportDir, routingExportFileName(ctx.course.name, 'inner')), routing.text);
+            lines.push(routing.line);
+        }
         return lines;
+    }
+
+    /**
+     * The edited tree routed again on a routed course (ArboristService.routeEdited), from the edits as they will
+     * be, staged in `tmp` under the edits file's own name: the routing file's text and its line, or null for a
+     * course that is not routed, or a routing that could not run (then a warning).
+     */
+    private async reroute(ctx: Context, id: string, editsFile: string, editsText: string, tmp: string, warnings: string[]): Promise<{ text: string; line: string } | null> {
+        const staged = { edits: path.join(tmp, path.basename(editsFile)), out: path.join(tmp, 'routing.json') };
+        try {
+            await writeFile(staged.edits, editsText, 'utf8');
+            const result = await this.arborist.routeEdited(ctx.course, [id], staged);
+            if (!result) return null;
+            const text = await readFile(staged.out, 'utf8');
+            const route = (JSON.parse(text) as { routes: Record<string, string> }).routes[id] ?? 'gone';
+            const file = path.join(ctx.course.exportDir, routingExportFileName(ctx.course.name, 'inner'));
+            return { text, line: `${file} (${id} ${route}; own ${result.counts.own}, billboard ${result.counts.billboard}, left out ${result.counts.out})` };
+        } catch (e) {
+            warnings.push(`the edited tree is not routed again: ${(e as Error).message.split('\n')[0]} - Unity's next planting says the routing is out of date (bun run arborist -- route <course>)`);
+            return null;
+        }
     }
 
     /** `body` while holding <file>.edit.lock (another process editing the same course waits). */

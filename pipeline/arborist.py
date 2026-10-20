@@ -384,6 +384,8 @@ def apply_vege_settings(doc: dict, species_file: dict) -> None:
     runs with: PlantDistance, AdditionalTreeMeshDistance, AdditionalBillboardDistance ...). Only keys
     the file already has; an unknown one stops the run, as a typo would otherwise do nothing."""
     wanted = {k: v for k, v in species_file.get("vegeSettings", {}).items() if not k.startswith("_")}
+    if not wanted:
+        return   # nothing to set: a file without the section is left as it is
     settings = doc["VSProSettings"]["vegeSettings"]
     unknown = sorted(set(wanted) - set(settings))
     if unknown:
@@ -713,6 +715,10 @@ class Routing:
         doc = json.loads(Path(path).read_text(encoding="utf-8-sig"))
         return cls(doc.get("routing"))
 
+    def as_doc(self) -> dict:
+        """The rules as a routing file records them (`rules`): what a later run compares its own rules with."""
+        return {"farBillboard": {"outsideOob": self.outside_oob, "fromPlay": self.from_play}, "outerKeep": self.outer_keep.bands}
+
     def route(self, rule: "FarRule", x: float, z: float) -> tuple[str, str | None]:
         """(the route, why it is left out) of a tree at world x, z."""
         if not rule.far(x, z):
@@ -809,17 +815,40 @@ def route_command(args) -> None:
             sys.exit(f"{args.edits}: not a golfmap-tree-edits-v1 file")
     rules = Routing.of_rules_file(Path(args.rules)) if args.rules else Routing(None)
     stems, warnings = edited_stems(trees_doc, edits_doc)
+    # --ids: only these trees are routed again (an edit touched them), the rest keep the routes of --from. Every
+    # other tree then stays as Unity's last planting stored it. A routing of other trees or other rules is
+    # routed whole instead.
+    base = None
+    if args.ids:
+        source = Path(args.base or args.out)
+        base = json.loads(source.read_text(encoding="utf-8-sig")) if source.is_file() else None
+        why = ("no routing yet" if base is None else
+               "not a " + ROUTING_FORMAT + " file" if base.get("format") != ROUTING_FORMAT else
+               "made from " + str(base.get("trees")) if base.get("trees") != trees_path.name else
+               "made with other rules" if base.get("rules") != rules.as_doc() else None)
+        if why:
+            print(f"routing every tree: {source.name} is {why}" if base is not None else f"routing every tree: {why} ({source.name})")
+            base = None
+    wanted = set(args.ids) if base is not None else None
     # The terrain's local metres to Unity's world (the inner terrain stands at the origin).
     ox, oz = args.origin
-    square = covering_square(tuple(args.terrains_square), Path(args.surfaces), Path(args.gkd), [(s["x"] + ox, s["z"] + oz) for s in stems])
+    judged = [s for s in stems if wanted is None or s["id"] in wanted]
+    square = covering_square(tuple(args.terrains_square), Path(args.surfaces), Path(args.gkd), [(s["x"] + ox, s["z"] + oz) for s in judged])
     rule = FarRule(Path(args.surfaces), Path(args.gkd), square, rules.outside_oob, rules.from_play)
-    routes = {s["id"]: rules.route(rule, s["x"] + ox, s["z"] + oz)[0] for s in stems}
+    routed = {s["id"]: rules.route(rule, s["x"] + ox, s["z"] + oz)[0] for s in judged}
+    if base is None:
+        routes = routed
+    else:
+        # A deleted tree leaves the routing; an added or moved one takes its new route.
+        routes = {i: r for i, r in base["routes"].items() if i not in wanted}
+        routes.update(routed)
     counts = {k: sum(1 for v in routes.values() if v == k) for k in (OWN, BILLBOARD, OUT)}
     for w in warnings:
         print(f"warning: {w}", file=sys.stderr)
     print(f"own {counts[OWN]}, billboard {counts[BILLBOARD]}, left out {counts[OUT]}"
-          f" ({len(routes)} trees of {trees_path.name}{' with ' + Path(args.edits).name if edits_doc else ''}; billboard beyond "
-          f"{rules.outside_oob:g} m outside the boundary and {rules.from_play:g} m from play"
+          f" ({len(routes)} trees of {trees_path.name}{' with ' + Path(args.edits).name if edits_doc else ''}"
+          + (f"; routed again: {', '.join(f'{i} {r}' for i, r in sorted(routed.items())) or 'none'} of {len(wanted)}" if wanted is not None else "")
+          + f"; billboard beyond {rules.outside_oob:g} m outside the boundary and {rules.from_play:g} m from play"
           + (", outerKeep " + json.dumps(rules.outer_keep.bands) if rules.outer_keep else "") + ")")
 
     def summary(out: Path | None) -> None:
@@ -835,8 +864,7 @@ def route_command(args) -> None:
     doc = {"format": ROUTING_FORMAT,
            "comment": "Each tree by id, routed before planting (arborist.py route): own = drawn by its model's renderer, billboard = an Arborist billboard whatever the model, out = left out (outerKeep). Unity's planter puts into the course's VSP only vsp models routed own; arborist.py trees draws the rest.",
            "trees": trees_path.name, "edits": Path(args.edits).name if edits_doc else None,
-           "rules": {"farBillboard": {"outsideOob": rules.outside_oob, "fromPlay": rules.from_play}, "outerKeep": rules.outer_keep.bands},
-           "counts": counts, "routes": routes}
+           "rules": rules.as_doc(), "counts": counts, "routes": routes}
     tmp = out.with_name(out.name + ".tmp")
     tmp.write_text(json.dumps(doc, indent=0), encoding="utf-8")
     os.replace(tmp, out)
@@ -844,14 +872,31 @@ def route_command(args) -> None:
     summary(out)
 
 
-def load_routes(path: str | None) -> dict[str, str] | None:
-    """The routes of a golfmap-routing-v1 file (arborist.py route), None without one."""
-    if not path:
-        return None
-    doc = json.loads(Path(path).read_text(encoding="utf-8-sig"))
+def tree_policy(args, species_file: dict) -> "LegacyPolicy | RoutedPolicy":
+    """Who draws which tree. A course is routed when its vegetation-rules.json has `routing` (the app then passes
+    --routing and --rules together, ArboristService.trees): the routing file is derived from those rules, so one
+    without the other is refused, and so is a routing file made with other rules than the course's now."""
+    if not args.routing:
+        if args.rules:
+            sys.exit("--rules goes with --routing (a routed course): without a routing file the species file's far rule applies")
+        return LegacyPolicy(species_file)
+    if not args.rules:
+        sys.exit("--routing needs --rules (the course's vegetation-rules.json whose `routing` made it): "
+                 "without them the outer catalogue would be drawn by the defaults, not the course's far rule and outerKeep")
+    doc = json.loads(Path(args.routing).read_text(encoding="utf-8-sig"))
     if doc.get("format") != ROUTING_FORMAT:
-        sys.exit(f"{path}: not a {ROUTING_FORMAT} file")
-    return doc["routes"]
+        sys.exit(f"{args.routing}: not a {ROUTING_FORMAT} file")
+    rules = Routing.of_rules_file(Path(args.rules))
+    if doc.get("rules") != rules.as_doc():
+        sys.exit(f"{Path(args.routing).name} was routed with other rules ({json.dumps(doc.get('rules'))}) than {args.rules} has now "
+                 f"({json.dumps(rules.as_doc())}): route again (bun run arborist -- route <course>), then plant in Unity")
+    return RoutedPolicy(doc["routes"], args.routing, rules)
+
+
+def fit_lines(fitted: int, unfitted: int) -> list[str]:
+    """The palette fit's report: the trees sized to their lidar stem (SizeFit)."""
+    return [f"{fitted} tree(s) of another shape than their Unity prefab sized to their lidar stem (palette rules)"
+            + (f", {unfitted} without a stem at their position kept the height" if unfitted else "")]
 
 
 class LegacyPolicy:
@@ -869,6 +914,13 @@ class LegacyPolicy:
         # catalogue, which Unity must then stop drawing (golfmap.vsp.trees.trim with the file written
         # beside --planted).
         self.in_vsp = [part.lower() for part in species_file.get("vsp", [])]
+        # The far rule and outerKeep: the species file's billboardBeyondM and outerKeep.
+        beyond = species_file.get("billboardBeyondM", {})
+        self.far_rule_m = (float(beyond.get("outsideOob", BILLBOARD_OUTSIDE_OOB_M)), float(beyond.get("fromPlay", BILLBOARD_FROM_PLAY_M)))
+        self.outer_keep = OuterKeep(species_file.get("outerKeep"))
+
+    def check_vsp(self, in_dump: set[str], vsp_ids: list[str]) -> list[str]:
+        return []   # the species file's list decides while drawing: nothing was decided before planting
 
     def kept_in_vsp(self, prefab: str) -> bool:
         """Whether this prefab's trees are the course's VSP's (unless the far rule or the ring hands them over)."""
@@ -885,10 +937,6 @@ class LegacyPolicy:
     def lists(self, entry: dict) -> bool:
         """Whether arboristdata.ids.json lists this tree (drawn or left out)."""
         return True
-
-    def fit_lines(self, fitted: int, unfitted: int) -> list[str]:
-        return [f"{fitted} tree(s) of another shape than their Unity prefab sized to their lidar stem (palette rules)"
-                + (f", {unfitted} without a stem at their position kept the height" if unfitted else "")]
 
     def band_lines(self, outer_keep: OuterKeep) -> list[str]:
         return outer_keep.report_lines()
@@ -927,9 +975,27 @@ class RoutedPolicy:
     placements_what = "drawn from the placements"
     ids_comment = "Routed (--routing): only trees with a tree id are listed (the placements); the outer catalogue's trees have none."
 
-    def __init__(self, routes: dict[str, str], path: str):
+    def __init__(self, routes: dict[str, str], path: str, rules: Routing):
         self.routes = routes
         self.path = path
+        # The far rule and outerKeep of the rules that made the routing: the outer catalogue's trees are drawn by them.
+        self.far_rule_m = (rules.outside_oob, rules.from_play)
+        self.outer_keep = rules.outer_keep
+        self.in_vsp: set[str] = set()
+
+    def check_vsp(self, in_dump: set[str], vsp_ids: list[str]) -> list[str]:
+        """What the course's VSP holds now (the dump's inner trees by tree id) against the routing of the inner
+        vsp placements. A tree the routing sends to Arborist but VSP still holds (routed again after the last
+        planting) stays VSP's, so it is drawn once; a vsp tree routed own that VSP lacks is drawn by nobody.
+        Both until Unity plants again."""
+        self.in_vsp = in_dump
+        held = sorted(i for i in in_dump if self.routes.get(i, OWN) != OWN)
+        missing = sorted(i for i in vsp_ids if i not in in_dump and self.routes.get(i, OWN) == OWN)
+        some = lambda ids: ", ".join(ids[:3]) + (", ..." if len(ids) > 3 else "")
+        return ([f"warning: {len(held)} tree(s) the course's VSP holds are routed to Arborist since the last planting ({some(held)}): "
+                 "VSP still draws them; plant again in Unity"] if held else []) + \
+               ([f"warning: {len(missing)} vsp tree(s) routed own are not in the course's VSP ({some(missing)}): "
+                 "nobody draws them; plant again in Unity"] if missing else [])
 
     def kept_in_vsp(self, prefab: str) -> bool:
         return False   # no "vsp" list: the routing decided per tree
@@ -938,15 +1004,14 @@ class RoutedPolicy:
         return not outer
 
     def tree_route(self, placement: dict, outer: bool) -> str | None:
-        # The routing file is the inner terrain's: only its placements go where it says.
-        return None if outer else self.routes.get(placement["id"], OWN)
+        # The routing file is the inner terrain's: only its placements go where it says. What VSP holds, it draws.
+        if outer:
+            return None
+        return OWN if placement["id"] in self.in_vsp else self.routes.get(placement["id"], OWN)
 
     def lists(self, entry: dict) -> bool:
         # One with no tree id (the outer catalogue's dump trees) is counted only.
         return entry.get("id") is not None
-
-    def fit_lines(self, fitted: int, unfitted: int) -> list[str]:
-        return []
 
     def band_lines(self, outer_keep: OuterKeep) -> list[str]:
         # outerKeep thinned the inner trees in the routing already; the bands here are the outer catalogue's.
@@ -989,13 +1054,13 @@ def trees(args) -> None:
     written. --rules (the course's vegetation-rules.json) gives the far rule and outerKeep for the rest (the
     outer catalogue's trees)."""
 
+    species_file = json.loads(Path(args.species).read_text(encoding="utf-8")) if Path(args.species).is_file() else {}
+    # Who draws which tree: the routing file's decisions, or the species file's "vsp" list, far rule and trim.
+    policy = tree_policy(args, species_file)
     key = key_file(args.key_file)
-    routes = load_routes(args.routing)
-    routing_rules = Routing.of_rules_file(Path(args.rules)) if args.rules else None
     # Several catalogue names end in a space; names are compared without it.
     library = {item["Name"].strip(): item for item in json.loads(Path(args.library).read_text(encoding="utf-8-sig"))["VegetationInfoList"]}
     sizes = {a["label"].strip(): a for a in json.loads(Path(args.sizes).read_text(encoding="utf-8"))["result"]["assets"] if a.get("heightM")}
-    species_file = json.loads(Path(args.species).read_text(encoding="utf-8")) if Path(args.species).is_file() else {}
     overrides = species_file.get("trees", {})
     look = species_file.get("treeSettings", [])
     planted = json.loads(Path(args.planted).read_text(encoding="utf-8"))["items"]
@@ -1007,18 +1072,12 @@ def trees(args) -> None:
 
     items: dict[str, dict] = {}
     cells: dict[int, dict] = {}
-    # Who draws which tree: the routing file's decisions, or the species file's "vsp" list, far rule and trim.
-    policy = LegacyPolicy(species_file) if routes is None else RoutedPolicy(routes, args.routing)
     rule = None
     if args.surfaces:
-        if routing_rules is None:
-            beyond = species_file.get("billboardBeyondM", {})
-        else:
-            beyond = {"outsideOob": routing_rules.outside_oob, "fromPlay": routing_rules.from_play}
         gkds = [Path(args.gkd)] if args.gkd else sorted(Path(args.course_dir).glob("*.GKD"))
         if not gkds:
             sys.exit("No .GKD in the course folder for the course boundary; give --gkd.")
-        rule = FarRule(Path(args.surfaces), gkds[0], (x0, z0, x1, z1), float(beyond.get("outsideOob", BILLBOARD_OUTSIDE_OOB_M)), float(beyond.get("fromPlay", BILLBOARD_FROM_PLAY_M)))
+        rule = FarRule(Path(args.surfaces), gkds[0], (x0, z0, x1, z1), *policy.far_rule_m)
     rows, unmapped, outside, thinned, left, trim = [], [], 0, 0, {}, []
     # Tree ids (arboristdata.ids.json): the placements of every tree handed to Arborist, drawn or left out.
     drawn: list[dict] = []
@@ -1096,7 +1155,13 @@ def trees(args) -> None:
     # "forstRing" (ForstRing): the "vsp" trees beyond the ring and inside the far rule become full models here.
     ring = ForstRing(species_file["forstRing"]) if rule and species_file.get("forstRing") else None
     ringed: dict[str, dict[str, int]] = {}   # Arborist item -> prefab -> trees
-    outer_keep = OuterKeep(species_file.get("outerKeep")) if routing_rules is None else routing_rules.outer_keep
+    outer_keep = policy.outer_keep
+    # The inner trees the course's VSP holds now, by tree id: checked against the routing before the placements are drawn.
+    in_dump = {e["id"] for source in planted if "(billboards)" not in source["catalogue"]
+               for e in (dump_entry(i[0], i[2], source["name"]) for i in source["instances"]) if e["id"]} if args.routing and placed_at else set()
+    vsp_ids = [p["id"] for doc in placement_docs if doc.get("terrain") != "outer"
+               for p in doc["placements"] if parse_model_id(p.get("model", ""))[0] != ARBORIST]
+    held_lines = policy.check_vsp(in_dump, vsp_ids)
     for source in planted:
         kept_in_vsp = policy.kept_in_vsp(source["prefab"])
         outer = "(billboards)" in source["catalogue"]
@@ -1290,7 +1355,7 @@ def trees(args) -> None:
     if placement_docs:
         print(f"{placed} tree(s) {policy.placements_what} ({', '.join(Path(p).name for p in args.placements)}); "
               f"{len(drawn)} drawn and {len(left_out)} left out by tree id: {out_dir / 'arboristdata.ids.json'}")
-    report = (policy.fit_lines(fitted, unfitted) if fit else []) + policy.band_lines(outer_keep)
+    report = held_lines + (fit_lines(fitted, unfitted) if fit else []) + policy.band_lines(outer_keep)
     far_total = sum(r[3] for r in rows if r[2].endswith(FAR_SUFFIX))
     report += policy.vsp_lines(rule=rule, total=total, far_total=far_total, left=left, routed_away=routed_away,
                                ring=ring, ringed=ringed, trim=trim, planted=args.planted)
@@ -1596,8 +1661,8 @@ def main() -> None:
     p.add_argument("--placements", nargs="*", help="<course>-<terrain>-placements.json of the export (golfmap-placements-v1, Unity's planter): the trees of Arborist models, drawn as placed; the VSP ones give the dump's trees their ids")
     p.add_argument("--models", help="the course's model library (models.json, golfmap-models-v1): an Arborist model's look")
     p.add_argument("--gkd", help="the course's .GKD for the boundary (default: the one in --course-dir)")
-    p.add_argument("--routing", help="<prefix>-inner-routing.json (golfmap-routing-v1, `route`): the inner placements go where it says; no \"vsp\" list, no trim")
-    p.add_argument("--rules", help="the course's vegetation-rules.json: its `routing` far rule and outerKeep instead of the species file's")
+    p.add_argument("--routing", help="<prefix>-inner-routing.json (golfmap-routing-v1, `route`): the inner placements go where it says; no \"vsp\" list, no trim. Needs --rules")
+    p.add_argument("--rules", help="with --routing: the course's vegetation-rules.json, whose `routing` made the routing file; its far rule and outerKeep draw the outer catalogue")
     p.add_argument("--key-file")
     p = sub.add_parser("route", help="before planting: route each tree by id - own (its model's renderer), billboard (Arborist) or out - by the course's routing rules")
     p.add_argument("--trees", required=True, help="the terrain's trees export (<prefix>-<terrain>-trees.json, unity-trees-v1)")
@@ -1608,6 +1673,9 @@ def main() -> None:
     p.add_argument("--origin", nargs=2, type=float, default=[0.0, 0.0], metavar=("X", "Z"), help="the terrain's Unity world position (the inner stands at 0 0)")
     p.add_argument("--rules", help="the course's vegetation-rules.json (its `routing`; the defaults without)")
     p.add_argument("--out", required=True, help="<prefix>-<terrain>-routing.json (golfmap-routing-v1)")
+    p.add_argument("--ids", nargs="+", help="route only these tree ids again (an edit touched them; one the edits deleted leaves the routing); "
+                                            "the rest keep their routes from --from. Every tree is routed when --from is missing or was made from another trees file or other rules")
+    p.add_argument("--from", dest="base", help="with --ids: the routing to start from (default --out)")
     p.add_argument("--dry-run", action="store_true", help="print the counts, write nothing")
     p.add_argument("--json", action="store_true", help="also print the counts as the last line, one JSON object {counts, out} (out null with --dry-run): what the app reads")
     p = sub.add_parser("edit", help="hand changes to placed trees (move, resize, rotate, delete, add, another item) in the file, in place")

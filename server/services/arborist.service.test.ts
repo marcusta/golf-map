@@ -239,10 +239,11 @@ test.skipIf(!!MISSING)('Update vegetation with Unity closed: zones exported only
     await svc.whenIdle(TEST_COURSE_ID);
     const done = svc.job(job.id);
     expect(done.error).toBeNull();
-    expect(runs).toEqual(['grass_zones.py', 'woodland_floor_zones.py', 'creek_bank_zones.py', 'gspro.py zones', 'arborist.py lower']);
+    expect(runs).toEqual(['grass_zones.py', 'woodland_floor_zones.py', 'rock_shore_zones.py', 'creek_bank_zones.py', 'gspro.py zones', 'arborist.py lower']);
     const report = done.result!.report;
     const out = path.join(f.out, 'arboristdata.dat');
-    expect(report.slice(-6)).toEqual([
+    // The last line is the phase timings (Time: ...).
+    expect(report.slice(-7, -1)).toEqual([
         expect.stringMatching(/^Unity: not open, zones exported only - no open Unity editor imports from .* \(none is open\)/),
         `Arborist lower vegetation written: 1 items, 1 mask textures (${out})`,
         `warning: no Arborist species for 1 item(s) (add them to ${path.join(f.docs, 'linkan', 'arborist-species.json')}):`,
@@ -250,6 +251,7 @@ test.skipIf(!!MISSING)('Update vegetation with Unity closed: zones exported only
         "left to the course's own VSP (the palette's prefabItemsInVsp): Woodland heath - heather",
         "Arborist trees: skipped, Unity is not open (the trees' positions and ground heights come from its scene); the file keeps the trees as last generated",
     ]);
+    expect(report.at(-1)).toMatch(/^Time: /);
 
     // Written to the trial folder; the course folder's own file is the base and is left as it was.
     expect(Object.keys(packages(await decode(out, f.key)))).toEqual(['Hand made in Arborist', 'GolfMap lower vegetation']);
@@ -288,3 +290,26 @@ test('the terrains square is the union of the heightmap sidecars in the export f
     expect(await terrainsSquare(f.exportDir, 'linkan')).toEqual([0, 0, 200, 200]);
     expect(await terrainsSquare(f.exportDir, 'vreta')).toBeNull();
 });
+
+test('one rule for a routed course: a routing file left on a course without `routing` rules is removed, and the Arborist trees wait for a planting', async () => {
+    const f = await fixture();
+    const routing = path.join(f.exportDir, 'linkan-inner-routing.json');
+    const leftOver = JSON.stringify({ format: 'golfmap-routing-v1', routes: { a: 'billboard' } });
+    const svc = new ArboristService({ dataDir: f.data, pipelineDir: PIPELINE, courseDocsRoot: f.docs, runner: real });
+    await writeFile(path.join(f.docs, 'linkan', 'vegetation-rules.json'), JSON.stringify({ format: 'golfmap-vegetation-rules-v1', generators: {} }));
+
+    // The trees export routes again (routeIfRouted): with no rules, the old file goes.
+    await writeFile(routing, leftOver);
+    expect(await svc.routeIfRouted(f.course, { dryRun: true })).toEqual([]);
+    expect(existsSync(routing)).toBe(true);
+    const lines = await svc.routeIfRouted(f.course);
+    expect(lines).toHaveLength(1);
+    expect(lines[0]).toStartWith('Routing removed: Linkan has no `routing`');
+    expect(existsSync(routing)).toBe(false);
+
+    // Writing the Arborist trees with one left over: Unity's VSP was planted routed, so it must plant again first.
+    await writeBase(f);
+    await writeFile(routing, leftOver);
+    await expect(svc.trees(f.course, editorWithTrees([]))).rejects.toThrow(/planted by the routing of a routed course/);
+    expect(existsSync(routing)).toBe(false);
+}, 60_000);

@@ -29,7 +29,7 @@
 //   wrapper key           <dataDir>/arborist-wrapper.key, never in the repo
 //                         (GOLFMAP_ARBORIST_KEY overrides)
 import * as path from 'node:path';
-import { readFile, readdir, stat } from 'node:fs/promises';
+import { readFile, readdir, rm, stat } from 'node:fs/promises';
 import {
     courseSlug, placementsExportFileName, routingExportFileName, statOrNull, surfacesExportFileName, treeEditsFileName, treesExportFileName,
     zonesExportFileName, type ExportRunner, type TerrainKind,
@@ -120,10 +120,13 @@ export class ArboristService {
     }
 
     /**
-     * The course's routing rules file (docs/gspro/<slug>/vegetation-rules.json with a `routing`), or null: a
-     * course without them is not routed and keeps the older path (the species file's "vsp" list, the trim).
+     * The course's routing rules file (docs/gspro/<slug>/vegetation-rules.json with a `routing`), or null. This is
+     * the one rule for a routed course: <slug>-inner-routing.json is derived from these rules (Unity's planter and
+     * `arborist.py trees` follow the file, and arborist.py refuses one made with other rules), and the file of a
+     * course without them is removed (`dropRouting`). A course without them keeps the older path (the species
+     * file's "vsp" list, the trim).
      */
-    async routingRules(course: ArboristCourse): Promise<string | null> {
+    private async routingRules(course: ArboristCourse): Promise<string | null> {
         const file = this.docs(course, VEGETATION_RULES_FILE);
         try {
             const doc = JSON.parse(await readFile(file, 'utf8')) as { routing?: unknown };
@@ -155,7 +158,7 @@ export class ArboristService {
      */
     async routeIfRouted(course: ArboristCourse, opts: { dryRun?: boolean } = {}): Promise<string[]> {
         const rules = await this.routingRules(course);
-        if (!rules) return [];
+        if (!rules) return opts.dryRun ? [] : this.dropRouting(course);
         try {
             return (await this.routeBy(course, rules, opts)).report;
         } catch (e) {
@@ -163,10 +166,35 @@ export class ArboristService {
         }
     }
 
+    /**
+     * The trees one edit touched (the Arborist edit loop: `ids`, by tree id) routed again, into `staged.out`: the
+     * routing file with those trees routed where `staged.edits` (the edits file as it will be) puts them and every
+     * other tree as before, so what Unity's last planting stored stays so. The whole terrain is routed instead when
+     * the routing is already older than its trees export or edits (a change Unity made since), was made with other
+     * rules, or is not there yet. Null for a course that is not routed; throws what is missing or failed.
+     */
+    async routeEdited(course: ArboristCourse, ids: string[], staged: { edits: string; out: string }): Promise<RouteResult | null> {
+        const rules = await this.routingRules(course);
+        if (!rules) return null;
+        const file = path.join(course.exportDir, routingExportFileName(course.name, 'inner'));
+        const routed = (await statOrNull(file))?.mtimeMs ?? 0;
+        let newest = 0;
+        for (const input of [treesExportFileName(course.name, 'inner'), treeEditsFileName(course.name, 'inner')]) {
+            newest = Math.max(newest, (await statOrNull(path.join(course.exportDir, input)))?.mtimeMs ?? 0);
+        }
+        const inputs = (await this.routeInputs(course)).filter((_, i, all) => all[i] !== '--edits' && all[i - 1] !== '--edits');
+        const only = routed >= newest ? ['--ids', ...ids, '--from', file] : [];
+        return this.runRoute([...inputs, '--edits', staged.edits, '--rules', rules, ...only], staged.out, {});
+    }
+
     /** `arborist.py route` with the course's routing rules file; its counts come back as JSON (`--json`). */
     private async routeBy(course: ArboristCourse, rules: string, opts: { dryRun?: boolean }): Promise<RouteResult> {
         const file = path.join(course.exportDir, routingExportFileName(course.name, 'inner'));
-        const args = ['route', ...await this.routeInputs(course), '--rules', rules, '--out', file, '--json'];
+        return this.runRoute([...await this.routeInputs(course), '--rules', rules], file, opts);
+    }
+
+    private async runRoute(inputs: string[], file: string, opts: { dryRun?: boolean }): Promise<RouteResult> {
+        const args = ['route', ...inputs, '--out', file, '--json'];
         if (opts.dryRun) args.push('--dry-run');
         const stdout = await this.run('Trees routing', args, ARBORIST_LOWER_TIMEOUT_MS);
         const counts = routeSummary(stdout);
@@ -176,6 +204,18 @@ export class ArboristService {
             report: [`Trees routed: own ${counts.own}, billboard ${counts.billboard}, left out ${counts.out}`
                 + (opts.dryRun ? ' (dry run, nothing written)' : ` (${file})`)],
         };
+    }
+
+    /**
+     * A course without routing rules has no routing file: one left from when it had them is removed, so Unity's
+     * planter stores every vsp model again (its next planting must run before the Arborist trees are written).
+     */
+    private async dropRouting(course: ArboristCourse): Promise<string[]> {
+        const file = path.join(course.exportDir, routingExportFileName(course.name, 'inner'));
+        if (!await statOrNull(file)) return [];
+        await rm(file, { force: true });
+        return [`Routing removed: ${course.name} has no \`routing\` in its ${VEGETATION_RULES_FILE} any more (${file}); `
+            + 'plant the trees in Unity again before writing the Arborist trees'];
     }
 
     /** What `arborist.py route` judges, checked: the inner trees export and its edits, the surface map, the GKD, the terrains. */
@@ -276,6 +316,11 @@ export class ArboristService {
                     + 'route the trees (bun run arborist -- route <course>), then plant them in Unity');
             }
             args.push('--routing', routing, '--rules', rules);
+        } else {
+            const dropped = await this.dropRouting(course);
+            if (dropped.length) {
+                throw new Error(`Arborist trees not written: Unity's VSP was planted by the routing of a routed course. ${dropped[0]}`);
+            }
         }
         // The trees the course's own VSP must stop drawing (not routed): arborist.py writes the list beside the planted trees.
         const farFile = path.join(path.dirname(planted), `${slug}-vsp-far.json`);

@@ -39,6 +39,24 @@ namespace GolfMap.Editor
             throw new InvalidOperationException("op must be modify, add, delete or revert.");
         }
 
+        // The survey's trees as the next Plant sees them, after GolfMapTreeEdits.Apply (golfmap.trees.edits.applied):
+        // id and terrain-local x, z of each, and the warnings for records that matched nothing. Nothing is written.
+        // arborist.py's edited_stems routes from its own copy of Apply; pipeline's parity test compares the two.
+        internal Dictionary<string, object> AppliedFromBridge()
+        {
+            var problem = SyncRole();
+            if (!string.IsNullOrEmpty(problem)) throw new InvalidOperationException(problem);
+            if (string.IsNullOrEmpty(filePath)) throw new InvalidOperationException("The " + RoleKey + " panel has no trees file.");
+            LoadFile();
+            if (loaded == null) throw new InvalidOperationException(status);
+            return new Dictionary<string, object>
+            {
+                { "trees", System.IO.Path.GetFileName(filePath) }, { "edits", System.IO.Path.GetFileName(editsPath) },
+                { "stems", loaded.trees.Select(t => (object)new Dictionary<string, object> { { "id", t.id }, { "x", (double)t.x }, { "z", (double)t.z } }).ToList() },
+                { "warnings", editWarnings.Cast<object>().ToList() },
+            };
+        }
+
         Dictionary<string, object> Revert(string id)
         {
             int removed = editFile.edits.RemoveAll(e => e.id == id);

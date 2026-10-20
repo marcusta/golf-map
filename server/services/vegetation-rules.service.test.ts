@@ -68,6 +68,22 @@ test("the planting rules: every generator in stack order, each rule's default fr
     expect(rules.treeAreas).toEqual([]);
 });
 
+test("a course that is not routed (Vreta) still shows who draws what from its species file; a routed one does not", async () => {
+    const species = { vsp: ['PF_Oak', 'PF Birch'], billboardBeyondM: { outsideOob: 80, fromPlay: 80 }, outerKeep: [[400, 0.8], [null, 0.2]], treeSettings: [] };
+    const legacy = (await (await setup({ 'arborist-species.json': species })).svc.forCourse(TEST_COURSE_ID)).trees.find((s) => s.source === 'arborist-legacy');
+    expect(legacy?.courseFile).toMatch(/linkan\/arborist-species\.json$/);
+    expect(rule(legacy, 'vsp')).toMatchObject({ courseSets: true, value: ['PF_Oak', 'PF Birch'] });
+    expect(rule(legacy, 'billboardBeyondM.fromPlay')).toMatchObject({ courseSets: true, value: 80, defaultValue: 40 });
+    expect(rule(legacy, 'outerKeep')).toMatchObject({ courseSets: true, value: [[400, 0.8], [null, 0.2]] });
+
+    const routed = await (await setup({
+        'arborist-species.json': { treeSettings: [] },
+        'vegetation-rules.json': { format: 'golfmap-vegetation-rules-v1', routing: { farBillboard: { outsideOob: 80, fromPlay: 80 } }, generators: {} },
+    })).svc.forCourse(TEST_COURSE_ID);
+    expect(routed.trees.map((s) => s.source)).not.toContain('arborist-legacy');
+    expect(rule(routed.trees.find((s) => s.source === 'routing'), 'routing.farBillboard.fromPlay')).toMatchObject({ courseSets: true, value: 80 });
+});
+
 test('a course with no rules files of its own shows the defaults alone', async () => {
     const { svc } = await setup({});
     const rules = await svc.forCourse(TEST_COURSE_ID);

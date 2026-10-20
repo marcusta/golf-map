@@ -46,6 +46,16 @@ namespace GolfMap.Editor
             });
         }
 
+        [BridgeCommand("golfmap.trees.edits.applied", "The terrain's survey trees as the next golfmap.trees.plant sees them: the trees export with its tree-edits file applied (GolfMapTreeEdits.Apply). Returns {trees, edits, stems: [{id, x, z}] (terrain-local metres), warnings}. Read-only: plants and writes nothing.",
+            args = "terrain=inner|outer")]
+        static object AppliedTreeEdits(BridgeArgs a)
+        {
+            var terrain = a.String("terrain", "inner");
+            if (terrain != "inner" && terrain != "outer") throw new System.InvalidOperationException("terrain must be inner or outer.");
+            var host = GolfMapTreePlanter.Host();
+            return GolfMapTreePlanter.For(terrain == "outer" ? GolfMapTreePlanter.Outer(host) : host).AppliedFromBridge();
+        }
+
         [BridgeCommand("golfmap.course", "The active GolfMap course and every course in the project: folder, scene, palette, export files (present, size, modified) and reports.")]
         static object Course()
         {

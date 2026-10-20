@@ -47,7 +47,23 @@ Unity's planter (`golfmap.trees.plant`) stores in the course's VSP only the vsp 
 the placements file still records every tree. `arborist.py trees --routing --rules` draws every other
 placement and lists it in `arboristdata.ids.json` (left out with reason outerKeep); it writes no
 `vsp-far.json` and asks for no trim. The course's `golfmap.vsp.trees` is `on=true` without `keep`.
-A tree edit (`golfmap.trees.edit`, the Arborist edit loop) does not re-route by itself: route, then plant.
+**One rule for a routed course**: it is routed when its vegetation-rules.json has `routing`; the routing
+file is derived from those rules. The app removes the file of a course without them (the trees export, and
+`gspro:export arborist` refuses once until Unity plants again); `arborist.py trees` refuses `--routing`
+without `--rules`, `--rules` without `--routing`, and a routing file made with other rules than the course's
+now (it records them under `rules`). It also checks the routing against what the course's VSP holds (the
+dump): a tree VSP holds stays VSP's even when routed to Arborist since, and both cases are warnings to plant
+again.
+
+**Edits re-route.** The Arborist edit loop routes the tree it changed again
+(`ArboristService.routeEdited`, `arborist.py route --ids <id> [--from <routing>]`): only that id, the rest
+keep the routes Unity's last planting stored (a whole route instead when the routing was already older than
+the trees export or edits, made with other rules, or missing). It runs beside the `.dat` save (Omberg: the
+whole save 1.3 s) and writes the routing after the edits file. Unity's own edits (`golfmap.trees.edit`, the
+Scene view editor) cannot route: the planter then warns that the routing is out of date (older than the
+trees export or the edits file) and plants those trees by their old route - route, then plant (the sync
+board's Trees does both). `golfmap.trees.edits.applied` returns the trees after Unity's `Apply`;
+`unity/tests/tree-edits-parity.test.ts` checks arborist.py's `edited_stems` against it on Omberg.
 
 | | |
 |---|---|
@@ -186,7 +202,8 @@ bun run arborist -- edit omberg show --picked                 # which tree it is
   (the placement: the next `gspro:export arborist` draws it the same) and
   `<prefix>-<terrain>-tree-edits.json` (the record `golfmap.trees.edit` would write: model, drawn
   height and crown width with `sized`, terrain-local x/z, rotation when turned — so the next plant in
-  Unity places it the same). Checked 2026-10-19 on Omberg: a bush moved, grown and another deleted,
+  Unity places it the same), then on a routed course `<prefix>-inner-routing.json` with that tree routed
+  again (worked out beside the `.dat` save; "Routing before planting"). Checked 2026-10-19 on Omberg: a bush moved, grown and another deleted,
   then the trees export rerun from the dump on disk drew them so.
 - A moved or added tree stands on Arborist's own ground (the mod's `ground`, the highest collider).
 - A model whose item the file lacks (a `swap` or `add` to a model the course has not drawn yet)

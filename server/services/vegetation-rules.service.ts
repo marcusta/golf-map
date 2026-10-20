@@ -214,20 +214,19 @@ export class VegetationRulesService {
         // The photo stems (golfpipe photo-stems): young trees the lidar missed, from their shadows in the summer photo.
         const photoDoc = defaults.get('photo-stems');
         if (photoDoc) trees.push(section(photoDoc, null, null));
+        // Who draws each tree: a course is routed when its vegetation-rules.json has `routing` (arborist.py route,
+        // before planting; the routing section's keys carry the `routing.` prefix, so the whole course file is its
+        // values). One that is not keeps the older path, read from its arborist-species.json (arborist-legacy).
+        const routed = !!(courseRules as { routing?: unknown } | null)?.routing;
         let palette: unknown = null;
-        for (const source of ['tree-palette', 'arborist']) {
+        for (const source of ['tree-palette', 'arborist', 'arborist-legacy', 'routing']) {
             const doc = defaults.get(source);
-            if (!doc?.courseFile) continue;
+            if (!doc?.courseFile || (source === 'arborist-legacy' && routed)) continue;
             const file = path.join(docs, doc.courseFile);
             const values = await readJson(file);
             if (source === 'tree-palette') palette = values;
             trees.push(section(doc, values, values ? rel(file) : null));
         }
-        // Who draws each tree (arborist.py route, before planting): the course's vegetation-rules.json `routing`.
-        // The whole course file is the section's values: its rule keys carry the `routing.` prefix, as the
-        // routing defaults (pipeline/vegetation-rules/routing.json) and arborist.py read them.
-        const routingDoc = defaults.get('routing');
-        if (routingDoc) trees.push(section(routingDoc, courseRules, courseRules ? rel(rulesFile) : null));
 
         const models = palette ? paletteModels(docs, palette) : [];
         const bySpecies = new Map<string, { enabled: number; total: number }>();

@@ -2,8 +2,9 @@ import { test, expect } from 'bun:test';
 import * as path from 'node:path';
 import * as os from 'node:os';
 import { existsSync } from 'node:fs';
-import { mkdtemp, mkdir, readFile, writeFile } from 'node:fs/promises';
+import { mkdtemp, mkdir, readFile, stat, utimes, writeFile } from 'node:fs/promises';
 import { defaultRunner, venvPython } from './gspro-export.service';
+import { ArboristService } from './arborist.service';
 import {
     ArboristEditService, orientation, treeItemId, modelItem, type ArboristPlayer, type Placement, type TreeModel,
 } from './arborist-edit.service';
@@ -267,4 +268,67 @@ t('an added tree stands on Arborist\'s ground with an id of its own; a dry run a
     const quiet = await f.svc.edit(f.course, { id }, { op: 'resize', heightM: 4 });
     expect(quiet.live.done).toBe(false);
     expect((await f.read()).placements.find(p => p.id === id)!.heightM).toBe(4);
+}, 60_000);
+
+/**
+ * A routed course (its vegetation-rules.json has `routing`): the map of pipeline/tests/test_arborist_routing.py,
+ * a fairway strip x 90..110, the boundary (20, 20)-(180, 180), billboards beyond 10 m outside it and 60 m from play.
+ */
+async function routed(f: Awaited<ReturnType<typeof fixture>>) {
+    const classes = new Uint8Array(400 * 400).fill(2);
+    for (let r = 0; r < 400; r++) classes.fill(1, r * 400 + 180, r * 400 + 220);
+    await writeFile(path.join(f.exportDir, 'linkan-inner-surfaces.bin'), classes);
+    await writeFile(path.join(f.exportDir, 'linkan-inner-surfaces.json'), JSON.stringify({
+        classes: { 1: 'fairway', 2: 'deep_rough' }, cellM: 0.5, data: 'linkan-inner-surfaces.bin', width: 400, height: 400, worldOrigin: [0, 0],
+    }));
+    await writeFile(path.join(f.courseDir, 'Linkan_scene.GKD'), JSON.stringify({ pOOB: { coords: [{ x: 20, z: 20 }, { x: 180, z: 20 }, { x: 180, z: 180 }, { x: 20, z: 180 }] } }));
+    await writeFile(path.join(f.docs, 'linkan', 'vegetation-rules.json'), JSON.stringify({
+        format: 'golfmap-vegetation-rules-v1', routing: { farBillboard: { outsideOob: 10, fromPlay: 60 } }, generators: {},
+    }));
+    const arborist = new ArboristService({ dataDir: f.data, pipelineDir: PIPELINE, courseDocsRoot: f.docs, runner: real });
+    await arborist.route(f.course);
+    const file = path.join(f.exportDir, 'linkan-inner-routing.json');
+    const routes = async () => (JSON.parse(await readFile(file, 'utf8')) as { routes: Record<string, string> }).routes;
+    return { file, routes };
+}
+
+t('on a routed course an edit routes the tree again where it now stands, and only that tree', async () => {
+    const f = await fixture();
+    const r = await routed(f);
+    expect(await r.routes()).toEqual({ [f.bush.id]: 'own', [f.elm.id]: 'own', [f.added.id]: 'own' });
+    // What Unity's last planting stored by this routing stays so, whatever the rules would say now.
+    const doc = JSON.parse(await readFile(r.file, 'utf8'));
+    doc.routes[f.elm.id] = 'billboard';
+    await writeFile(r.file, JSON.stringify(doc));
+
+    const moved = await f.svc.edit(f.course, { id: f.bush.id }, { op: 'move', to: [195, 100] });   // 15 m outside, 85 m from play
+    expect(moved.warnings).toEqual([]);
+    expect(moved.saved.at(-1)).toContain(`${f.bush.id} billboard`);
+    expect(await r.routes()).toEqual({ [f.bush.id]: 'billboard', [f.elm.id]: 'billboard', [f.added.id]: 'own' });
+    // The routing is not older than the edits it was routed from (Unity's planter checks).
+    expect((await stat(r.file)).mtimeMs).toBeGreaterThanOrEqual((await stat(path.join(f.exportDir, 'linkan-inner-tree-edits.json'))).mtimeMs);
+
+    const gone = await f.svc.edit(f.course, { id: f.added.id }, { op: 'delete' });
+    expect(gone.saved.at(-1)).toContain(`${f.added.id} gone`);
+    expect(Object.keys(await r.routes()).sort()).toEqual([f.bush.id, f.elm.id].sort());
+}, 60_000);
+
+t('a routing already older than the edits (a change in Unity since) is routed whole by the next edit', async () => {
+    const f = await fixture();
+    const r = await routed(f);
+    const doc = JSON.parse(await readFile(r.file, 'utf8'));
+    doc.routes[f.elm.id] = 'billboard';
+    await writeFile(r.file, JSON.stringify(doc));
+    const edits = path.join(f.exportDir, 'linkan-inner-tree-edits.json');
+    const later = new Date(Date.now() + 5_000);
+    await utimes(edits, later, later);
+
+    await f.svc.edit(f.course, { id: f.bush.id }, { op: 'resize', factor: 1.2 });
+    expect(await r.routes()).toEqual({ [f.bush.id]: 'own', [f.elm.id]: 'own', [f.added.id]: 'own' });
+}, 60_000);
+
+t('a course without routing rules gets no routing file from an edit', async () => {
+    const f = await fixture();
+    await f.svc.edit(f.course, { id: f.bush.id }, { op: 'move', by: [1, 0] });
+    expect(existsSync(path.join(f.exportDir, 'linkan-inner-routing.json'))).toBe(false);
 }, 60_000);

@@ -474,17 +474,38 @@ namespace GolfMap.Editor
         const string RouteOwn = "own";
 
         // <export folder>/<prefix>-<terrain>-routing.json (golfmap-routing-v1, arborist.py route): tree id -> "own" |
-        // "billboard" | "out". Null when the course has none (it is not routed: every vsp model goes into VSP).
+        // "billboard" | "out". Null when the course has none (it is not routed: every vsp model goes into VSP). The
+        // file is derived from the course's vegetation-rules.json `routing` - a course is routed when that has one, and
+        // the app removes the file of a course that has none - so here the file being there is the course being routed.
         Dictionary<string, string> LoadRoutes()
         {
-            var file = Course ? GolfMapCourses.ExportFile(Course, RoleKey, "routing") : null;
-            if (file == null || !File.Exists(file)) return null;
+            var file = RoutingFile();
+            if (file == null) return null;
             var doc = GolfMapJsonDoc.ParseObject(File.ReadAllText(file));
             var routes = doc.Object("routes");
             if (doc.String("format") != RoutingFormat || routes == null) throw new InvalidOperationException("Not a " + RoutingFormat + " file: " + file + ". Existing import retained.");
             var result = new Dictionary<string, string>();
             foreach (var id in routes.keys) result[id] = routes.String(id);
             return result;
+        }
+
+        string RoutingFile()
+        {
+            var file = Course ? GolfMapCourses.ExportFile(Course, RoleKey, "routing") : null;
+            return file != null && File.Exists(file) ? file : null;
+        }
+
+        // Why the routing is older than what it routed from (the trees export, the tree edits: a Scene view or
+        // golfmap.trees.edit change since); null when it is not. Those trees are planted by their old route, or as
+        // unrouted. The Arborist edit loop and the app's trees export route again themselves.
+        string StaleRouting()
+        {
+            var file = RoutingFile();
+            if (file == null) return null;
+            var routed = File.GetLastWriteTimeUtc(file);
+            var newer = new[] { filePath, editsPath }.Where(f => !string.IsNullOrEmpty(f) && File.Exists(f) && File.GetLastWriteTimeUtc(f) > routed)
+                .Select(f => Path.GetFileName(f)).ToArray();
+            return newer.Length == 0 ? null : string.Join(" and ", newer) + " changed after " + Path.GetFileName(file) + " was written";
         }
 
         // The prepared vsp trees split by the routing: Own go into the course's VSP, Away ("billboard", "out") are
@@ -496,10 +517,12 @@ namespace GolfMap.Editor
             public List<PreparedTree> Away = new List<PreparedTree>();
             public int Unrouted;
             public bool Routed;
+            public string Stale;   // why the routing is older than what it routed from; null when it is not
 
             public string Note()
             {
                 var note = Away.Count > 0 ? "\nRouting: " + Away.Count + " trees of vsp models are Arborist's (billboard or left out), placements only." : "";
+                if (Stale != null) note += "\nWARNING the routing is out of date (" + Stale + "): edited trees went by their old route. Route again (bun run arborist -- route <course>), then plant.";
                 if (Unrouted > 0) note += "\nWARNING " + Unrouted + " trees are not in the routing file and went into VSP: route again (bun run arborist -- route <course>), then plant.";
                 return note;
             }
@@ -511,6 +534,7 @@ namespace GolfMap.Editor
             var routes = LoadRoutes();
             split.Routed = routes != null;
             if (routes == null) { split.Own.AddRange(prepared); return split; }
+            split.Stale = StaleRouting();
             foreach (var t in prepared)
             {
                 string route;

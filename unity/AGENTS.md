@@ -49,7 +49,7 @@ Indexed (read the full text before touching the area):
 - **Planter is a scene component**: settings live on `GolfMapTrees`; call `Dirty()` after changing them from code.
 - **Tree edits file** `<course>-<terrain>-tree-edits.json`: a replant or survey regeneration keeps it; `golfmap.trees.edit` writes it by tree id.
 - **Arborist models** in the palette (`arborist:<label>`, models.json beside palette.json): no prefab and never in VSP; their trees exist only in `<prefix>-<terrain>-placements.json`. Keep Unity's palette.json/models.json equal to docs/gspro/<course>/.
-- **Routing file** `<prefix>-<terrain>-routing.json` (`bun run arborist -- route`): with one, the planter stores only vsp models routed `own`; the rest are placements only. No routing file = every vsp model stored (Vreta).
+- **Routing file** `<prefix>-<terrain>-routing.json` (`bun run arborist -- route`): with one, the planter stores only vsp models routed `own`; the rest are placements only. No routing file = every vsp model stored (Vreta); the app removes the file of a course whose vegetation-rules.json has no `routing`. A routing older than the trees export or the tree edits (a Unity-side edit) is planted with a WARNING to route again. `golfmap.trees.edits.applied` returns the trees after `GolfMapTreeEdits.Apply` (parity test `unity/tests/tree-edits-parity.test.ts`).
 - **VSP draws one mesh per LOD**: multi-renderer LODs render as blobs; use `VS_` or baked variants.
 - **VegetationSystemPro name**: GSPro resolves the system by that exact name; build via `GolfMapVspRig.cs`, find systems by storage asset.
 - **Copied tree shader names**: never rename; GSPro's forked VSP throws and drops every tree in the package. Stock names only.
