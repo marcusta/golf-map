@@ -6,7 +6,7 @@
 import * as path from 'node:path';
 import * as os from 'node:os';
 import { mkdir, mkdtemp, readdir, utimes, writeFile } from 'node:fs/promises';
-import { writeFileSync } from 'node:fs';
+import { existsSync, writeFileSync } from 'node:fs';
 import { test, expect, afterEach } from 'bun:test';
 import { ConflictError, NotFoundError } from '@basics/core/server/auth';
 import { createTestDb } from '../testing/db';
@@ -119,7 +119,7 @@ function fakeEditor(exportFolder: string, opts: { rejectOnly?: boolean; refreshM
 async function setup(opts: {
     worker?: FakeShapingWorker; workerUrl?: string; workerLauncher?: string[]; unity?: 'ours' | 'none' | 'reject-only';
     library?: unknown; runner?: ExportRunner; editor?: { refreshMs?: number; steps?: object[]; failSurfaces?: boolean };
-    plantFails?: boolean; token?: string; timeouts?: Partial<ShapingTimeouts>; queueDir?: string;
+    plantFails?: boolean; token?: string; timeouts?: Partial<ShapingTimeouts>; queueDir?: string; allowGaps?: boolean;
 } = {}) {
     const ctx = await createTestDb(seedCourse);
     const exportDir = await tmp('shaping-export-');
@@ -150,7 +150,7 @@ async function setup(opts: {
         courses: ctx.coursesService, exportSettings: exporter, dataDir,
         pipelineDir: '/pipeline', runner: opts.runner ?? layers.runner, unityBridge: defaultUnityBridge(discovery),
         workerUrl: opts.worker?.url ?? opts.workerUrl ?? 'http://127.0.0.1:9', workerLauncher: opts.workerLauncher,
-        token: opts.token, layersRoot, recipeLibrary, dbPath: '/data/app.sqlite', queueDir: opts.queueDir,
+        token: opts.token, layersRoot, recipeLibrary, dbPath: '/data/app.sqlite', queueDir: opts.queueDir, allowGaps: opts.allowGaps,
         timeouts: { pollMs: 25, startMs: 20_000, loadMs: 20_000, syncMs: 20_000, unitySec: 30, heartbeatMs: 50, ...opts.timeouts },
     });
     cleanup.push(() => svc.stopWorker());
@@ -571,6 +571,65 @@ test('dry run: the worker and Unity plan only', async () => {
     expect(worker.calls.find(c => c.route === '/sync')!.body).toEqual({ dryRun: true });
     expect(job.result!.exported).toEqual([]);
     expect(t.editor!.calls.at(-1)).toEqual({ command: 'golfmap.course.refresh', args: { only: 'Spline_recipe-10,Spline_recipe-11,Spline_tees', dryRun: true } });
+});
+
+test("a sync whose gates find a gap it made fails the Blender phase with the worker's message; nothing is refreshed in Unity", async () => {
+    const worker = startFakeShapingWorker({ gaps: true });
+    cleanup.push(() => worker.stop());
+    const t = await setup({ worker });
+    await blends(t.exportDir);
+
+    const job = await run(t.svc);
+    expect(job.status).toBe('failed');
+    expect(job.phase).toBe('blender');
+    expect(job.phases.map(p => p.status)).toEqual(['done', 'done', 'failed', 'pending', 'pending']);
+    // the worker's own words: what failed, which objects, where in EPSG:3006, and the way out
+    expect(job.error).toMatch(/^Shaping worker \/sync failed: 1 gap check\(s\) failed, so nothing was exported and the objects are back as they were before this sync: seam gap 2\.5 cm between Spline_recipe-10 and Spline_neighbour at EPSG:3006 530110\.50, 6487074\.60\. .*allowGaps/);
+    expect(job.phases[2]!.detail).toBe(job.error);
+    expect(job.result).toBeNull();
+    expect(worker.calls.find(c => c.route === '/sync')!.body).toEqual({});
+    expect(t.editor!.calls.filter(c => c.command === 'golfmap.course.refresh')).toEqual([]);
+    expect(existsSync(path.join(t.project, 'Assets', 'fbx'))).toBe(false);
+
+    // Nothing was applied: the next run meets the same gap and fails the same way.
+    const again = await run(t.svc);
+    expect(again.status).toBe('failed');
+    expect(again.error).toBe(job.error);
+});
+
+test("allowGaps: the gates' failures come back as warnings, the FBX are exported and Unity refreshes", async () => {
+    const worker = startFakeShapingWorker({ gaps: true });
+    cleanup.push(() => worker.stop());
+    const t = await setup({ worker, allowGaps: true });
+    await blends(t.exportDir);
+
+    const job = await run(t.svc);
+    expect(job.error).toBeNull();
+    expect(job.status).toBe('succeeded');
+    expect(worker.calls.find(c => c.route === '/sync')!.body).toEqual({ allowGaps: true });
+    const r = job.result!;
+    expect(r.gates).toEqual({
+        ok: false, allowGaps: true, limits: { gapM: 0.01, tJunctionM: 0.01 }, preExisting: [],
+        failures: [{ type: 'seamGap', objects: ['Spline_recipe-10', 'Spline_neighbour'], maxAbsDz: 0.025, points: 3, blend: [-12.5, 40.25], epsg3006: [530110.5, 6487074.6] }],
+        warnings: ['allowGaps: exported anyway: seam gap 2.5 cm between Spline_recipe-10 and Spline_neighbour at EPSG:3006 530110.50, 6487074.60'],
+    });
+    expect(r.warnings).toContain(r.gates!.warnings[0]!);
+    expect(r.seams!.gaps).toEqual([{ objects: ['Spline_recipe-10', 'Spline_neighbour'], vertices: 9, gaps: 3, maxAbsDz: 0.025, at: [-12.5, 40.25], new: true, gapsBefore: 0 }]);
+    expect(r.seams!.newGaps).toBe(1);
+    expect(r.exported.slice().sort()).toEqual(['Spline_recipe-10.fbx', 'Spline_recipe-11.fbx', 'Spline_tees.fbx']);
+    expect(t.editor!.calls.find(c => c.command === 'golfmap.course.refresh')!.args).toEqual({ only: 'Spline_recipe-10,Spline_recipe-11,Spline_tees' });
+    expect(job.phases.map(p => [p.id, p.status])).toEqual([['layers', 'done'], ['worker', 'done'], ['blender', 'done'], ['unity', 'done'], ['vegetation', 'skipped']]);
+
+    // A clean sync: the gates passed, nothing to warn about.
+    const clean = startFakeShapingWorker();
+    cleanup.push(() => clean.stop());
+    const plain = await setup({ worker: clean });
+    await blends(plain.exportDir);
+    const ok = (await run(plain.svc)).result!;
+    expect(ok.gates).toMatchObject({ ok: true, allowGaps: false, failures: [], warnings: [] });
+    expect(ok.seams).toMatchObject({ gaps: [], newGaps: 0 });
+    expect(ok.warnings.some(w => w.includes('allowGaps'))).toBe(false);
+    expect(clean.calls.find(c => c.route === '/sync')!.body).toEqual({});
 });
 
 test('with Unity closed: a loaded worker still syncs and the refresh is reported skipped; a worker that must load needs an FBX folder', async () => {

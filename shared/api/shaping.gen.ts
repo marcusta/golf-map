@@ -20,7 +20,7 @@ export interface ShapingJob {
     note: null | string;
     slice: null | RequestSlice;
     status: 'running' | 'succeeded' | 'failed';
-    phase: null | 'vegetation' | 'layers' | 'worker' | 'blender' | 'unity';
+    phase: null | 'blender' | 'unity' | 'vegetation' | 'layers' | 'worker';
     step: string;
     phases: ShapingPhase[];
     dryRun: boolean;
@@ -55,9 +55,9 @@ export interface RequestSlice {
 }
 
 export interface ShapingPhase {
-    id: 'vegetation' | 'layers' | 'worker' | 'blender' | 'unity';
+    id: 'blender' | 'unity' | 'vegetation' | 'layers' | 'worker';
     label: string;
-    status: 'done' | 'running' | 'failed' | 'pending' | 'skipped';
+    status: 'running' | 'failed' | 'pending' | 'done' | 'skipped';
     detail: null | string;
     seconds: null | number;
 }
@@ -68,7 +68,8 @@ export interface ShapingApplyResult {
     removed: string[];
     warnings: string[];
     places: unknown[];
-    seams: unknown;
+    seams: null | ShapingSeams;
+    gates: null | ShapingGates;
     unityReport: unknown;
     pathSurfaces: string[];
     pathMaterials: unknown;
@@ -99,6 +100,25 @@ export interface ShapingWorkerStatus {
     log: null | string;
 }
 
+export interface ShapingSeams {
+    toleranceXY: number;
+    gapDz: number;
+    pairsChecked: number;
+    gaps: ShapingSeamGap[];
+    newGaps: number;
+    unmatchedBoundaryChanged: Record<string, { before: number; after: number; }>;
+    tJunctions?: ShapingTJunctionCheck;
+}
+
+export interface ShapingGates {
+    ok: boolean;
+    allowGaps: boolean;
+    limits: { gapM: number; tJunctionM: number };
+    failures: ShapingGateFinding[];
+    preExisting: ShapingGateFinding[];
+    warnings: string[];
+}
+
 export interface ShapingUnityStep {
     id: string;
     status: string;
@@ -114,6 +134,34 @@ export interface ShapingWorkerJob {
     seconds: null | number;
     result: unknown;
     error: null | string;
+}
+
+export interface ShapingSeamGap {
+    objects: string[];
+    vertices: number;
+    gaps: number;
+    maxAbsDz: number;
+    at?: number[];
+    new: boolean;
+    gapsBefore: number;
+}
+
+export interface ShapingTJunctionCheck {
+    toleranceXY: number;
+    objects: Record<string, { vertices: number; onEdge: number; gaps: number; maxAbsDz: number; at?: number[] | undefined; }>;
+    gaps: number;
+    maxAbsDz: number;
+}
+
+export interface ShapingGateFinding {
+    type: 'seamGap' | 'tJunction' | 'flipped' | 'nan';
+    objects: string[];
+    maxAbsDz?: number;
+    points?: number;
+    faces?: null | number;
+    note?: string;
+    blend?: number[];
+    epsg3006?: number[];
 }
 
 export interface ShapingApi {

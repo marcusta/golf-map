@@ -169,13 +169,15 @@ export interface ShapingSeamGap {
     gapsBefore: number;
 }
 
-/** A mesh's border vertices on a neighbour's edge, off it in height (`shape_apply.tjunction_check`). */
-export interface ShapingTJunction {
-    vertices: number;
-    onEdge: number;
+/**
+ * The T-junction check after a sync that ran a cut (`shape_apply.tjunction_check`): per object, its border
+ * vertices on a neighbour's edge (`onEdge`) and how far off it in height they are.
+ */
+export interface ShapingTJunctionCheck {
+    toleranceXY: number;
+    objects: Record<string, { vertices: number; onEdge: number; gaps: number; maxAbsDz: number; at?: number[] }>;
     gaps: number;
     maxAbsDz: number;
-    at?: number[];
 }
 
 /** The worker's seam check of a sync (`report.seams`). */
@@ -187,7 +189,7 @@ export interface ShapingSeams {
     newGaps: number;
     unmatchedBoundaryChanged: Record<string, { before: number; after: number }>;
     /** Only when the sync ran a cut (a cart path cut, a weld, a road split, a rock cut-out). */
-    tJunctions?: { toleranceXY: number; objects: Record<string, ShapingTJunction>; gaps: number; maxAbsDz: number };
+    tJunctions?: ShapingTJunctionCheck;
 }
 
 /** One finding of the sync's gates (blender/README.md, "Shaping worker"). */

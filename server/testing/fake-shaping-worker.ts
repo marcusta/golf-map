@@ -6,6 +6,11 @@
 // folder holds (added, edited or removed since the last export; everything
 // after a load into a new folder, as fbx_sync's manifest would) as one changed
 // object `Spline_<op id>`, whose (empty) FBX it writes into the FBX folder.
+// The run's `report.seams` and `report.gates` have the real worker's shapes;
+// with `gaps` every sync that changes something opens a 2.5 cm seam gap at its
+// first changed object, and its gates fail it as the real worker's do (422,
+// the message naming the objects and the EPSG:3006 spot, nothing applied or
+// exported) unless the body says `allowGaps`, which exports with warnings.
 //
 // Both POSTs are JOBS, as the worker's: they answer `{job, kind, state:
 // 'running'}` with 202 and the work goes on in the background (`/status`
@@ -40,6 +45,8 @@ export interface FakeShapingWorkerOptions {
     statusOutages?: number;
     /** When set, every request must carry it as `X-Golfmap-Token` (401 otherwise). */
     token?: string;
+    /** Every sync that changes something opens a seam gap: its gates fail it unless the body has `allowGaps`. */
+    gaps?: boolean;
     /** The command line it was started with (reported in /status). */
     argv?: string[];
 }
@@ -123,6 +130,16 @@ export function startFakeShapingWorker(opts: FakeShapingWorkerOptions = {}): Fak
             const ids = new Set([...now.keys(), ...exportedOps.keys()]);
             const changedIds = [...ids].filter(id => now.get(id) !== exportedOps.get(id)).sort();
             const changed = changedIds.map(id => `Spline_${id}`);
+            const gap = opts.gaps && changed.length > 0 && !body.dryRun ? {
+                type: 'seamGap', objects: [changed[0]!, 'Spline_neighbour'], maxAbsDz: 0.025, points: 3,
+                blend: [-12.5, 40.25], epsg3006: [530110.5, 6487074.6],
+            } : null;
+            const gapLine = gap ? `seam gap 2.5 cm between ${gap.objects[0]} and ${gap.objects[1]} at EPSG:3006 530110.50, 6487074.60` : '';
+            if (gap && !body.allowGaps) {
+                // the real worker puts the objects back and exports nothing: the next sync sees the same change
+                throw new HttpError(422, `1 gap check(s) failed, so nothing was exported and the objects are back as they were before this sync: ${gapLine}. `
+                    + 'Fix the layer, or sync with {"allowGaps": true} to export anyway');
+            }
             const exported = body.dryRun ? [] : changed.map(n => `${n}.fbx`);
             // An op may name objects it merges away (`removesFbx`, like a permanent-join recipe's blends): their FBX goes.
             const removed = changedIds.flatMap(id => (JSON.parse(now.get(id) ?? '{}').removesFbx ?? []) as string[]).map(n => `${n}.fbx`);
@@ -134,9 +151,17 @@ export function startFakeShapingWorker(opts: FakeShapingWorkerOptions = {}): Fak
                     for (const f of exported) writeFileSync(path.join(fbxFolder, f), '');
                 }
             }
+            const seams = {
+                toleranceXY: 1e-4, gapDz: 1e-3, pairsChecked: changed.length, newGaps: gap ? 1 : 0, unmatchedBoundaryChanged: {},
+                gaps: gap ? [{ objects: gap.objects, vertices: 9, gaps: 3, maxAbsDz: 0.025, at: gap.blend, new: true, gapsBefore: 0 }] : [],
+            };
+            const gates = {
+                ok: !gap, allowGaps: body.allowGaps === true, limits: { gapM: 0.01, tJunctionM: 0.01 },
+                failures: gap ? [gap] : [], preExisting: [], warnings: gap ? [`allowGaps: exported anyway: ${gapLine}`] : [],
+            };
             const run = {
-                changedObjects: changed, exported, removed, seconds: 0.1,
-                report: { warnings: ['1 seam gap under 1 mm'], seams: { gaps: 1 }, changedPlaces: changed.map(object => ({ object, hole: 1 })) },
+                changedObjects: changed, exported, removed, seconds: 0.1, errors: [],
+                report: { warnings: ['1 seam gap under 1 mm'], seams, gates, changedPlaces: changed.map(object => ({ object, hole: 1 })) },
             };
             lastRun = run;
             return run;
