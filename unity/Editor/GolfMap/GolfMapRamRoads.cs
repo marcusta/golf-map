@@ -104,10 +104,10 @@ namespace GolfMap.Editor
         }
 
         // The profile's material, or (look given) a copy of it in the course's folder with the tint/brightness.
-        static Material LookMaterial(GolfMapCourse course, Material from, Options o)
+        static Material LookMaterial(string courseFolder, Material from, Options o)
         {
             if (from == null || string.IsNullOrEmpty(o.look)) return from;
-            var folder = GolfMapCourses.Folder(course) + "RAM Roads";
+            var folder = courseFolder + "RAM Roads";
             if (!AssetDatabase.IsValidFolder(folder)) AssetDatabase.CreateFolder(folder.Substring(0, folder.LastIndexOf('/')), "RAM Roads");
             var path = folder + "/" + from.name + " (" + o.look + ").mat";
             var mat = AssetDatabase.LoadAssetAtPath<Material>(path);
@@ -130,10 +130,10 @@ namespace GolfMap.Editor
         }
 
         // surface -> physic material asset path, from the course's path looks spec (what the OPCD path meshes collide with).
-        static Dictionary<string, string> SurfacePhysics(GolfMapCourse course)
+        static Dictionary<string, string> SurfacePhysics(string courseFolder)
         {
             var map = new Dictionary<string, string>();
-            var spec = GolfMapCourses.Folder(course) + "Paths/path-surfaces.json";
+            var spec = courseFolder + "Paths/path-surfaces.json";
             if (!File.Exists(spec)) return map;
             var surfaces = GolfMapJsonDoc.ParseObject(File.ReadAllText(spec)).Object("surfaces");
             if (surfaces == null) return map;
@@ -172,8 +172,11 @@ namespace GolfMap.Editor
                 .Select(p => AssetDatabase.LoadAssetAtPath(p, profileType)).FirstOrDefault(p => p != null);
             if (profile == null) throw new InvalidOperationException("No R.A.M. profile named '" + o.profile + "' in the project.");
             var material = profileType.GetField("splineMaterial").GetValue(profile) as Material;
-            var worn = LookMaterial(course, material, o);
-            var physics = SurfacePhysics(course);
+            // The folder once, up front: AssetDatabase.SaveAssets (the look's material) can leave the course
+            // object without an asset path for the rest of the call ("The course is not a saved asset").
+            var courseFolder = GolfMapCourses.Folder(course);
+            var physics = SurfacePhysics(courseFolder);
+            var worn = LookMaterial(courseFolder, material, o);
 
             var scene = EditorSceneManager.GetActiveScene();
             var root = scene.GetRootGameObjects().FirstOrDefault(g => g.name == RootName);

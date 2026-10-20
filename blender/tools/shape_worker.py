@@ -26,11 +26,15 @@ takes an hour needs no held connection.
   whose content sha is not the one on disk now - `conformed_stale`), apply every layer (op-result cache:
   a cold load replays unchanged ops from <blend folder>/shaping-staging/cache), keep per-object snapshots, write
   shaping-report.json. syncFbx: also bring fbxFolder in step with the whole shaped course (fbx_sync).
-- POST /sync {dryRun?} -> re-read the layer files, diff the ops against the applied ones by layer:id + content,
-  restore the affected objects to their state before the first changed op, re-run in layer order every op
+- POST /sync {dryRun?, allowGaps?} -> re-read the layer files, diff the ops against the applied ones by layer:id +
+  content, restore the affected objects to their state before the first changed op, re-run in layer order every op
   unit that touches them, seam-check, export the changed objects' FBX into fbxFolder (fbx_sync's exporter,
-  fingerprints and manifest) and delete the FBX of removed objects -> {changedObjects, exported, removed,
-  seconds, report: {warnings, seams, changedPlaces}, ...}
+  fingerprints and manifest) and delete the FBX of removed objects -> {changedObjects, exported, removed, errors,
+  seconds, report: {warnings, seams, gates, changedPlaces}, ...}. GATES before any export: a seam gap > 1 cm, a
+  T-junction step >= 1 cm, upside-down faces on top or NaN vertices that the sync made (or made worse) fail the
+  job (422, the message names the objects and EPSG:3006 spots), the affected objects, history and books go back
+  to before the sync and nothing is exported; what was there before it is only a warning (report.gates).
+  `allowGaps: true` turns the failures into warnings and exports anyway.
 - Both POSTs answer {job, kind, state: "running"} with 202, or 409 when a job is already going.
   `?wait=1` instead holds the connection until the job is done and answers its result, as before
   (what `curl` users want).
@@ -78,6 +82,8 @@ DEFAULT_HOST = "127.0.0.1"
 TOKEN_HEADER = "X-Golfmap-Token"
 PLAN_MARGIN = 1.0  # m added to predicted reaches when working out what a change can touch
 JOBS_KEPT = 20  # finished jobs still answerable on /job/<id>
+GATE_GAP_M = 0.01  # a seam gap wider than this that the sync made (or widened) fails it: the ball falls through
+GATE_TJUNCTION_M = 0.01  # ... and a T-junction step at least this high
 
 
 class HttpError(Exception):
@@ -548,15 +554,26 @@ class Worker:
         if full:
             return self.full_reload(body, base, t0, "history incomplete: " + "; ".join(self.history.broken[:3]))
         fbx_sync = sa.fbx_sync_module()
-        self.set_status(phase="sync: restore")
+        self.set_status(phase="sync: checks before")
         existing = sorted(n for n in affected if n in bpy.data.objects)
         dg = bpy.context.evaluated_depsgraph_get()
         fp_before = {n: fbx_sync.fingerprint(bpy.data.objects[n], dg) for n in existing}
         seams_before = sa.seam_check(existing)
+        faces_before = face_findings(existing)
+        tj_before = sa.tjunction_check(sorted(self.cut_candidates(d, old, new) & set(existing)))
+        self.set_status(phase="sync: restore")
+        undo = self.undo_point(affected)
         p = d["p"]
         for n in sorted(affected):
             self.history.restore(n, p)
-        self.history.truncate(affected, p)
+        # The history's entries from p on are dropped from the books (the run records new ones) but their meshes
+        # are kept until the gates pass: a failed gate puts them back (revert), a passed one frees them (drop_undo).
+        for n in affected:
+            keep = [e for e in self.history.entries.get(n, []) if e[0] < p]
+            if keep:
+                self.history.entries[n] = keep
+            else:
+                self.history.entries.pop(n, None)
         inverse = {k: j for j, k in d["mapping"].items()}
         if not self.history.remap(inverse, p, affected):
             return self.full_reload(body, base, t0, "an unchanged object has history at a changed op")
@@ -612,14 +629,30 @@ class Worker:
         path_meshes = [n for n in changed if (app.ctx.by_name.get(n) or {}).get("type") == "path"
                        and (app.ctx.by_name.get(n) or {}).get("kind") == "mesh"]
         path_surface = sa.path_surface_check(path_meshes, app.frame, app.svg_paths)
+        allow = bool(body.get("allowGaps"))
+        gates = gate_check(seams, (seams.get("tJunctions") or {}).get("objects") or {}, tj_before,
+                           face_findings(changed), faces_before, app.frame, allow)
+        if not gates["ok"] and not allow:
+            self.set_status(phase="sync: gates failed, restoring")
+            self.revert(undo)
+            message = gate_message(gates["failures"])
+            sa._write(os.path.join(app.staging, "shaping-sync.json"),
+                      dict(base, failed=message, gates=gates, report={"seams": seams}, ranOps=ran))
+            self.set_status(lastRun={"kind": "sync", "at": time.strftime("%Y-%m-%dT%H:%M:%S"), "error": message,
+                                     "gateFailures": len(gates["failures"])})
+            print(f"[shape_worker] sync refused: {message}")
+            raise HttpError(422, message)
+        self.drop_undo(undo)
         ops_by_object = {n: [k for k in ran if n in (self.entries[k].get("objectsChanged") or [])] for n in changed}
         places = app.places(changed, ops_by_object, op_keys=set(ran))
         self.set_status(phase="sync: export")
         exported, removed = self.export(changed, gone)
+        errors = [{"op": k, "error": self.entries[k].get("error")} for k in ran
+                  if (self.entries.get(k) or {}).get("status") == "error"]
         result = dict(base, changedObjects=changed + gone, exported=exported, removed=removed,
-                      seconds=round(time.time() - t0, 2),
-                      report={"warnings": app.warnings, "seams": seams, "pathSurface": path_surface, "changedPlaces": places,
-                              "changedObjectsDetail": app.places_detail(changed, ops_by_object)},
+                      seconds=round(time.time() - t0, 2), errors=errors,
+                      report={"warnings": app.warnings, "seams": seams, "gates": gates, "pathSurface": path_surface,
+                              "changedPlaces": places, "changedObjectsDetail": app.places_detail(changed, ops_by_object)},
                       ranOps=ran, cache=runner.summary(), hash=sa.hash_all(),
                       timings={"rerunS": round(t_run, 2)}, fbxFolder=self.status["fbxFolder"])
         sa._write(os.path.join(app.staging, "shaping-sync.json"),
@@ -631,6 +664,57 @@ class Worker:
               f"{base['restorePoint']['op']}, re-ran {len(ran)} op(s) in {t_run:.1f} s; {len(changed)} changed, "
               f"{len(exported)} FBX exported, {len(removed)} removed; {result['seconds']} s")
         return result
+
+    def cut_candidates(self, d, old, new):
+        """Objects a sync's T-junction check after the run can name, for the same check before it: what the cut ops
+        from p on cut last time, plus everything the changed cut ops read now."""
+        names = sa.cut_objects([self.entries[r["key"]] for r in old[d["p"]:] if r["key"] in self.entries])
+        for j in d["changedNew"]:
+            op = new[j]["op"]
+            if op["op"] not in sa.CUT_OPS or op.get("enabled") is False:
+                continue
+            try:
+                units, _ = sa.plan_units(self.app.ctx, op)
+            except Exception as e:  # the op reports it when run
+                print(f"[shape_worker] cannot plan {new[j]['key']}: {e}")
+                continue
+            for u in units:
+                names |= set(u.reads(0.0))
+        return names
+
+    def undo_point(self, names):
+        """What a sync that fails its gates goes back to: the live state of `names` (mesh copies, cheap: the arrays are
+        shared until one side changes), the history's books, the applied ops and the op records."""
+        h = self.history
+        return {"live": {n: h.copy(n) for n in names},
+                "entries": {n: [list(e) for e in lst] for n, lst in h.entries.items()},
+                "broken": list(h.broken), "ops": self.ops, "opEntries": dict(self.entries),
+                "records": {k: dict(v) for k, v in self.app.runner.records.items()}}
+
+    def revert(self, undo):
+        """Back to the undo point: every object of it as it was before the sync (the ones the sync made are removed),
+        the history, ops and records too, so the next sync diffs against what the FBX folder still holds."""
+        h = self.history
+        kept = {e[1] for lst in undo["entries"].values() for e in lst if e[1]}
+        h.free([e[1] for lst in h.entries.values() for e in lst if e[1] and e[1] not in kept])
+        back = sa.History()  # one entry per object: History.restore puts it back (or removes it: absent before)
+        back.entries = {n: [[0, snap[0], snap[1]]] for n, snap in undo["live"].items()}
+        for n in sorted(back.entries):
+            back.restore(n, 0)
+        h.free([snap[0] for snap in undo["live"].values() if snap[0]])
+        h.entries, h.broken = undo["entries"], undo["broken"]
+        self.ops, self.entries = undo["ops"], undo["opEntries"]
+        self.app.runner.records = undo["records"]
+        sa.object_mode()
+        self.app.ctx.forget()
+        self.app.ctx.refresh()
+
+    def drop_undo(self, undo):
+        """The gates passed: free the undo point's copies and the history entries the sync replaced."""
+        h = self.history
+        live = {e[1] for lst in h.entries.values() for e in lst if e[1]}
+        h.free([e[1] for lst in undo["entries"].values() for e in lst if e[1] and e[1] not in live]
+               + [snap[0] for snap in undo["live"].values() if snap[0]])
 
     def full_reload(self, body, base, t0, reason):
         """Fallback when the snapshots cannot restore exactly: open the .blend again and apply everything (op
@@ -683,6 +767,93 @@ class Worker:
             manifest.pop(fn, None)
         fbx_sync.save_manifest(folder, manifest)
         return [fn + ".fbx" for fn in todo], removed
+
+
+# ------------------------------------------------------------ the sync's gates
+
+
+def face_findings(names):
+    """course_check's per-object checks on these objects, its upside-down-on-top and NaN findings kept:
+    {name: {"flipped"|"nan": {severity, faces, note, at: [x, y] | None}}}."""
+    import course_check
+    out = {}
+
+    def add(kind, severity, note, objects, at):
+        if kind not in ("flipped", "nan"):
+            return
+        faces = note.split(" ", 1)[0]
+        out.setdefault(objects[0], {})[kind] = {
+            "severity": severity, "faces": int(faces) if faces.isdigit() else None, "note": note,
+            "at": None if at is None else [round(float(at[0]), 3), round(float(at[1]), 3)]}
+
+    objs = [bpy.data.objects[n] for n in names if n in bpy.data.objects and bpy.data.objects[n].type == "MESH"]
+    if objs:
+        course_check.object_checks(objs, course_check.Area(), add)
+    return out
+
+
+def _spot(xy, frame):
+    if not xy:
+        return {}
+    out = {"blend": [round(float(xy[0]), 3), round(float(xy[1]), 3)]}
+    if frame is not None:
+        import shape_coords
+        e, n = shape_coords.from_blend(float(xy[0]), float(xy[1]), frame)
+        out["epsg3006"] = [round(e, 2), round(n, 2)]
+    return out
+
+
+def gate_check(seams, tj, tj_before, faces, faces_before, frame, allow=False):
+    """The sync's gates on what it changed: a seam gap > GATE_GAP_M, a T-junction step >= GATE_TJUNCTION_M, upside-down
+    faces on top (course_check: slivers under its SLIVER_M2 are only a warning there and here), NaN vertices. Only
+    what the sync made or made worse fails (`failures`); the same found already before it is `preExisting` (an OPCD
+    gap must not block every sync near it). Every finding names its objects and its EPSG:3006 spot.
+    -> {ok, allowGaps, limits, failures, preExisting, warnings: [str]}; with `allow` the failures are warnings."""
+    fails, pre = [], []
+    for g in seams.get("gaps") or []:
+        if g["maxAbsDz"] <= GATE_GAP_M:
+            continue
+        (fails if g["new"] else pre).append(dict(type="seamGap", objects=g["objects"], maxAbsDz=round(g["maxAbsDz"], 4),
+                                                 points=g["gaps"], **_spot(g.get("at"), frame)))
+    for n, r in sorted(tj.items()):
+        if r["maxAbsDz"] < GATE_TJUNCTION_M:
+            continue
+        new = r["maxAbsDz"] > (tj_before.get(n) or {}).get("maxAbsDz", 0.0) + 1e-6
+        (fails if new else pre).append(dict(type="tJunction", objects=[n], maxAbsDz=r["maxAbsDz"], points=r["gaps"],
+                                            **_spot(r.get("at"), frame)))
+    for n, f in sorted(faces.items()):
+        old = faces_before.get(n) or {}
+        if "nan" in f:
+            (pre if "nan" in old else fails).append(dict(type="nan", objects=[n], **_spot(f["nan"]["at"], frame)))
+        fl = f.get("flipped")
+        if fl and fl["severity"] == "error":
+            was = old.get("flipped")
+            new = not was or was["severity"] != "error" or (fl["faces"] or 0) > (was["faces"] or 0)
+            (fails if new else pre).append(dict(type="flipped", objects=[n], faces=fl["faces"], note=fl["note"],
+                                                **_spot(fl["at"], frame)))
+    warnings = [f"allowGaps: exported anyway: {describe_gate(f)}" for f in fails] if allow else []
+    warnings += [f"already there before this sync: {describe_gate(f)}" for f in pre]
+    return {"ok": not fails, "allowGaps": allow, "limits": {"gapM": GATE_GAP_M, "tJunctionM": GATE_TJUNCTION_M},
+            "failures": fails, "preExisting": pre, "warnings": warnings}
+
+
+def describe_gate(f):
+    where = f" at EPSG:3006 {f['epsg3006'][0]:.2f}, {f['epsg3006'][1]:.2f}" if f.get("epsg3006") else (
+        f" at blend {f['blend'][0]:.2f}, {f['blend'][1]:.2f}" if f.get("blend") else "")
+    if f["type"] == "seamGap":
+        return f"seam gap {f['maxAbsDz'] * 100:.1f} cm between {f['objects'][0]} and {f['objects'][1]}{where}"
+    if f["type"] == "tJunction":
+        return f"T-junction step {f['maxAbsDz'] * 100:.1f} cm on {f['objects'][0]}{where}"
+    if f["type"] == "flipped":
+        return f"{f['faces']} upside-down face(s) on top of {f['objects'][0]}{where}"
+    return f"vertices without a position (NaN) in {f['objects'][0]}{where}"
+
+
+def gate_message(fails, shown=6):
+    more = f" (+{len(fails) - shown} more)" if len(fails) > shown else ""
+    return (f"{len(fails)} gap check(s) failed, so nothing was exported and the objects are back as they were before "
+            f"this sync: {'; '.join(describe_gate(f) for f in fails[:shown])}{more}. Fix the layer, or sync with "
+            "{\"allowGaps\": true} to export anyway")
 
 
 def make_handler(worker):

@@ -37,8 +37,12 @@
 //
 // The worker speaks JSON over HTTP on GOLFMAP_SHAPING_URL (default
 // http://127.0.0.1:8766): `GET /status`, `GET /job/<id>`, `POST /load {blend?,
-// layersDir?, fbxFolder?}`, `POST /sync {dryRun?}` (contract in
-// blender/README.md, "Shaping worker"). The two POSTs are JOBS: they answer
+// layersDir?, fbxFolder?}`, `POST /sync {dryRun?, allowGaps?}` (contract in
+// blender/README.md, "Shaping worker"). The sync GATES what it exports: a seam
+// gap, T-junction step, upside-down top face or NaN it made fails its job (the
+// worker puts the objects back and exports nothing), so the blender phase fails
+// with the worker's message and Unity is not refreshed; GOLFMAP_SHAPING_ALLOW_GAPS=1
+// (deps.allowGaps) sends `allowGaps` and makes them warnings. The two POSTs are JOBS: they answer
 // `{job, kind, state: 'running'}` at once (409 while one is going) and this
 // service polls `/status` — `job: {id, kind, state, phase, startedAt, seconds,
 // result | error}` — for the outcome, so a sync that runs for an hour holds no
@@ -149,6 +153,75 @@ export interface ShapingUnityStep {
     seconds: number | null;
 }
 
+/** A seam pair with a gap after the sync (the worker's `shape_apply.seam_summary`). */
+export interface ShapingSeamGap {
+    /** The two objects whose shared border vertices differ in height. */
+    objects: string[];
+    /** Shared border vertices, and those more than `gapDz` apart. */
+    vertices: number;
+    gaps: number;
+    /** Metres. */
+    maxAbsDz: number;
+    /** Blend x, y of the worst one. */
+    at?: number[];
+    /** The pair had no gap this wide before the sync. */
+    new: boolean;
+    gapsBefore: number;
+}
+
+/** A mesh's border vertices on a neighbour's edge, off it in height (`shape_apply.tjunction_check`). */
+export interface ShapingTJunction {
+    vertices: number;
+    onEdge: number;
+    gaps: number;
+    maxAbsDz: number;
+    at?: number[];
+}
+
+/** The worker's seam check of a sync (`report.seams`). */
+export interface ShapingSeams {
+    toleranceXY: number;
+    gapDz: number;
+    pairsChecked: number;
+    gaps: ShapingSeamGap[];
+    newGaps: number;
+    unmatchedBoundaryChanged: Record<string, { before: number; after: number }>;
+    /** Only when the sync ran a cut (a cart path cut, a weld, a road split, a rock cut-out). */
+    tJunctions?: { toleranceXY: number; objects: Record<string, ShapingTJunction>; gaps: number; maxAbsDz: number };
+}
+
+/** One finding of the sync's gates (blender/README.md, "Shaping worker"). */
+export interface ShapingGateFinding {
+    /** A seam gap, a T-junction step, upside-down faces on top, vertices without a position. */
+    type: 'seamGap' | 'tJunction' | 'flipped' | 'nan';
+    objects: string[];
+    /** Metres (seamGap, tJunction). */
+    maxAbsDz?: number;
+    /** Vertices off (seamGap, tJunction). */
+    points?: number;
+    /** Upside-down triangles (flipped). */
+    faces?: number | null;
+    note?: string;
+    /** Where: blend x, y and EPSG:3006 east, north. */
+    blend?: number[];
+    epsg3006?: number[];
+}
+
+/**
+ * The gates a `/sync` runs before it exports: a gap the sync made fails it
+ * (the job fails, nothing is exported) unless `allowGaps`, which turns the
+ * failures into warnings; what was there before the sync is only a warning.
+ */
+export interface ShapingGates {
+    ok: boolean;
+    allowGaps: boolean;
+    limits: { gapM: number; tJunctionM: number };
+    failures: ShapingGateFinding[];
+    preExisting: ShapingGateFinding[];
+    /** One line per allowed failure and per pre-existing finding (also in the result's `warnings`). */
+    warnings: string[];
+}
+
 /** What an apply job produces. */
 export interface ShapingApplyResult {
     /** Objects the worker re-shaped (Unity re-imports them; with `removed`'s objects they are the refresh's only=). */
@@ -160,8 +233,10 @@ export interface ShapingApplyResult {
     warnings: string[];
     /** The changed places (object, hole, centre, bounds) the Review window reads. */
     places: unknown[];
-    /** The worker's seam check. */
-    seams: unknown;
+    /** The worker's seam check; null when it did none (nothing changed, a dry run, a full reload). */
+    seams: ShapingSeams | null;
+    /** The sync's gates (passed, or failed and allowed by `allowGaps`); null when it ran none. */
+    gates: ShapingGates | null;
     /** `golfmap.course.refresh`'s report; null when Unity was not refreshed (see warnings / unityError). */
     unityReport: unknown;
     /** `paths`: the report lines of the surfaces file's rewrite (what changed surface); [] otherwise. */
@@ -291,6 +366,12 @@ export interface ShapingDeps {
     workerUrl?: string;
     /** The shared secret the worker wants as `X-Golfmap-Token` (default GOLFMAP_SHAPING_TOKEN; unset = no header). */
     token?: string;
+    /**
+     * Every `/sync` with `{allowGaps: true}`: a gap, T-junction step, upside-down top face or NaN the sync made is a
+     * warning instead of a failed job, and the FBX are exported anyway — the escape hatch, not the way to work
+     * (default GOLFMAP_SHAPING_ALLOW_GAPS=1; unset = the gates fail the job).
+     */
+    allowGaps?: boolean;
     /** The command before the worker's own arguments (default `[blender, -b, --python, <repo>/blender/tools/shape_worker.py]`). */
     workerLauncher?: string[];
     /** Replaces `<repo>/docs/gspro`: the course's layers are `<root>/<course slug>/shaping`. */
@@ -318,7 +399,9 @@ interface SyncAnswer {
     exported?: unknown;
     removed?: unknown;
     seconds?: unknown;
-    report?: { warnings?: unknown; seams?: unknown; changedPlaces?: unknown };
+    /** Ops that failed in this sync (`{op, error}`): their objects are as the op left them, which may be as before. */
+    errors?: unknown;
+    report?: { warnings?: unknown; seams?: unknown; gates?: unknown; changedPlaces?: unknown };
 }
 
 // --- Service ---
@@ -333,6 +416,7 @@ export class ShapingService {
     private readonly dbPath: string | undefined;
     private readonly workerUrl: string;
     private readonly token: string | undefined;
+    private readonly allowGaps: boolean;
     private readonly workerLauncher: string[];
     private readonly layersRoot: string;
     private readonly recipeLibrary: string;
@@ -361,6 +445,7 @@ export class ShapingService {
         this.dbPath = deps.dbPath ?? process.env.DB_PATH;
         this.workerUrl = (deps.workerUrl ?? process.env.GOLFMAP_SHAPING_URL ?? DEFAULT_SHAPING_URL).replace(/\/+$/, '');
         this.token = deps.token ?? process.env.GOLFMAP_SHAPING_TOKEN ?? undefined;
+        this.allowGaps = deps.allowGaps ?? process.env.GOLFMAP_SHAPING_ALLOW_GAPS === '1';
         this.workerLauncher = deps.workerLauncher ?? [
             blenderExecutable(), '-b', '--python', path.join(REPO_DIR, 'blender', 'tools', 'shape_worker.py'),
         ];
@@ -695,7 +780,8 @@ export class ShapingService {
         const exported = strings(sync.exported);
         // Unity's only=: the re-shaped objects plus those whose FBX is gone (meshes.sync prunes a named object without one).
         const unityObjects = [...new Set([...changedObjects, ...removed.map(objectName)])];
-        warnings.push(...strings(sync.report?.warnings));
+        const gates = gatesOf(sync.report?.gates);
+        warnings.push(...strings(sync.report?.warnings), ...(gates?.warnings ?? []), ...opErrors(sync.errors));
         endPhase(rec, 'blender', 'done', `${changedObjects.length} object(s) re-shaped, ${exported.length} FBX exported`
             + (removed.length ? `, ${removed.length} removed` : ''));
 
@@ -745,7 +831,8 @@ export class ShapingService {
             removed,
             warnings,
             places: Array.isArray(sync.report?.changedPlaces) ? sync.report!.changedPlaces as unknown[] : [],
-            seams: sync.report?.seams ?? null,
+            seams: seamsOf(sync.report?.seams),
+            gates,
             unityReport,
             pathSurfaces,
             pathMaterials,
@@ -1040,7 +1127,9 @@ export class ShapingService {
             notePhase(rec, w.phase ? `re-shaping what changed: ${w.phase}` : 're-shaping what changed');
         let started: unknown;
         try {
-            started = await this.post('/sync', dryRun ? { dryRun: true } : {}, this.timeouts.startMs);
+            started = await this.post('/sync', {
+                ...(dryRun ? { dryRun: true } : {}), ...(this.allowGaps ? { allowGaps: true } : {}),
+            }, this.timeouts.startMs);
         } catch (e) {
             const st = await this.workerStatus();
             if (!st.reachable) throw e;
@@ -1331,6 +1420,36 @@ export function isRockSlab(object: string): boolean {
 
 function strings(v: unknown): string[] {
     return Array.isArray(v) ? v.filter((s): s is string => typeof s === 'string') : [];
+}
+
+/** The worker's `report.seams` read leniently: null unless it has the summary's shape. */
+function seamsOf(value: unknown): ShapingSeams | null {
+    const s = value as Partial<ShapingSeams> | null;
+    return s && typeof s === 'object' && Array.isArray(s.gaps) ? s as ShapingSeams : null;
+}
+
+/** The worker's `report.gates` read leniently; null for a worker that runs none. */
+function gatesOf(value: unknown): ShapingGates | null {
+    const g = value as Partial<ShapingGates> | null;
+    if (!g || typeof g !== 'object' || typeof g.ok !== 'boolean') return null;
+    const findings = (v: unknown) => Array.isArray(v) ? v.filter((f): f is ShapingGateFinding => !!f && typeof f === 'object') : [];
+    return {
+        ok: g.ok,
+        allowGaps: g.allowGaps === true,
+        limits: { gapM: g.limits?.gapM ?? 0.01, tJunctionM: g.limits?.tJunctionM ?? 0.01 },
+        failures: findings(g.failures),
+        preExisting: findings(g.preExisting),
+        warnings: strings(g.warnings),
+    };
+}
+
+/** The sync's failed ops as warning lines (`op <layer:id> failed: <error>`). */
+function opErrors(value: unknown): string[] {
+    if (!Array.isArray(value)) return [];
+    return value.flatMap((e) => {
+        const err = e as { op?: unknown; error?: unknown } | null;
+        return typeof err?.op === 'string' ? [`op ${err.op} failed: ${typeof err.error === 'string' ? err.error : 'see the worker log'}`] : [];
+    });
 }
 
 function describeRun(run: unknown): string | null {

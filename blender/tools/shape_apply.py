@@ -4382,6 +4382,28 @@ def op_cut_out(ctx, op):
     return runs, []
 
 
+def _put_back_point(ctx, op, poly):
+    """Before a dem rise's cut: the state of every mesh the op can reach (plan_cut_out's reads) and the Spline
+    names there are, for _put_back."""
+    object_mode()
+    box = sl.polygon_bbox(poly)
+    reach = 1.0 + rise_params(op["rise"])["apronM"]
+    names = near_boxes(ctx, [o.name for o in spline_meshes() if ctx.box(o.name)
+                             and sl.bbox_distance(box, ctx.box(o.name)) <= reach], 1.0)
+    return {n: capture_state(bpy.data.objects[n]) for n in sorted(names)}, {o.name for o in spline_meshes()}
+
+
+def _put_back(start):
+    """Every mesh as _put_back_point found it; the Spline meshes made since are removed."""
+    states, names_before = start
+    object_mode()
+    for n in sorted({o.name for o in spline_meshes()} - names_before):
+        remove_object(n)
+    for n, st in states.items():
+        apply_state(n, *st)
+    object_mode()
+
+
 def _cut_ring(obj, poly):
     """Cut the closed outline into the mesh as an exact edge chain. Returns insert_polyline's stats, summed."""
     import bmesh
@@ -4469,6 +4491,8 @@ def cut_out(ctx, op):
     if overlap:
         return dict(run, result=["CANCELLED"],
                     skipped="outline overlaps protected " + ", ".join(sorted(f"{n} ({protected[n]})" for n in overlap)))
+    # a dem rise that opens seams fails the op with every mesh put back (a rock with a gap is no result)
+    start = _put_back_point(ctx, op, poly) if rise.get("mode") == "dem" else None
     snap = {o.name: {"co": positions(o).astype(np.float64)} for o in cands}
     cut = {o.name: _cut_ring(o, poly) for o in cands}
     names = [o.name for o in cands]
@@ -4551,7 +4575,11 @@ def cut_out(ctx, op):
     new["golfmap_cut_from"] = ",".join(s["name"] for s in sources)
     new.hide_render = first.hide_render
     if op.get("rise"):
-        run["rise"] = rock_rise(ctx, op, new, poly)
+        try:
+            run["rise"] = rock_rise(ctx, op, new, poly)
+        except RiseSeamsOpen:
+            _put_back(start)
+            raise
     # The border: every boundary vertex of the new object has the same vertex on a mesh outside.
     outside = np.concatenate([boundary_points(o) for o in spline_meshes()
                               if o.name != name and ctx.box(o.name) is not None
@@ -5182,7 +5210,7 @@ def slab_seam_check(objs, tol_xy=SEAM_XY, tol_z=SEAM_DZ):
 #   4. relief: where the sharpened DEM is over reliefMinDeg (fading in over 5 degrees either side), the vertices
 #      move horizontally along the face's outward normal by 3-octave value noise in 3D (3 / 1.2 / 0.5 m, reliefM
 #      at most) so a wall is not smooth; a face that would flip has its vertices' move halved (6 rounds), and what
-#      still flips is reported;
+#      still flips then gets no relief at all (its vertices' move set to 0; `revertedVertices` in the report);
 # then (5.) the rock's normals are split by angle (`hardEdgeDeg`: sharp edges, smooth faces, no custom normals), so
 # the facets light as crisp edges; the FBX exporter writes the split corner normals.
 
@@ -5410,19 +5438,31 @@ def dem_granite(slab, poly, p, seed, sample):
                     for i, (wt, sc) in enumerate(((0.55, 3.0), (0.3, 1.2), (0.15, 0.5))))
         disp = (p["reliefM"] * noise * w)[:, None] * nh
         n0 = _tri_normals(co, tri)
-        scale = np.ones(len(co))
-        flips = 0
-        for _ in range(7):
+        live = np.linalg.norm(n0, axis=1) > 1e-12
+
+        def flipped(scale):
             moved = co.copy()
             moved[:, :2] += disp * scale[:, None]
-            bad = (np.einsum("ij,ij->i", n0, _tri_normals(moved, tri)) <= 0) & (np.linalg.norm(n0, axis=1) > 1e-12)
-            flips = int(bad.sum())
-            if not flips:
+            return (np.einsum("ij,ij->i", n0, _tri_normals(moved, tri)) <= 0) & live
+
+        scale = np.ones(len(co))
+        for _ in range(6):
+            bad = flipped(scale)
+            if not bad.any():
                 break
             scale[np.unique(tri[bad].reshape(-1))] *= 0.5
-        step("relief", new_xy=co[:, :2] + disp * scale[:, None], flips=flips, faces=int((w > 0.5).sum()))
-        if flips:
-            rep["steps"]["relief"]["warning"] = f"{flips} face(s) still flip after 6 halvings"
+        # What still flips after 6 halvings keeps its place: those faces' vertices get no relief at all (a face
+        # upside down on top lets the ball through). Zeroing can tip a neighbour, so until none flips; with every
+        # displacement 0 nothing can.
+        bad = flipped(scale)
+        still, reverted = int(bad.sum()), set()
+        while bad.any():
+            vs = np.unique(tri[bad].reshape(-1))
+            reverted.update(vs.tolist())
+            scale[vs] = 0.0
+            bad = flipped(scale)
+        step("relief", new_xy=co[:, :2] + disp * scale[:, None], flips=0, faces=int((w > 0.5).sum()),
+             flippedAfterHalvings=still, revertedVertices=len(reverted))
     me.vertices.foreach_set("co", co.astype(np.float32).reshape(-1))
     me.update()
     rep["after"] = slope_stats(co, tri)
@@ -5449,10 +5489,12 @@ def hard_edges(me, deg):
 def _rock_rise_dem(ctx, op, slab, poly, p):
     t0 = time.time()
     apron, max_edge = p["apronM"], p["maxEdgeM"]
+    box = sl.polygon_bbox(poly, apron + 1.0)
+    # open seams already there (an OPCD gap near the outline) are not the rise's: only more than these fail it
+    open_before = slab_seam_check([o for o in spline_meshes() if (b := bbox_xy(o)) and sl.bbox_distance(box, b) <= 0])["open"]
     near, passes, weld = _rise_refine(ctx, slab, poly, apron, max_edge, single_edge=True)
     objs = [slab] + near
     cos = {o.name: positions(o) for o in objs}
-    box = sl.polygon_bbox(poly, apron + 1.0)
     sample, info = dem_sampler(ctx, box)
     # the XY of the kept meshes' vertices within reach: a vertex there keeps its height (the seam to them stays)
     key = lambda c: (np.round(c[:, 0] / SEAM_XY).astype(np.int64), np.round(c[:, 1] / SEAM_XY).astype(np.int64))
@@ -5522,15 +5564,19 @@ def _rock_rise_dem(ctx, op, slab, poly, p):
                inradiusM=round(s_max, 2), refinePasses=passes, weld=weld, moved=moved_n, lifted=moved_n,
                maxUpM=round(up, 3), maxDownM=round(down, 3), pinned=pinned,
                steepFaces=int((slope >= RISE_STEEP_DEG).sum()), maxSlopeDeg=round(float(slope.max()), 1),
-               seams=seams, sunk=sunk, granite=granite, seconds=round(time.time() - t0, 2))
-    if granite and (granite.get("steps", {}).get("relief") or {}).get("warning"):
-        out["warning"] = granite["steps"]["relief"]["warning"]
+               seams=dict(seams, openBefore=open_before), sunk=sunk, granite=granite, seconds=round(time.time() - t0, 2))
     print(f"[shape_apply] cut_out {slab.name} rise dem: slab {out['slabZ'][0]:.2f}-{out['slabZ'][1]:.2f}, "
           f"up {up:.2f} / down {down:.2f}, {out['steepFaces']} faces >= {RISE_STEEP_DEG:g} deg, "
-          f"seams {seams['open']} open of {seams['points']}, moved {moved_n}")
-    if seams["open"]:
-        out["warning"] = f"{seams['open']} seam point(s) open after the dem rise (seams.maxDz {seams['maxDz']} m)"
+          f"seams {seams['open']} open of {seams['points']} ({open_before} before), moved {moved_n}")
+    if seams["open"] > open_before:
+        # A gap the ball falls through: the op fails and cut_out puts every mesh it can reach back.
+        raise RiseSeamsOpen(f"{slab.name}: {seams['open'] - open_before} seam point(s) opened by the dem rise "
+                            f"(seams.maxDz {seams['maxDz']} m); the meshes are left as they were")
     return out
+
+
+class RiseSeamsOpen(RuntimeError):
+    """The dem rise opened seam points: cut_out puts its meshes back and the op fails (Applier.apply_op: status error)."""
 
 
 # ---------------------------------------------------------------- golfmap.path_edge_fade
@@ -6692,8 +6738,11 @@ def path_surface_check(names, frame=None, svg_paths=None):
     return dict(tot, steepNz=PATH_STEEP_NZ, shadeDeg=PATH_SHADE_DEG, bumpM=PATH_BUMP_M, shortEdgeM=SLIVER_M, objects=out)
 
 
+CUT_OPS = ("afrod.cutcartpaths", "golfmap.weld_tjunctions", "golfmap.split_surfaces", "golfmap.cut_out")  # leave T-junctions to check
+
+
 def cut_objects(ops_report):
-    return {n for e in ops_report if e["op"] in ("afrod.cutcartpaths", "golfmap.weld_tjunctions", "golfmap.split_surfaces", "golfmap.cut_out")
+    return {n for e in ops_report if e["op"] in CUT_OPS
             for r in e.get("runs", [])
             for n in list(r["targets"]) + list((r.get("post") or {}).get("objects", {}))}
 
