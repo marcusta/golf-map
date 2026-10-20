@@ -84,6 +84,9 @@ OPS = {
         "required": {"name", "outline3006"},
         "noSelect": True,
     },
+    # Rule-based vertex paint of the course meshes: one paint.json rule or stroke (shape_paintop.py, maths in
+    # shape_paintrules.py), generated into 90-paint.gen.json by gspro.py shaping-paint.
+    "golfmap.paint": {"params": {}, "keys": {"rule", "source"}, "required": {"rule"}, "noSelect": True},
 }
 CUT_OUT_NAME = re.compile(r"^[a-z0-9]+(_[a-z0-9]+)*$")
 CUT_OUT_UV_MODES = ("planar", "box")
@@ -240,6 +243,11 @@ def validate_op(op):
                 isinstance(k, str) and k and (_is_scalar(v) or (isinstance(v, list) and v and all(_is_type(c, float) for c in v)))
                 for k, v in ov.items()):
             errors.append("overrides must be an object of scene.opcdtools prop -> number/bool/string (or list of numbers)")
+    if name == "golfmap.paint":
+        import shape_paintrules  # numpy: only for a paint op
+        errors += shape_paintrules.validate(op.get("rule"), "rule")
+        if "source" in op and not (isinstance(op["source"], str) and op["source"]):
+            errors.append("source must be a file path (relative to the course folder)")
     if name == "golfmap.creek_channel":
         line = op.get("centerline3006")
         if not (isinstance(line, list) and len(line) >= 2 and all(

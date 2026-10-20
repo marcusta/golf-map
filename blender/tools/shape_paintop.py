@@ -129,13 +129,16 @@ def _load(path, what, arg=None):
 
 
 def _input(ctx, op, rule):
-    """(path, sha, parsed, problem) of the rule's export file; (None, None, None, None) for a rule that reads none."""
+    """(path, sha, parsed, problem) of the rule's export file; (None, None, None, None) for a rule that reads none.
+    problem: None = read, "" = no file (nothing to paint), else what is wrong."""
     path = pr.rule_file(rule, course_folder(ctx), op.get("source"))
     what = "creek" if rule["kind"] == "object" and rule.get("creek") else rule["kind"]
     if what not in ("road", "creek", "lakebed"):
         return None, None, None, None
     if path is None or not os.path.isfile(path):
-        return path, None, None, f"{op['id']}: no {pr.FILE_SUFFIX[what]} export ({path or 'no course prefix'}): nothing painted"
+        # as Unity: no R.A.M. roads / no big lake = nothing to paint; a creek rule's creek must be exported
+        why = f"{op['id']}: no {pr.FILE_SUFFIX[what]} export ({path or 'no course prefix'}): nothing painted"
+        return path, None, None, why if what == "creek" else ""
     sha, parsed = _load(path, what, rule.get("creek") if what == "creek" else None)
     if what == "creek" and parsed is None:
         return path, sha, None, f"{op['id']}: creek {rule['creek']} is not in {os.path.basename(path)} (export creeks first)"
@@ -146,8 +149,8 @@ def plan_paint(ctx, op):
     """The op's units (one per course mesh it can paint) and its problems (a missing export file or creek)."""
     rule = pr.normalise(op["rule"], op["id"])
     path, sha, parsed, problem = _input(ctx, op, rule)
-    if problem:
-        return [], [problem]
+    if problem is not None:
+        return [], [problem] if problem else []
     extra = json.dumps([os.path.basename(path), sha]) if path else ""
     kind = rule["kind"]
     meshes = _course_meshes()
@@ -229,8 +232,8 @@ def paint_unit(ctx, op, rule, unit):
     if obj is None or obj.type != "MESH":
         return dict(run, result=["CANCELLED"], error=f"{unit.id} does not exist")
     _, _, parsed, problem = _input(ctx, op, rule)
-    if problem:
-        return dict(run, result=["CANCELLED"], error=problem)
+    if problem is not None:
+        return dict(run, result=["CANCELLED"], error=problem or "its export file is gone")
     me = obj.data
     world = _world(obj)
     lake = rule["kind"] == "lakebed"

@@ -146,6 +146,11 @@ def main():
     assert runner.stats["misses"] == misses + 1, runner.stats
     check("old centreline: red again", colour_at(rough, -5.0, -5.0), [1, 0, 0, 1])
     check("new centreline: black", colour_at(rough, -5.0, -8.0), [0, 0, 0, 1])
+    runs, problems, _ = apply({"id": "paint-lakebed", "op": po.KIND, "rule": {"id": "lakebed", "kind": "lakebed"}})
+    assert runs == [] and problems == [], (runs, problems)   # no big lake on this course: nothing, quietly
+    runs, problems, _ = apply({"id": "paint-x", "op": po.KIND, "rule": {"id": "x", "kind": "object", "match": "Brook",
+                                                                        "belowM": 0.1, "creek": "feature:none"}})
+    assert runs == [] and len(problems) == 1 and "creeks" in problems[0], problems
     dep = po.dependency(ops[1], tmp)
     assert dep["file"] == "t-inner-ramroads.json" and dep["sha"], dep
     print("shape_paintop_test: all ok")

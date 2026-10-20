@@ -7716,6 +7716,9 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--library", help="the shaping recipe library (default $GOLFMAP_RECIPE_LIBRARY, else "
                                      "blender/recipes/library.json)")
 
+    import shaping_paint
+    shaping_paint.add_parser(sub)   # shaping-paint --course-dir <docs/gspro/course> [--out-dir <shaping dir>] [--out <file>]
+
     p = sub.add_parser("batch", help="run several of the commands above in ONE process from a JSON job list, "
                                      "sharing the database, the course's features and the DEM reads")
     p.add_argument("--jobs", help="the job list JSON ({\"jobs\": [{\"id\", \"command\", \"args\"}], "
@@ -7781,6 +7784,9 @@ def main(argv: list[str] | None = None) -> int:
         cmd_shaping_global(Path(args.db), args.course, Path(args.out) if args.out else None,
                            Path(args.out_dir) if args.out_dir else None, Path(args.library) if args.library else None)
         return 0
+    if args.command == "shaping-paint":
+        import shaping_paint
+        return shaping_paint.run(args)
     if args.command == "power-lines":
         cmd_power_lines(args.course, Path(args.out), Path(args.db))
         return 0
