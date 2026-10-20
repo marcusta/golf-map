@@ -86,7 +86,7 @@ export type TerrainEditOp = TerrainEdit['op'];
 export const RECIPE_OP = 'recipe' satisfies TerrainEditOp;
 
 /** Marker glyph per op (DOM markers — the editor style has no glyphs endpoint). */
-export const OP_GLYPHS: Record<TerrainEditOp, string> = { plane: '▱', smooth: '∿', corridor: '⫽', dig: '◡', shore: '≋', delta: '≈', recipe: '◈' };
+export const OP_GLYPHS: Record<TerrainEditOp, string> = { plane: '▱', smooth: '∿', corridor: '⫽', dig: '◡', shore: '≋', delta: '≈', recipe: '◈', wall: '▙' };
 
 /** The origin of the generated lake shore (`golfpipe shore-edits`, imported through the terrain-edits import). */
 export const LAKE_SHORE_ORIGIN = 'lake-shore';
@@ -1418,6 +1418,11 @@ export class TerrainEditToolService {
             return undefined;
         }
         const op = this.op.peek();
+        if (op === 'wall') {
+            // a wall edit comes from the wall generator (terrain:generate), never from a drawn ring
+            this.notice.set('Wall edits are generated, not drawn.');
+            return undefined;
+        }
         const params = op === 'plane'
             ? { featherM: this.featherM.peek(), ...(this.flat.peek() ? { flat: true } : {}) }
             : { featherM: this.featherM.peek(), radiusM: this.radiusM.peek() };
