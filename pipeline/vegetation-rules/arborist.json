@@ -1,33 +1,22 @@
 {
   "format": "golfmap-vegetation-rule-defaults-v1",
   "source": "arborist",
-  "label": "VSP or Arborist",
+  "label": "Arborist looks",
   "script": "arborist.py",
   "courseFile": "arborist-species.json",
-  "summary": "Which planted trees stay in the course's own VSP and which Arborist draws, and which become billboards far out: set per course in its arborist-species.json.",
+  "summary": "How Arborist draws what it is handed: the looks of its items and its system's settings, set per course in its arborist-species.json. Who draws which tree is the routing (vegetation-rules.json `routing`).",
   "steps": [
-    "Starts from the trees Unity planted (golfmap.trees.dump): position, rotation, scale and prefab of each.",
-    "Prefabs whose name contains a `vsp` entry stay in the course's own VSP; every other tree becomes an Arborist item, mapped by `trees` (prefab -> Arborist model, with an optional look and keep share).",
-    "Far rule: a tree both more than outsideOob metres outside the course boundary (the GKD's pOOB) and more than fromPlay metres from play (rough, semi, fairway, green, tee, bunker) is scenery: billboard only. Every tree inside the boundary is a full model.",
-    "outerKeep thins the billboard-only trees outside the boundary, by distance band: [up to metres, share kept]; deterministic by position.",
-    "With `forstRing` (renamed forstRing_off = off) the VSP trees further than playM from play become full Arborist models of the replacement species.",
-    "The lower vegetation (bushes, ground plants) comes from the zone masks and the grass palette's items: `species` maps or drops their prefabs."
+    "Each Arborist item is a clone of its species out of the GolfMap library, in the looks of `treeSettings` (trees) and `plantSettings` (the lower vegetation): rules by name, later ones winning; a tree model's own look (models.json) goes on top.",
+    "The lower vegetation (bushes, ground plants) comes from the zone masks and the grass palette's items: `species` maps or drops their prefabs.",
+    "`vegeSettings` go into the file's system settings, which GSPro's Arborist system runs with."
   ],
   "groups": [
     {
-      "title": "Who draws what",
+      "title": "Looks",
       "rules": [
-        { "key": "vsp", "value": null, "unit": "prefab name parts", "text": "Trees whose prefab name contains one of these stay in the course's own VSP." },
-        { "key": "trees", "value": null, "unit": "prefab -> model", "text": "The Arborist model (and look, keep share) for each other prefab." },
-        { "key": "forstRing", "value": null, "text": "The ring rule: VSP trees beyond playM from play become Arborist models (off when missing)." }
-      ]
-    },
-    {
-      "title": "Billboards far out",
-      "rules": [
-        { "key": "billboardBeyondM.outsideOob", "value": 40, "unit": "m", "text": "Billboard only beyond this outside the course boundary (pOOB) ..." },
-        { "key": "billboardBeyondM.fromPlay", "value": 40, "unit": "m", "text": "... and beyond this from play (both must hold)." },
-        { "key": "outerKeep", "value": null, "unit": "[m, share]", "text": "Share of the billboard trees kept outside the boundary, per distance band (null = beyond the last)." }
+        { "key": "treeSettings", "value": null, "unit": "rules", "text": "The trees' looks: tints, caps, billboard calibration, LOD factor, by name match." },
+        { "key": "plantSettings", "value": null, "unit": "rules", "text": "The lower vegetation's looks, by name match." },
+        { "key": "species", "value": null, "unit": "prefab -> label", "text": "The Arborist species of a lower-vegetation prefab the name rule misses (null = left out)." }
       ]
     },
     {

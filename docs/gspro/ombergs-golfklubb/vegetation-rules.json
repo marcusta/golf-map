@@ -7,6 +7,11 @@
   "trees": {
     "lidarSizeFactor": 1.15
   },
+  "routing_comment": "Who draws each tree, decided before planting (arborist.py route; moved here from arborist-species.json 2026-10-20). farBillboard: a tree both further than outsideOob outside the course boundary and further than fromPlay from the playing field (rough, semi, fairway, green, tee, bunker, wherever they lie) is an Arborist billboard, whatever its model; every tree inside the boundary is drawn by its own model's renderer. Marcus 2026-10-13: 40 m was too aggressive, 80 m. outerKeep (Marcus 2026-10-13): the horizon forest need not draw every tree, and less the further out: bands by distance outside the boundary [metres or null = beyond, share kept]; half of all outer billboards showed no difference in the forest wall from three viewpoints and no measurable frame-rate gain either.",
+  "routing": {
+    "farBillboard": { "outsideOob": 80, "fromPlay": 80 },
+    "outerKeep": [[400, 0.8], [1000, 0.6], [null, 0.2]]
+  },
   "generators": {
     "tall-grass": {
       "near-start": 30,

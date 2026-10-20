@@ -15,19 +15,46 @@ The course is a hybrid (Marcus, 2026-10-12): use Arborist wherever it has a good
 (NatureManufacture pines, firs and poplars are the same models and look good there; bushes and
 ground plants are cheaper there) and fall back on the course's VSP where it does not. Forst's oaks
 and birches are far better than anything in Arborist, whose birches are SpeedTree models that
-cannot be tinted as needed. One list decides: `"vsp"` in `arborist-species.json` (parts of prefab
-names). `arborist.py trees` leaves those prefabs' full-model trees out, and Unity draws only them:
-`golfmap.vsp.trees on=true keep=<the same list>` hides every other item of the inner tree
-catalogue (nothing deleted; `on=true` without `keep` shows all again) and leaves the background
-system off, so the background trees of every species, these included, are Arborist's
-billboard-only copies. Not yet seen in GSPro: whether the two draw together.
+cannot be tinted as needed. Who draws a tree follows from its model (models.json: `arborist:` or
+`vsp:`) and the course's **routing**, decided before planting (below, "Routing before planting");
+Omberg since 2026-10-20. Vreta still runs the older path: one list, `"vsp"` in
+`arborist-species.json` (parts of prefab names); `arborist.py trees` leaves those prefabs' full-model
+trees out, Unity draws only them (`golfmap.vsp.trees on=true keep=<the same list>` hides every other
+item of the inner tree catalogue; `on=true` without `keep` shows all again) and the far ones are
+trimmed out of its storage afterwards. Not yet seen in GSPro: whether the two draw together.
+
+### Routing before planting (a course with `routing` rules)
+
+`bun run arborist -- route <course> [--dry-run]` (`ArboristService.route`, `arborist.py route`) routes
+every inner tree by id - the trees export with the tree edits applied first - into
+`<export>/<prefix>-inner-routing.json` (golfmap-routing-v1, `golfmap.course` lists it as
+`exports['inner-routing']`) and prints `own N, billboard M, left out L`:
+
+- `own`: drawn by its model's renderer - the course's VSP for a `vsp:` model, Arborist's full model
+  for an `arborist:` one.
+- `billboard`: an Arborist billboard whatever the model (the far rule, `FarRule`: more than
+  `outsideOob` outside the GKD's pOOB and more than `fromPlay` from rough/semi/fairway/green/tee/bunker).
+  A vsp model's billboard is the Arborist model its models.json entry names as `billboardAs`.
+- `out`: left out by the `outerKeep` bands (by position, the same trees every run).
+
+The rules are the course's `docs/gspro/<course>/vegetation-rules.json` `routing`
+(`{farBillboard: {outsideOob, fromPlay}, outerKeep: [[maxM|null, share], ...]}`; defaults
+`pipeline/vegetation-rules/routing.json`, shown in the Planting rules). A course without `routing` is
+refused by name. The trees export (`gspro:export ... trees:inner`, the sync board's Trees) routes again
+after writing the trees file, so the planting that follows it uses the new routes.
+
+Unity's planter (`golfmap.trees.plant`) stores in the course's VSP only the vsp models routed `own`;
+the placements file still records every tree. `arborist.py trees --routing --rules` draws every other
+placement and lists it in `arboristdata.ids.json` (left out with reason outerKeep); it writes no
+`vsp-far.json` and asks for no trim. The course's `golfmap.vsp.trees` is `on=true` without `keep`.
+A tree edit (`golfmap.trees.edit`, the Arborist edit loop) does not re-route by itself: route, then plant.
 
 | | |
 |---|---|
 | Arborist app | `D:\gspro\Arborist_Launcher\Data\Application` (the launcher only updates and starts it; an update may remove the mod); log in `%USERPROFILE%\AppData\LocalLow\OPCD\Arborist\output_log.txt` |
 | The mod | [unity/ArboristMod/README.md](../../unity/ArboristMod/README.md): `bun unity/ArboristMod/call.ts <command> ['{json}'] [timeoutSec]`; `call.ts commands` lists them. Marcus opens the course in Arborist; ask him when no bridge answers. |
 | Course folder | `C:\GSProV1\Core\GSP\Courses\<course>` (Vreta: `Vreta_lidar_scene`): `arboristdata.dat`, `arboristversion.dat`, GKD with `IsArborist: true` |
-| Per-course choices | `docs/gspro/<course>/arborist-species.json`: species mapping (`species`, `trees`) and looks (`treeSettings`, `plantSettings`; keys in `arborist.py apply_look`); `vegeSettings` = the Arborist system's own settings (`PlantDistance` ...), written by `trees` and `lower` |
+| Per-course choices | `docs/gspro/<course>/arborist-species.json`: species mapping (`species`; `trees` on the older, unrouted path) and looks (`treeSettings`, `plantSettings`; keys in `arborist.py apply_look`); `vegeSettings` = the Arborist system's own settings (`PlantDistance` ...), written by `trees` and `lower` |
 | Inputs (git-ignored, `data/arborist/`) | `GolfMap library.biome` (species library), `catalog-sizes.json` (`arb.catalog` with `sizes`), `<course>-planted-trees.json` (Unity `golfmap.trees.dump file=<abs path>`), `lineup-items.txt` (the tree species in calibration order) |
 | File key | `data/arborist-wrapper.key` (git-ignored; never into the repo) |
 
@@ -64,8 +91,8 @@ Unity, so the Arborist vegetation follows the zones without a shell (`ArboristSe
   `coursedetails.txt`, which GSPro's course list reads (without it every hole shows "500 yards, par 0"
   and the round refuses to start), and `IsArborist: true` in the GKD. GreenKeeper refuses to save
   without a `splash.jpg` in the course folder.
-- Still by hand: `arborist.py post` (look.json's post values), `lineup`, and after the trees
-  changed owner the trim in Unity (the reload in Arborist is `bun run arborist`, below): the report then ends with
+- Still by hand: `arborist.py post` (look.json's post values), `lineup`, and (a course without
+  routing rules only) after the trees changed owner the trim in Unity (the reload in Arborist is `bun run arborist`, below): the report then ends with
   a warning naming `golfmap.vsp.trees.trim restore=true`, then `file=<path>`, save, build.
   The trim is not run for you, because `restore` after a replant in Unity would put the old trees
   back beside the new ones. A replant (`golfmap.trees.plant`) drops its own items' rows from the trim
@@ -289,9 +316,12 @@ Arborist model); the matcher hashes `key` / `MatchKey` (the prefab guid, else th
   `golfmap.vsp.trees.stored` counts what the course's VSP holds (or lists it `near: [x, z]`).
 - Omberg 2026-10-18: beech (Forest_Large_beech_tree_03/04/05, CE_DA_Forest_Tree_16018/18195/11164) and elm
   (S7_American_Elm, darkened, and CE_Oak_CE_Tall_Fanned_1/2/3) are Arborist models; the Unity stand-ins
-  and the list mapping under `"trees"` are gone. Open: the poplars, firs and pines are still vsp models that
-  the `"vsp"` keep list hides in VSP and `"trees"` hands to Arborist - as models of their own they would be
-  `arborist:` ones.
+  and the list mapping under `"trees"` are gone. 2026-10-20: the poplars (MeadowEnv_02/03/05/06/07_Poplar), pines
+  (MountainEnv_Forest_pine_01/03-06, _tree_00_B/C), firs (NM_Fir_02_Small/03_Medium/05_Standalone/07_Forest) and
+  dwarf pines (MountainEnv_bush_dwarf_pine_big/medium_04) are `arborist:` models too, their calibrated looks moved
+  from the species file into models.json; the Forst oaks and birches stay `vsp:` models with `billboardAs`
+  (their Arborist billboard stand-in). The species file lost `vsp`, `trees`, `billboardBeyondM`, `outerKeep`
+  and `forstRing_off` (the routing rules are in vegetation-rules.json).
 - Open (first delivery): the Scene view tree editor handles VSP trees only - a tree that would become an
   Arborist model, or is one, is edited with `golfmap.trees.edit`. Unity's terrain-tree and GameObject planting
   modes plant no Arborist model and write no placements. The model library has two copies (docs and Unity's,

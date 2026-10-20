@@ -32,7 +32,7 @@
   "zones": {},
   "assets": [
     {
-      "model": "vsp:Fir_02_S",
+      "model": "arborist:NM_Fir_02_Small",
       "enabled": true
     },
     {
@@ -60,47 +60,47 @@
       "enabled": true
     },
     {
-      "model": "vsp:Fir_03_Medium",
+      "model": "arborist:NM_Fir_03_Medium",
       "enabled": true
     },
     {
-      "model": "vsp:Fir_07_Forest_cheap",
+      "model": "arborist:NM_Fir_07_Forest",
       "enabled": true
     },
     {
-      "model": "vsp:Fir_05_Standalone_cheap",
+      "model": "arborist:NM_Fir_05_Standalone",
       "enabled": true
     },
     {
-      "model": "vsp:Prefab_dwarf_pine_big_04",
+      "model": "arborist:MountainEnv_bush_dwarf_pine_big_04",
       "enabled": true
     },
     {
-      "model": "vsp:Prefab_dwarf_pine_medium_04",
+      "model": "arborist:MountainEnv_bush_dwarf_pine_medium_04",
       "enabled": true
     },
     {
-      "model": "vsp:Prefab_Forest_pine_03",
+      "model": "arborist:MountainEnv_Forest_pine_03",
       "enabled": true,
       "selectionWeight": 5
     },
     {
-      "model": "vsp:Prefab_Forest_pine_01",
+      "model": "arborist:MountainEnv_Forest_pine_01",
       "enabled": true,
       "selectionWeight": 1
     },
     {
-      "model": "vsp:Prefab_Forest_pine_05",
+      "model": "arborist:MountainEnv_Forest_pine_05",
       "enabled": true,
       "selectionWeight": 5
     },
     {
-      "model": "vsp:Prefab_Forest_pine_tree_00_B",
+      "model": "arborist:MountainEnv_Forest_pine_tree_00_B",
       "enabled": true,
       "selectionWeight": 1
     },
     {
-      "model": "vsp:Prefab_Forest_pine_tree_00_C",
+      "model": "arborist:MountainEnv_Forest_pine_tree_00_C",
       "enabled": true,
       "selectionWeight": 1
     },
@@ -117,33 +117,33 @@
       "enabled": true
     },
     {
-      "model": "vsp:Prefab_Forest_pine_04",
+      "model": "arborist:MountainEnv_Forest_pine_04",
       "enabled": true,
       "selectionWeight": 1
     },
     {
-      "model": "vsp:Prefab_Forest_pine_06",
+      "model": "arborist:MountainEnv_Forest_pine_06",
       "enabled": true,
       "selectionWeight": 1
     },
     {
-      "model": "vsp:VS_prefab_01_Poplar",
+      "model": "arborist:MeadowEnv_02_Poplar",
       "enabled": true
     },
     {
-      "model": "vsp:VS_prefab_06_Poplar",
+      "model": "arborist:MeadowEnv_06_Poplar",
       "enabled": true
     },
     {
-      "model": "vsp:VS_prefab_07_Poplar",
+      "model": "arborist:MeadowEnv_07_Poplar",
       "enabled": true
     },
     {
-      "model": "vsp:VS_prefab_05_Poplar",
+      "model": "arborist:MeadowEnv_05_Poplar",
       "enabled": true
     },
     {
-      "model": "vsp:VS_prefab_03_Poplar",
+      "model": "arborist:MeadowEnv_03_Poplar",
       "enabled": true
     },
     {

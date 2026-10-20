@@ -468,6 +468,65 @@ namespace GolfMap.Editor
             return file;
         }
 
+        // The routing file's format and the route that keeps a tree with its own model's renderer (pipeline/arborist.py
+        // ROUTING_FORMAT, OWN); the others ("billboard", "out") all mean "not the course's VSP" here.
+        const string RoutingFormat = "golfmap-routing-v1";
+        const string RouteOwn = "own";
+
+        // <export folder>/<prefix>-<terrain>-routing.json (golfmap-routing-v1, arborist.py route): tree id -> "own" |
+        // "billboard" | "out". Null when the course has none (it is not routed: every vsp model goes into VSP).
+        Dictionary<string, string> LoadRoutes()
+        {
+            var file = Course ? GolfMapCourses.ExportFile(Course, RoleKey, "routing") : null;
+            if (file == null || !File.Exists(file)) return null;
+            var doc = GolfMapJsonDoc.ParseObject(File.ReadAllText(file));
+            var routes = doc.Object("routes");
+            if (doc.String("format") != RoutingFormat || routes == null) throw new InvalidOperationException("Not a " + RoutingFormat + " file: " + file + ". Existing import retained.");
+            var result = new Dictionary<string, string>();
+            foreach (var id in routes.keys) result[id] = routes.String(id);
+            return result;
+        }
+
+        // The prepared vsp trees split by the routing: Own go into the course's VSP, Away ("billboard", "out") are
+        // placements only. A tree the routing does not name stays Own (counted in Unrouted). Routed: the course has
+        // a routing file (nothing is trimmed afterwards then: the storage holds only "own").
+        class RoutingSplit
+        {
+            public List<PreparedTree> Own = new List<PreparedTree>();
+            public List<PreparedTree> Away = new List<PreparedTree>();
+            public int Unrouted;
+            public bool Routed;
+
+            public string Note()
+            {
+                var note = Away.Count > 0 ? "\nRouting: " + Away.Count + " trees of vsp models are Arborist's (billboard or left out), placements only." : "";
+                if (Unrouted > 0) note += "\nWARNING " + Unrouted + " trees are not in the routing file and went into VSP: route again (bun run arborist -- route <course>), then plant.";
+                return note;
+            }
+        }
+
+        RoutingSplit SplitByRouting(List<PreparedTree> prepared)
+        {
+            var split = new RoutingSplit();
+            var routes = LoadRoutes();
+            split.Routed = routes != null;
+            if (routes == null) { split.Own.AddRange(prepared); return split; }
+            foreach (var t in prepared)
+            {
+                string route;
+                if (string.IsNullOrEmpty(t.tree.id) || !routes.TryGetValue(t.tree.id, out route)) { split.Unrouted++; split.Own.Add(t); }
+                else if (route == RouteOwn) split.Own.Add(t);
+                else split.Away.Add(t);
+            }
+            return split;
+        }
+
+        // A hybrid course that is not routed: trimmed trees came back into the storage with this planting.
+        static string HybridTrimNote(int untrimmed, bool routed)
+        {
+            return untrimmed > 0 && !routed ? "\nHybrid course: " + untrimmed + " trimmed trees are back in the storage. Write the Arborist trees again (" + ArboristExport + "), then golfmap.vsp.trees.trim file=<its vsp-far.json>." : "";
+        }
+
         // The command that writes the course's Arborist file (ArboristService), the Arborist trees included.
         const string ArboristExport = "bun run gspro:export -- <course> arborist";
 
@@ -679,7 +738,13 @@ namespace GolfMap.Editor
                     if (!t.prefab) {if(useBiome){skipped++;continue;}throw new InvalidOperationException("No prefab mapping for kind " + tree.k + ". Existing import retained.");}
                     prepared.Add(t);
                 }
-                if (prepared.Count == 0 && arborist.Count == 0) throw new InvalidOperationException("No eligible trees. Existing import retained.");
+                // The routing policy, decided before planting (<prefix>-<terrain>-routing.json, arborist.py route): only the
+                // vsp models routed "own" go into the course's VSP; one routed "billboard" or "out" is a placement only,
+                // which the Arborist writer draws as a billboard or leaves out. No routing file: every vsp model is stored.
+                var routing = SplitByRouting(prepared);
+                prepared = routing.Own;
+                var routedAway = routing.Away;
+                if (prepared.Count == 0 && arborist.Count == 0 && routedAway.Count == 0) throw new InvalidOperationException("No eligible trees. Existing import retained.");
                 VegetationSystemPro system; PersistentVegetationStoragePackage package;
                 CheckStorageReady(out system, out package);
                 system.PersistentVegetationStorage = storage;
@@ -717,8 +782,9 @@ namespace GolfMap.Editor
                 EditorSceneManager.MarkSceneDirty(terrain.gameObject.scene);
                 RefreshStorage();
                 AssetDatabase.SaveAssets();
-                var placements = WritePlacements(prepared, arborist);
-                status = "Replaced " + prior + " " + RoleKey + " trees with " + prepared.Count + ": " + meshHits + " mesh hits, " + terrainHits + " terrain fallback, " + skipped + " skipped, " + clamped + " scale-clamped, " + nudged + " nudged off cell edges" + (pruned > 0 ? ", " + pruned + " retired catalogue item(s) pruned" : "") + ". Source 42. Save the scene to retain setup." + (untrimmed > 0 ? "\nHybrid course: " + untrimmed + " trimmed trees are back in the storage. Write the Arborist trees again (" + ArboristExport + "), then golfmap.vsp.trees.trim file=<its vsp-far.json>." : "") + PlacementsNote(placements, prepared.Count, arborist.Count);
+                var placements = WritePlacements(prepared, arborist.Concat(routedAway).ToList());
+                status = "Replaced " + prior + " " + RoleKey + " trees with " + prepared.Count + ": " + meshHits + " mesh hits, " + terrainHits + " terrain fallback, " + skipped + " skipped, " + clamped + " scale-clamped, " + nudged + " nudged off cell edges" + (pruned > 0 ? ", " + pruned + " retired catalogue item(s) pruned" : "") + ". Source 42. Save the scene to retain setup."
+                    + HybridTrimNote(untrimmed, routing.Routed) + PlacementsNote(placements, prepared.Count + routedAway.Count, arborist.Count) + routing.Note();
                 File.WriteAllText(GolfMapCourses.ReportPath(Course, "tree_import.txt"), DateTime.UtcNow.ToString("o") + "\n" + status + "\n" + AlignmentReport() + "\nStorage: " + AssetDatabase.GetAssetPath(package));
                 Debug.Log("[GolfMap] " + status);
             }

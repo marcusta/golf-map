@@ -271,6 +271,8 @@ export interface RuleDefaultsDoc {
     summary: string;
     steps: string[];
     groups: { title: string; rules: RuleDefault[] }[];
+    /** The course's own file under docs/gspro/<slug>/ that sets these rules' values, when it is not the generator's. */
+    courseFile?: string;
 }
 
 export const RULE_DEFAULTS_FORMAT = 'golfmap-vegetation-rule-defaults-v1';

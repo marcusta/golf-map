@@ -445,6 +445,19 @@ export function placementsExportFileName(courseName: string, kind: TerrainKind):
     return `${courseSlug(courseName)}-${kind}-placements.json`;
 }
 
+/** `Vreta`, inner -> `vreta-inner-tree-edits.json` (golfmap-tree-edits-v1, beside the trees export). */
+export function treeEditsFileName(courseName: string, kind: TerrainKind): string {
+    return `${courseSlug(courseName)}-${kind}-tree-edits.json`;
+}
+
+/**
+ * `Omberg`, inner -> `ombergs-golfklubb-inner-routing.json` (golfmap-routing-v1, `arborist.py route`): each tree by id
+ * routed before planting - own (its model's renderer), billboard (Arborist) or out. Unity's planter reads it.
+ */
+export function routingExportFileName(courseName: string, kind: TerrainKind): string {
+    return `${courseSlug(courseName)}-${kind}-routing.json`;
+}
+
 /** `Vreta`, outer -> `vreta-outer-buildings.json` (unity-buildings-v1). */
 export function buildingsExportFileName(courseName: string, kind: TerrainKind): string {
     return `${courseSlug(courseName)}-${kind}-buildings.json`;
@@ -575,19 +588,6 @@ export function creeksExportFileName(courseName: string): string {
     return `${courseSlug(courseName)}-inner-creeks.json`;
 }
 
-/** `Vreta` -> `vreta-inner-waterfalls.json` (unity-waterfalls-v1, the falls' lips and levels; inner terrain only). */
-export function waterfallsExportFileName(courseName: string): string {
-    return `${courseSlug(courseName)}-inner-waterfalls.json`;
-}
-
-/** `Vreta` -> `vreta-holes.json` (golfmap-holes-v1: tees, aim points, green centres for Unity's hole navigator). */
-export function holesExportFileName(courseName: string): string {
-    return `${courseSlug(courseName)}-holes.json`;
-}
-
-/** The request's forest-floor fields as `renderOrtho` options; undefined when not asked for. */
-function floorOptions(r: GsproExportRequest): ForestFloorOptions | undefined {
-    return r.forestFloor ? { color: r.floorColor, mix: r.floorMix } : undefined;
 /** `Vreta` -> `vreta-inner-ramroads.json` (unity-ramroads-v1, the render=ram paths as R.A.M. splines; inner terrain only). */
 export function ramRoadsExportFileName(courseName: string): string {
     return `${courseSlug(courseName)}-inner-ramroads.json`;
@@ -634,6 +634,19 @@ export interface RoadRenderResult {
     dryRun: boolean;
 }
 
+/** `Vreta` -> `vreta-inner-waterfalls.json` (unity-waterfalls-v1, the falls' lips and levels; inner terrain only). */
+export function waterfallsExportFileName(courseName: string): string {
+    return `${courseSlug(courseName)}-inner-waterfalls.json`;
+}
+
+/** `Vreta` -> `vreta-holes.json` (golfmap-holes-v1: tees, aim points, green centres for Unity's hole navigator). */
+export function holesExportFileName(courseName: string): string {
+    return `${courseSlug(courseName)}-holes.json`;
+}
+
+/** The request's forest-floor fields as `renderOrtho` options; undefined when not asked for. */
+function floorOptions(r: GsproExportRequest): ForestFloorOptions | undefined {
+    return r.forestFloor ? { color: r.floorColor, mix: r.floorMix } : undefined;
 }
 
 /** The request's tint fields as `renderOrtho` options; undefined when no tint was asked for. */
@@ -1513,7 +1526,9 @@ export class GsproExportService {
             files: [stems, sidecar, rocks, photoStems],
             values: { features: await this.history.latestStamp(courseId), sizeFactor: sizeFactor ?? 1 },
         }, opts.force);
-        return { path: rendered.path, report: [...prepared, ...fetched, ...rendered.report] };
+        // A routed course decides who draws each tree before planting: the trees just written are routed again.
+        const routed = kind === 'inner' ? await this.arborist.routeIfRouted(await this.arboristCourse(courseId)) : [];
+        return { path: rendered.path, report: [...prepared, ...fetched, ...rendered.report, ...routed] };
     }
 
     /**
@@ -2190,21 +2205,6 @@ export class GsproExportService {
     }
 
     /**
-     * The course's waterfalls for the inner terrain
-     * (`<dir>/<course>-inner-waterfalls.json`, unity-waterfalls-v1, what
-     * `golfmap.waterfalls.build` builds the falling water from): each
-     * `waterfall` feature's lip in the creeks' frame, the water above and
-     * below and the way it falls, written by `gspro.py waterfalls`. Levels
-     * and the bearing a fall does not set are read beside its lip on the RAW
-     * lidar DEM (the edited one has the ponds dug). Reads the inner heightmap
-     * sidecar for the terrain's zero, exporting the inner heightmap first when
-     * there is none.
-     */
-    async exportWaterfalls(courseId: string, opts: { force?: boolean } = {}): Promise<GsproExportResult> {
-        const course = await this.courses.get(courseId);
-        if (!course.siteId) throw new ConflictError('This course has no built map on this machine — build its map first');
-        const terrain = await this.resolveTerrain(courseId, 'export the GSPro waterfalls for');
-    /**
      * The course's R.A.M. roads for the inner terrain
      * (`<dir>/<course>-inner-ramroads.json`, unity-ramroads-v1, what
      * `golfmap.ramroads.build` builds the splines from): each `path` with
@@ -2307,6 +2307,21 @@ export class GsproExportService {
         return { render, changed: changed.map(f => f.id), unchanged, dryRun: opts.dryRun === true };
     }
 
+    /**
+     * The course's waterfalls for the inner terrain
+     * (`<dir>/<course>-inner-waterfalls.json`, unity-waterfalls-v1, what
+     * `golfmap.waterfalls.build` builds the falling water from): each
+     * `waterfall` feature's lip in the creeks' frame, the water above and
+     * below and the way it falls, written by `gspro.py waterfalls`. Levels
+     * and the bearing a fall does not set are read beside its lip on the RAW
+     * lidar DEM (the edited one has the ponds dug). Reads the inner heightmap
+     * sidecar for the terrain's zero, exporting the inner heightmap first when
+     * there is none.
+     */
+    async exportWaterfalls(courseId: string, opts: { force?: boolean } = {}): Promise<GsproExportResult> {
+        const course = await this.courses.get(courseId);
+        if (!course.siteId) throw new ConflictError('This course has no built map on this machine — build its map first');
+        const terrain = await this.resolveTerrain(courseId, 'export the GSPro waterfalls for');
         const dir = await this.exportDir(courseId);
         const dem = path.join(this.sourcesDir(course.siteId), 'dem.tif');
         if (!await statOrNull(dem)) throw new ConflictError(`No raw DEM for this course's site (${dem}) — build its map first`);
@@ -2446,6 +2461,7 @@ export class GsproExportService {
             case 'vegetation-update': return this.updateZones(courseId, r.zoneIds!, { plantIfNeeded: r.plantIfNeeded === true });
             case 'arborist': return this.exportArborist(courseId);
             case 'creeks': return this.exportCreeks(courseId, force);
+            case 'ramroads': return this.exportRamRoads(courseId, force);
             case 'waterfalls': return this.exportWaterfalls(courseId, force);
             case 'gkd': return this.exportGkd(courseId);
         }
@@ -2461,7 +2477,6 @@ export class GsproExportService {
     private async exportDir(courseId: string): Promise<string> {
         const { dir } = await this.settings(courseId);
         await ensureDir(dir);
-            case 'ramroads': return this.exportRamRoads(courseId, force);
         return dir;
     }
 
@@ -2918,6 +2933,7 @@ export function describeRequest(r: GsproExportRequest): string {
         case 'vegetation-update': need(r.zoneIds?.length, 'the zones to update'); return `${r.zoneIds!.length} vegetation zone(s) updated for GSPro`;
         case 'arborist': return 'Arborist file (lower vegetation and trees)';
         case 'creeks': return 'creeks (R.A.M. splines)';
+        case 'ramroads': return 'R.A.M. roads';
         case 'waterfalls': return 'waterfalls (lips and water levels)';
         case 'gkd': return 'GreenKeeper course file';
         default: throw new ConflictError(`Unknown export kind '${String((r as { kind: unknown }).kind)}'`);
@@ -2933,7 +2949,6 @@ function arboristAfterFailure(arborist: ArboristResult | null): string {
 
 function firstLine(text: string): string {
     return text.split('\n')[0] ?? '';
-        case 'ramroads': return 'R.A.M. roads';
 }
 
 /**

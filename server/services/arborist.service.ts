@@ -29,8 +29,12 @@
 //   wrapper key           <dataDir>/arborist-wrapper.key, never in the repo
 //                         (GOLFMAP_ARBORIST_KEY overrides)
 import * as path from 'node:path';
-import { readFile, readdir } from 'node:fs/promises';
-import { courseSlug, placementsExportFileName, statOrNull, surfacesExportFileName, treesExportFileName, zonesExportFileName, type ExportRunner } from './gspro-export.service';
+import { readFile, readdir, stat } from 'node:fs/promises';
+import {
+    courseSlug, placementsExportFileName, routingExportFileName, statOrNull, surfacesExportFileName, treeEditsFileName, treesExportFileName,
+    zonesExportFileName, type ExportRunner, type TerrainKind,
+} from './gspro-export.service';
+import { VEGETATION_RULES_FILE } from './vegetation-generators';
 import type { UnityEditor } from './unity-bridge';
 
 /** `arborist.py lower` on Vreta takes 10 s, `trees` 5 s plus the dump; a 5 km outer square with the far rule is the slow case. */
@@ -66,6 +70,13 @@ export interface ArboristResult {
     /** The parts written, for a one-line summary: 'lower vegetation', 'trees'. */
     written: string[];
     error: string | null;
+}
+
+/** What `route` did: the counts, and the routing file it wrote (null for a dry run). */
+export interface RouteResult {
+    counts: { own: number; billboard: number; out: number };
+    file: string | null;
+    report: string[];
 }
 
 export class ArboristService {
@@ -106,6 +117,87 @@ export class ArboristService {
             result.error = (e as Error).message.split('\n')[0]!;
         }
         return result;
+    }
+
+    /**
+     * The course's routing rules file (docs/gspro/<slug>/vegetation-rules.json with a `routing`), or null: a
+     * course without them is not routed and keeps the older path (the species file's "vsp" list, the trim).
+     */
+    async routingRules(course: ArboristCourse): Promise<string | null> {
+        const file = this.docs(course, VEGETATION_RULES_FILE);
+        try {
+            const doc = JSON.parse(await readFile(file, 'utf8')) as { routing?: unknown };
+            return doc.routing && typeof doc.routing === 'object' ? file : null;
+        } catch {
+            return null;
+        }
+    }
+
+    /**
+     * Route the inner trees before planting (`arborist.py route`): the trees export with the tree edits applied,
+     * judged by the course's `routing` rules on its surface map and the GKD's boundary, each tree by id
+     * own / billboard / out, into <slug>-inner-routing.json (not with `dryRun`). Unity's planter then puts only
+     * the vsp models routed own into the course's VSP, and `trees` draws the rest. Throws what is missing.
+     */
+    async route(course: ArboristCourse, opts: { dryRun?: boolean } = {}): Promise<RouteResult> {
+        const rules = await this.routingRules(course);
+        if (!rules) {
+            throw new Error(`${course.name} has no routing rules: no \`routing\` in ${this.docs(course, VEGETATION_RULES_FILE)} `
+                + '(pipeline/vegetation-rules/routing.json lists them); it keeps the species file\'s "vsp" list and the trim');
+        }
+        return this.routeBy(course, rules, opts);
+    }
+
+    /**
+     * `route` where the course has routing rules, as report lines: nothing for a course without them, and a
+     * routing that cannot run is a warning line. The routing file from the last run that worked then stays in
+     * force: Unity's planter and `trees` follow it, and a tree it does not name goes into VSP with a WARNING.
+     */
+    async routeIfRouted(course: ArboristCourse, opts: { dryRun?: boolean } = {}): Promise<string[]> {
+        const rules = await this.routingRules(course);
+        if (!rules) return [];
+        try {
+            return (await this.routeBy(course, rules, opts)).report;
+        } catch (e) {
+            return [`warning: ${(e as Error).message.split('\n')[0] ?? ''}`];
+        }
+    }
+
+    /** `arborist.py route` with the course's routing rules file; its counts come back as JSON (`--json`). */
+    private async routeBy(course: ArboristCourse, rules: string, opts: { dryRun?: boolean }): Promise<RouteResult> {
+        const file = path.join(course.exportDir, routingExportFileName(course.name, 'inner'));
+        const args = ['route', ...await this.routeInputs(course), '--rules', rules, '--out', file, '--json'];
+        if (opts.dryRun) args.push('--dry-run');
+        const stdout = await this.run('Trees routing', args, ARBORIST_LOWER_TIMEOUT_MS);
+        const counts = routeSummary(stdout);
+        if (!counts) throw new Error(`Trees routing: no counts in arborist.py's output: ${stdout.trim().split('\n')[0]}`);
+        return {
+            counts, file: opts.dryRun ? null : file,
+            report: [`Trees routed: own ${counts.own}, billboard ${counts.billboard}, left out ${counts.out}`
+                + (opts.dryRun ? ' (dry run, nothing written)' : ` (${file})`)],
+        };
+    }
+
+    /** What `arborist.py route` judges, checked: the inner trees export and its edits, the surface map, the GKD, the terrains. */
+    private async routeInputs(course: ArboristCourse): Promise<string[]> {
+        const slug = courseSlug(course.name);
+        const trees = path.join(course.exportDir, treesExportFileName(course.name, 'inner'));
+        if (!await statOrNull(trees)) throw new Error(`Trees not routed: no trees export yet (${trees}) - export the inner trees first`);
+        const surfaces = path.join(course.exportDir, surfacesExportFileName(course.name, 'inner'));
+        if (!await statOrNull(surfaces)) throw new Error(`Trees not routed: no surface map (${surfaces}; golfmap.surfaces.export in Unity)`);
+        if (!course.courseDir || !(await statOrNull(course.courseDir))?.isDirectory()) {
+            throw new Error('Trees not routed: set the GSPro course folder first (its .GKD holds the course boundary)');
+        }
+        const gkd = (await readdir(course.courseDir)).filter(n => n.toLowerCase().endsWith('.gkd')).sort()[0];
+        if (!gkd) throw new Error(`Trees not routed: no .GKD with the course boundary in ${course.courseDir}`);
+        const square = await terrainsSquare(course.exportDir, slug);
+        if (!square) throw new Error(`Trees not routed: no inner heightmap sidecar in ${course.exportDir} - export the inner heightmap first (it places the terrains)`);
+        const origin = await terrainOrigin(course.exportDir, slug, 'inner');
+        const args = ['--trees', trees, '--surfaces', surfaces, '--gkd', path.join(course.courseDir, gkd),
+            '--terrains-square', ...square.map(String), '--origin', String(origin.x), String(origin.z)];
+        const edits = path.join(course.exportDir, treeEditsFileName(course.name, 'inner'));
+        if (await statOrNull(edits)) args.push('--edits', edits);
+        return args;
     }
 
     /** `arborist.py lower`: the palette's prefab items on the inner zones export's masks. Throws what is missing. */
@@ -174,14 +266,25 @@ export class ArboristService {
         if (placements.length) args.push('--placements', ...placements);
         const models = this.docs(course, 'models.json');
         if (await statOrNull(models)) args.push('--models', models);
-        // The trees the course's own VSP must stop drawing: arborist.py writes the list beside the planted trees.
+        // A routed course: the routing decided before planting who draws each tree, so the placements go where it
+        // says and nothing is trimmed in Unity afterwards.
+        const rules = await this.routingRules(course);
+        if (rules) {
+            const routing = path.join(course.exportDir, routingExportFileName(course.name, 'inner'));
+            if (!await statOrNull(routing)) {
+                throw new Error(`Arborist trees not written: ${course.name} has routing rules but no routing yet (${routing}) - `
+                    + 'route the trees (bun run arborist -- route <course>), then plant them in Unity');
+            }
+            args.push('--routing', routing, '--rules', rules);
+        }
+        // The trees the course's own VSP must stop drawing (not routed): arborist.py writes the list beside the planted trees.
         const farFile = path.join(path.dirname(planted), `${slug}-vsp-far.json`);
         const before = await positionsIn(farFile);
         const stdout = await this.run('Arborist trees', args, ARBORIST_TREES_TIMEOUT_MS);
         const counts = /: (\d+) trees of (\d+) Arborist species/.exec(stdout);
         report.unshift(`Arborist trees written: ${counts?.[1] ?? '?'} trees of ${counts?.[2] ?? '?'} species, from ${count} planted in Unity (${editor.projectName})`);
         report.push(...notes(stdout).filter(l => !/tree\(s\) of the course's VSP are now Arborist's/.test(l)));
-        if (await positionsIn(farFile) !== before) {
+        if (!rules && await positionsIn(farFile) !== before) {
             report.push(`warning: the trees Arborist draws in place of the course's own changed. In Unity: golfmap.vsp.trees.trim restore=true, `
                 + `then golfmap.vsp.trees.trim file=${farFile}, save the scene and build the course - until then those trees are drawn twice or not at all`);
         }
@@ -247,6 +350,20 @@ function notes(stdout: string): string[] {
     return kept;
 }
 
+/** The counts `arborist.py route --json` prints as its last line ({counts: {own, billboard, out}, out}); null without. */
+function routeSummary(stdout: string): RouteResult['counts'] | null {
+    const last = stdout.trim().split('\n').at(-1)?.trim() ?? '';
+    try {
+        const counts = (JSON.parse(last) as { counts?: Partial<RouteResult['counts']> }).counts;
+        if (typeof counts?.own === 'number' && typeof counts.billboard === 'number' && typeof counts.out === 'number') {
+            return { own: counts.own, billboard: counts.billboard, out: counts.out };
+        }
+    } catch {
+        // not a summary line
+    }
+    return null;
+}
+
 /** The `positions` of a golfmap-vsp-far-v1 file as text, for comparing two runs; no file = no positions. */
 async function positionsIn(file: string): Promise<string> {
     try {
@@ -294,4 +411,17 @@ export async function terrainsSquare(exportDir: string, slug: string): Promise<[
         Math.min(...squares.map(s => s[0])), Math.min(...squares.map(s => s[1])),
         Math.max(...squares.map(s => s[2])), Math.max(...squares.map(s => s[3])),
     ];
+}
+
+/** The terrain's Unity position (its heightmap sidecar's unity.position): world = local + this. */
+export async function terrainOrigin(exportDir: string, slug: string, kind: TerrainKind): Promise<{ x: number; z: number }> {
+    let newest: { name: string; t: number } | null = null;
+    for (const n of await readdir(exportDir)) {
+        if (!n.startsWith(`${slug}-${kind}-dem-`) || !n.endsWith('m.tif.json')) continue;
+        const t = (await stat(path.join(exportDir, n))).mtimeMs;
+        if (!newest || t > newest.t) newest = { name: n, t };
+    }
+    if (!newest) return { x: 0, z: 0 };
+    const sidecar = JSON.parse(await readFile(path.join(exportDir, newest.name), 'utf8')) as { unity?: { position?: { x?: number; z?: number } } };
+    return { x: sidecar.unity?.position?.x ?? 0, z: sidecar.unity?.position?.z ?? 0 };
 }

@@ -20,9 +20,9 @@
 import * as path from 'node:path';
 import * as os from 'node:os';
 import { createHash, randomUUID } from 'node:crypto';
-import { mkdtemp, open, readFile, readdir, rename, rm, stat, writeFile } from 'node:fs/promises';
-import { courseSlug, placementsExportFileName, statOrNull, treesExportFileName, type ExportRunner } from './gspro-export.service';
-import { terrainsSquare, type ArboristCourse } from './arborist.service';
+import { mkdtemp, open, readFile, rename, rm, writeFile } from 'node:fs/promises';
+import { courseSlug, placementsExportFileName, statOrNull, treeEditsFileName, treesExportFileName, type ExportRunner } from './gspro-export.service';
+import { terrainOrigin, terrainsSquare, type ArboristCourse } from './arborist.service';
 
 /** The trees package's items: the id of item `variant` follows from its name (pipeline/arborist.py tree_item). */
 export const FAR_SUFFIX = ' (far)';
@@ -630,11 +630,6 @@ async function ensurePicker(player: ArboristPlayer): Promise<void> {
 
 // ───────────────────────────── files ─────────────────────────────
 
-/** `Vreta`, inner -> `vreta-inner-tree-edits.json` (golfmap-tree-edits-v1, beside the trees export). */
-export function treeEditsFileName(courseName: string, kind: TerrainKind): string {
-    return `${courseSlug(courseName)}-${kind}-tree-edits.json`;
-}
-
 async function readEdits(file: string, trees: string): Promise<{ format: string; trees: string; edits: TreeEditRecord[] }> {
     if (!await statOrNull(file)) return { format: TREE_EDITS_FORMAT, trees, edits: [] };
     const doc = JSON.parse((await readFile(file, 'utf8')).replace(/^﻿/, ''));
@@ -648,19 +643,6 @@ async function surveyTree(file: string, id: string): Promise<{ x: number; z: num
     const doc = JSON.parse(await readFile(file, 'utf8')) as { trees: { id: string; x: number; z: number; k: number; bush?: boolean }[] };
     const t = doc.trees.find(q => q.id === id);
     return t ? { x: t.x, z: t.z, k: t.k, bush: !!t.bush } : null;
-}
-
-/** The terrain's Unity position (its heightmap sidecar's unity.position): world = local + this. */
-async function terrainOrigin(exportDir: string, slug: string, kind: TerrainKind): Promise<{ x: number; z: number }> {
-    let newest: { name: string; t: number } | null = null;
-    for (const n of await readdir(exportDir)) {
-        if (!n.startsWith(`${slug}-${kind}-dem-`) || !n.endsWith('m.tif.json')) continue;
-        const t = (await stat(path.join(exportDir, n))).mtimeMs;
-        if (!newest || t > newest.t) newest = { name: n, t };
-    }
-    if (!newest) return { x: 0, z: 0 };
-    const sidecar = JSON.parse(await readFile(path.join(exportDir, newest.name), 'utf8')) as { unity?: { position?: { x?: number; z?: number } } };
-    return { x: sidecar.unity?.position?.x ?? 0, z: sidecar.unity?.position?.z ?? 0 };
 }
 
 /** A placements file as Unity's planter writes it: the header, then one placement per line. */

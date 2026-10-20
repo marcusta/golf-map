@@ -1,0 +1,24 @@
+{
+  "format": "golfmap-vegetation-rule-defaults-v1",
+  "source": "routing",
+  "label": "Who draws each tree",
+  "script": "arborist.py route",
+  "courseFile": "vegetation-rules.json",
+  "summary": "Before planting, every tree is routed by tree id: drawn by its own model's renderer, an Arborist billboard far out, or left out. Set per course under `routing` in its vegetation-rules.json; a course without it keeps the older species-file path.",
+  "steps": [
+    "Starts from the trees export (<prefix>-inner-trees.json) with the tree edits applied first: moved, added and deleted trees are routed where they now stand.",
+    "Far rule: a tree both more than outsideOob metres outside the course boundary (the GKD's pOOB) and more than fromPlay metres from play (rough, semi, fairway, green, tee, bunker) is an Arborist billboard, whatever its model. Every tree inside the boundary is drawn by its own model's renderer.",
+    "outerKeep thins the billboards outside the boundary, by distance band: [up to metres, share kept]; which trees go follows from their position, so every run leaves the same ones out.",
+    "Writes <export>/<prefix>-inner-routing.json (golfmap-routing-v1); Unity's planter puts into the course's VSP only the vsp models routed own, and arborist.py trees draws the rest."
+  ],
+  "groups": [
+    {
+      "title": "Billboards far out",
+      "rules": [
+        { "key": "routing.farBillboard.outsideOob", "value": 40, "unit": "m", "text": "Billboard beyond this outside the course boundary (pOOB) ..." },
+        { "key": "routing.farBillboard.fromPlay", "value": 40, "unit": "m", "text": "... and beyond this from play (both must hold)." },
+        { "key": "routing.outerKeep", "value": null, "unit": "[m, share]", "text": "Share of the billboards kept outside the boundary, per distance band (null = beyond the last); none = every one kept." }
+      ]
+    }
+  ]
+}

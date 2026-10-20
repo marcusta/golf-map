@@ -51,7 +51,7 @@ test("the planting rules: every generator in stack order, each rule's default fr
     expect(rule(rules.generators[1], 'reach')?.courseSets).toBe(false);
 
     // The trees: the code's rules, the course's palette (per course only), no species file.
-    expect(rules.trees.map((s) => s.source)).toEqual(expect.arrayContaining(['tree-palette', 'arborist']));
+    expect(rules.trees.map((s) => s.source)).toEqual(expect.arrayContaining(['tree-palette', 'arborist', 'routing']));
     const palette = rules.trees.find((s) => s.source === 'tree-palette');
     expect(rule(palette, 'rules.minScale')).toMatchObject({ defaultValue: null, courseSets: true, value: 0.6 });
     expect(rule(palette, 'rules.maxScale')).toMatchObject({ courseSets: false, value: null });
@@ -59,7 +59,11 @@ test("the planting rules: every generator in stack order, each rule's default fr
     expect(rule(palette, 'seed')?.value).toBe('s1');
     const arborist = rules.trees.find((s) => s.source === 'arborist');
     expect(arborist?.courseFile).toBeNull();
-    expect(rule(arborist, 'billboardBeyondM.outsideOob')).toMatchObject({ courseSets: false, value: 40 });
+    expect(rule(arborist, 'billboardBeyondM.outsideOob')).toBeUndefined();
+    // Who draws each tree is the routing, from the course's vegetation-rules.json (which sets none of it here).
+    const routing = rules.trees.find((s) => s.source === 'routing');
+    expect(routing?.courseFile).toMatch(/linkan\/vegetation-rules\.json$/);
+    expect(rule(routing, 'routing.farBillboard.outsideOob')).toMatchObject({ courseSets: false, value: 40 });
     expect(rules.treeAssets).toEqual([{ species: 'oak', enabled: 1, total: 2 }, { species: 'conifer', enabled: 1, total: 1 }]);
     expect(rules.treeAreas).toEqual([]);
 });

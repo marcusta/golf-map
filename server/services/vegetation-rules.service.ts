@@ -144,7 +144,7 @@ async function readJson(file: string): Promise<unknown | null> {
 }
 
 /** A section's rules with the course's values: `courseValues` = the object its keys are looked up in (dotted keys walk it). */
-function section(doc: RuleDefaultsDoc & { courseFile?: string }, courseValues: unknown, courseFile: string | null): PlantingRuleSection {
+function section(doc: RuleDefaultsDoc, courseValues: unknown, courseFile: string | null): PlantingRuleSection {
     const known = new Set<string>();
     const groups = doc.groups.map((g) => ({
         title: g.title,
@@ -216,13 +216,18 @@ export class VegetationRulesService {
         if (photoDoc) trees.push(section(photoDoc, null, null));
         let palette: unknown = null;
         for (const source of ['tree-palette', 'arborist']) {
-            const doc = defaults.get(source) as (RuleDefaultsDoc & { courseFile?: string }) | undefined;
+            const doc = defaults.get(source);
             if (!doc?.courseFile) continue;
             const file = path.join(docs, doc.courseFile);
             const values = await readJson(file);
             if (source === 'tree-palette') palette = values;
             trees.push(section(doc, values, values ? rel(file) : null));
         }
+        // Who draws each tree (arborist.py route, before planting): the course's vegetation-rules.json `routing`.
+        // The whole course file is the section's values: its rule keys carry the `routing.` prefix, as the
+        // routing defaults (pipeline/vegetation-rules/routing.json) and arborist.py read them.
+        const routingDoc = defaults.get('routing');
+        if (routingDoc) trees.push(section(routingDoc, courseRules, courseRules ? rel(rulesFile) : null));
 
         const models = palette ? paletteModels(docs, palette) : [];
         const bySpecies = new Map<string, { enabled: number; total: number }>();

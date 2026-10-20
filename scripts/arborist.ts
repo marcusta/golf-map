@@ -562,6 +562,7 @@ async function main(): Promise<void> {
         const { editMain } = await import('./arborist-edit');
         return editMain(process.argv.slice(3));
     }
+    if (process.argv[2] === 'route') return routeMain(process.argv.slice(3));
     const parsed = parseArgs(process.argv.slice(2));
     if ('error' in parsed) {
         console.error(`error: ${parsed.error}\n\n${usageText()}`);
@@ -585,6 +586,32 @@ async function main(): Promise<void> {
     } catch (e) {
         console.error(`error: ${(e as Error).message}`);
         process.exit(1);
+    } finally {
+        await close();
+    }
+}
+
+/**
+ * `bun run arborist -- route <course> [--dry-run]`: the course's inner trees routed before planting by its
+ * routing rules (ArboristService.route, `arborist.py route`), one line of counts. --dry-run writes nothing.
+ * Exit 1 when it cannot route (a course without routing rules is refused by name), 2 for a bad command line.
+ */
+async function routeMain(argv: string[]): Promise<void> {
+    const dryRun = argv.includes('--dry-run');
+    const words = argv.filter((a) => a !== '--dry-run');
+    const unknown = words.find((a) => a.startsWith('--'));
+    if (unknown || words.length !== 1) {
+        console.error(`error: ${unknown ? `unknown option ${unknown}` : 'name one course'}\n\nusage: bun run arborist -- route <course> [--dry-run]`);
+        process.exit(2);
+    }
+    const { course, id, arborist, close } = await openCourse(words[0]!);
+    try {
+        console.log(`${course.name} (${id}), export folder ${course.exportDir}`);
+        const result = await arborist.route(course, { dryRun });
+        for (const line of result.report) console.log(line);
+    } catch (e) {
+        console.error(`error: ${(e as Error).message}`);
+        process.exitCode = 1;
     } finally {
         await close();
     }

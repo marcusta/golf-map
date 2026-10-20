@@ -81,6 +81,8 @@ Everything renders over one square EPSG:3006 extent (`--square-3006` verbatim fr
 
 Writes `arboristdata.dat` (GSPro-native vegetation): `trees`, `lower`, `lineup`, `post`, `decode`/`encode`. The server runs `lower` and `trees` at the end of the web's Update vegetation (`server/services/arborist.service.ts` finds every argument from the course; its test runs both for real on fixtures): keep their arguments and the first line each prints (`N item(s), M mask texture(s)`, `N trees of M Arborist species`) in step with it. Format, the working loop and the per-course species file: [docs/gspro/arborist.md](../docs/gspro/arborist.md).
 
+`route` (before planting; `bun run arborist -- route <course> [--dry-run]`, `ArboristService.route`) writes `<prefix>-inner-routing.json` (golfmap-routing-v1: each tree id `own` / `billboard` / `out`) from the trees export with the tree edits applied, by the course's vegetation-rules.json `routing` (`Routing`, `FarRule`; defaults `vegetation-rules/routing.json`); it prints `own N, billboard M, left out L` (the server parses that line). `trees --routing <file> --rules <vegetation-rules.json>` then follows it: no `"vsp"` list, no trim file. Tests `tests/acceptance/test_routing_rules.py`.
+
 ## Notes
 
 - `trees-stems` leaves out solid low objects (rocks, sheds, walls: `trees_stems.SOLID_MAX_HEIGHT_M` and the comment above it for the rule and the Vreta numbers it was set from) and writes them beside `--out` as `<out stem>-solid.geojson`: rock candidates. It needs the leaf-off ortho; `--no-kind` runs (the outer square) leave nothing out. What the detector still plants on a known rock or under a wire is dropped at export (`gspro.py trees`: `rock_slab` and `power_line` features, `--rocks`).

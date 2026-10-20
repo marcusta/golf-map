@@ -78,7 +78,7 @@ namespace GolfMap.Editor
             d["palette"] = FileInfo(GolfMapCourses.PalettePath(course));
             var exports = new Dictionary<string, object>();
             foreach (var terrain in new[] { "inner", "outer" })
-                foreach (var kind in new[] { "trees", "zones", "placements" })
+                foreach (var kind in new[] { "trees", "zones", "placements", "routing" })
                 {
                     var path = GolfMapCourses.ExportFile(course, terrain, kind);
                     if (path != null) exports[terrain + "-" + kind] = FileInfo(path);
