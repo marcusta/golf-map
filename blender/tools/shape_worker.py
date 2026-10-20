@@ -345,6 +345,12 @@ class Worker:
                     except (OSError, ValueError) as error:
                         dependency = {"missing": paths, "error": str(error)}
                     canon += json.dumps(dependency, sort_keys=True, separators=(",", ":"))
+                if op["op"] == "golfmap.paint":
+                    # The rule's export (R.A.M. roads, creeks, lake plane) lives outside the op: diff its sha too.
+                    import shape_paintop
+                    folder = (shape_paintop.course_folder(self.app.ctx) if self.app is not None
+                              else os.path.dirname(self.status.get("blend") or self.args.blend or ""))
+                    canon += json.dumps(shape_paintop.dependency(op, folder), sort_keys=True, separators=(",", ":"))
                 out.append({"key": sa.op_key(layer, op), "layer": layer, "path": path, "op": op,
                             "canon": canon})
         return out
@@ -532,10 +538,11 @@ class Worker:
         app.ctx.__dict__.pop("_sidecars", None)
         # The transition paint is keyed on these files' content, so an edit re-runs it: with the edited code.
         import importlib
-        for name in ("shape_edgefade", "shape_transition"):
+        reloaded = ["shape_edgefade", "shape_transition", "shape_paintrules", "shape_paintop"]
+        for name in reloaded:
             if name in sys.modules:
                 importlib.reload(sys.modules[name])
-        app.runner.reload_code(["shape_edgefade", "shape_transition"])  # their text is in the op cache's code keys
+        app.runner.reload_code(reloaded)  # their text is in the op cache's code keys
         new = self.op_list(self.status["layersDir"])
         d = self.diff(old, new)
         base = {"changedOps": [new[j]["key"] for j in d["changedNew"]],

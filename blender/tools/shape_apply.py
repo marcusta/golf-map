@@ -39,6 +39,7 @@ import shape_recipes as sr  # noqa: E402
 import shape_region as sreg  # noqa: E402  (region entries of the op cache)
 import shape_opkey  # noqa: E402
 import shape_creek  # noqa: E402
+import shape_paintop  # noqa: E402  (golfmap.paint: rule-based vertex paint, shape_paintrules)
 
 # This file's source as imported: the op cache's code keys (shape_opkey) are taken from the code that runs, not
 # from a file someone edits while a worker is up.
@@ -2506,7 +2507,12 @@ def plan_creek_channel(ctx, op):
     return [Unit(name, [name], None, lambda margin=0.0: set())], []
 
 
+def plan_paint(ctx, op):
+    return shape_paintop.plan_paint(ctx, op)
+
+
 PLANNERS = {
+    "golfmap.paint": plan_paint,
     "golfmap.creek_channel": plan_creek_channel,
     "golfmap.flatten_footprint": plan_flatten_footprint,
     "golfmap.split_surfaces": plan_split_surfaces,
@@ -6179,7 +6185,12 @@ def creek_channel(ctx, op):
     return run
 
 
+def op_paint(ctx, op):
+    return shape_paintop.op_paint(ctx, op)
+
+
 RUNNERS = {
+    "golfmap.paint": op_paint,
     "golfmap.creek_channel": op_creek_channel,
     "golfmap.split_surfaces": op_split_surfaces,
     "golfmap.cut_out": op_cut_out,
