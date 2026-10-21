@@ -6905,19 +6905,24 @@ def cmd_creeks(bbox, db_path: Path, course_ident: str, dem_path: Path, sidecar_p
             continue
         width = width or 2.0
         pts = np.asarray(clipped.coords)[:, :2]
+        # `ramOnLake`: water that runs through a pond's own water (hole 9's channel from pond 576 under the bridge to
+        # fall E), not down a bed of its own: drawn from the open pond downstream, level, cut at no fall. Unity puts it
+        # on the lake's water plane (GolfMapCreeks, onLake).
+        on_lake = attrs.get("ramOnLake") is True
         outline = shape.buffer(CREEK_FALL_NEAR_M) if source == "polygon" else clipped.buffer(width / 2 + CREEK_FALL_NEAR_M)
-        on_it = [(lip, sill) for lip, sill in falls if lip.intersects(outline)]
+        on_it = [] if on_lake else [(lip, sill) for lip, sill in falls if lip.intersects(outline)]
         prof = surface_profile(dem, transform, pts, width, valid=valid,
                                breaks=[list(lip.interpolate(0.5, normalized=True).coords[0]) for lip, _ in on_it])
         if prof is None:
             skipped.append(f"{label}: no DEM under it")
             continue
-        if prof.reversed:
+        if prof.reversed and not on_lake:
             pts = pts[::-1]
         control = _densify(pts, CREEK_MAX_POINT_SPACING_M)
         _, station = cKDTree(np.column_stack([prof.x, prof.y])).query(control)
-        z = np.minimum.accumulate(prof.z[station])
-        s_ctrl = prof.s[station]
+        z = np.full(len(control), float(np.min(prof.z))) if on_lake else np.minimum.accumulate(prof.z[station])
+        # The points' order is by station; on a lake that is the drawn order.
+        s_ctrl = np.concatenate([[0.0], np.cumsum(np.hypot(*np.diff(control, axis=0).T))]) if on_lake else prof.s[station]
         # One spline down the whole creek. At each fall it runs flat over the sill at the upper water, then drops
         # over the lip within CREEK_FALL_RUN_M to the lower water: R.A.M. draws a steep stretch as a cascade (its
         # profile's flowWaterfall and big-cascade texture), so the fall is the creek's own water.
@@ -6961,6 +6966,7 @@ def cmd_creeks(bbox, db_path: Path, course_ident: str, dem_path: Path, sidecar_p
             **({"water": str(attrs["ramWater"])} if attrs.get("ramWater") in ("lake", "profile") else {}),
             **({"waterMaterial": str(attrs["ramWaterMaterial"])} if attrs.get("ramWaterMaterial") else {}),
             **({"aboveBedM": float(attrs["ramAboveBedM"])} if isinstance(attrs.get("ramAboveBedM"), (int, float)) else {}),
+            **({"onLake": True} if on_lake else {}),
             **{k: float(attrs[k]) for k in ("grassBelowLeftM", "grassBelowRightM") if isinstance(attrs.get(k), (int, float))},
             "widthM": round(width, 2),
             "lengthM": round(float(prof.s[-1]), 1),

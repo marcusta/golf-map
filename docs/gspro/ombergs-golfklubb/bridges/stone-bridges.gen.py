@@ -47,8 +47,10 @@ SITES = {
                                     note="creek 575 where it enters hole 9's west pond (pale slab 5 x 3 m); not the 'bridge at hole 9's green' (sill E)"),
     # hole 9's green: the bridge over the channel from the upper pond 576 to the bay and fall E's lip just west of it
     # (Marcus 2026-10-19, photo from the west: "fallet är under bron"); deck 10.5 x 2.8 m in the 2025 ortho, N-S
-    "omberg_stone_bridge_h9e": dict(hole=9, e=477742.9, n=6457804.8, yawDeg=175.0, style="arch", length=10.0, width=2.8, height=1.0, seed=53,
-                                    opening=3.2, dz=-0.3, active=True,   # Marcus: 2 dm lower in the ground
+    # 2026-10-21 (Marcus: "ligger lite fel"): centred on the channel (its water N 6457803.0-6457807.5 at the bridge, centre
+    # 6457805.35, was 0.55 m south) and the arch widened 3.2 -> 4.5 m so the abutments stand on the banks, not in the water
+    "omberg_stone_bridge_h9e": dict(hole=9, e=477742.9, n=6457805.35, yawDeg=175.0, style="arch", length=10.0, width=2.8, height=1.0, seed=53,
+                                    opening=4.5, dz=-0.3, active=True,   # Marcus: 2 dm lower in the ground
                                     note="pond 576's channel under the bridge (E 477741-477745, N 6457803-6457808), fall E 5 m west"),
     "omberg_stone_bridge_h17": dict(hole=17, e=477672.6, n=6457220.5, yawDeg=69.0, style="arch", length=6.5, width=2.4, height=1.1, seed=41, active=True,
                                     note="replaces omberg_creek_bridge_17 (creek-bridge.json, 4.8 m on bearing 69) - Marcus 2026-10-19: the arch bridge on 17"),

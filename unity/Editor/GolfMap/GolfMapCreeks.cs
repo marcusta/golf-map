@@ -47,6 +47,11 @@
 //   wide from the last point before them (no lip, no neck, no cascade foam).
 // A side or end that never meets a bank (a creek into another creek, flat
 // ground) keeps the export's width or end and is counted "open".
+// A creek on a lake (the export's onLake: a channel of a pond's own water, no
+// bed of its own, drawn from the open pond downstream) lies level OnLakeM over
+// the lake's water plane, keeps its drawn ends and fades in over pondFadeM from
+// its upstream end only: hole 9's channel from pond 576 under the bridge to
+// fall E, where the AQUAS plane alone shows nothing but the bed.
 //
 // GSPro's water is a collider: each spline gets a MeshCollider on R.A.M.'s
 // own mesh with the GSPwater physic material. Before that, every edge vertex
@@ -99,9 +104,13 @@ namespace GolfMap.Editor
             // A creek with waterfalls (the export's `falls`): a chain of dug ponds, each holding its water, the spline
             // dropping over each lip (fallsAt, plot x/z) where R.A.M. draws the cascade.
             public bool held;
+            // The export's onLake: on the lake's water plane, not on a bed (see the header).
+            public bool onLake;
             public List<Vector2> fallsAt = new List<Vector2>();
             // The points gspro.py put over each sill and down its face (`fallPoints`, indices into points): the neck.
             public HashSet<int> fallPoints = new HashSet<int>();
+            // The same neck once fitted: indices into `points` as Fit leaves them (CloseGaps leaves these points be).
+            public HashSet<int> neckPoints;
             // The look for this creek alone (the feature's ramWater: lake|profile), else the import's.
             public string water;
             // An asset path of a material this creek alone wears (the feature's ramWaterMaterial), over `water`: Omberg's hole 17
@@ -247,8 +256,8 @@ namespace GolfMap.Editor
                 splineType.GetField("snapToTerrain").SetValue(spline, false);
                 if (profile != null) ApplyProfile(spline, splineType, profile, profileType);
                 splineType.GetMethod("GenerateSpline").Invoke(spline, new object[] { null });
-                row["gaps"] = CloseGaps(spline, splineType, fit);
-                int faded = FadeIntoLakes(spline, splineType, fit.pondFadeM);
+                row["gaps"] = CloseGaps(spline, splineType, fit, c.neckPoints ?? c.fallPoints);
+                int faded = FadeIntoLakes(spline, splineType, fit.pondFadeM, c.onLake);
                 if (faded > 0) row["lakeFadeVertices"] = faded;
                 var colliderError = WaterCollider(spline);
                 if (colliderError != null) row["colliderError"] = colliderError;
@@ -312,6 +321,7 @@ namespace GolfMap.Editor
                     id = o.String("id"), profile = o.String("profile") ?? "Small Stream Profile", source = o.String("source") ?? "",
                     widthM = (float)o.Number("widthM", 2), lengthM = (float)o.Number("lengthM"), fallM = (float)o.Number("fallM"),
                     held = o.Number("stretches", 0) > 1 || o.Number("falls", 0) > 0,
+                    onLake = o.Bool("onLake", false),
                     water = o.String("water"), waterMaterial = o.String("waterMaterial"),
                     aboveBedM = (float)o.Number("aboveBedM", float.NaN),
                     grassBelowLeftM = (float)o.Number("grassBelowLeftM", float.NaN),
@@ -611,9 +621,16 @@ namespace GolfMap.Editor
                 y[i] = float.IsNegativeInfinity(highest) ? pts[i].y
                     : c.held ? Mathf.Max(pts[i].y, highest + above) : highest + above;
             }
+            // A creek on a lake lies level over the lake's water plane, the highest one under its line.
+            if (c.onLake)
+            {
+                float lake = LakeSurface(pts);
+                if (float.IsNaN(lake)) flag(XZ(pts[0]), "onLake, but no lake's water plane under it: fitted to its bed");
+                else for (int i = 0; i < n; i++) y[i] = lake + OnLakeM;
+            }
             // At a lake end the bed is the lake's bank (a lip where the creek's and the lake's digs meet), not the creek's:
             // from the last point before it the water runs on flat, and as wide (below), into the lake.
-            var atLake = o.pondFadeM > 0 ? LakeEnds(pts) : new bool[n];
+            var atLake = o.pondFadeM > 0 && !c.onLake ? LakeEnds(pts) : new bool[n];
             for (int i = 0; i < n; i++)
             {
                 int k = NotAtLake(atLake, i);
@@ -722,18 +739,21 @@ namespace GolfMap.Editor
             float maxShift = 0;
             var widths = new List<float>();
             var fitted = new List<Vector4>();
+            var fittedNeck = new List<bool>();
             foreach (int i in line)
             {
                 float left = sides[0][i], right = sides[1][i];
                 maxShift = Mathf.Max(maxShift, Mathf.Abs(right - left) / 2f);
                 widths.Add(left + right);
                 fitted.Add(new Vector4(at[i].x, y[i], at[i].y, left + right));
+                fittedNeck.Add(neck[i]);
             }
 
             // Ends: on along the line into the bank.
             var ends = new List<object>();
             for (int e = 0; e < 2; e++)
             {
+                if (c.onLake) { ends.Add("drawn"); continue; }
                 int i = e == 0 ? 0 : fitted.Count - 1, inward = e == 0 ? 1 : fitted.Count - 2;
                 Vector2 end = XZ(fitted[i]), outward = (end - XZ(fitted[inward])).normalized;
                 float into = o.pondFadeM > 0 ? IntoLake(end, outward, o.pondFadeM) : float.NaN;
@@ -744,7 +764,7 @@ namespace GolfMap.Editor
                     if (into < 0.1f) continue;
                     var p = end + outward * into;
                     var on = new Vector4(p.x, fitted[i].y, p.y, fitted[i].w);
-                    if (e == 0) fitted.Insert(0, on); else fitted.Add(on);
+                    if (e == 0) { fitted.Insert(0, on); fittedNeck.Insert(0, false); } else { fitted.Add(on); fittedNeck.Add(false); }
                     continue;
                 }
                 int steps = Mathf.CeilToInt((fitted[i].w / 2f + o.searchM) / StepM);
@@ -755,7 +775,7 @@ namespace GolfMap.Editor
                 ends.Add((float)Math.Round(reach, 2));
                 var q = end + outward * reach;
                 var extra = new Vector4(q.x, fitted[i].y, q.y, fitted[i].w);
-                if (e == 0) fitted.Insert(0, extra); else fitted.Add(extra);
+                if (e == 0) { fitted.Insert(0, extra); fittedNeck.Insert(0, false); } else { fitted.Add(extra); fittedNeck.Add(false); }
             }
 
             var traced = new List<object>();
@@ -771,6 +791,7 @@ namespace GolfMap.Editor
                 }
             var diff = Enumerable.Range(0, n).Select(i => y[i] - pts[i].y).OrderBy(v => v).ToList();
             c.points = fitted;
+            c.neckPoints = new HashSet<int>(Enumerable.Range(0, fitted.Count).Where(i => fittedNeck[i]));
             widths.Sort();
             var result = new Dictionary<string, object>
             {
@@ -896,6 +917,20 @@ namespace GolfMap.Editor
             return !float.IsNegativeInfinity(mesh) ? mesh : !float.IsNegativeInfinity(terrain) ? terrain : float.NaN;
         }
 
+        // How far a creek on a lake lies over the lake's water plane (m): over AQUAS's surface, not in it.
+        const float OnLakeM = 0.03f;
+
+        // The highest lake water plane under any of these points (plot x, z), NaN when none is.
+        static float LakeSurface(List<Vector4> pts)
+        {
+            float top = float.NegativeInfinity;
+            foreach (var p in pts)
+                foreach (var h in Physics.RaycastAll(new Vector3(p.x, 10000f, p.z), Vector3.down, 20000f, ~0, QueryTriggerInteraction.Ignore))
+                    if (GolfMapWaterplanes.IsWaterPlane(h.collider.name) && !h.collider.name.StartsWith(NamePrefix, StringComparison.Ordinal))
+                        top = Mathf.Max(top, h.point.y);
+            return float.IsNegativeInfinity(top) ? float.NaN : top;
+        }
+
         // A creek end at a lake: a water plane within LakeGapM past the end (or under it, LakeBackM back along the line).
         const float LakeGapM = 1f, LakeBackM = 4f;
 
@@ -955,14 +990,16 @@ namespace GolfMap.Editor
         // reach the ground all round: where an edge of the water hangs over lower ground, a ball rolls under it onto the
         // bed and never touches water. CloseGaps checks every edge vertex of the built mesh, both sides of every loop and
         // both end loops: one more than GapM above the ground under it (and not over a lake, whose plane takes the ball)
-        // is a gap. The control point the loop belongs to is widened on that side (its centre moved that way by half), or
+        // is a gap. A waterfall's neck (the points over its sill and down its face) is left be: water falling hangs over the
+        // lower ground by nature, and widening the face (hole 3's fall C, 6 -> 12 m, its centre moved 2 m) folded the mesh.
+        // Elsewhere the control point a gap's loop belongs to is widened on that side (its centre moved that way by half), or
         // an end point moved on along the line, out to where the ground has risen MeetM above the water and BuryM on, and
         // the spline built again, up to CloseRounds times. A gap with no ground above the water within searchM is `open`.
         const string WaterPhysics = "Assets/Resources/Physics/GSPwater.physicMaterial";
         const float GapM = 0.02f, MeetM = 0.02f, BuryM = 0.2f, ReachStepM = 0.1f;
         const int CloseRounds = 4;
 
-        static Dictionary<string, object> CloseGaps(Component spline, Type splineType, FitOptions o)
+        static Dictionary<string, object> CloseGaps(Component spline, Type splineType, FitOptions o, HashSet<int> neck)
         {
             var go = spline.gameObject;
             var field = splineType.GetField("controlPoints");
@@ -1009,6 +1046,7 @@ namespace GolfMap.Editor
                 {
                     int i = 0;
                     for (int k = 1; k < n; k++) if ((XZ(pts[k]) - centre[l]).sqrMagnitude < (XZ(pts[i]) - centre[l]).sqrMagnitude) i = k;
+                    if (neck.Contains(i)) continue;
                     var right = Right(pts, i);
                     foreach (int j in new[] { 0, per - 1 })
                     {
@@ -1101,9 +1139,10 @@ namespace GolfMap.Editor
 
         // The water's opacity, R.A.M.'s vertex colour alpha (its vertex colour water shaders multiply their alpha by it): 1 off
         // the lakes, easing to 0 fadeM inside a lake's shore, so a creek running into a pond melts into the pond's own water.
+        // A creek on a lake (onLake) lies wholly over one: it eases in from 0 at its upstream end to 1 fadeM along it instead.
         // Every vertex is set (R.A.M. keeps the colours of a spline whose vertex count is unchanged), the spline regenerated
         // with them. The number of vertices made see-through at all.
-        static int FadeIntoLakes(Component spline, Type splineType, float fadeM)
+        static int FadeIntoLakes(Component spline, Type splineType, float fadeM, bool onLake)
         {
             var filter = spline.GetComponent<MeshFilter>();
             var mesh = filter != null ? filter.sharedMesh : null;
@@ -1127,9 +1166,11 @@ namespace GolfMap.Editor
                     centre[l] = new Vector2(sum.x / per, sum.z / per);
                     if (l > 0) cum[l] = cum[l - 1] + Vector2.Distance(centre[l - 1], centre[l]);
                 }
-                var over = centre.Select(OverLake).ToArray();
+                var over = onLake ? new bool[loops] : centre.Select(OverLake).ToArray();
                 int first = Array.IndexOf(over, false), last = Array.LastIndexOf(over, false);
-                if (first >= 0)
+                if (onLake)
+                    for (int l = 0; l < loops; l++) along[l] = Mathf.Max(0f, fadeM - cum[l]);
+                else if (first >= 0)
                     for (int l = 0; l < loops; l++)
                         along[l] = l < first ? cum[first] - cum[l] : l > last ? cum[l] - cum[last] : 0;
             }
@@ -1138,7 +1179,7 @@ namespace GolfMap.Editor
             for (int i = 0; i < vertices.Length; i++)
             {
                 var w = spline.transform.TransformPoint(vertices[i]);
-                float depth = LakeDepth(new Vector2(w.x, w.z), fadeM);
+                float depth = onLake ? 0f : LakeDepth(new Vector2(w.x, w.z), fadeM);
                 if (loops > 0) depth = Mathf.Max(depth, along[i / per]);
                 float a = fadeM > 0 ? 1f - Mathf.SmoothStep(0f, 1f, Mathf.Min(depth, fadeM) / fadeM) : 1f;
                 if (a < 1f) faded++;

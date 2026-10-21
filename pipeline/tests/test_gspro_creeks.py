@@ -165,3 +165,29 @@ def test_a_fountain_or_a_cascade_on_a_creek_is_no_fall(tmp_path):
     creek = {c["id"]: c for c in json.loads(out.read_text())["creeks"]}["feature:k2"]
     assert creek.get("falls") is None and creek.get("fallsAt") is None
     assert len({round(p[3], 2) for p in creek["points"]}) == 1          # no neck anywhere
+
+
+def test_a_creek_on_a_lake_runs_level_as_drawn_and_is_cut_at_no_fall(tmp_path):
+    # ramOnLake: hole 9's channel through pond 576 to fall E - drawn from the pond downstream, here uphill on the DEM.
+    dem = _dem(tmp_path / "dem.tif")
+    db = _db(tmp_path / "app.sqlite")
+    conn = sqlite3.connect(db)
+    conn.execute("UPDATE course_features SET attributes_json = ? WHERE id = 'k1'", (json.dumps({"ramOnLake": True}),))
+    lip = {"crs": "EPSG:3006", "rings": [], "centerline": {
+        "points": [{"x": E0 + 100, "y": N0 + 97.5}, {"x": E0 + 100, "y": N0 + 102.5}], "widthM": 2}}
+    conn.execute("INSERT INTO course_features VALUES ('w1', 'c1', NULL, 'waterfall', ?, 3, ?)",
+                 (json.dumps(lip), json.dumps({"style": "sill", "sillM": 1})))
+    conn.commit()
+    conn.close()
+    sidecar = tmp_path / "inner.tif.json"
+    sidecar.write_text(json.dumps({"terrain": "inner", "square3006": list(EXTENT), "minM": MIN_M, "maxM": 30.0}))
+    out = tmp_path / "creeks.json"
+
+    gspro.cmd_creeks(None, db, "c1", dem, sidecar, out, extent=EXTENT)
+
+    creek = {c["id"]: c for c in json.loads(out.read_text())["creeks"]}["feature:k1"]
+    pts = np.array(creek["points"])
+    assert creek["onLake"] is True
+    assert pts[0, 0] > pts[-1, 0]                                      # as drawn (east first), not turned
+    assert np.ptp(pts[:, 1]) == 0                                      # level
+    assert creek.get("falls") is None                                  # the lip on it cuts nothing
