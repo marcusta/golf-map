@@ -49,9 +49,9 @@
 // ground) keeps the export's width or end and is counted "open".
 // A creek on a lake (the export's onLake: a channel of a pond's own water, no
 // bed of its own, drawn from the open pond downstream) lies level OnLakeM over
-// the lake's water plane, keeps its drawn ends and fades in over pondFadeM from
-// its upstream end only: hole 9's channel from pond 576 under the bridge to
-// fall E, where the AQUAS plane alone shows nothing but the bed.
+// the lake's water plane, no wider than drawn, keeps its drawn ends and fades
+// in over pondFadeM from its upstream end only: hole 9's channel from pond 576
+// under the bridge to fall E, where the AQUAS plane alone shows only the bed.
 //
 // GSPro's water is a collider: each spline gets a MeshCollider on R.A.M.'s
 // own mesh with the GSPwater physic material. Before that, every edge vertex
@@ -668,6 +668,8 @@ namespace GolfMap.Editor
             {
                 crossed[i] = stations.Any(st => st.owner == i && st.crossing) && !stations.Any(st => st.owner == i && !st.crossing && !float.IsNaN(st.bed));
                 for (int side = 0; side < 2; side++) half[i, side] = found[i, side] ? extent[i, side] : pts[i].w / 2f;
+                // On a lake the drawn width is the most: the lake's own water lies beyond it.
+                if (c.onLake) for (int side = 0; side < 2; side++) half[i, side] = Mathf.Min(half[i, side], pts[i].w / 2f);
                 if (crossed[i] || atLake[i]) continue;
                 if (!found[i, 0]) openSides++;
                 if (!found[i, 1]) openSides++;
