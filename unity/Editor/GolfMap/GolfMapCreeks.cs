@@ -193,6 +193,7 @@ namespace GolfMap.Editor
             var imported = new List<GameObject>();
             var perCreek = new Dictionary<GameObject, string>();
             var ownMaterial = new Dictionary<GameObject, string>();
+            var onLakeAt = new Dictionary<GameObject, Vector3>();
             int created = 0, updated = 0;
 
             if (!dryRun)
@@ -269,6 +270,7 @@ namespace GolfMap.Editor
                 imported.Add(go);
                 if (c.water == "lake" || c.water == "profile") perCreek[go] = c.water;
                 if (!string.IsNullOrEmpty(c.waterMaterial)) ownMaterial[go] = c.waterMaterial;
+                if (c.onLake) onLakeAt[go] = new Vector3(c.points[0].x, c.points[0].y, c.points[0].z);
             }
 
             // Creeks no longer in the export (not when only some were refitted).
@@ -277,7 +279,7 @@ namespace GolfMap.Editor
             Dictionary<string, object> water = null;
             if (!dryRun)
             {
-                water = Wear(imported, fit.water, course, splineType, profileType, perCreek, ownMaterial);
+                water = Wear(imported, fit.water, course, splineType, profileType, perCreek, ownMaterial, onLakeAt);
                 foreach (var go in existing.Values) Undo.DestroyObjectImmediate(go);
                 Undo.CollapseUndoOperations(undoGroup);
                 EditorSceneManager.MarkSceneDirty(scene);
@@ -405,10 +407,14 @@ namespace GolfMap.Editor
         // material, reflecting the nearest lake's probe) or each spline's profile
         // material. The parts R.A.M. splits a long spline into follow the parent.
         static Dictionary<string, object> Wear(List<GameObject> creeks, string water, GolfMapCourse course, Type splineType, Type profileType,
-            Dictionary<GameObject, string> perCreek = null, Dictionary<GameObject, string> ownMaterial = null)
+            Dictionary<GameObject, string> perCreek = null, Dictionary<GameObject, string> ownMaterial = null,
+            Dictionary<GameObject, Vector3> onLakeAt = null)
         {
             perCreek = perCreek ?? new Dictionary<GameObject, string>();
             ownMaterial = ownMaterial ?? new Dictionary<GameObject, string>();
+            // A creek on a lake (onLake: where its line starts) reflects that lake's probe whatever it wears, like the
+            // lake round it: R.A.M.'s water reflecting the sky stood pale blue against hole 9's dark pond 576.
+            onLakeAt = onLakeAt ?? new Dictionary<GameObject, Vector3>();
             Func<GameObject, string> waterOf = go => { string w; return perCreek.TryGetValue(go, out w) ? w : water; };
             var result = new Dictionary<string, object> { { "water", water }, { "creeks", creeks.Count } };
             if (perCreek.Count > 0) result["ownWater"] = perCreek.ToDictionary(kv => kv.Key.name, kv => (object)kv.Value);
@@ -425,6 +431,9 @@ namespace GolfMap.Editor
                 }
                 result["material"] = AssetDatabase.GetAssetPath(lake);
                 if (made != null) result["madeFrom"] = made;
+            }
+            if (lake != null || onLakeAt.Count > 0)
+            {
                 probes = UnityEngine.Object.FindObjectsOfType<ReflectionProbe>()
                     .Where(p => p.transform.parent != null && GolfMapWaterplanes.IsWaterPlane(p.transform.parent.name) && p.gameObject.activeInHierarchy)
                     .ToList();
@@ -450,7 +459,10 @@ namespace GolfMap.Editor
                     else result["missingWaterMaterial"] = ownPath;
                 }
                 var centre = go.GetComponent<Renderer>() != null ? go.GetComponent<Renderer>().bounds.center : go.transform.position;
-                var probe = probes.OrderBy(p => (p.transform.position - centre).sqrMagnitude).FirstOrDefault();
+                Vector3 at;
+                bool onLake = onLakeAt.TryGetValue(go, out at);
+                if (onLake) centre = at;
+                var probe = waterOf(go) == "lake" || onLake ? probes.OrderBy(p => (p.transform.position - centre).sqrMagnitude).FirstOrDefault() : null;
                 if (probe != null)
                 {
                     var key = probe.transform.parent.name;
@@ -467,7 +479,7 @@ namespace GolfMap.Editor
                     r.probeAnchor = probe != null ? probe.transform : null;
                 }
             }
-            if (lake != null) result["probeFrom"] = anchors.ToDictionary(kv => kv.Key, kv => (object)kv.Value);
+            if (anchors.Count > 0) result["probeFrom"] = anchors.ToDictionary(kv => kv.Key, kv => (object)kv.Value);
             return result;
         }
 
@@ -924,7 +936,7 @@ namespace GolfMap.Editor
         }
 
         // How far a creek on a lake lies over the lake's water plane (m): over AQUAS's surface, not in it.
-        const float OnLakeM = 0.03f, OnLakeSideFadeM = 1.2f;
+        const float OnLakeM = 0.03f, OnLakeSideFadeM = 0.5f;
         const int OnLakeVertsInShape = 9;
 
         // The highest lake water plane under any of these points (plot x, z), NaN when none is.
@@ -1201,6 +1213,9 @@ namespace GolfMap.Editor
                 }
                 if (a < 1f) faded++;
                 if (colors[i].a != a) { colors[i].a = a; changed = true; }
+                // No cascade on a lake: R.A.M.'s vertex colour r/g/b blend in its cascade water, and a spline whose vertex
+                // count changed came back white (streaks of cascade down hole 9's whole channel).
+                if (onLake && (colors[i].r != 0 || colors[i].g != 0 || colors[i].b != 0)) { colors[i].r = colors[i].g = colors[i].b = 0; changed = true; }
             }
             if (!changed) return faded;
             field.SetValue(spline, colors);

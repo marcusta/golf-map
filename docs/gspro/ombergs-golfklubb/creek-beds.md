@@ -70,3 +70,11 @@ edge, and the black (red 0) grows none.
 ponds' own copy of the lake material (`Assets/GolfMap/Omberg/Ponds/OPCD MAHS Water Base Lake_Sat (pond 17).mat`, the other lakes keep theirs) draws the nearest
 rough's red channel (copyFromRough), the same grass as the bank, with green and blue 10 % darker (scaleGreen/scaleBlue 0.9). A steeper bank (the dig's
 `digBankSlopeDeg`, shelf) would shorten the shelf itself but needs a terrain bake and the Blender replay: not done.
+
+**Hole 9's channel creek on pond 576** (2026-10-21, feature `92416ac5`, `ramOnLake`, `dig: false`, 6.8 m drawn): R.A.M. water through the
+channel under the stone bridge to fall E, lying 3 cm over the pond's AQUAS plane (which alone renders see-through there from above).
+It wears its own copy, `Creek water (hole 9 channel).mat`, tuned to the pond as rendered (pond 43/39/50, creek 42/39/55 from fall E's
+side): `_ShalowFalloff` -4 (opaque: the profile's -0.1 showed the sandy bed through 1.4 m of water), `_DeepColor` 0.02/0.012/0.02,
+`_ShalowColor` 0.032/0.022/0.032, `_WaterSmoothness` 0.75, `_WaterSpecularClose`/`Far` 0.06; the import anchors an onLake creek to its
+lake's reflection probe, so it reflects the pond's surroundings, not the sky. Wider than about 7 m the profile draws cascade streaks
+down it: keep the drawn width at the bay's.
