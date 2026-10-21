@@ -7027,6 +7027,20 @@
     }
    ]
   },
+  "oob_stake": {
+   "category": "prop",
+   "collider": "box",
+   "parts": [
+    {
+     "kind": "marker_post",
+     "height": 1.3,
+     "size": 0.15,
+     "bands": [
+      "post_white_wood"
+     ]
+    }
+   ]
+  },
   "car_hatch_white": {
    "prefab": "Assets/GolfMap/Vreta/Props/VehiclesLowPoly/Hatchback White.prefab",
    "axis": "z",
@@ -20510,6 +20524,370 @@
    "e": 529676.96,
    "n": 6488550.12,
    "yawDeg": 237.0,
+   "ground": "centre"
+  },
+  {
+   "asset": "oob_stake",
+   "e": 529888.75,
+   "n": 6488228.45,
+   "yawDeg": 229.68,
+   "ground": "centre"
+  },
+  {
+   "asset": "oob_stake",
+   "e": 529876.29,
+   "n": 6488207.94,
+   "yawDeg": 181.26,
+   "ground": "centre"
+  },
+  {
+   "asset": "oob_stake",
+   "e": 529881.06,
+   "n": 6488183.78,
+   "yawDeg": 164.47,
+   "ground": "centre"
+  },
+  {
+   "asset": "oob_stake",
+   "e": 529888.03,
+   "n": 6488160.08,
+   "yawDeg": 163.19,
+   "ground": "centre"
+  },
+  {
+   "asset": "oob_stake",
+   "e": 529895.33,
+   "n": 6488136.47,
+   "yawDeg": 162.21,
+   "ground": "centre"
+  },
+  {
+   "asset": "oob_stake",
+   "e": 529903.25,
+   "n": 6488113.08,
+   "yawDeg": 159.95,
+   "ground": "centre"
+  },
+  {
+   "asset": "oob_stake",
+   "e": 529912.3,
+   "n": 6488090.09,
+   "yawDeg": 157.14,
+   "ground": "centre"
+  },
+  {
+   "asset": "oob_stake",
+   "e": 529922.15,
+   "n": 6488067.44,
+   "yawDeg": 156.39,
+   "ground": "centre"
+  },
+  {
+   "asset": "oob_stake",
+   "e": 529931.65,
+   "n": 6488044.63,
+   "yawDeg": 159.25,
+   "ground": "centre"
+  },
+  {
+   "asset": "oob_stake",
+   "e": 529937.82,
+   "n": 6488020.8,
+   "yawDeg": 175.8,
+   "ground": "centre"
+  },
+  {
+   "asset": "oob_stake",
+   "e": 529933.71,
+   "n": 6487996.62,
+   "yawDeg": 198.93,
+   "ground": "centre"
+  },
+  {
+   "asset": "oob_stake",
+   "e": 529924.2,
+   "n": 6487973.83,
+   "yawDeg": 204.81,
+   "ground": "centre"
+  },
+  {
+   "asset": "oob_stake",
+   "e": 529913.8,
+   "n": 6487951.43,
+   "yawDeg": 204.23,
+   "ground": "centre"
+  },
+  {
+   "asset": "oob_stake",
+   "e": 529904.36,
+   "n": 6487928.6,
+   "yawDeg": 201.12,
+   "ground": "centre"
+  },
+  {
+   "asset": "oob_stake",
+   "e": 529895.97,
+   "n": 6487905.36,
+   "yawDeg": 197.78,
+   "ground": "centre"
+  },
+  {
+   "asset": "oob_stake",
+   "e": 529892.26,
+   "n": 6487881.07,
+   "yawDeg": 178.51,
+   "ground": "centre"
+  },
+  {
+   "asset": "oob_stake",
+   "e": 529898.49,
+   "n": 6487857.41,
+   "yawDeg": 151.14,
+   "ground": "centre"
+  },
+  {
+   "asset": "oob_stake",
+   "e": 529914.66,
+   "n": 6487838.9,
+   "yawDeg": 130.89,
+   "ground": "centre"
+  },
+  {
+   "asset": "oob_stake",
+   "e": 529933.98,
+   "n": 6487823.51,
+   "yawDeg": 126.59,
+   "ground": "centre"
+  },
+  {
+   "asset": "oob_stake",
+   "e": 529955.42,
+   "n": 6487811.51,
+   "yawDeg": 105.54,
+   "ground": "centre"
+  },
+  {
+   "asset": "oob_stake",
+   "e": 529979.95,
+   "n": 6487810.83,
+   "yawDeg": 84.11,
+   "ground": "centre"
+  },
+  {
+   "asset": "oob_stake",
+   "e": 530004.49,
+   "n": 6487813.7,
+   "yawDeg": 84.09,
+   "ground": "centre"
+  },
+  {
+   "asset": "oob_stake",
+   "e": 530029.15,
+   "n": 6487814.96,
+   "yawDeg": 91.13,
+   "ground": "centre"
+  },
+  {
+   "asset": "oob_stake",
+   "e": 530053.8,
+   "n": 6487813.38,
+   "yawDeg": 94.55,
+   "ground": "centre"
+  },
+  {
+   "asset": "oob_stake",
+   "e": 530078.97,
+   "n": 6487778.17,
+   "yawDeg": 158.78,
+   "ground": "centre"
+  },
+  {
+   "asset": "oob_stake",
+   "e": 530090.22,
+   "n": 6487758.54,
+   "yawDeg": 142.72,
+   "ground": "centre"
+  },
+  {
+   "asset": "oob_stake",
+   "e": 530106.53,
+   "n": 6487737.4,
+   "yawDeg": 142.72,
+   "ground": "centre"
+  },
+  {
+   "asset": "oob_stake",
+   "e": 530120.53,
+   "n": 6487717.07,
+   "yawDeg": 150.32,
+   "ground": "centre"
+  },
+  {
+   "asset": "oob_stake",
+   "e": 530127.91,
+   "n": 6487693.67,
+   "yawDeg": 172.05,
+   "ground": "centre"
+  },
+  {
+   "asset": "oob_stake",
+   "e": 529901.2,
+   "n": 6487201.51,
+   "yawDeg": 249.88,
+   "ground": "centre"
+  },
+  {
+   "asset": "oob_stake",
+   "e": 529877.35,
+   "n": 6487204.04,
+   "yawDeg": 288.36,
+   "ground": "centre"
+  },
+  {
+   "asset": "oob_stake",
+   "e": 529854.91,
+   "n": 6487213.9,
+   "yawDeg": 299.15,
+   "ground": "centre"
+  },
+  {
+   "asset": "oob_stake",
+   "e": 529834.43,
+   "n": 6487227.38,
+   "yawDeg": 307.52,
+   "ground": "centre"
+  },
+  {
+   "asset": "oob_stake",
+   "e": 529815.72,
+   "n": 6487243.25,
+   "yawDeg": 312.81,
+   "ground": "centre"
+  },
+  {
+   "asset": "oob_stake",
+   "e": 529798.24,
+   "n": 6487260.48,
+   "yawDeg": 315.98,
+   "ground": "centre"
+  },
+  {
+   "asset": "oob_stake",
+   "e": 529781.44,
+   "n": 6487278.37,
+   "yawDeg": 317.54,
+   "ground": "centre"
+  },
+  {
+   "asset": "oob_stake",
+   "e": 529765.01,
+   "n": 6487296.6,
+   "yawDeg": 318.51,
+   "ground": "centre"
+  },
+  {
+   "asset": "oob_stake",
+   "e": 529748.98,
+   "n": 6487315.18,
+   "yawDeg": 319.91,
+   "ground": "centre"
+  },
+  {
+   "asset": "oob_stake",
+   "e": 529733.39,
+   "n": 6487334.13,
+   "yawDeg": 321.02,
+   "ground": "centre"
+  },
+  {
+   "asset": "oob_stake",
+   "e": 529717.97,
+   "n": 6487353.23,
+   "yawDeg": 320.47,
+   "ground": "centre"
+  },
+  {
+   "asset": "oob_stake",
+   "e": 529700.8,
+   "n": 6487370.7,
+   "yawDeg": 309.82,
+   "ground": "centre"
+  },
+  {
+   "asset": "oob_stake",
+   "e": 529681.08,
+   "n": 6487385.3,
+   "yawDeg": 304.93,
+   "ground": "centre"
+  },
+  {
+   "asset": "oob_stake",
+   "e": 529661.03,
+   "n": 6487399.45,
+   "yawDeg": 305.54,
+   "ground": "centre"
+  },
+  {
+   "asset": "oob_stake",
+   "e": 529640.88,
+   "n": 6487413.47,
+   "yawDeg": 302.2,
+   "ground": "centre"
+  },
+  {
+   "asset": "oob_stake",
+   "e": 529624.84,
+   "n": 6487431.33,
+   "yawDeg": 331.05,
+   "ground": "centre"
+  },
+  {
+   "asset": "oob_stake",
+   "e": 529607.37,
+   "n": 6487448.13,
+   "yawDeg": 301.73,
+   "ground": "centre"
+  },
+  {
+   "asset": "oob_stake",
+   "e": 529587.38,
+   "n": 6487462.26,
+   "yawDeg": 312.96,
+   "ground": "centre"
+  },
+  {
+   "asset": "oob_stake",
+   "e": 529570.44,
+   "n": 6487480.0,
+   "yawDeg": 316.4,
+   "ground": "centre"
+  },
+  {
+   "asset": "oob_stake",
+   "e": 529552.73,
+   "n": 6487496.99,
+   "yawDeg": 311.56,
+   "ground": "centre"
+  },
+  {
+   "asset": "oob_stake",
+   "e": 529534.08,
+   "n": 6487512.94,
+   "yawDeg": 310.79,
+   "ground": "centre"
+  },
+  {
+   "asset": "oob_stake",
+   "e": 529515.99,
+   "n": 6487529.53,
+   "yawDeg": 313.25,
+   "ground": "centre"
+  },
+  {
+   "asset": "oob_stake",
+   "e": 529497.85,
+   "n": 6487546.05,
+   "yawDeg": 312.6,
    "ground": "centre"
   },
   {

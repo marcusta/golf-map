@@ -611,6 +611,8 @@ MATERIALS = {
     # railway sleepers for the steps, off-white hemp rope. One board per tile: the planks are geometry.
     "wood_deck_grey": ("boards:86,82,75:v:1.0:1.0:2", (1.0, 1.0), None, 0.1, 0.0),
     "wood_post_brown": ("boards:68,50,42:v:1.0:1.0:2", (1.0, 1.0), None, 0.15, 0.0),
+    # white-painted wood: the out-of-bounds stakes (grain, no seams; ~sRGB 176 like paint_white so it does not glow)
+    "post_white_wood": ("boards:178,178,172:v:1.0:1.0:2", (1.0, 1.0), None, 0.2, 0.0),
     "wood_sleeper": ("boards:74,69,62:v:1.0:1.0:2", (1.0, 1.0), None, 0.05, 0.0),
     "rope_hemp": (None, (1, 1), (124, 120, 110), 0.05, 0.0),
     "rubber_black": (None, (1, 1), (18, 18, 18), 0.3, 0.0),

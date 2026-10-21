@@ -659,6 +659,85 @@ place("jetty", *JETTY, ground="centre")
 BRIDGES.append(("jetty", *world(7.55, 0.0, *JETTY), JETTY[2], 15.1, 4.2))
 
 # ---------------------------------------------------------------------------------------------
+# Out-of-bounds stakes (Marcus 2026-10-21): big white wooden posts every ~25 m along the OOB line left of
+# holes 8, 9 and 15 - 1.3 m high, 0.15 m square. Stood on the app's `oob` feature (its closed B-spline), so
+# they follow the line when it is redrawn. Each stretch runs along the ring from the point nearest its first
+# end to the point nearest its second, the short way round: E of the 8th from tee level, down the ditch on
+# the 9th to behind its green (one stretch, 8 and 9 share it), and the forest edge W of the 15th from behind
+# its tee to the 16th tee. A stake that lands in water or on a path slides along the line until it is clear.
+# ---------------------------------------------------------------------------------------------
+OOB_STRETCHES = (((-111.2, 1228.5), (127.8, 694.2)),   # holes 8 + 9
+                 ((-98.8, 201.5), (-502.1, 546.1)))     # hole 15
+OOB_SPACING = 25.0
+
+
+def oob_ring():
+    """The `oob` feature's ring relative to E0/N0, the closed uniform cubic B-spline (shared/geo/bezier.ts) sampled finely."""
+    import sqlite3
+    db = sqlite3.connect(os.path.join(HERE, "..", "..", "..", "data", "app.sqlite"))
+    rows = db.execute("select type, geometry_json from course_features where course_id = ? and type in ('oob', 'water', 'water_creek', 'path')",
+                      ("88E5F5B7-B1E6-4EBA-9D47-49B289C59EAE",)).fetchall()
+    db.close()
+    ring, keep_out = None, []
+    for kind, gj in rows:
+        for r in json.loads(gj).get("rings", []):
+            pts = [(p["x"] - E0, p["y"] - N0) for p in r["points"]]
+            if kind != "oob":
+                keep_out.append(pts)
+                continue
+            ctrl = [q for p, q in zip(r["points"], pts) for _ in range(3 if p.get("corner") else 1)]
+            ring = []
+            for i in range(len(ctrl)):
+                c0, c1, c2, c3 = (ctrl[(i + k) % len(ctrl)] for k in range(4))
+                for j in range(20):
+                    t = j / 20
+                    w = ((1 - t) ** 3 / 6, (3 * t ** 3 - 6 * t ** 2 + 4) / 6, (-3 * t ** 3 + 3 * t ** 2 + 3 * t + 1) / 6, t ** 3 / 6)
+                    ring.append((sum(wk * c[0] for wk, c in zip(w, (c0, c1, c2, c3))), sum(wk * c[1] for wk, c in zip(w, (c0, c1, c2, c3)))))
+    return ring, keep_out
+
+
+def inside(pt, poly):
+    x, y = pt
+    hit = False
+    for (x0, y0), (x1, y1) in zip(poly, poly[1:] + poly[:1]):
+        if (y0 > y) != (y1 > y) and x < x0 + (y - y0) * (x1 - x0) / (y1 - y0):
+            hit = not hit
+    return hit
+
+
+assets["oob_stake"] = {"category": "prop", "collider": "box", "parts": [
+    {"kind": "marker_post", "height": 1.3, "size": 0.15, "bands": ["post_white_wood"]}]}
+_ring, _keep_out = oob_ring()
+if _ring:
+    for a, b in OOB_STRETCHES:
+        ia = min(range(len(_ring)), key=lambda i: math.dist(_ring[i], a))
+        ib = min(range(len(_ring)), key=lambda i: math.dist(_ring[i], b))
+        fwd = [_ring[(ia + k) % len(_ring)] for k in range((ib - ia) % len(_ring) + 1)]
+        back = [_ring[(ia - k) % len(_ring)] for k in range((ia - ib) % len(_ring) + 1)]
+        line = min(fwd, back, key=lambda l: sum(math.dist(p, q) for p, q in zip(l, l[1:])))
+        s = [0.0]
+        for p, q in zip(line, line[1:]):
+            s.append(s[-1] + math.dist(p, q))
+
+        def at(d):
+            d = min(max(d, 0.0), s[-1])
+            i = max(1, next((k for k, v in enumerate(s) if v >= d), len(s) - 1))
+            p, q = line[i - 1], line[i]
+            u = (d - s[i - 1]) / max(s[i] - s[i - 1], 1e-9)
+            return (p[0] + (q[0] - p[0]) * u, p[1] + (q[1] - p[1]) * u), math.degrees(math.atan2(q[0] - p[0], q[1] - p[1]))
+
+        n = max(1, round(s[-1] / OOB_SPACING))
+        for k in range(n + 1):
+            d0 = s[-1] * k / n
+            for nudge in (0.0, 1.0, -1.0, 2.0, -2.0, 3.0, -3.0, 4.0, -4.0, 5.0, -5.0):
+                (e, nn), yaw = at(d0 + nudge)
+                if not any(inside((e + de, nn + dn), poly) for poly in _keep_out for de, dn in ((0, 0), (0.4, 0), (-0.4, 0), (0, 0.4), (0, -0.4))):
+                    place("oob_stake", round(e, 2), round(nn, 2), yaw, ground="centre")
+                    break
+            else:
+                print("oob stake at %.0f m of the stretch from (%.1f, %.1f) left out: water or path for 5 m either way" % (d0, *a))
+
+# ---------------------------------------------------------------------------------------------
 # Parked cars (clubhouse-cars.json: stall rows tuned on the 2025 ortho, occupancy + colour).
 # ---------------------------------------------------------------------------------------------
 # Two realistic models from the course project's vehicle pack (Standard shader, +z forward): a 5-door
