@@ -2739,6 +2739,65 @@
         }
       ],
       "comment": "Submerged leafy grass on Omberg's hole 13 pond bed (2026-10-19): cards at most 0.9 x 1.0 x 1.1 = 0.9 m, the zone is the ortho's weed mat 2.6 m in from the outline, where the flat bed lies 1.2-1.35 m under the water, so the tops stay 0.3-0.45 m below the surface. Tints are light because the water is nearly opaque and dark."
+    },
+    {
+      "key": "rough_tall/pond_reed",
+      "package": "GolfMap lower vegetation",
+      "tintAreaScale": 20,
+      "plantDistance": 300,
+      "distanceFalloff": 0.15,
+      "lodFactor": 5,
+      "items": [
+        {
+          "name": "Pond reed - upright blades",
+          "model": "vsp:texture:Dune Grass_02",
+          "width": 0.6,
+          "height": 0.95,
+          "minScale": 0.8,
+          "maxScale": 1.15,
+          "sampleDistance": 0.32,
+          "noiseDensityScale": 0,
+          "maxDensity": 1,
+          "maxSteepness": 80,
+          "lodFactor": 40,
+          "noiseScaleMin": 0.8,
+          "noiseScaleMax": 1.15,
+          "noiseScaleScale": 5
+        },
+        {
+          "name": "Pond reed - broad leaves",
+          "model": "vsp:texture:010",
+          "width": 0.55,
+          "height": 1.0,
+          "minScale": 0.75,
+          "maxScale": 1.1,
+          "sampleDistance": 0.7,
+          "noiseDensityScale": 7,
+          "maxDensity": 1,
+          "maxSteepness": 80,
+          "lodFactor": 40,
+          "noiseScaleMin": 0.8,
+          "noiseScaleMax": 1.15,
+          "noiseScaleScale": 7
+        },
+        {
+          "name": "Pond reed - fine blades",
+          "model": "vsp:texture:Dune Grass_04",
+          "width": 0.55,
+          "height": 0.85,
+          "minScale": 0.8,
+          "maxScale": 1.1,
+          "sampleDistance": 0.6,
+          "noiseDensityScale": 9,
+          "maxDensity": 1,
+          "maxSteepness": 80,
+          "lodFactor": 40,
+          "noiseScaleMin": 0.8,
+          "noiseScaleMax": 1.1,
+          "noiseScaleScale": 9
+        }
+      ],
+      "comment": "Small, low reed clumps standing in shallow pond water (Omberg pond 576, 2026-10-21, Marcus: \"små vass-ruggar här och där, inte jättehöga\"): the creek reeds' models (same look) on narrower, shorter cards, 0.7-1.1 m, so in the dig's 0.15-0.4 m shelf water 0.3-0.7 m stands above the surface. Hand-drawn zones 1-1.8 m along the shore, 0.2-0.5 m in."
     }
   ]
 }
