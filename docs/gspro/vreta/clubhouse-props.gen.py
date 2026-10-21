@@ -272,6 +272,22 @@ assets["course_toilet"] = {"category": "building", "parts": [  # local +y SE (do
 place("course_toilet", -220.12, 551.97, 225.0, dz=-0.075)  # set by hand in Unity 2026-10-11 (ortho fit: -221.25, 551.6, 223)
 
 # ---------------------------------------------------------------------------------------------
+# Pump house at the S tip of the pond by the 10th green, where the gravel path ends (Marcus 2026-10-21:
+# small red wooden house, white corners). 2023 leaf-off ortho roof 7.7 x 3.9 m, centre (-226.4, 1281.8),
+# ridge along 141 deg, dark grey roof; lidar (roofs.tif) ridge 3.3 m, eaves ~2.4 m. No photo: door on the
+# SE gable facing the path, a small window on the pond side.
+# ---------------------------------------------------------------------------------------------
+assets["pump_house"] = {"category": "building", "parts": [  # local +x SE (path, door gable), +y NE (pond)
+    {"kind": "building", "length": 7.1, "width": 3.3, "wall": "falu_red_vertical", "trim": "white_trim",
+     "cornerBoard": 0.15, "plinth": {"h": 0.2, "mat": "concrete"},
+     "roof": {"type": "gable", "eave": 2.3, "ridge": 3.25, "overhang": 0.3, "gableOverhang": 0.3, "mat": "roof_metal_charcoal"},
+     "openings": [{"side": "+x", "at": 0.0, "w": 1.0, "h": 1.95, "sill": 0.2, "kind": "door", "mat": "door_red", "lamp": False},
+                  win("+y", 1.2, 0.8, 0.6, 1.3, bars=[1, 1])]},
+    {"kind": "box", "c": (3.75, 0.0, 0.07), "s": (0.4, 1.2, 0.15), "mat": "concrete"},
+]}
+place("pump_house", -226.4, 1281.8, 141.0)
+
+# ---------------------------------------------------------------------------------------------
 # Driving range house (OSM 7222): photos 12, 124. Mono roof falling from 6.3 m (NNW, range side)
 # to 4.2 m (SSE, path side), brown felt roof, white fascia; door, windows and sign boards on the
 # SSE front. Lidar centre (165.3, 689.5), 11.2 x 12.8 m walls.

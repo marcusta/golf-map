@@ -2145,6 +2145,69 @@
     }
    ]
   },
+  "pump_house": {
+   "category": "building",
+   "parts": [
+    {
+     "kind": "building",
+     "length": 7.1,
+     "width": 3.3,
+     "wall": "falu_red_vertical",
+     "trim": "white_trim",
+     "cornerBoard": 0.15,
+     "plinth": {
+      "h": 0.2,
+      "mat": "concrete"
+     },
+     "roof": {
+      "type": "gable",
+      "eave": 2.3,
+      "ridge": 3.25,
+      "overhang": 0.3,
+      "gableOverhang": 0.3,
+      "mat": "roof_metal_charcoal"
+     },
+     "openings": [
+      {
+       "side": "+x",
+       "at": 0.0,
+       "w": 1.0,
+       "h": 1.95,
+       "sill": 0.2,
+       "kind": "door",
+       "mat": "door_red",
+       "lamp": false
+      },
+      {
+       "side": "+y",
+       "at": 1.2,
+       "w": 0.8,
+       "h": 0.6,
+       "sill": 1.3,
+       "kind": "window",
+       "bars": [
+        1,
+        1
+       ]
+      }
+     ]
+    },
+    {
+     "kind": "box",
+     "c": [
+      3.75,
+      0.0,
+      0.07
+     ],
+     "s": [
+      0.4,
+      1.2,
+      0.15
+     ],
+     "mat": "concrete"
+    }
+   ]
+  },
   "range_house": {
    "category": "building",
    "parts": [
@@ -18808,6 +18871,13 @@
    "yawDeg": 225.0,
    "ground": "median",
    "dz": -0.075
+  },
+  {
+   "asset": "pump_house",
+   "e": 529773.6,
+   "n": 6488281.8,
+   "yawDeg": 141.0,
+   "ground": "median"
   },
   {
    "asset": "range_house",
