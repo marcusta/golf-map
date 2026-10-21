@@ -76,12 +76,15 @@ describe('B1 + B3: Omberg routes before planting, no trim, one renderer per tree
 
         // Arborist is handed every other placement, once, drawn or left out; none of the VSP ones.
         const vspIds = new Set(inVsp.map(p => p.id));
-        const handed = [...ids.drawn, ...ids.leftOut].map(e => e.id);
-        expect(new Set(handed).size).toBe(handed.length);
+        // (Arborist is also handed the outer terrain's trees since they are routed; this compares the inner ones.)
+        const inner = new Set(placements.map(p => p.id));
+        const all = [...ids.drawn, ...ids.leftOut].map(e => e.id);
+        expect(new Set(all).size).toBe(all.length);
+        const handed = all.filter(id => inner.has(id));
         expect(handed.filter(id => vspIds.has(id))).toEqual([]);
         expect(handed.sort()).toEqual(placements.filter(p => !vspIds.has(p.id)).map(p => p.id).sort());
         // ... and left out exactly where the routing said "out".
-        expect(ids.leftOut.map(e => e.id).sort()).toEqual(placements.filter(p => routing.routes[p.id] === 'out').map(p => p.id).sort());
+        expect(ids.leftOut.map(e => e.id).filter(id => inner.has(id)).sort()).toEqual(placements.filter(p => routing.routes[p.id] === 'out').map(p => p.id).sort());
 
         // B3: poplars, pines and firs are Arborist models; none is in VSP, none is hidden there either.
         const moved = placements.filter(p => ['poplar', 'pine', 'conifer'].includes(p.species));

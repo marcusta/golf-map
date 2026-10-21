@@ -84,10 +84,12 @@ describe('A1: beech and elm are drawn by Arborist, oak by the course VSP', () =>
 
         // Arborist: every beech and elm placement once, drawn or left out by the routing policy, by tree id.
         expect(ids.format).toBe('golfmap-arborist-ids-v1');
-        const handed = [...ids.drawn, ...ids.leftOut].filter(e => isArboristOnly(e.model));
+        // (Arborist is also handed the outer terrain's trees since they are routed; this compares the inner ones.)
+        const inner = new Set(placements.map(p => p.id));
+        const handed = [...ids.drawn, ...ids.leftOut].filter(e => isArboristOnly(e.model) && inner.has(e.id));
         expect(handed.map(e => e.id).sort()).toEqual([...beech, ...elm].map(p => p.id).sort());
         expect(ids.leftOut.every(e => e.reason.length > 0)).toBe(true);
-        for (const e of ids.drawn.filter(e => isArboristOnly(e.model))) {
+        for (const e of ids.drawn.filter(e => isArboristOnly(e.model) && inner.has(e.id))) {
             const p = placements.find(q => q.id === e.id)!;
             expect(e.model).toBe(p.model);
             expect(Math.abs(e.x - p.x) < 0.01 && Math.abs(e.z - p.z) < 0.01).toBe(true);

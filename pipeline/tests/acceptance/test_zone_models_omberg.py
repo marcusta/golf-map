@@ -64,6 +64,7 @@ def resolved(course_docs: Path) -> dict:
 
 def write_lower(course_docs: Path, out: Path) -> dict:
     """arborist.py lower as the app runs it, into `out`; the lower-vegetation package it wrote."""
+    out.mkdir(parents=True, exist_ok=True)
     models = out / "models.resolved.json"
     models.write_text(json.dumps(resolved(course_docs)), encoding="utf-8")
     subprocess.run([sys.executable, str(PIPELINE / "arborist.py"), "lower",
