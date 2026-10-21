@@ -255,8 +255,12 @@ namespace GolfMap.Editor
                 splineType.GetField("width").SetValue(spline, c.widthM);
                 splineType.GetField("snapToTerrain").SetValue(spline, false);
                 if (profile != null) ApplyProfile(spline, splineType, profile, profileType);
+                // A creek on a lake fades at its sides (FadeIntoLakes): it needs vertices across, not the profile's two edges.
+                if (c.onLake) splineType.GetField("vertsInShape").SetValue(spline, OnLakeVertsInShape);
                 splineType.GetMethod("GenerateSpline").Invoke(spline, new object[] { null });
-                row["gaps"] = CloseGaps(spline, splineType, fit, c.neckPoints ?? c.fallPoints);
+                // A creek on a lake lies on the lake's water plane, whose collider takes the ball: no gaps to close, and widening
+                // its end over the low ground beside a fall's wall swung hole 9's channel creek 3.5 m aside, 14 m wide.
+                row["gaps"] = c.onLake ? (object)"on a lake: as fitted" : CloseGaps(spline, splineType, fit, c.neckPoints ?? c.fallPoints);
                 int faded = FadeIntoLakes(spline, splineType, fit.pondFadeM, c.onLake);
                 if (faded > 0) row["lakeFadeVertices"] = faded;
                 var colliderError = WaterCollider(spline);
@@ -920,7 +924,8 @@ namespace GolfMap.Editor
         }
 
         // How far a creek on a lake lies over the lake's water plane (m): over AQUAS's surface, not in it.
-        const float OnLakeM = 0.03f;
+        const float OnLakeM = 0.03f, OnLakeSideFadeM = 1.2f;
+        const int OnLakeVertsInShape = 9;
 
         // The highest lake water plane under any of these points (plot x, z), NaN when none is.
         static float LakeSurface(List<Vector4> pts)
@@ -1141,7 +1146,8 @@ namespace GolfMap.Editor
 
         // The water's opacity, R.A.M.'s vertex colour alpha (its vertex colour water shaders multiply their alpha by it): 1 off
         // the lakes, easing to 0 fadeM inside a lake's shore, so a creek running into a pond melts into the pond's own water.
-        // A creek on a lake (onLake) lies wholly over one: it eases in from 0 at its upstream end to 1 fadeM along it instead.
+        // A creek on a lake (onLake) lies wholly over one: it eases in from 0 at its upstream end to 1 fadeM along it instead,
+        // and out to 0 at both sides.
         // Every vertex is set (R.A.M. keeps the colours of a spline whose vertex count is unchanged), the spline regenerated
         // with them. The number of vertices made see-through at all.
         static int FadeIntoLakes(Component spline, Type splineType, float fadeM, bool onLake)
@@ -1184,6 +1190,15 @@ namespace GolfMap.Editor
                 float depth = onLake ? 0f : LakeDepth(new Vector2(w.x, w.z), fadeM);
                 if (loops > 0) depth = Mathf.Max(depth, along[i / per]);
                 float a = fadeM > 0 ? 1f - Mathf.SmoothStep(0f, 1f, Mathf.Min(depth, fadeM) / fadeM) : 1f;
+                // On a lake the sides fade too, over OnLakeSideFadeM in from each edge of the loop: its straight edges stood
+                // over the bank's grass like the rim of a sheet of glass.
+                if (onLake && loops > 0 && per > 1)
+                {
+                    int l = i / per, j = i % per;
+                    float width = Vector3.Distance(vertices[l * per], vertices[l * per + per - 1]);
+                    float t = j / (float)(per - 1), edge = Mathf.Min(t, 1f - t) * width;
+                    a *= Mathf.SmoothStep(0f, 1f, Mathf.Clamp01(edge / OnLakeSideFadeM));
+                }
                 if (a < 1f) faded++;
                 if (colors[i].a != a) { colors[i].a = a; changed = true; }
             }
