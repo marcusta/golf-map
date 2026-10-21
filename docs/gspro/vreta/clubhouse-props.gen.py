@@ -287,6 +287,18 @@ assets["pump_house"] = {"category": "building", "parts": [  # local +x SE (path,
 ]}
 place("pump_house", -226.4, 1281.8, 141.0)
 
+# Small shed 13 m S of the pump house, across the gravel path (Marcus 2026-10-21). 2023 ortho: dark roof
+# ~6 x 2.7 m along 146 deg, red walls showing at the SE end; lidar 2021 roof points 2.2 m (SW eave) to
+# 2.45 m (ridge) over its SE half (an oak crown hides the NW half). Door on the path side (NE).
+assets["pond_shed"] = {"category": "building", "parts": [  # local +x SE, +y NE (path, door)
+    {"kind": "building", "length": 5.6, "width": 2.3, "wall": "falu_red_vertical", "trim": "white_trim",
+     "cornerBoard": 0.14, "plinth": {"h": 0.15, "mat": "concrete"},
+     "roof": {"type": "gable", "eave": 2.0, "ridge": 2.5, "overhang": 0.25, "gableOverhang": 0.25, "mat": "roof_metal_charcoal"},
+     "openings": [{"side": "+y", "at": 0.8, "w": 0.9, "h": 1.8, "sill": 0.15, "kind": "door", "mat": "door_red", "lamp": False}]},
+    {"kind": "box", "c": (0.8, 1.35, 0.07), "s": (1.1, 0.4, 0.15), "mat": "concrete"},
+]}
+place("pond_shed", -224.55, 1269.3, 146.0)
+
 # ---------------------------------------------------------------------------------------------
 # Driving range house (OSM 7222): photos 12, 124. Mono roof falling from 6.3 m (NNW, range side)
 # to 4.2 m (SSE, path side), brown felt roof, white fascia; door, windows and sign boards on the

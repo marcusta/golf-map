@@ -2208,6 +2208,57 @@
     }
    ]
   },
+  "pond_shed": {
+   "category": "building",
+   "parts": [
+    {
+     "kind": "building",
+     "length": 5.6,
+     "width": 2.3,
+     "wall": "falu_red_vertical",
+     "trim": "white_trim",
+     "cornerBoard": 0.14,
+     "plinth": {
+      "h": 0.15,
+      "mat": "concrete"
+     },
+     "roof": {
+      "type": "gable",
+      "eave": 2.0,
+      "ridge": 2.5,
+      "overhang": 0.25,
+      "gableOverhang": 0.25,
+      "mat": "roof_metal_charcoal"
+     },
+     "openings": [
+      {
+       "side": "+y",
+       "at": 0.8,
+       "w": 0.9,
+       "h": 1.8,
+       "sill": 0.15,
+       "kind": "door",
+       "mat": "door_red",
+       "lamp": false
+      }
+     ]
+    },
+    {
+     "kind": "box",
+     "c": [
+      0.8,
+      1.35,
+      0.07
+     ],
+     "s": [
+      1.1,
+      0.4,
+      0.15
+     ],
+     "mat": "concrete"
+    }
+   ]
+  },
   "range_house": {
    "category": "building",
    "parts": [
@@ -18877,6 +18928,13 @@
    "e": 529773.6,
    "n": 6488281.8,
    "yawDeg": 141.0,
+   "ground": "median"
+  },
+  {
+   "asset": "pond_shed",
+   "e": 529775.45,
+   "n": 6488269.3,
+   "yawDeg": 146.0,
    "ground": "median"
   },
   {
