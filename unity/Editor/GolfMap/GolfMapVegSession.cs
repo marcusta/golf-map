@@ -131,17 +131,28 @@ namespace GolfMap.Editor
         {
             var list = edited.ToList();
             var extra = new List<GolfMapVegEntry>();
-            foreach (var e in list.Where(x => x.kind == GolfMapVegKind.Tree && !x.readOnly))
-                foreach (var v in e.values.Where(x => !string.IsNullOrEmpty(x.slot)))
+            // A zone item's look is its model's: every other item of the model takes the change (live, and saved once).
+            PropagateTo(list, extra, e => e.model != null, v => GolfMapVegPalette.IsLookRole(v.role), (e, o) => o.model == e.model);
+            // A tree value keyed by a material or a baked texture: every other tree look that shares it.
+            PropagateTo(list, extra, e => e.kind == GolfMapVegKind.Tree, v => !string.IsNullOrEmpty(v.slot), (e, o) => o.kind == GolfMapVegKind.Tree && !o.readOnly);
+            return list.Concat(extra).ToList();
+        }
+
+        // Each value `value` picks of an edited, writable entry `source` picks, copied onto every other entry `peer`
+        // accepts that has it with another value; those entries join `extra` (once).
+        static void PropagateTo(List<GolfMapVegEntry> list, List<GolfMapVegEntry> extra, Func<GolfMapVegEntry, bool> source,
+            Func<GolfMapVegValue, bool> value, Func<GolfMapVegEntry, GolfMapVegEntry, bool> peer)
+        {
+            foreach (var e in list.Where(x => source(x) && !x.readOnly))
+                foreach (var v in e.values.Where(value))
                     foreach (var o in Current.entries)
                     {
-                        if (o == e || o.kind != GolfMapVegKind.Tree || o.readOnly || list.Contains(o)) continue;
+                        if (o == e || !peer(e, o) || list.Contains(o)) continue;
                         var w = o.Find(v);
                         if (w == null || w.Same(v)) continue;
                         w.c = v.c; w.f = v.f;
                         if (!extra.Contains(o)) extra.Add(o);
                     }
-            return list.Concat(extra).ToList();
         }
 
         // Absolute value for a role on every selected entry that has it (part/slot narrow it).
@@ -186,7 +197,11 @@ namespace GolfMap.Editor
             var course = Course();
             var dirty = DirtyEntries();
             var notes = new List<string>();
-            if (dirty.Any(e => e.kind != GolfMapVegKind.Tree) && File.Exists(saved.grassPath))
+            // Zone items on the model library: through the repo (bun run models -- look / zone), which writes the
+            // repo's models.json and grass-palette.json and generates this project's copies.
+            var modelled = dirty.Where(e => e.model != null && e.kind != GolfMapVegKind.Tree).ToList();
+            if (modelled.Count > 0) notes.AddRange(SaveThroughRepo(course, modelled));
+            if (dirty.Any(e => e.kind != GolfMapVegKind.Tree && e.model == null) && File.Exists(saved.grassPath))
             {
                 var text = File.ReadAllText(saved.grassPath);
                 var updated = GolfMapVegPalette.GrassText(text, current, saved);
@@ -240,6 +255,83 @@ namespace GolfMap.Editor
             Raise();
             return LastResult;
         }
+
+        // The edited look values per model (`models -- look <model> --set ...`), then each item's edited size and
+        // placement per palette listing it (`models -- zone <palette> <item> --set ...`). Throws the CLI's output when
+        // one fails (nothing of that call written); the calls before it stay written.
+        static List<string> SaveThroughRepo(GolfMapCourse course, List<GolfMapVegEntry> entries)
+        {
+            var repo = GolfMapModels.RepoRoot();
+            var unity = GolfMapModels.UnityFolderOf(saved.grassPath);
+            string prefix = course.exportPrefix;
+            Dictionary<string, Dictionary<string, string>> looks;
+            List<ZoneSet> zones;
+            CollectRepoChanges(entries, out looks, out zones);
+            var notes = new List<string>();
+            Func<Dictionary<string, string>, string> join = d => string.Join(",", d.Select(kv => kv.Key + "=" + kv.Value).ToArray());
+            EditorUtility.DisplayProgressBar("Vegetation palettes", "bun run models", 0.3f);
+            try
+            {
+                foreach (var kv in looks.Where(x => x.Value.Count > 0))
+                {
+                    GolfMapModels.RunCli(repo, "look", prefix, kv.Key, "--set", join(kv.Value), "--unity", unity);
+                    notes.Add(kv.Key + " look");
+                }
+                foreach (var z in zones)
+                {
+                    GolfMapModels.RunCli(repo, "zone", prefix, z.palette, z.item, "--set", join(z.set), "--unity", unity);
+                    notes.Add(z.palette + " / " + z.item);
+                }
+            }
+            finally { EditorUtility.ClearProgressBar(); }
+            if (GolfMapCourses.Owns(saved.grassPath)) AssetDatabase.ImportAsset(saved.grassPath);
+            var models = GolfMapModels.PathBeside(saved.grassPath);
+            if (GolfMapCourses.Owns(models)) AssetDatabase.ImportAsset(models);
+            return notes.Count == 0 ? notes : new List<string> { "the repo's models.json / grass-palette.json (" + string.Join(", ", notes.ToArray()) + ")" };
+        }
+
+        // One `models -- zone <palette> <item> --set ...` call: an item's edited size and placement in one palette.
+        struct ZoneSet { public string palette, item; public Dictionary<string, string> set; }
+
+        // The edited values of `entries` as the CLI takes them: per model its look keys (material.<float> for a
+        // shader float), per palette listing an item its other keys (maxDensity is the palette's own).
+        static void CollectRepoChanges(List<GolfMapVegEntry> entries, out Dictionary<string, Dictionary<string, string>> looks, out List<ZoneSet> zones)
+        {
+            looks = new Dictionary<string, Dictionary<string, string>>();
+            zones = new List<ZoneSet>();
+            foreach (var e in entries)
+            {
+                var look = looks.ContainsKey(e.model) ? looks[e.model] : (looks[e.model] = new Dictionary<string, string>());
+                var item = new Dictionary<string, string>();
+                var perPalette = new Dictionary<string, string>();
+                foreach (var v in e.values.Where(x => Edited(e, x)))
+                {
+                    if (v.role == "maxDensity") { perPalette[v.slot] = CliNumber(v.f); continue; }
+                    string value = CliValue(v);
+                    if (GolfMapVegPalette.IsMaterial(v.role)) look["material." + v.prop] = value;
+                    else if (GolfMapVegPalette.IsLookRole(v.role)) look[v.prop] = value;
+                    else item[v.prop] = value;
+                }
+                foreach (var palette in e.palettes)
+                {
+                    var set = new Dictionary<string, string>(item);
+                    string density;
+                    if (perPalette.TryGetValue(palette, out density)) set["maxDensity"] = density;
+                    if (set.Count > 0) zones.Add(new ZoneSet { palette = palette, item = e.name, set = set });
+                }
+            }
+        }
+
+        // A value as `--set` takes it: a colour #rrggbb, shadows true/false, a number rounded to its role's decimals
+        // (a shader float to 4).
+        static string CliValue(GolfMapVegValue v)
+        {
+            if (v.colour) return GolfMapVegPalette.Hex(v.c);
+            if (v.role == "shadows") return v.f > 0.5f ? "true" : "false";
+            return CliNumber(GolfMapVegPalette.Round(v.f, GolfMapVegPalette.IsMaterial(v.role) ? 4 : GolfMapVegPalette.Role(v.role).decimals + 1));
+        }
+
+        static string CliNumber(float f) { return Math.Round(f, 4).ToString(System.Globalization.CultureInfo.InvariantCulture); }
 
         static bool Edited(GolfMapVegEntry e, GolfMapVegValue v)
         {
@@ -414,6 +506,7 @@ namespace GolfMap.Editor
         static object Describe(GolfMapVegEntry e)
         {
             var d = new Dictionary<string, object> { { "key", e.key }, { "name", e.name }, { "kind", e.kind.ToString().ToLowerInvariant() }, { "palettes", e.palettes.Cast<object>().ToList() } };
+            if (e.model != null) d["model"] = e.model;   // its colour, shading and material values are this model's
             if (e.readOnly) d["readOnly"] = e.readOnlyWhy;
             if (IsDirty(e)) d["unsaved"] = true;
             if (!GolfMapVegLive.InScene(e)) d["inScene"] = false;
@@ -519,7 +612,7 @@ namespace GolfMap.Editor
             throw new BridgeError("action must be create, duplicate, remove, regenerate or lab.");
         }
 
-        [BridgeCommand("golfmap.vegpalette.save", "Write the vegetation palette editor's unsaved edits to grass-palette.json / palette.json (tree looks: material values captured).")]
+        [BridgeCommand("golfmap.vegpalette.save", "Write the vegetation palette editor's unsaved edits: a zone item with a model through the repo (bun run models -- look for its model's colour/shading/material, models -- zone --set for its size and placement; the project's copies are generated), an older-form item into grass-palette.json, tree looks into palette.json (material values captured).")]
         static object SaveCommand() { return Save(); }
 
         [BridgeCommand("golfmap.vegpalette.revert", "Drop the vegetation palette editor's unsaved edits and put the saved values back into the scene.", args = "select (default all)")]

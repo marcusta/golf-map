@@ -210,6 +210,7 @@ export class VegetationRulesPanelComponent extends Component {
         for (const tr of rules.trees) body.appendChild(this.section(tr, explainOn, open));
         body.appendChild(this.treeAreas(rules, open));
         if (rules.treeModels?.length) body.appendChild(this.treeModels(rules, open));
+        if (rules.zoneModels?.length) body.appendChild(this.zoneModels(rules, open));
     }
 
     private details(id: string, open: Set<string>): HTMLDetailsElement {
@@ -346,6 +347,33 @@ export class VegetationRulesPanelComponent extends Component {
                 row.title = `${m.id}\n${size}${m.enabled ? '' : '\n(disabled in the palette)'}`;
                 row.append(el('span', 'vr-hidden', `${sp.species} `), el('span', 'vr-model__label', modelLabel(m.id)),
                     el('span', m.enabled ? 'vr-tag' : 'vr-tag--off', rendererName(m.renderer)));
+                group.appendChild(row);
+            }
+            b.appendChild(group);
+        }
+        d.appendChild(b);
+        return d;
+    }
+
+    /** Each zone palette's items, one line each: the item and who draws it (its model's renderer); the model id in the tooltip. */
+    private zoneModels(rules: PlantingRules, open: Set<string>): HTMLElement {
+        const d = this.details('zone-models', open);
+        const summary = el('summary');
+        summary.title = "The zone palettes' items (grass-palette.json) and the models they refer to (models.json): the model's renderer draws the item, the model holds its look";
+        const count = rules.zoneModels.reduce((n, p) => n + p.items.length, 0);
+        summary.append(el('span', 'vr-section__label', 'Zone models'), el('span', 'vr-section__script', 'grass-palette.json'), el('span', 'vr-tag', String(count)));
+        d.appendChild(summary);
+        const b = el('div', 'vr-section__body');
+        for (const p of rules.zoneModels) {
+            const group = el('div', 'vr-group');
+            group.appendChild(el('div', 'vr-group__title', p.palette));
+            for (const item of p.items) {
+                const row = el('div', item.renderer === '?' ? 'vr-model empty' : 'vr-model');
+                row.dataset.testid = 'planting-rules-zone-item';
+                row.dataset.model = item.model;
+                row.title = item.model + (item.renderer === '?' ? '\nnot in the model library (models.json)' : '');
+                row.append(el('span', 'vr-model__label', item.name),
+                    el('span', item.renderer === '?' ? 'vr-tag--off' : 'vr-tag', item.renderer === '?' ? 'missing' : rendererName(item.renderer)));
                 group.appendChild(row);
             }
             b.appendChild(group);

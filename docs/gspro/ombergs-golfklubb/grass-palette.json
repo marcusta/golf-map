@@ -1,12 +1,6 @@
 {
   "format": "golfmap-grass-v1",
-  "prefabItems": "arborist",
-  "prefabItemsInVsp": [
-    "heather",
-    "lingonberry",
-    "bilberry",
-    "fern"
-  ],
+  "comment": "Omberg's zone palettes (CONTEXT.md 'Model library'): each item refers to a model of models.json (\"model\") and keeps where and how densely it grows and its size; the look (healthy / dry, the shader \"material\" floats, randomDarkening, ...) is the model's, set once for every zone that uses it (bun run models -- look). The model's renderer decides who draws the item: a vsp model the course's own VSP, an arborist model Arborist's lower-vegetation package. Swap one: bun run models -- zone \"Ombergs Golfklubb\" <palette key> \"<item>\" --model <id>. Migrated from the prefab/source form 2026-10-21 (heather, lingonberry, bilberry and fern stay VSP: Arborist stores no _BackFaceMirrorNormal).",
   "palettes": [
     {
       "key": "rough_tall",
@@ -18,9 +12,7 @@
       "items": [
         {
           "name": "Tall rough - green base",
-          "source": "Assets/RUSTIC Grass/Textures/Rustic Grass_15.psd",
-          "healthy": "#5e9154",
-          "dry": "#6d9058",
+          "model": "vsp:texture:Rustic Grass_15",
           "width": 0.9,
           "height": 0.55,
           "minScale": 0.75,
@@ -36,15 +28,12 @@
           "copies": [
             15,
             30
-          ],
-          "randomDarkening": 0.3
+          ]
         },
         {
           "name": "Tall rough - tall green",
-          "source": "Assets/RUSTIC Grass/Textures/Rustic Grass_07.psd",
-          "healthy": "#67945c",
-          "dry": "#78905f",
-          "width": 1.0,
+          "model": "vsp:texture:Rustic Grass_07",
+          "width": 1,
           "height": 0.9,
           "minScale": 0.6,
           "maxScale": 1.5,
@@ -60,15 +49,12 @@
           "noiseCutoffScale": 12,
           "copies": [
             30
-          ],
-          "randomDarkening": 0.3
+          ]
         },
         {
           "name": "Tall rough - dry straw",
-          "source": "Assets/RUSTIC Grass/Textures/Rustic Grass_18.psd",
-          "healthy": "#867f56",
-          "dry": "#6d6242",
-          "width": 1.0,
+          "model": "vsp:texture:Rustic Grass_18",
+          "width": 1,
           "height": 0.85,
           "minScale": 0.65,
           "maxScale": 1.45,
@@ -85,17 +71,14 @@
         },
         {
           "name": "Tall rough - pale seed heads",
-          "source": "Assets/RUSTIC Grass/Textures/Sea Grass_09.psd",
-          "healthy": "#9b9774",
-          "dry": "#85805f",
-          "width": 1.0,
-          "height": 1.0,
+          "model": "vsp:texture:Sea Grass_09",
+          "width": 1,
+          "height": 1,
           "minScale": 0.65,
           "maxScale": 1.45,
           "sampleDistance": 2.315,
           "noiseDensityScale": 18,
           "maxDensity": 1,
-          "whitePoint": 0.8,
           "maxSteepness": 75,
           "lodFactor": 40,
           "noiseScaleMin": 0.5,
@@ -115,16 +98,13 @@
       "items": [
         {
           "name": "Fresh rough - fine blades",
-          "source": "Assets/Grasses_Flowers/Grass Textures/grass14.psd",
-          "healthy": "#326232",
-          "dry": "#3e6034",
-          "width": 1.0,
+          "model": "vsp:texture:grass14",
+          "width": 1,
           "height": 1.1,
           "minScale": 0.75,
           "maxScale": 1.3,
           "sampleDistance": 0.371,
           "noiseDensityScale": 0,
-          "randomDarkening": 0.1,
           "maxDensity": 1,
           "maxSteepness": 75,
           "lodFactor": 40,
@@ -138,9 +118,7 @@
         },
         {
           "name": "Fresh rough - crossing blades",
-          "source": "Assets/Grasses_Flowers/Grass Textures/grass24.psd",
-          "healthy": "#326232",
-          "dry": "#3e6034",
+          "model": "vsp:texture:grass24",
           "width": 0.9,
           "height": 1.1,
           "minScale": 0.6,
@@ -150,7 +128,6 @@
           "maxDensity": 1,
           "maxSteepness": 75,
           "lodFactor": 40,
-          "randomDarkening": 0.1,
           "noiseScaleMin": 0.3,
           "noiseScaleMax": 1.85,
           "noiseScaleScale": 19,
@@ -162,9 +139,7 @@
         },
         {
           "name": "Fresh rough - tall wisps",
-          "source": "Assets/Grasses_Flowers/Grass Textures2/041.psd",
-          "healthy": "#346532",
-          "dry": "#426438",
+          "model": "vsp:texture:041",
           "width": 0.8,
           "height": 1.4,
           "minScale": 0.65,
@@ -174,7 +149,6 @@
           "maxDensity": 1,
           "maxSteepness": 75,
           "lodFactor": 40,
-          "randomDarkening": 0.1,
           "noiseScaleMin": 0.35,
           "noiseScaleMax": 1.75,
           "noiseScaleScale": 11,
@@ -186,16 +160,13 @@
         },
         {
           "name": "Fresh rough - seed tips",
-          "source": "Assets/RUSTIC Grass/Textures/Rustic Grass_06.psd",
-          "healthy": "#7b8b54",
-          "dry": "#738450",
+          "model": "vsp:texture:Rustic Grass_06",
           "width": 0.6,
           "height": 1.3,
           "minScale": 0.65,
           "maxScale": 1.45,
           "sampleDistance": 1.579,
           "noiseDensityScale": 18,
-          "whitePoint": 0.85,
           "maxDensity": 1,
           "maxSteepness": 75,
           "lodFactor": 40,
@@ -216,10 +187,8 @@
       "items": [
         {
           "name": "Blond rough - green foot",
-          "source": "Assets/Grasses_Flowers/Grass Textures/grass14.psd",
-          "healthy": "#55683a",
-          "dry": "#5d683d",
-          "width": 1.0,
+          "model": "vsp:texture:grass14#green-foot",
+          "width": 1,
           "height": 0.8500000238418579,
           "minScale": 0.75,
           "maxScale": 1.3,
@@ -228,7 +197,6 @@
           "noiseScaleMin": 0.35,
           "noiseScaleMax": 1.7,
           "noiseScaleScale": 7,
-          "randomDarkening": 0.15,
           "maxDensity": 1,
           "maxSteepness": 75,
           "lodFactor": 40,
@@ -239,9 +207,7 @@
         },
         {
           "name": "Blond rough - straw blades",
-          "source": "Assets/Grasses_Flowers/Grass Textures/grass24.psd",
-          "healthy": "#838465",
-          "dry": "#7a775b",
+          "model": "vsp:texture:grass24#straw-blades",
           "width": 0.9,
           "height": 1.1,
           "minScale": 0.65,
@@ -251,16 +217,13 @@
           "noiseScaleMin": 0.35,
           "noiseScaleMax": 1.75,
           "noiseScaleScale": 17,
-          "randomDarkening": 0.1,
           "maxDensity": 1,
           "maxSteepness": 75,
           "lodFactor": 40
         },
         {
           "name": "Blond rough - straw wisps",
-          "source": "Assets/Grasses_Flowers/Grass Textures2/041.psd",
-          "healthy": "#8a8a69",
-          "dry": "#807c60",
+          "model": "vsp:texture:041#straw-wisps",
           "width": 0.8,
           "height": 1.4,
           "minScale": 0.65,
@@ -270,7 +233,6 @@
           "noiseScaleMin": 0.3,
           "noiseScaleMax": 1.85,
           "noiseScaleScale": 11,
-          "randomDarkening": 0.1,
           "maxDensity": 1,
           "maxSteepness": 75,
           "lodFactor": 40,
@@ -279,9 +241,7 @@
         },
         {
           "name": "Blond rough - seed tips",
-          "source": "Assets/RUSTIC Grass/Textures/Rustic Grass_06.psd",
-          "healthy": "#8f8e6f",
-          "dry": "#818065",
+          "model": "vsp:texture:Rustic Grass_06#seed-tips",
           "width": 0.6,
           "height": 1.3,
           "minScale": 0.65,
@@ -291,7 +251,6 @@
           "noiseScaleMin": 0.5,
           "noiseScaleMax": 1.6,
           "noiseScaleScale": 29,
-          "whitePoint": 0.85,
           "maxDensity": 1,
           "maxSteepness": 75,
           "lodFactor": 40,
@@ -311,9 +270,7 @@
       "items": [
         {
           "name": "Hummock rough - dark tussock",
-          "source": "Assets/RUSTIC Grass/Textures/Rustic Grass_15.psd",
-          "healthy": "#647054",
-          "dry": "#6f7457",
+          "model": "vsp:texture:Rustic Grass_15#dark-tussock",
           "width": 0.8,
           "height": 0.6499999761581421,
           "minScale": 0.7,
@@ -323,7 +280,6 @@
           "noiseScaleMin": 0.4,
           "noiseScaleMax": 1.65,
           "noiseScaleScale": 6,
-          "randomDarkening": 0.2,
           "maxDensity": 1,
           "maxSteepness": 75,
           "lodFactor": 40,
@@ -334,9 +290,7 @@
         },
         {
           "name": "Hummock rough - brown tufts",
-          "source": "Assets/RUSTIC Grass/Textures/Rustic Grass_19.psd",
-          "healthy": "#8b8465",
-          "dry": "#908866",
+          "model": "vsp:texture:Rustic Grass_19",
           "width": 0.8,
           "height": 0.5,
           "minScale": 0.65,
@@ -352,18 +306,15 @@
         },
         {
           "name": "Hummock rough - straw stragglers",
-          "source": "Assets/Grasses_Flowers/Grass Textures2/041.psd",
-          "healthy": "#8a8a69",
-          "dry": "#807c60",
+          "model": "vsp:texture:041#straw-wisps",
           "width": 0.6,
-          "height": 1.0,
+          "height": 1,
           "minScale": 0.65,
           "maxScale": 1.45,
           "sampleDistance": 1.579,
           "noiseDensityScale": 10,
           "noiseCutoff": 0.3,
           "noiseCutoffScale": 8,
-          "randomDarkening": 0.1,
           "maxDensity": 1,
           "maxSteepness": 75,
           "lodFactor": 40,
@@ -384,10 +335,8 @@
       "items": [
         {
           "name": "Weedy rough - grass base",
-          "source": "Assets/Grasses_Flowers/Grass Textures/grass14.psd",
-          "healthy": "#4b5e37",
-          "dry": "#535e39",
-          "width": 1.0,
+          "model": "vsp:texture:grass14#grass-base",
+          "width": 1,
           "height": 0.7,
           "minScale": 0.75,
           "maxScale": 1.3,
@@ -396,7 +345,6 @@
           "noiseScaleMin": 0.35,
           "noiseScaleMax": 1.7,
           "noiseScaleScale": 7,
-          "randomDarkening": 0.2,
           "maxDensity": 1,
           "maxSteepness": 75,
           "lodFactor": 40,
@@ -407,16 +355,13 @@
         },
         {
           "name": "Weedy rough - straw blades",
-          "source": "Assets/Grasses_Flowers/Grass Textures/grass24.psd",
-          "healthy": "#838465",
-          "dry": "#7a775b",
+          "model": "vsp:texture:grass24#straw-blades",
           "width": 0.9,
-          "height": 1.0,
+          "height": 1,
           "minScale": 0.65,
           "maxScale": 1.45,
           "sampleDistance": 0.842,
           "noiseDensityScale": 8,
-          "randomDarkening": 0.1,
           "maxDensity": 1,
           "maxSteepness": 75,
           "lodFactor": 40,
@@ -426,9 +371,7 @@
         },
         {
           "name": "Weedy rough - dark seed stems",
-          "source": "Assets/RUSTIC Grass/Textures/Dry Grass_02.psd",
-          "healthy": "#6d625a",
-          "dry": "#655c52",
+          "model": "vsp:texture:Dry Grass_02",
           "width": 0.9,
           "height": 1.1,
           "minScale": 0.65,
@@ -444,16 +387,13 @@
         },
         {
           "name": "Weedy rough - thistle heads",
-          "source": "Assets/RUSTIC Grass/Textures/Dry Silybum_03.psd",
-          "healthy": "#938f86",
-          "dry": "#87847a",
+          "model": "vsp:texture:Dry Silybum_03",
           "width": 0.9,
           "height": 1.2,
           "minScale": 0.65,
           "maxScale": 1.45,
           "sampleDistance": 1.158,
           "noiseDensityScale": 9,
-          "whitePoint": 0.85,
           "maxDensity": 1,
           "maxSteepness": 75,
           "lodFactor": 40,
@@ -463,16 +403,13 @@
         },
         {
           "name": "Weedy rough - thistle heads tall",
-          "source": "Assets/RUSTIC Grass/Textures/Dry Silybum_02.psd",
-          "healthy": "#938f86",
-          "dry": "#87847a",
+          "model": "vsp:texture:Dry Silybum_02",
           "width": 0.8,
           "height": 1.35,
           "minScale": 0.65,
           "maxScale": 1.45,
           "sampleDistance": 1.579,
           "noiseDensityScale": 12,
-          "whitePoint": 0.85,
           "maxDensity": 1,
           "maxSteepness": 75,
           "lodFactor": 40,
@@ -482,11 +419,9 @@
         },
         {
           "name": "Weedy rough - dry umbels",
-          "source": "Assets/RUSTIC Grass/Textures/Dry Grass_06.psd",
-          "healthy": "#817759",
-          "dry": "#766c51",
-          "width": 1.0,
-          "height": 1.0,
+          "model": "vsp:texture:Dry Grass_06",
+          "width": 1,
+          "height": 1,
           "minScale": 0.65,
           "maxScale": 1.45,
           "sampleDistance": 1.473,
@@ -511,10 +446,8 @@
       "items": [
         {
           "name": "Far rough - green base",
-          "source": "Assets/RUSTIC Grass/Textures/Rustic Grass_15.psd",
-          "healthy": "#5e9154",
-          "dry": "#6d9058",
-          "width": 2.0,
+          "model": "vsp:texture:Rustic Grass_15",
+          "width": 2,
           "height": 0.75,
           "minScale": 0.75,
           "maxScale": 1.3,
@@ -525,14 +458,11 @@
           "lodFactor": 12,
           "noiseScaleMin": 0.5,
           "noiseScaleMax": 1.6,
-          "noiseScaleScale": 9,
-          "randomDarkening": 0.3
+          "noiseScaleScale": 9
         },
         {
           "name": "Far rough - tall green",
-          "source": "Assets/RUSTIC Grass/Textures/Rustic Grass_07.psd",
-          "healthy": "#67945c",
-          "dry": "#78905f",
+          "model": "vsp:texture:Rustic Grass_07",
           "width": 1.9,
           "height": 1.2,
           "minScale": 0.75,
@@ -544,14 +474,11 @@
           "lodFactor": 12,
           "noiseScaleMin": 0.4,
           "noiseScaleMax": 1.8,
-          "noiseScaleScale": 19,
-          "randomDarkening": 0.3
+          "noiseScaleScale": 19
         },
         {
           "name": "Far rough - dry straw",
-          "source": "Assets/RUSTIC Grass/Textures/Rustic Grass_18.psd",
-          "healthy": "#867f56",
-          "dry": "#6d6242",
+          "model": "vsp:texture:Rustic Grass_18",
           "width": 1.9,
           "height": 1.15,
           "minScale": 0.75,
@@ -577,9 +504,7 @@
       "items": [
         {
           "name": "Dark rough - green base",
-          "source": "Assets/RUSTIC Grass/Textures/Rustic Grass_15.psd",
-          "healthy": "#487140",
-          "dry": "#537043",
+          "model": "vsp:texture:Rustic Grass_15#green-base",
           "width": 0.9,
           "height": 0.55,
           "minScale": 0.75,
@@ -595,15 +520,12 @@
           "copies": [
             15,
             30
-          ],
-          "randomDarkening": 0.3
+          ]
         },
         {
           "name": "Dark rough - tall green",
-          "source": "Assets/RUSTIC Grass/Textures/Rustic Grass_07.psd",
-          "healthy": "#4f7347",
-          "dry": "#5c6f49",
-          "width": 1.0,
+          "model": "vsp:texture:Rustic Grass_07#tall-green",
+          "width": 1,
           "height": 0.9,
           "minScale": 0.6,
           "maxScale": 1.5,
@@ -619,15 +541,12 @@
           "noiseCutoffScale": 12,
           "copies": [
             30
-          ],
-          "randomDarkening": 0.3
+          ]
         },
         {
           "name": "Tall rough - dry straw",
-          "source": "Assets/RUSTIC Grass/Textures/Rustic Grass_18.psd",
-          "healthy": "#867f56",
-          "dry": "#6d6242",
-          "width": 1.0,
+          "model": "vsp:texture:Rustic Grass_18",
+          "width": 1,
           "height": 0.85,
           "minScale": 0.65,
           "maxScale": 1.45,
@@ -644,17 +563,14 @@
         },
         {
           "name": "Tall rough - pale seed heads",
-          "source": "Assets/RUSTIC Grass/Textures/Sea Grass_09.psd",
-          "healthy": "#9b9774",
-          "dry": "#85805f",
-          "width": 1.0,
-          "height": 1.0,
+          "model": "vsp:texture:Sea Grass_09",
+          "width": 1,
+          "height": 1,
           "minScale": 0.65,
           "maxScale": 1.45,
           "sampleDistance": 2.315,
           "noiseDensityScale": 18,
           "maxDensity": 1,
-          "whitePoint": 0.8,
           "maxSteepness": 75,
           "lodFactor": 40,
           "noiseScaleMin": 0.5,
@@ -674,10 +590,8 @@
       "items": [
         {
           "name": "Far dark rough - green base",
-          "source": "Assets/RUSTIC Grass/Textures/Rustic Grass_15.psd",
-          "healthy": "#487140",
-          "dry": "#537043",
-          "width": 2.0,
+          "model": "vsp:texture:Rustic Grass_15#green-base",
+          "width": 2,
           "height": 0.75,
           "minScale": 0.75,
           "maxScale": 1.3,
@@ -688,14 +602,11 @@
           "lodFactor": 12,
           "noiseScaleMin": 0.5,
           "noiseScaleMax": 1.6,
-          "noiseScaleScale": 9,
-          "randomDarkening": 0.3
+          "noiseScaleScale": 9
         },
         {
           "name": "Far dark rough - tall green",
-          "source": "Assets/RUSTIC Grass/Textures/Rustic Grass_07.psd",
-          "healthy": "#4f7347",
-          "dry": "#5c6f49",
+          "model": "vsp:texture:Rustic Grass_07#tall-green",
           "width": 1.9,
           "height": 1.2,
           "minScale": 0.75,
@@ -707,14 +618,11 @@
           "lodFactor": 12,
           "noiseScaleMin": 0.4,
           "noiseScaleMax": 1.8,
-          "noiseScaleScale": 19,
-          "randomDarkening": 0.3
+          "noiseScaleScale": 19
         },
         {
           "name": "Far rough - dry straw",
-          "source": "Assets/RUSTIC Grass/Textures/Rustic Grass_18.psd",
-          "healthy": "#867f56",
-          "dry": "#6d6242",
+          "model": "vsp:texture:Rustic Grass_18",
           "width": 1.9,
           "height": 1.15,
           "minScale": 0.75,
@@ -741,7 +649,7 @@
       "items": [
         {
           "name": "Shrub thicket - grey willow round",
-          "prefab": "Assets/NatureManufacture Assets/Meadow Environment Dynamic Nature/Bushes/Prefabs/prefab_grey_willow_02.prefab",
+          "model": "arborist:MeadowEnv_bush_grey_willow_02",
           "minScale": 0.5,
           "maxScale": 1.25,
           "sampleDistance": 11.52,
@@ -750,20 +658,11 @@
           "noiseScaleMax": 1.4,
           "noiseScaleScale": 9,
           "maxDensity": 1,
-          "maxSteepness": 60,
-          "healthy": "#96a4cb",
-          "dry": "#a0a9c4",
-          "material": {
-            "_BackFaceMirrorNormal": 0,
-            "_SmoothnessPower": 0,
-            "_SpecularPower": 0,
-            "_Smooothness": 0.1,
-            "_AmbientOcclusionPower": 0.65
-          }
+          "maxSteepness": 60
         },
         {
           "name": "Shrub thicket - grey willow wide",
-          "prefab": "Assets/NatureManufacture Assets/Meadow Environment Dynamic Nature/Bushes/Prefabs/prefab_grey_willow_03.prefab",
+          "model": "arborist:MeadowEnv_bush_grey_willow_03",
           "minScale": 0.5,
           "maxScale": 1.15,
           "sampleDistance": 12.8,
@@ -772,20 +671,11 @@
           "noiseScaleMax": 1.4,
           "noiseScaleScale": 9,
           "maxDensity": 1,
-          "maxSteepness": 60,
-          "healthy": "#8fa3b4",
-          "dry": "#9aa9b0",
-          "material": {
-            "_BackFaceMirrorNormal": 0,
-            "_SmoothnessPower": 0,
-            "_SpecularPower": 0,
-            "_Smooothness": 0.1,
-            "_AmbientOcclusionPower": 0.65
-          }
+          "maxSteepness": 60
         },
         {
           "name": "Shrub thicket - grey willow tall",
-          "prefab": "Assets/NatureManufacture Assets/Meadow Environment Dynamic Nature/Bushes/Prefabs/prefab_grey_willow_04.prefab",
+          "model": "arborist:MeadowEnv_bush_grey_willow_04",
           "minScale": 0.6,
           "maxScale": 1.3,
           "sampleDistance": 17.6,
@@ -794,20 +684,11 @@
           "noiseScaleMax": 1.4,
           "noiseScaleScale": 9,
           "maxDensity": 1,
-          "maxSteepness": 60,
-          "healthy": "#869acd",
-          "dry": "#8b9ac4",
-          "material": {
-            "_BackFaceMirrorNormal": 0,
-            "_SmoothnessPower": 0,
-            "_SpecularPower": 0,
-            "_Smooothness": 0.1,
-            "_AmbientOcclusionPower": 0.65
-          }
+          "maxSteepness": 60
         },
         {
           "name": "Shrub thicket - willow shoot",
-          "prefab": "Assets/NatureManufacture Assets/Meadow Environment Dynamic Nature/Bushes/Prefabs/prefab_grey_willow_01.prefab",
+          "model": "arborist:MeadowEnv_bush_grey_willow_01",
           "minScale": 0.5,
           "maxScale": 1.3,
           "sampleDistance": 12.8,
@@ -816,20 +697,11 @@
           "noiseScaleMax": 1.4,
           "noiseScaleScale": 9,
           "maxDensity": 1,
-          "maxSteepness": 60,
-          "healthy": "#9aa9a8",
-          "dry": "#a3ada6",
-          "material": {
-            "_BackFaceMirrorNormal": 0,
-            "_SmoothnessPower": 0,
-            "_SpecularPower": 0,
-            "_Smooothness": 0.1,
-            "_AmbientOcclusionPower": 0.65
-          }
+          "maxSteepness": 60
         },
         {
           "name": "Shrub thicket - low hazel",
-          "prefab": "Assets/NatureManufacture Assets/Mountain Environment/0-Prefab-OPCD-Optimized/Bushes/Prefab_hazel_00_bush.prefab",
+          "model": "arborist:MountainEnv_bush_hazel_00_bush",
           "minScale": 0.7,
           "maxScale": 1.5,
           "sampleDistance": 2.29,
@@ -838,21 +710,11 @@
           "noiseScaleMax": 1.4,
           "noiseScaleScale": 9,
           "maxDensity": 1,
-          "maxSteepness": 60,
-          "healthy": "#899cae",
-          "dry": "#99a6af",
-          "material": {
-            "_BackFaceMirrorNormal": 0,
-            "_SmoothnessPower": 0.1,
-            "_SpecularPower": 0,
-            "_Smooothness": 0.1,
-            "_AmbientOcclusionPower": 0.7,
-            "_Cutoff": 0.45
-          }
+          "maxSteepness": 60
         },
         {
           "name": "Shrub thicket - hazel cluster",
-          "prefab": "Assets/NatureManufacture Assets/Mountain Environment/0-Prefab-OPCD-Optimized/Bushes/Prefab_hazel_04_cluster.prefab",
+          "model": "arborist:MountainEnv_bush_hazel_04_cluster",
           "minScale": 0.7,
           "maxScale": 1.3,
           "sampleDistance": 2.68,
@@ -861,21 +723,11 @@
           "noiseScaleMax": 1.4,
           "noiseScaleScale": 9,
           "maxDensity": 1,
-          "maxSteepness": 60,
-          "healthy": "#8296a2",
-          "dry": "#93a1a4",
-          "material": {
-            "_BackFaceMirrorNormal": 0,
-            "_SmoothnessPower": 0.1,
-            "_SpecularPower": 0,
-            "_Smooothness": 0.1,
-            "_AmbientOcclusionPower": 0.7,
-            "_Cutoff": 0.45
-          }
+          "maxSteepness": 60
         },
         {
           "name": "Shrub thicket - hazel",
-          "prefab": "Assets/NatureManufacture Assets/Mountain Environment/0-Prefab-OPCD-Optimized/Bushes/Prefab_hazel_01.prefab",
+          "model": "arborist:MountainEnv_bush_hazel_01",
           "minScale": 0.6,
           "maxScale": 1.2,
           "sampleDistance": 2.55,
@@ -884,21 +736,11 @@
           "noiseScaleMax": 1.4,
           "noiseScaleScale": 9,
           "maxDensity": 1,
-          "maxSteepness": 60,
-          "healthy": "#90a2ac",
-          "dry": "#9eaaae",
-          "material": {
-            "_BackFaceMirrorNormal": 0,
-            "_SmoothnessPower": 0.1,
-            "_SpecularPower": 0,
-            "_Smooothness": 0.1,
-            "_AmbientOcclusionPower": 0.7,
-            "_Cutoff": 0.45
-          }
+          "maxSteepness": 60
         },
         {
           "name": "Shrub thicket - maple sapling",
-          "prefab": "Assets/NatureManufacture Assets/Meadow Environment Dynamic Nature/Bushes/Prefabs/prefab_maple_bush_01.prefab",
+          "model": "arborist:MeadowEnv_maple_bush_01",
           "minScale": 0.6,
           "maxScale": 1.3,
           "sampleDistance": 3.75,
@@ -907,20 +749,11 @@
           "noiseScaleMax": 1.4,
           "noiseScaleScale": 9,
           "maxDensity": 1,
-          "maxSteepness": 60,
-          "healthy": "#7088b0",
-          "dry": "#8794b0",
-          "material": {
-            "_BackFaceMirrorNormal": 0,
-            "_SmoothnessPower": 0.1,
-            "_SpecularPower": 0,
-            "_Smooothness": 0.1,
-            "_AmbientOcclusionPower": 0.7
-          }
+          "maxSteepness": 60
         },
         {
           "name": "Shrub thicket - maple bush low",
-          "prefab": "Assets/NatureManufacture Assets/Meadow Environment Dynamic Nature/Bushes/Prefabs/prefab_maple_bush_02.prefab",
+          "model": "arborist:MeadowEnv_maple_bush_02",
           "minScale": 0.6,
           "maxScale": 1.2,
           "sampleDistance": 3.75,
@@ -929,47 +762,28 @@
           "noiseScaleMax": 1.4,
           "noiseScaleScale": 9,
           "maxDensity": 1,
-          "maxSteepness": 60,
-          "healthy": "#7a8eaa",
-          "dry": "#8c98ac",
-          "material": {
-            "_BackFaceMirrorNormal": 0,
-            "_SmoothnessPower": 0.1,
-            "_SpecularPower": 0,
-            "_Smooothness": 0.1,
-            "_AmbientOcclusionPower": 0.7
-          }
+          "maxSteepness": 60
         },
         {
           "name": "Shrub thicket - cottonwood bush",
-          "prefab": "Assets/CESimgolf 3D Assets/TREES - Cottonwoods/Cottonwood Giant HERO Tree/Cottonwood-Giant-Canopy PREFAB.prefab",
+          "model": "arborist:MeadowEnv_maple_bush_03",
           "minScale": 0.18,
           "maxScale": 0.3,
-          "sampleDistance": 5.0,
+          "sampleDistance": 5,
           "noiseDensityScale": 13,
           "noiseScaleMin": 0.8,
           "noiseScaleMax": 1.25,
           "noiseScaleScale": 9,
           "maxDensity": 1,
           "maxSteepness": 60,
-          "healthy": "#6579b7",
-          "dry": "#7689b2",
-          "material": {
-            "_BackFaceMirrorNormal": 0,
-            "_SmoothnessPower": 0.1,
-            "_SpecularPower": 0,
-            "_Smooothness": 0.1,
-            "_AmbientOcclusionPower": 0.65,
-            "_Cutoff": 0.55
-          },
           "verticalOffset": -1.5
         },
         {
           "name": "Shrub thicket - birch sapling",
-          "prefab": "Assets/GolfMap/Omberg/Looks/birch/darker/PF Birch F Sapling.prefab",
+          "model": "arborist:MeadowEnv_00_Poplar_plant_A",
           "minScale": 0.45,
-          "maxScale": 1.0,
-          "sampleDistance": 11.0,
+          "maxScale": 1,
+          "sampleDistance": 11,
           "noiseDensityScale": 8,
           "noiseScaleMin": 0.65,
           "noiseScaleMax": 1.4,
@@ -989,7 +803,7 @@
       "items": [
         {
           "name": "Dense shrub - cottonwood canopy",
-          "prefab": "Assets/CESimgolf 3D Assets/TREES - Cottonwoods/Cottonwood Giant HERO Tree/Cottonwood-Giant-Canopy PREFAB.prefab",
+          "model": "arborist:MeadowEnv_maple_bush_03",
           "minScale": 0.24,
           "maxScale": 0.32,
           "sampleDistance": 2.4,
@@ -999,22 +813,12 @@
           "noiseScaleScale": 9,
           "maxDensity": 1,
           "maxSteepness": 60,
-          "healthy": "#6579b7",
-          "dry": "#7689b2",
-          "material": {
-            "_BackFaceMirrorNormal": 0,
-            "_SmoothnessPower": 0.1,
-            "_SpecularPower": 0,
-            "_Smooothness": 0.1,
-            "_AmbientOcclusionPower": 0.65,
-            "_Cutoff": 0.55
-          },
           "verticalOffset": -1.5
         },
         {
           "name": "Dense shrub - grey willow round",
-          "prefab": "Assets/NatureManufacture Assets/Meadow Environment Dynamic Nature/Bushes/Prefabs/prefab_grey_willow_02.prefab",
-          "minScale": 1.0,
+          "model": "arborist:MeadowEnv_bush_grey_willow_02",
+          "minScale": 1,
           "maxScale": 1.3,
           "sampleDistance": 8.32,
           "noiseDensityScale": 0,
@@ -1022,21 +826,12 @@
           "noiseScaleMax": 1.15,
           "noiseScaleScale": 9,
           "maxDensity": 1,
-          "maxSteepness": 60,
-          "healthy": "#96a4cb",
-          "dry": "#a0a9c4",
-          "material": {
-            "_BackFaceMirrorNormal": 0,
-            "_SmoothnessPower": 0,
-            "_SpecularPower": 0,
-            "_Smooothness": 0.1,
-            "_AmbientOcclusionPower": 0.65
-          }
+          "maxSteepness": 60
         },
         {
           "name": "Dense shrub - grey willow wide",
-          "prefab": "Assets/NatureManufacture Assets/Meadow Environment Dynamic Nature/Bushes/Prefabs/prefab_grey_willow_03.prefab",
-          "minScale": 1.0,
+          "model": "arborist:MeadowEnv_bush_grey_willow_03",
+          "minScale": 1,
           "maxScale": 1.25,
           "sampleDistance": 9.6,
           "noiseDensityScale": 0,
@@ -1044,21 +839,12 @@
           "noiseScaleMax": 1.15,
           "noiseScaleScale": 9,
           "maxDensity": 1,
-          "maxSteepness": 60,
-          "healthy": "#8fa3b4",
-          "dry": "#9aa9b0",
-          "material": {
-            "_BackFaceMirrorNormal": 0,
-            "_SmoothnessPower": 0,
-            "_SpecularPower": 0,
-            "_Smooothness": 0.1,
-            "_AmbientOcclusionPower": 0.65
-          }
+          "maxSteepness": 60
         },
         {
           "name": "Dense shrub - grey willow tall",
-          "prefab": "Assets/NatureManufacture Assets/Meadow Environment Dynamic Nature/Bushes/Prefabs/prefab_grey_willow_04.prefab",
-          "minScale": 1.0,
+          "model": "arborist:MeadowEnv_bush_grey_willow_04",
+          "minScale": 1,
           "maxScale": 1.3,
           "sampleDistance": 10.88,
           "noiseDensityScale": 0,
@@ -1066,21 +852,12 @@
           "noiseScaleMax": 1.15,
           "noiseScaleScale": 9,
           "maxDensity": 1,
-          "maxSteepness": 60,
-          "healthy": "#869acd",
-          "dry": "#8b9ac4",
-          "material": {
-            "_BackFaceMirrorNormal": 0,
-            "_SmoothnessPower": 0,
-            "_SpecularPower": 0,
-            "_Smooothness": 0.1,
-            "_AmbientOcclusionPower": 0.65
-          }
+          "maxSteepness": 60
         },
         {
           "name": "Dense shrub - hazel cluster",
-          "prefab": "Assets/NatureManufacture Assets/Mountain Environment/0-Prefab-OPCD-Optimized/Bushes/Prefab_hazel_04_cluster.prefab",
-          "minScale": 1.0,
+          "model": "arborist:MountainEnv_bush_hazel_04_cluster",
+          "minScale": 1,
           "maxScale": 1.3,
           "sampleDistance": 1.91,
           "noiseDensityScale": 0,
@@ -1088,39 +865,20 @@
           "noiseScaleMax": 1.15,
           "noiseScaleScale": 9,
           "maxDensity": 0.3,
-          "maxSteepness": 60,
-          "healthy": "#8296a2",
-          "dry": "#93a1a4",
-          "material": {
-            "_BackFaceMirrorNormal": 0,
-            "_SmoothnessPower": 0.1,
-            "_SpecularPower": 0,
-            "_Smooothness": 0.1,
-            "_AmbientOcclusionPower": 0.7,
-            "_Cutoff": 0.45
-          }
+          "maxSteepness": 60
         },
         {
           "name": "Dense shrub - maple bush",
-          "prefab": "Assets/NatureManufacture Assets/Meadow Environment Dynamic Nature/Bushes/Prefabs/prefab_maple_bush_01.prefab",
-          "minScale": 1.0,
+          "model": "arborist:MeadowEnv_maple_bush_01",
+          "minScale": 1,
           "maxScale": 1.3,
-          "sampleDistance": 3.0,
+          "sampleDistance": 3,
           "noiseDensityScale": 0,
           "noiseScaleMin": 0.9,
           "noiseScaleMax": 1.15,
           "noiseScaleScale": 9,
           "maxDensity": 1,
-          "maxSteepness": 60,
-          "healthy": "#7088b0",
-          "dry": "#8794b0",
-          "material": {
-            "_BackFaceMirrorNormal": 0,
-            "_SmoothnessPower": 0.1,
-            "_SpecularPower": 0,
-            "_Smooothness": 0.1,
-            "_AmbientOcclusionPower": 0.7
-          }
+          "maxSteepness": 60
         }
       ]
     },
@@ -1134,10 +892,8 @@
       "items": [
         {
           "name": "Creek lush - broad blades",
-          "source": "Assets/RUSTIC Grass/Textures/Rustic Grass_23.psd",
-          "healthy": "#648854",
-          "dry": "#708859",
-          "width": 1.0,
+          "model": "vsp:texture:Rustic Grass_23",
+          "width": 1,
           "height": 1.15,
           "minScale": 0.7,
           "maxScale": 1.3,
@@ -1148,15 +904,12 @@
           "lodFactor": 40,
           "noiseScaleMin": 0.35,
           "noiseScaleMax": 1.6,
-          "noiseScaleScale": 6,
-          "randomDarkening": 0.15
+          "noiseScaleScale": 6
         },
         {
           "name": "Creek lush - tall arching",
-          "source": "Assets/RUSTIC Grass/Textures/Rustic Grass_11.psd",
-          "healthy": "#6b8e5b",
-          "dry": "#7a9062",
-          "width": 1.0,
+          "model": "vsp:texture:Rustic Grass_11",
+          "width": 1,
           "height": 1.55,
           "minScale": 0.6,
           "maxScale": 1.4,
@@ -1173,9 +926,7 @@
         },
         {
           "name": "Creek lush - fine tall blades",
-          "source": "Assets/RUSTIC Grass/Textures/Dune Grass_04.psd",
-          "healthy": "#719663",
-          "dry": "#839668",
+          "model": "vsp:texture:Dune Grass_04",
           "width": 0.9,
           "height": 1.45,
           "minScale": 0.6,
@@ -1193,10 +944,8 @@
         },
         {
           "name": "Creek lush - reed canary heads",
-          "source": "Assets/Grasses_Flowers/Grass Textures2/026.psd",
-          "healthy": "#717654",
-          "dry": "#7b7254",
-          "width": 1.0,
+          "model": "vsp:texture:026",
+          "width": 1,
           "height": 1.7,
           "minScale": 0.6,
           "maxScale": 1.4,
@@ -1207,16 +956,13 @@
           "lodFactor": 40,
           "noiseScaleMin": 0.5,
           "noiseScaleMax": 1.7,
-          "noiseScaleScale": 27,
-          "whitePoint": 0.8
+          "noiseScaleScale": 27
         },
         {
           "name": "Creek - brown dead grass",
-          "source": "Assets/RUSTIC Grass/Textures/Rustic Grass_19.psd",
-          "healthy": "#756043",
-          "dry": "#826b49",
-          "width": 1.0,
-          "height": 1.0,
+          "model": "vsp:texture:Rustic Grass_19#brown-dead-grass",
+          "width": 1,
+          "height": 1,
           "minScale": 0.6,
           "maxScale": 1.4,
           "sampleDistance": 2.2,
@@ -1241,9 +987,7 @@
       "items": [
         {
           "name": "Creek lush low - broad blades",
-          "source": "Assets/RUSTIC Grass/Textures/Rustic Grass_23.psd",
-          "healthy": "#648854",
-          "dry": "#708859",
+          "model": "vsp:texture:Rustic Grass_23",
           "width": 0.5,
           "height": 0.26,
           "minScale": 0.8,
@@ -1255,14 +999,11 @@
           "lodFactor": 40,
           "noiseScaleMin": 0.8,
           "noiseScaleMax": 1.25,
-          "noiseScaleScale": 6,
-          "randomDarkening": 0.15
+          "noiseScaleScale": 6
         },
         {
           "name": "Creek lush low - arching",
-          "source": "Assets/RUSTIC Grass/Textures/Rustic Grass_11.psd",
-          "healthy": "#6b8e5b",
-          "dry": "#7a9062",
+          "model": "vsp:texture:Rustic Grass_11",
           "width": 0.5,
           "height": 0.32,
           "minScale": 0.8,
@@ -1278,9 +1019,7 @@
         },
         {
           "name": "Creek lush low - fine blades",
-          "source": "Assets/RUSTIC Grass/Textures/Dune Grass_04.psd",
-          "healthy": "#719663",
-          "dry": "#839668",
+          "model": "vsp:texture:Dune Grass_04",
           "width": 0.45,
           "height": 0.3,
           "minScale": 0.8,
@@ -1296,9 +1035,7 @@
         },
         {
           "name": "Creek lush low - canary heads",
-          "source": "Assets/Grasses_Flowers/Grass Textures2/026.psd",
-          "healthy": "#717654",
-          "dry": "#7b7254",
+          "model": "vsp:texture:026",
           "width": 0.45,
           "height": 0.4,
           "minScale": 0.85,
@@ -1310,14 +1047,11 @@
           "lodFactor": 40,
           "noiseScaleMin": 0.8,
           "noiseScaleMax": 1.25,
-          "noiseScaleScale": 6,
-          "whitePoint": 0.8
+          "noiseScaleScale": 6
         },
         {
           "name": "Creek lush low - brown tufts",
-          "source": "Assets/RUSTIC Grass/Textures/Rustic Grass_19.psd",
-          "healthy": "#756043",
-          "dry": "#826b49",
+          "model": "vsp:texture:Rustic Grass_19#brown-dead-grass",
           "width": 0.5,
           "height": 0.28,
           "minScale": 0.8,
@@ -1344,9 +1078,7 @@
       "items": [
         {
           "name": "Creek reed - upright blades",
-          "source": "Assets/RUSTIC Grass/Textures/Dune Grass_02.psd",
-          "healthy": "#547247",
-          "dry": "#5e734b",
+          "model": "vsp:texture:Dune Grass_02",
           "width": 0.9,
           "height": 1.25,
           "minScale": 0.7,
@@ -1358,19 +1090,16 @@
           "lodFactor": 40,
           "noiseScaleMin": 0.35,
           "noiseScaleMax": 1.6,
-          "noiseScaleScale": 6,
-          "randomDarkening": 0.15
+          "noiseScaleScale": 6
         },
         {
           "name": "Creek reed - broad leaves",
-          "source": "Assets/Grasses_Flowers/Grass Textures2/010.psd",
-          "healthy": "#4f6f44",
-          "dry": "#5b6f48",
+          "model": "vsp:texture:010",
           "width": 0.8,
           "height": 1.45,
           "minScale": 0.6,
           "maxScale": 1.4,
-          "sampleDistance": 1.0,
+          "sampleDistance": 1,
           "noiseDensityScale": 10,
           "maxDensity": 1,
           "maxSteepness": 80,
@@ -1383,10 +1112,8 @@
         },
         {
           "name": "Creek lush - tall arching",
-          "source": "Assets/RUSTIC Grass/Textures/Rustic Grass_11.psd",
-          "healthy": "#6b8e5b",
-          "dry": "#7a9062",
-          "width": 1.0,
+          "model": "vsp:texture:Rustic Grass_11",
+          "width": 1,
           "height": 1.55,
           "minScale": 0.6,
           "maxScale": 1.4,
@@ -1403,11 +1130,9 @@
         },
         {
           "name": "Creek - brown dead grass",
-          "source": "Assets/RUSTIC Grass/Textures/Rustic Grass_19.psd",
-          "healthy": "#756043",
-          "dry": "#826b49",
-          "width": 1.0,
-          "height": 1.0,
+          "model": "vsp:texture:Rustic Grass_19#brown-dead-grass",
+          "width": 1,
+          "height": 1,
           "minScale": 0.6,
           "maxScale": 1.4,
           "sampleDistance": 2.2,
@@ -1432,9 +1157,7 @@
       "items": [
         {
           "name": "Creek reed - upright blades",
-          "source": "Assets/RUSTIC Grass/Textures/Dune Grass_02.psd",
-          "healthy": "#547247",
-          "dry": "#5e734b",
+          "model": "vsp:texture:Dune Grass_02",
           "width": 0.9,
           "height": 1.25,
           "minScale": 0.7,
@@ -1446,19 +1169,16 @@
           "lodFactor": 40,
           "noiseScaleMin": 0.35,
           "noiseScaleMax": 1.6,
-          "noiseScaleScale": 6,
-          "randomDarkening": 0.15
+          "noiseScaleScale": 6
         },
         {
           "name": "Creek reed - broad leaves",
-          "source": "Assets/Grasses_Flowers/Grass Textures2/010.psd",
-          "healthy": "#4f6f44",
-          "dry": "#5b6f48",
+          "model": "vsp:texture:010",
           "width": 0.8,
           "height": 1.45,
           "minScale": 0.6,
           "maxScale": 1.4,
-          "sampleDistance": 1.0,
+          "sampleDistance": 1,
           "noiseDensityScale": 10,
           "maxDensity": 1,
           "maxSteepness": 80,
@@ -1471,10 +1191,8 @@
         },
         {
           "name": "Creek reed - reed plumes",
-          "source": "Assets/Grasses_Flowers/Grass Textures2/024.psd",
-          "healthy": "#636b50",
-          "dry": "#6b6a50",
-          "width": 1.0,
+          "model": "vsp:texture:024",
+          "width": 1,
           "height": 1.8,
           "minScale": 0.8,
           "maxScale": 1.3,
@@ -1485,15 +1203,12 @@
           "lodFactor": 40,
           "noiseScaleMin": 0.6,
           "noiseScaleMax": 1.5,
-          "noiseScaleScale": 9,
-          "whitePoint": 0.75
+          "noiseScaleScale": 9
         },
         {
           "name": "Creek reed - cattail stand",
-          "source": "Assets/RUSTIC Grass/Textures/Dry Cattails_05.psd",
-          "healthy": "#666a48",
-          "dry": "#655a42",
-          "width": 1.0,
+          "model": "vsp:texture:Dry Cattails_05",
+          "width": 1,
           "height": 1.9,
           "minScale": 0.95,
           "maxScale": 1.35,
@@ -1508,14 +1223,12 @@
         },
         {
           "name": "Creek reed - cattail single",
-          "source": "Assets/RUSTIC Grass/Textures/Dry Cattails_01.psd",
-          "healthy": "#666a48",
-          "dry": "#655a42",
+          "model": "vsp:texture:Dry Cattails_01",
           "width": 0.8,
           "height": 1.8,
           "minScale": 0.95,
           "maxScale": 1.35,
-          "sampleDistance": 1.0,
+          "sampleDistance": 1,
           "noiseDensityScale": 10,
           "maxDensity": 1,
           "maxSteepness": 80,
@@ -1537,9 +1250,7 @@
       "items": [
         {
           "name": "Creek reed - upright blades",
-          "source": "Assets/RUSTIC Grass/Textures/Dune Grass_02.psd",
-          "healthy": "#547247",
-          "dry": "#5e734b",
+          "model": "vsp:texture:Dune Grass_02",
           "width": 0.9,
           "height": 1.25,
           "minScale": 0.7,
@@ -1551,19 +1262,16 @@
           "lodFactor": 40,
           "noiseScaleMin": 0.35,
           "noiseScaleMax": 1.6,
-          "noiseScaleScale": 6,
-          "randomDarkening": 0.15
+          "noiseScaleScale": 6
         },
         {
           "name": "Creek reed - broad leaves",
-          "source": "Assets/Grasses_Flowers/Grass Textures2/010.psd",
-          "healthy": "#4f6f44",
-          "dry": "#5b6f48",
+          "model": "vsp:texture:010",
           "width": 0.8,
           "height": 1.45,
           "minScale": 0.6,
           "maxScale": 1.4,
-          "sampleDistance": 1.0,
+          "sampleDistance": 1,
           "noiseDensityScale": 10,
           "maxDensity": 1,
           "maxSteepness": 80,
@@ -1576,10 +1284,8 @@
         },
         {
           "name": "Creek lush - tall arching",
-          "source": "Assets/RUSTIC Grass/Textures/Rustic Grass_11.psd",
-          "healthy": "#6b8e5b",
-          "dry": "#7a9062",
-          "width": 1.0,
+          "model": "vsp:texture:Rustic Grass_11",
+          "width": 1,
           "height": 1.55,
           "minScale": 0.6,
           "maxScale": 1.4,
@@ -1596,11 +1302,9 @@
         },
         {
           "name": "Creek - brown dead grass",
-          "source": "Assets/RUSTIC Grass/Textures/Rustic Grass_19.psd",
-          "healthy": "#756043",
-          "dry": "#826b49",
-          "width": 1.0,
-          "height": 1.0,
+          "model": "vsp:texture:Rustic Grass_19#brown-dead-grass",
+          "width": 1,
+          "height": 1,
           "minScale": 0.6,
           "maxScale": 1.4,
           "sampleDistance": 2.2,
@@ -1625,9 +1329,7 @@
       "items": [
         {
           "name": "Creek reed - upright blades",
-          "source": "Assets/RUSTIC Grass/Textures/Dune Grass_02.psd",
-          "healthy": "#547247",
-          "dry": "#5e734b",
+          "model": "vsp:texture:Dune Grass_02",
           "width": 0.9,
           "height": 1.25,
           "minScale": 0.7,
@@ -1639,19 +1341,16 @@
           "lodFactor": 40,
           "noiseScaleMin": 0.35,
           "noiseScaleMax": 1.6,
-          "noiseScaleScale": 6,
-          "randomDarkening": 0.15
+          "noiseScaleScale": 6
         },
         {
           "name": "Creek reed - broad leaves",
-          "source": "Assets/Grasses_Flowers/Grass Textures2/010.psd",
-          "healthy": "#4f6f44",
-          "dry": "#5b6f48",
+          "model": "vsp:texture:010",
           "width": 0.8,
           "height": 1.45,
           "minScale": 0.6,
           "maxScale": 1.4,
-          "sampleDistance": 1.0,
+          "sampleDistance": 1,
           "noiseDensityScale": 10,
           "maxDensity": 0.16,
           "maxSteepness": 80,
@@ -1664,10 +1363,8 @@
         },
         {
           "name": "Creek reed - reed plumes",
-          "source": "Assets/Grasses_Flowers/Grass Textures2/024.psd",
-          "healthy": "#636b50",
-          "dry": "#6b6a50",
-          "width": 1.0,
+          "model": "vsp:texture:024",
+          "width": 1,
           "height": 1.8,
           "minScale": 0.8,
           "maxScale": 1.3,
@@ -1678,15 +1375,12 @@
           "lodFactor": 40,
           "noiseScaleMin": 0.6,
           "noiseScaleMax": 1.5,
-          "noiseScaleScale": 9,
-          "whitePoint": 0.75
+          "noiseScaleScale": 9
         },
         {
           "name": "Creek reed - cattail stand",
-          "source": "Assets/RUSTIC Grass/Textures/Dry Cattails_05.psd",
-          "healthy": "#666a48",
-          "dry": "#655a42",
-          "width": 1.0,
+          "model": "vsp:texture:Dry Cattails_05",
+          "width": 1,
           "height": 1.9,
           "minScale": 0.95,
           "maxScale": 1.35,
@@ -1701,14 +1395,12 @@
         },
         {
           "name": "Creek reed - cattail single",
-          "source": "Assets/RUSTIC Grass/Textures/Dry Cattails_01.psd",
-          "healthy": "#666a48",
-          "dry": "#655a42",
+          "model": "vsp:texture:Dry Cattails_01",
           "width": 0.8,
           "height": 1.8,
           "minScale": 0.95,
           "maxScale": 1.35,
-          "sampleDistance": 1.0,
+          "sampleDistance": 1,
           "noiseDensityScale": 10,
           "maxDensity": 0.2,
           "maxSteepness": 80,
@@ -1719,11 +1411,9 @@
         },
         {
           "name": "Creek vass - reed stand",
-          "source": "Assets/Grasses_Flowers/Grass Textures2/013.psd",
-          "healthy": "#6b804c",
-          "dry": "#71824d",
+          "model": "vsp:texture:013",
           "width": 1.2,
-          "height": 3.0,
+          "height": 3,
           "minScale": 0.7,
           "maxScale": 1.5,
           "sampleDistance": 2.08,
@@ -1733,14 +1423,11 @@
           "lodFactor": 40,
           "noiseScaleMin": 0.55,
           "noiseScaleMax": 1.5,
-          "noiseScaleScale": 5,
-          "randomDarkening": 0.2
+          "noiseScaleScale": 5
         },
         {
           "name": "Creek vass - reed stand 2",
-          "source": "Assets/Grasses_Flowers/Grass Textures2/013.psd",
-          "healthy": "#758646",
-          "dry": "#7d8848",
+          "model": "vsp:texture:013#reed-stand-2",
           "width": 1.2,
           "height": 2.6,
           "minScale": 0.7,
@@ -1752,14 +1439,11 @@
           "lodFactor": 40,
           "noiseScaleMin": 0.55,
           "noiseScaleMax": 1.5,
-          "noiseScaleScale": 4,
-          "randomDarkening": 0.2
+          "noiseScaleScale": 4
         },
         {
           "name": "Creek vass - reed stand 3",
-          "source": "Assets/Grasses_Flowers/Grass Textures2/013.psd",
-          "healthy": "#607b4a",
-          "dry": "#657e4a",
+          "model": "vsp:texture:013#reed-stand-3",
           "width": 1.2,
           "height": 3.4,
           "minScale": 0.7,
@@ -1771,14 +1455,11 @@
           "lodFactor": 40,
           "noiseScaleMin": 0.55,
           "noiseScaleMax": 1.5,
-          "noiseScaleScale": 6.5,
-          "randomDarkening": 0.2
+          "noiseScaleScale": 6.5
         },
         {
           "name": "Creek vass - leafy reed",
-          "source": "Assets/RUSTIC Grass/Textures/Rustic Grass_11.psd",
-          "healthy": "#6e8049",
-          "dry": "#748148",
+          "model": "vsp:texture:Rustic Grass_11#leafy-reed",
           "width": 1.5,
           "height": 2.6,
           "minScale": 0.7,
@@ -1790,14 +1471,11 @@
           "lodFactor": 40,
           "noiseScaleMin": 0.55,
           "noiseScaleMax": 1.5,
-          "noiseScaleScale": 7,
-          "randomDarkening": 0.2
+          "noiseScaleScale": 7
         },
         {
           "name": "Creek vass - reed plumes",
-          "source": "Assets/Grasses_Flowers/Grass Textures2/014.psd",
-          "healthy": "#858056",
-          "dry": "#877e54",
+          "model": "vsp:texture:014",
           "width": 0.9,
           "height": 3.3,
           "minScale": 0.7,
@@ -1813,9 +1491,7 @@
         },
         {
           "name": "Creek vass - winter reed",
-          "source": "Assets/RUSTIC Grass/Textures/Dry Grass_12.psd",
-          "healthy": "#7d7752",
-          "dry": "#80754e",
+          "model": "vsp:texture:Dry Grass_12",
           "width": 1.4,
           "height": 2.8,
           "minScale": 0.7,
@@ -1842,10 +1518,8 @@
       "items": [
         {
           "name": "Creek thicket - grass base",
-          "source": "Assets/RUSTIC Grass/Textures/Rustic Grass_23.psd",
-          "healthy": "#5f8250",
-          "dry": "#6b8254",
-          "width": 1.0,
+          "model": "vsp:texture:Rustic Grass_23#grass-base",
+          "width": 1,
           "height": 1.15,
           "minScale": 0.7,
           "maxScale": 1.3,
@@ -1856,15 +1530,12 @@
           "lodFactor": 40,
           "noiseScaleMin": 0.35,
           "noiseScaleMax": 1.6,
-          "noiseScaleScale": 6,
-          "randomDarkening": 0.15
+          "noiseScaleScale": 6
         },
         {
           "name": "Creek thicket - grass tall",
-          "source": "Assets/RUSTIC Grass/Textures/Rustic Grass_11.psd",
-          "healthy": "#658856",
-          "dry": "#74895d",
-          "width": 1.0,
+          "model": "vsp:texture:Rustic Grass_11#grass-tall",
+          "width": 1,
           "height": 1.55,
           "minScale": 0.6,
           "maxScale": 1.4,
@@ -1881,14 +1552,12 @@
         },
         {
           "name": "Creek thicket - grass fine",
-          "source": "Assets/RUSTIC Grass/Textures/Dune Grass_04.psd",
-          "healthy": "#6c8e5e",
-          "dry": "#7c8e63",
+          "model": "vsp:texture:Dune Grass_04#grass-fine",
           "width": 0.9,
           "height": 1.45,
           "minScale": 0.6,
           "maxScale": 1.4,
-          "sampleDistance": 1.0,
+          "sampleDistance": 1,
           "noiseDensityScale": 12,
           "maxDensity": 1,
           "maxSteepness": 80,
@@ -1901,10 +1570,8 @@
         },
         {
           "name": "Creek lush - reed canary heads",
-          "source": "Assets/Grasses_Flowers/Grass Textures2/026.psd",
-          "healthy": "#717654",
-          "dry": "#7b7254",
-          "width": 1.0,
+          "model": "vsp:texture:026",
+          "width": 1,
           "height": 1.7,
           "minScale": 0.6,
           "maxScale": 1.4,
@@ -1915,16 +1582,13 @@
           "lodFactor": 40,
           "noiseScaleMin": 0.5,
           "noiseScaleMax": 1.7,
-          "noiseScaleScale": 27,
-          "whitePoint": 0.8
+          "noiseScaleScale": 27
         },
         {
           "name": "Creek - brown dead grass",
-          "source": "Assets/RUSTIC Grass/Textures/Rustic Grass_19.psd",
-          "healthy": "#756043",
-          "dry": "#826b49",
-          "width": 1.0,
-          "height": 1.0,
+          "model": "vsp:texture:Rustic Grass_19#brown-dead-grass",
+          "width": 1,
+          "height": 1,
           "minScale": 0.6,
           "maxScale": 1.4,
           "sampleDistance": 2.2,
@@ -1938,10 +1602,8 @@
         },
         {
           "name": "Creek thicket - grass giant arching",
-          "source": "Assets/RUSTIC Grass/Textures/Rustic Grass_11.psd",
-          "healthy": "#658856",
-          "dry": "#74895d",
-          "width": 1.0,
+          "model": "vsp:texture:Rustic Grass_11#grass-tall",
+          "width": 1,
           "height": 1.55,
           "minScale": 0.75,
           "maxScale": 1.25,
@@ -1956,9 +1618,7 @@
         },
         {
           "name": "Creek thicket - grass giant fine",
-          "source": "Assets/RUSTIC Grass/Textures/Dune Grass_04.psd",
-          "healthy": "#6c8e5e",
-          "dry": "#7c8e63",
+          "model": "vsp:texture:Dune Grass_04#grass-fine",
           "width": 0.9,
           "height": 1.45,
           "minScale": 0.75,
@@ -1985,7 +1645,7 @@
       "items": [
         {
           "name": "Creek thicket - willow round",
-          "prefab": "Assets/NatureManufacture Assets/Meadow Environment Dynamic Nature/Bushes/Prefabs/prefab_grey_willow_02.prefab",
+          "model": "arborist:MeadowEnv_bush_grey_willow_02",
           "minScale": 0.5,
           "maxScale": 1.0499999523162842,
           "sampleDistance": 10.56,
@@ -1995,21 +1655,12 @@
           "noiseScaleScale": 8,
           "maxDensity": 1,
           "maxSteepness": 75,
-          "healthy": "#96a4cb",
-          "dry": "#a0a9c4",
-          "material": {
-            "_BackFaceMirrorNormal": 0,
-            "_SmoothnessPower": 0,
-            "_SpecularPower": 0,
-            "_Smooothness": 0.1,
-            "_AmbientOcclusionPower": 0.6499999761581421
-          },
           "noiseCutoff": 0.47999998927116394,
           "noiseCutoffScale": 16
         },
         {
           "name": "Creek thicket - willow wide",
-          "prefab": "Assets/NatureManufacture Assets/Meadow Environment Dynamic Nature/Bushes/Prefabs/prefab_grey_willow_03.prefab",
+          "model": "arborist:MeadowEnv_bush_grey_willow_03",
           "minScale": 0.5,
           "maxScale": 1.0499999523162842,
           "sampleDistance": 10.56,
@@ -2019,21 +1670,12 @@
           "noiseScaleScale": 8,
           "maxDensity": 1,
           "maxSteepness": 75,
-          "healthy": "#96a4cb",
-          "dry": "#a0a9c4",
-          "material": {
-            "_BackFaceMirrorNormal": 0,
-            "_SmoothnessPower": 0,
-            "_SpecularPower": 0,
-            "_Smooothness": 0.1,
-            "_AmbientOcclusionPower": 0.6499999761581421
-          },
           "noiseCutoff": 0.47999998927116394,
           "noiseCutoffScale": 16
         },
         {
           "name": "Creek thicket - willow tall",
-          "prefab": "Assets/NatureManufacture Assets/Meadow Environment Dynamic Nature/Bushes/Prefabs/prefab_grey_willow_04.prefab",
+          "model": "arborist:MeadowEnv_bush_grey_willow_04",
           "minScale": 0.5,
           "maxScale": 1.100000023841858,
           "sampleDistance": 18.56,
@@ -2043,21 +1685,12 @@
           "noiseScaleScale": 8,
           "maxDensity": 1,
           "maxSteepness": 75,
-          "healthy": "#96a4cb",
-          "dry": "#a0a9c4",
-          "material": {
-            "_BackFaceMirrorNormal": 0,
-            "_SmoothnessPower": 0,
-            "_SpecularPower": 0,
-            "_Smooothness": 0.1,
-            "_AmbientOcclusionPower": 0.6499999761581421
-          },
           "noiseCutoff": 0.47999998927116394,
           "noiseCutoffScale": 16
         },
         {
           "name": "Creek thicket - willow shoot",
-          "prefab": "Assets/NatureManufacture Assets/Meadow Environment Dynamic Nature/Bushes/Prefabs/prefab_grey_willow_01.prefab",
+          "model": "arborist:MeadowEnv_bush_grey_willow_01",
           "minScale": 0.5,
           "maxScale": 1.0499999523162842,
           "sampleDistance": 13.44,
@@ -2067,21 +1700,12 @@
           "noiseScaleScale": 8,
           "maxDensity": 1,
           "maxSteepness": 75,
-          "healthy": "#96a4cb",
-          "dry": "#a0a9c4",
-          "material": {
-            "_BackFaceMirrorNormal": 0,
-            "_SmoothnessPower": 0,
-            "_SpecularPower": 0,
-            "_Smooothness": 0.1,
-            "_AmbientOcclusionPower": 0.6499999761581421
-          },
           "noiseCutoff": 0.47999998927116394,
           "noiseCutoffScale": 16
         },
         {
           "name": "Creek thicket - maple bush",
-          "prefab": "Assets/NatureManufacture Assets/Meadow Environment Dynamic Nature/Bushes/Prefabs/prefab_maple_bush_01.prefab",
+          "model": "arborist:MeadowEnv_maple_bush_01",
           "minScale": 0.6,
           "maxScale": 1.3,
           "sampleDistance": 2.85,
@@ -2091,22 +1715,13 @@
           "noiseScaleScale": 8,
           "maxDensity": 1,
           "maxSteepness": 75,
-          "healthy": "#7088b0",
-          "dry": "#8794b0",
-          "material": {
-            "_BackFaceMirrorNormal": 0,
-            "_SmoothnessPower": 0.1,
-            "_SpecularPower": 0,
-            "_Smooothness": 0.1,
-            "_AmbientOcclusionPower": 0.699999988079071
-          },
           "noiseCutoff": 0.4000000059604645,
           "noiseCutoffScale": 16,
           "density": 1
         },
         {
           "name": "Creek thicket - maple bush low",
-          "prefab": "Assets/NatureManufacture Assets/Meadow Environment Dynamic Nature/Bushes/Prefabs/prefab_maple_bush_02.prefab",
+          "model": "arborist:MeadowEnv_maple_bush_02",
           "minScale": 0.6,
           "maxScale": 1.1,
           "sampleDistance": 2.85,
@@ -2116,22 +1731,13 @@
           "noiseScaleScale": 8,
           "maxDensity": 1,
           "maxSteepness": 75,
-          "healthy": "#7088b0",
-          "dry": "#8794b0",
-          "material": {
-            "_BackFaceMirrorNormal": 0,
-            "_SmoothnessPower": 0.1,
-            "_SpecularPower": 0,
-            "_Smooothness": 0.1,
-            "_AmbientOcclusionPower": 0.699999988079071
-          },
           "noiseCutoff": 0.4000000059604645,
           "noiseCutoffScale": 16,
           "density": 1
         },
         {
           "name": "Creek thicket - hazel",
-          "prefab": "Assets/NatureManufacture Assets/Mountain Environment/0-Prefab-OPCD-Optimized/Bushes/Prefab_hazel_01.prefab",
+          "model": "arborist:MountainEnv_bush_hazel_01",
           "minScale": 0.6,
           "maxScale": 1.1,
           "sampleDistance": 1.66,
@@ -2141,23 +1747,13 @@
           "noiseScaleScale": 8,
           "maxDensity": 1,
           "maxSteepness": 75,
-          "healthy": "#899cae",
-          "dry": "#99a6af",
-          "material": {
-            "_BackFaceMirrorNormal": 0,
-            "_SmoothnessPower": 0.1,
-            "_SpecularPower": 0,
-            "_Smooothness": 0.1,
-            "_Cutoff": 0.44999998807907104,
-            "_AmbientOcclusionPower": 0.699999988079071
-          },
           "noiseCutoff": 0.30000001192092896,
           "noiseCutoffScale": 16,
           "density": 1
         },
         {
           "name": "Creek thicket - hazel low",
-          "prefab": "Assets/NatureManufacture Assets/Mountain Environment/0-Prefab-OPCD-Optimized/Bushes/Prefab_hazel_00_bush.prefab",
+          "model": "arborist:MountainEnv_bush_hazel_00_bush",
           "minScale": 0.6,
           "maxScale": 1.2,
           "sampleDistance": 1.66,
@@ -2167,23 +1763,13 @@
           "noiseScaleScale": 8,
           "maxDensity": 1,
           "maxSteepness": 75,
-          "healthy": "#899cae",
-          "dry": "#99a6af",
-          "material": {
-            "_BackFaceMirrorNormal": 0,
-            "_SmoothnessPower": 0.1,
-            "_SpecularPower": 0,
-            "_Smooothness": 0.1,
-            "_Cutoff": 0.44999998807907104,
-            "_AmbientOcclusionPower": 0.699999988079071
-          },
           "noiseCutoff": 0.30000001192092896,
           "noiseCutoffScale": 16,
           "density": 1
         },
         {
           "name": "Creek thicket - hazel cluster",
-          "prefab": "Assets/NatureManufacture Assets/Mountain Environment/0-Prefab-OPCD-Optimized/Bushes/Prefab_hazel_04_cluster.prefab",
+          "model": "arborist:MountainEnv_bush_hazel_04_cluster",
           "minScale": 0.7,
           "maxScale": 1.1,
           "sampleDistance": 1.66,
@@ -2193,26 +1779,16 @@
           "noiseScaleScale": 8,
           "maxDensity": 1,
           "maxSteepness": 75,
-          "healthy": "#899cae",
-          "dry": "#99a6af",
-          "material": {
-            "_BackFaceMirrorNormal": 0,
-            "_SmoothnessPower": 0.1,
-            "_SpecularPower": 0,
-            "_Smooothness": 0.1,
-            "_Cutoff": 0.44999998807907104,
-            "_AmbientOcclusionPower": 0.699999988079071
-          },
           "noiseCutoff": 0.30000001192092896,
           "noiseCutoffScale": 16,
           "density": 1
         },
         {
           "name": "Creek thicket - birch sapling",
-          "prefab": "Assets/GolfMap/Omberg/Looks/birch/darker/PF Birch F Sapling.prefab",
+          "model": "arborist:MeadowEnv_00_Poplar_plant_A",
           "minScale": 0.5,
           "maxScale": 1.1,
-          "sampleDistance": 8.0,
+          "sampleDistance": 8,
           "noiseDensityScale": 6,
           "noiseScaleMin": 0.65,
           "noiseScaleMax": 1.35,
@@ -2223,7 +1799,7 @@
         },
         {
           "name": "Creek thicket - cottonwood bush",
-          "prefab": "Assets/CESimgolf 3D Assets/TREES - Cottonwoods/Cottonwood Giant HERO Tree/Cottonwood-Giant-Canopy PREFAB.prefab",
+          "model": "arborist:MeadowEnv_maple_bush_03",
           "minScale": 0.20000000298023224,
           "maxScale": 0.27000001072883606,
           "sampleDistance": 3.0999999046325684,
@@ -2233,16 +1809,6 @@
           "noiseScaleScale": 8,
           "maxDensity": 1,
           "maxSteepness": 75,
-          "healthy": "#6579b7",
-          "dry": "#7689b2",
-          "material": {
-            "_BackFaceMirrorNormal": 0,
-            "_SmoothnessPower": 0.1,
-            "_SpecularPower": 0,
-            "_Smooothness": 0.1,
-            "_Cutoff": 0.550000011920929,
-            "_AmbientOcclusionPower": 0.6499999761581421
-          },
           "noiseCutoff": 0.4300000071525574,
           "noiseCutoffScale": 16,
           "verticalOffset": -1.5,
@@ -2250,10 +1816,8 @@
         },
         {
           "name": "Creek thicket - grass base",
-          "source": "Assets/RUSTIC Grass/Textures/Rustic Grass_23.psd",
-          "healthy": "#5f8250",
-          "dry": "#6b8254",
-          "width": 1.0,
+          "model": "vsp:texture:Rustic Grass_23#grass-base",
+          "width": 1,
           "height": 1.15,
           "minScale": 0.7,
           "maxScale": 1.3,
@@ -2264,15 +1828,12 @@
           "lodFactor": 40,
           "noiseScaleMin": 0.35,
           "noiseScaleMax": 1.6,
-          "noiseScaleScale": 6,
-          "randomDarkening": 0.15
+          "noiseScaleScale": 6
         },
         {
           "name": "Creek thicket - grass tall",
-          "source": "Assets/RUSTIC Grass/Textures/Rustic Grass_11.psd",
-          "healthy": "#658856",
-          "dry": "#74895d",
-          "width": 1.0,
+          "model": "vsp:texture:Rustic Grass_11#grass-tall",
+          "width": 1,
           "height": 1.55,
           "minScale": 0.6,
           "maxScale": 1.4,
@@ -2289,11 +1850,9 @@
         },
         {
           "name": "Creek - brown dead grass",
-          "source": "Assets/RUSTIC Grass/Textures/Rustic Grass_19.psd",
-          "healthy": "#756043",
-          "dry": "#826b49",
-          "width": 1.0,
-          "height": 1.0,
+          "model": "vsp:texture:Rustic Grass_19#brown-dead-grass",
+          "width": 1,
+          "height": 1,
           "minScale": 0.6,
           "maxScale": 1.4,
           "sampleDistance": 2.2,
@@ -2307,10 +1866,8 @@
         },
         {
           "name": "Creek thicket - grass giant arching",
-          "source": "Assets/RUSTIC Grass/Textures/Rustic Grass_11.psd",
-          "healthy": "#658856",
-          "dry": "#74895d",
-          "width": 1.0,
+          "model": "vsp:texture:Rustic Grass_11#grass-tall",
+          "width": 1,
           "height": 1.55,
           "minScale": 0.75,
           "maxScale": 1.25,
@@ -2325,9 +1882,7 @@
         },
         {
           "name": "Creek thicket - grass giant fine",
-          "source": "Assets/RUSTIC Grass/Textures/Dune Grass_04.psd",
-          "healthy": "#6c8e5e",
-          "dry": "#7c8e63",
+          "model": "vsp:texture:Dune Grass_04#grass-fine",
           "width": 0.9,
           "height": 1.45,
           "minScale": 0.75,
@@ -2343,10 +1898,8 @@
         },
         {
           "name": "Creek thicket - cattail stand",
-          "source": "Assets/RUSTIC Grass/Textures/Dry Cattails_05.psd",
-          "healthy": "#666a48",
-          "dry": "#655a42",
-          "width": 1.0,
+          "model": "vsp:texture:Dry Cattails_05",
+          "width": 1,
           "height": 1.9,
           "minScale": 0.6,
           "maxScale": 1.7,
@@ -2361,9 +1914,7 @@
         },
         {
           "name": "Creek thicket - cattail single",
-          "source": "Assets/RUSTIC Grass/Textures/Dry Cattails_01.psd",
-          "healthy": "#666a48",
-          "dry": "#655a42",
+          "model": "vsp:texture:Dry Cattails_01",
           "width": 0.8,
           "height": 1.8,
           "minScale": 0.6,
@@ -2390,9 +1941,7 @@
       "items": [
         {
           "name": "Wispy rough - sunk wisps",
-          "source": "Assets/Grasses_Flowers/Grass Textures2/041.psd",
-          "healthy": "#7c8a58",
-          "dry": "#888a5c",
+          "model": "vsp:texture:041#sunk-wisps",
           "width": 0.45,
           "height": 1.600000023841858,
           "verticalOffset": -0.22,
@@ -2406,7 +1955,6 @@
           "maxDensity": 1,
           "maxSteepness": 75,
           "lodFactor": 40,
-          "randomDarkening": 0.1,
           "copies": [
             30,
             60
@@ -2414,9 +1962,7 @@
         },
         {
           "name": "Wispy rough - sunk seed tips",
-          "source": "Assets/RUSTIC Grass/Textures/Rustic Grass_06.psd",
-          "healthy": "#8c8a64",
-          "dry": "#807c5a",
+          "model": "vsp:texture:Rustic Grass_06#sunk-seed-tips",
           "width": 0.4,
           "height": 1.850000023841858,
           "verticalOffset": -0.24,
@@ -2427,7 +1973,6 @@
           "noiseScaleMin": 0.75,
           "noiseScaleMax": 1.3,
           "noiseScaleScale": 10,
-          "whitePoint": 0.75,
           "maxDensity": 1,
           "maxSteepness": 75,
           "lodFactor": 40,
@@ -2449,90 +1994,50 @@
       "items": [
         {
           "name": "Woodland heath - heather",
-          "prefab": "Assets/NatureManufacture Assets/Mountain Environment/0-Prefab-OPCD-Optimized/Foliage and Grass/Prefab_heath_A_01.prefab",
+          "model": "vsp:Prefab_heath_A_01",
           "minScale": 1.3,
           "maxScale": 2.2,
           "sampleDistance": 2.7,
           "noiseDensityScale": 6,
           "maxDensity": 1,
-          "maxSteepness": 60,
-          "shadows": false,
-          "material": {
-            "_BackFaceMirrorNormal": 0,
-            "_WindNormalInfluence": -3,
-            "_SmoothnessPower": 0,
-            "_Specular": 0,
-            "_AmbientOcclusionPower": 0.8
-          },
-          "healthy": "#8c9684",
-          "dry": "#868c7c"
+          "maxSteepness": 60
         },
         {
           "name": "Woodland heath - heather low",
-          "prefab": "Assets/NatureManufacture Assets/Mountain Environment/0-Prefab-OPCD-Optimized/Foliage and Grass/Prefab_heath_B_02.prefab",
+          "model": "vsp:Prefab_heath_B_02",
           "minScale": 1.3,
           "maxScale": 2.2,
           "sampleDistance": 3.3,
           "noiseDensityScale": 9,
           "maxDensity": 1,
-          "maxSteepness": 60,
-          "shadows": false,
-          "material": {
-            "_BackFaceMirrorNormal": 0,
-            "_WindNormalInfluence": -3,
-            "_SmoothnessPower": 0,
-            "_Specular": 0,
-            "_AmbientOcclusionPower": 0.8
-          },
-          "healthy": "#8c9684",
-          "dry": "#868c7c"
+          "maxSteepness": 60
         },
         {
           "name": "Woodland heath - lingonberry",
-          "prefab": "Assets/NatureManufacture Assets/Mountain Environment/0-Prefab-OPCD-Optimized/Foliage and Grass/Prefab_lingonberry_01.prefab",
+          "model": "vsp:Prefab_lingonberry_01",
           "minScale": 1.3,
-          "maxScale": 2.0,
+          "maxScale": 2,
           "sampleDistance": 0.75,
           "noiseDensityScale": 7,
           "maxDensity": 1,
-          "maxSteepness": 60,
-          "shadows": false,
-          "material": {
-            "_BackFaceMirrorNormal": 0,
-            "_WindNormalInfluence": -3,
-            "_SmoothnessPower": 0,
-            "_Specular": 0,
-            "_AmbientOcclusionPower": 0.8
-          },
-          "healthy": "#66785e",
-          "dry": "#6d755c"
+          "maxSteepness": 60
         },
         {
           "name": "Woodland heath - dry bilberry",
-          "prefab": "Assets/NatureManufacture Assets/Mountain Environment/0-Prefab-OPCD-Optimized/Foliage and Grass/Prefab_billberry_dry_02.prefab",
+          "model": "vsp:Prefab_billberry_dry_02",
           "minScale": 1.2,
-          "maxScale": 2.0,
+          "maxScale": 2,
           "sampleDistance": 2.5,
           "noiseDensityScale": 11,
           "maxDensity": 1,
-          "maxSteepness": 60,
-          "shadows": false,
-          "material": {
-            "_BackFaceMirrorNormal": 0,
-            "_WindNormalInfluence": -3,
-            "_SmoothnessPower": 0,
-            "_Specular": 0,
-            "_AmbientOcclusionPower": 0.8
-          },
-          "healthy": "#66785e",
-          "dry": "#6d755c"
+          "maxSteepness": 60
         },
         {
           "name": "Woodland heath - pine seedling",
-          "prefab": "Assets/NatureManufacture Assets/Mountain Environment/0-Prefab-OPCD-Optimized/Plants/Prefab_Forest_pine_plant_01.prefab",
+          "model": "arborist:MountainEnv_Forest_pine_plant_01",
           "minScale": 0.5,
-          "maxScale": 1.0,
-          "sampleDistance": 14.0,
+          "maxScale": 1,
+          "sampleDistance": 14,
           "noiseDensityScale": 10,
           "maxDensity": 1,
           "maxSteepness": 60
@@ -2549,43 +2054,23 @@
       "items": [
         {
           "name": "Woodland bilberry - carpet",
-          "prefab": "Assets/NatureManufacture Assets/Mountain Environment/0-Prefab-OPCD-Optimized/Foliage and Grass/Prefab_billberry_01.prefab",
+          "model": "vsp:Prefab_billberry_01",
           "minScale": 1.4,
           "maxScale": 2.3,
           "sampleDistance": 0.8,
           "noiseDensityScale": 5,
           "maxDensity": 1,
-          "maxSteepness": 60,
-          "shadows": false,
-          "material": {
-            "_BackFaceMirrorNormal": 0,
-            "_WindNormalInfluence": -3,
-            "_SmoothnessPower": 0,
-            "_Specular": 0,
-            "_AmbientOcclusionPower": 0.8
-          },
-          "healthy": "#66785e",
-          "dry": "#6d755c"
+          "maxSteepness": 60
         },
         {
           "name": "Woodland bilberry - tall",
-          "prefab": "Assets/NatureManufacture Assets/Mountain Environment/0-Prefab-OPCD-Optimized/Foliage and Grass/Prefab_billberry_04.prefab",
+          "model": "vsp:Prefab_billberry_04",
           "minScale": 1.2,
           "maxScale": 1.9,
           "sampleDistance": 1.1,
           "noiseDensityScale": 8,
           "maxDensity": 1,
-          "maxSteepness": 60,
-          "shadows": false,
-          "material": {
-            "_BackFaceMirrorNormal": 0,
-            "_WindNormalInfluence": -3,
-            "_SmoothnessPower": 0,
-            "_Specular": 0,
-            "_AmbientOcclusionPower": 0.8
-          },
-          "healthy": "#66785e",
-          "dry": "#6d755c"
+          "maxSteepness": 60
         }
       ]
     },
@@ -2599,43 +2084,23 @@
       "items": [
         {
           "name": "Woodland fern - fern",
-          "prefab": "Assets/CESimgolf 3D Assets/Plants/Common Fern/2018 Prefabs/Common Fern_Var2.prefab",
+          "model": "vsp:Common Fern_Var2",
           "minScale": 1.8,
           "maxScale": 3.2,
           "sampleDistance": 1.5,
           "noiseDensityScale": 8,
           "maxDensity": 1,
-          "maxSteepness": 60,
-          "shadows": false,
-          "healthy": "#8ea285",
-          "dry": "#87937a",
-          "material": {
-            "_BackFaceMirrorNormal": 0,
-            "_WindNormalInfluence": -3,
-            "_SmoothnessPower": 0,
-            "_Specular": 0,
-            "_AmbientOcclusionPower": 1.0
-          }
+          "maxSteepness": 60
         },
         {
           "name": "Woodland fern - fern wide",
-          "prefab": "Assets/CESimgolf 3D Assets/Plants/Common Fern/2018 Prefabs/Common Fern_Var3.prefab",
+          "model": "vsp:Common Fern_Var3",
           "minScale": 1.8,
           "maxScale": 3.2,
           "sampleDistance": 1.9,
           "noiseDensityScale": 11,
           "maxDensity": 1,
-          "maxSteepness": 60,
-          "shadows": false,
-          "healthy": "#8ea285",
-          "dry": "#87937a",
-          "material": {
-            "_BackFaceMirrorNormal": 0,
-            "_WindNormalInfluence": -3,
-            "_SmoothnessPower": 0,
-            "_Specular": 0,
-            "_AmbientOcclusionPower": 1.0
-          }
+          "maxSteepness": 60
         }
       ]
     },
@@ -2649,40 +2114,40 @@
       "items": [
         {
           "name": "Woodland edge - hazel",
-          "prefab": "Assets/NatureManufacture Assets/Mountain Environment/0-Prefab-OPCD-Optimized/Bushes/Prefab_hazel_01.prefab",
+          "model": "arborist:MountainEnv_bush_hazel_01",
           "minScale": 0.9,
           "maxScale": 1.6,
-          "sampleDistance": 7.0,
+          "sampleDistance": 7,
           "noiseDensityScale": 8,
           "maxDensity": 1,
           "maxSteepness": 60
         },
         {
           "name": "Woodland edge - hazel cluster",
-          "prefab": "Assets/NatureManufacture Assets/Mountain Environment/0-Prefab-OPCD-Optimized/Bushes/Prefab_hazel_04_cluster.prefab",
+          "model": "arborist:MountainEnv_bush_hazel_04_cluster",
           "minScale": 0.8,
           "maxScale": 1.4,
-          "sampleDistance": 10.0,
+          "sampleDistance": 10,
           "noiseDensityScale": 8,
           "maxDensity": 1,
           "maxSteepness": 60
         },
         {
           "name": "Woodland edge - birch sapling",
-          "prefab": "Assets/GolfMap/Omberg/Looks/birch/darker/PF Birch F Sapling.prefab",
+          "model": "arborist:MeadowEnv_00_Poplar_plant_A",
           "minScale": 0.6,
           "maxScale": 1.3,
-          "sampleDistance": 12.0,
+          "sampleDistance": 12,
           "noiseDensityScale": 8,
           "maxDensity": 1,
           "maxSteepness": 60
         },
         {
           "name": "Woodland edge - young pine",
-          "prefab": "Assets/NatureManufacture Assets/Mountain Environment/0-Prefab-OPCD-Optimized/Plants/Prefab_Forest_pine_plant_04.prefab",
+          "model": "arborist:MountainEnv_Forest_pine_plant_04",
           "minScale": 0.4,
           "maxScale": 0.8,
-          "sampleDistance": 16.0,
+          "sampleDistance": 16,
           "noiseDensityScale": 9,
           "maxDensity": 1,
           "maxSteepness": 60
@@ -2699,7 +2164,7 @@
       "items": [
         {
           "name": "Woodland brush - hazel",
-          "prefab": "Assets/NatureManufacture Assets/Mountain Environment/0-Prefab-OPCD-Optimized/Bushes/Prefab_hazel_00_bush.prefab",
+          "model": "arborist:MountainEnv_bush_hazel_00_bush",
           "minScale": 0.8,
           "maxScale": 1.6,
           "sampleDistance": 3.5,
@@ -2709,37 +2174,37 @@
         },
         {
           "name": "Woodland brush - hazel shoot",
-          "prefab": "Assets/NatureManufacture Assets/Mountain Environment/0-Prefab-OPCD-Optimized/Bushes/Prefab_hazel_02.prefab",
+          "model": "arborist:MountainEnv_bush_hazel_02",
           "minScale": 0.4,
           "maxScale": 0.85,
-          "sampleDistance": 4.0,
+          "sampleDistance": 4,
           "noiseDensityScale": 7,
           "maxDensity": 1,
           "maxSteepness": 60
         },
         {
           "name": "Woodland brush - birch sapling",
-          "prefab": "Assets/GolfMap/Omberg/Looks/birch/darker/PF Birch F Sapling.prefab",
+          "model": "arborist:MeadowEnv_00_Poplar_plant_A",
           "minScale": 0.15,
           "maxScale": 0.32,
-          "sampleDistance": 5.0,
+          "sampleDistance": 5,
           "noiseDensityScale": 7,
           "maxDensity": 1,
           "maxSteepness": 60
         },
         {
           "name": "Woodland brush - pine sapling",
-          "prefab": "Assets/NatureManufacture Assets/Mountain Environment/0-Prefab-OPCD-Optimized/Plants/Prefab_Forest_pine_plant_00_A.prefab",
+          "model": "arborist:MountainEnv_Forest_pine_plant_00_A",
           "minScale": 0.6,
           "maxScale": 1.3,
-          "sampleDistance": 5.0,
+          "sampleDistance": 5,
           "noiseDensityScale": 7,
           "maxDensity": 1,
           "maxSteepness": 60
         },
         {
           "name": "Woodland brush - young pine",
-          "prefab": "Assets/NatureManufacture Assets/Mountain Environment/0-Prefab-OPCD-Optimized/Plants/Prefab_Forest_pine_plant_01.prefab",
+          "model": "arborist:MountainEnv_Forest_pine_plant_01",
           "minScale": 0.4,
           "maxScale": 0.85,
           "sampleDistance": 6.5,
@@ -2759,9 +2224,7 @@
       "items": [
         {
           "name": "Rock crack - green tufts",
-          "source": "Assets/RUSTIC Grass/Textures/Rustic Grass_15.psd",
-          "healthy": "#537649",
-          "dry": "#5d754c",
+          "model": "vsp:texture:Rustic Grass_15#green-tufts",
           "width": 0.6,
           "height": 0.35,
           "minScale": 0.7,
@@ -2781,9 +2244,7 @@
         },
         {
           "name": "Rock crack - moss tufts",
-          "source": "Assets/RUSTIC Grass/Textures/Rustic Grass_15.psd",
-          "healthy": "#4b6739",
-          "dry": "#55693c",
+          "model": "vsp:texture:Rustic Grass_15#moss-tufts",
           "width": 0.5,
           "height": 0.14,
           "minScale": 0.7,
@@ -2802,9 +2263,7 @@
         },
         {
           "name": "Rock crack - dry straw",
-          "source": "Assets/RUSTIC Grass/Textures/Rustic Grass_18.psd",
-          "healthy": "#8c8360",
-          "dry": "#72654a",
+          "model": "vsp:texture:Rustic Grass_18#dry-straw",
           "width": 0.7,
           "height": 0.5,
           "minScale": 0.7,
@@ -2820,9 +2279,7 @@
         },
         {
           "name": "Rock crack - brown tufts",
-          "source": "Assets/RUSTIC Grass/Textures/Rustic Grass_19.psd",
-          "healthy": "#92896e",
-          "dry": "#978d70",
+          "model": "vsp:texture:Rustic Grass_19#brown-tufts",
           "width": 0.6,
           "height": 0.35,
           "minScale": 0.7,
@@ -2849,53 +2306,33 @@
       "items": [
         {
           "name": "Rock heath - heather",
-          "prefab": "Assets/NatureManufacture Assets/Mountain Environment/0-Prefab-OPCD-Optimized/Foliage and Grass/Prefab_heath_A_01.prefab",
+          "model": "vsp:Prefab_heath_A_01",
           "minScale": 1.2,
-          "maxScale": 2.0,
+          "maxScale": 2,
           "sampleDistance": 2.2,
           "noiseDensityScale": 6,
           "noiseScaleMin": 0.65,
           "noiseScaleMax": 1.4,
           "noiseScaleScale": 9,
           "maxDensity": 1,
-          "maxSteepness": 60,
-          "shadows": false,
-          "material": {
-            "_BackFaceMirrorNormal": 0,
-            "_WindNormalInfluence": -3,
-            "_SmoothnessPower": 0,
-            "_Specular": 0,
-            "_AmbientOcclusionPower": 0.8
-          },
-          "healthy": "#8c9684",
-          "dry": "#868c7c"
+          "maxSteepness": 60
         },
         {
           "name": "Rock heath - heather low",
-          "prefab": "Assets/NatureManufacture Assets/Mountain Environment/0-Prefab-OPCD-Optimized/Foliage and Grass/Prefab_heath_B_02.prefab",
+          "model": "vsp:Prefab_heath_B_02",
           "minScale": 1.2,
-          "maxScale": 2.0,
+          "maxScale": 2,
           "sampleDistance": 2.8,
           "noiseDensityScale": 9,
           "noiseScaleMin": 0.65,
           "noiseScaleMax": 1.4,
           "noiseScaleScale": 9,
           "maxDensity": 1,
-          "maxSteepness": 60,
-          "shadows": false,
-          "material": {
-            "_BackFaceMirrorNormal": 0,
-            "_WindNormalInfluence": -3,
-            "_SmoothnessPower": 0,
-            "_Specular": 0,
-            "_AmbientOcclusionPower": 0.8
-          },
-          "healthy": "#8c9684",
-          "dry": "#868c7c"
+          "maxSteepness": 60
         },
         {
           "name": "Rock heath - lingonberry",
-          "prefab": "Assets/NatureManufacture Assets/Mountain Environment/0-Prefab-OPCD-Optimized/Foliage and Grass/Prefab_lingonberry_01.prefab",
+          "model": "vsp:Prefab_lingonberry_01",
           "minScale": 1.2,
           "maxScale": 1.9,
           "sampleDistance": 0.75,
@@ -2904,17 +2341,7 @@
           "noiseScaleMax": 1.4,
           "noiseScaleScale": 9,
           "maxDensity": 1,
-          "maxSteepness": 60,
-          "shadows": false,
-          "material": {
-            "_BackFaceMirrorNormal": 0,
-            "_WindNormalInfluence": -3,
-            "_SmoothnessPower": 0,
-            "_Specular": 0,
-            "_AmbientOcclusionPower": 0.8
-          },
-          "healthy": "#66785e",
-          "dry": "#6d755c"
+          "maxSteepness": 60
         }
       ],
       "comment": "Heather and lingonberry on the ledges and the thin soil beside the shore rock (2026-10-16), the woodland heath's plants and looks. Their names hold 'heather' / 'lingonberry', so the prefabItemsInVsp rule leaves them to the course's VSP (NatureManufacture's grass-shader plants are white from the sun's side in Arborist: docs/gspro/arborist.md)."
@@ -2929,7 +2356,7 @@
       "items": [
         {
           "name": "Rock scrub - hazel low",
-          "prefab": "Assets/NatureManufacture Assets/Mountain Environment/0-Prefab-OPCD-Optimized/Bushes/Prefab_hazel_00_bush.prefab",
+          "model": "arborist:MountainEnv_bush_hazel_00_bush",
           "minScale": 0.6,
           "maxScale": 1.3,
           "sampleDistance": 2.2,
@@ -2938,21 +2365,11 @@
           "noiseScaleMax": 1.4,
           "noiseScaleScale": 9,
           "maxDensity": 1,
-          "maxSteepness": 65,
-          "healthy": "#899cae",
-          "dry": "#99a6af",
-          "material": {
-            "_BackFaceMirrorNormal": 0,
-            "_SmoothnessPower": 0.1,
-            "_SpecularPower": 0,
-            "_Smooothness": 0.1,
-            "_AmbientOcclusionPower": 0.7,
-            "_Cutoff": 0.45
-          }
+          "maxSteepness": 65
         },
         {
           "name": "Rock scrub - hazel",
-          "prefab": "Assets/NatureManufacture Assets/Mountain Environment/0-Prefab-OPCD-Optimized/Bushes/Prefab_hazel_01.prefab",
+          "model": "arborist:MountainEnv_bush_hazel_01",
           "minScale": 0.6,
           "maxScale": 1.15,
           "sampleDistance": 2.8,
@@ -2961,44 +2378,24 @@
           "noiseScaleMax": 1.4,
           "noiseScaleScale": 9,
           "maxDensity": 1,
-          "maxSteepness": 65,
-          "healthy": "#90a2ac",
-          "dry": "#9eaaae",
-          "material": {
-            "_BackFaceMirrorNormal": 0,
-            "_SmoothnessPower": 0.1,
-            "_SpecularPower": 0,
-            "_Smooothness": 0.1,
-            "_AmbientOcclusionPower": 0.7,
-            "_Cutoff": 0.45
-          }
+          "maxSteepness": 65
         },
         {
           "name": "Rock scrub - hazel shoot",
-          "prefab": "Assets/NatureManufacture Assets/Mountain Environment/0-Prefab-OPCD-Optimized/Bushes/Prefab_hazel_02.prefab",
+          "model": "arborist:MountainEnv_bush_hazel_02",
           "minScale": 0.4,
           "maxScale": 0.85,
-          "sampleDistance": 4.0,
+          "sampleDistance": 4,
           "noiseDensityScale": 7,
           "noiseScaleMin": 0.65,
           "noiseScaleMax": 1.4,
           "noiseScaleScale": 9,
           "maxDensity": 1,
-          "maxSteepness": 65,
-          "healthy": "#899cae",
-          "dry": "#99a6af",
-          "material": {
-            "_BackFaceMirrorNormal": 0,
-            "_SmoothnessPower": 0.1,
-            "_SpecularPower": 0,
-            "_Smooothness": 0.1,
-            "_AmbientOcclusionPower": 0.7,
-            "_Cutoff": 0.45
-          }
+          "maxSteepness": 65
         },
         {
           "name": "Rock scrub - hazel cluster",
-          "prefab": "Assets/NatureManufacture Assets/Mountain Environment/0-Prefab-OPCD-Optimized/Bushes/Prefab_hazel_04_cluster.prefab",
+          "model": "arborist:MountainEnv_bush_hazel_04_cluster",
           "minScale": 0.6,
           "maxScale": 1.1,
           "sampleDistance": 3.5,
@@ -3007,109 +2404,63 @@
           "noiseScaleMax": 1.4,
           "noiseScaleScale": 9,
           "maxDensity": 1,
-          "maxSteepness": 65,
-          "healthy": "#8296a2",
-          "dry": "#93a1a4",
-          "material": {
-            "_BackFaceMirrorNormal": 0,
-            "_SmoothnessPower": 0.1,
-            "_SpecularPower": 0,
-            "_Smooothness": 0.1,
-            "_AmbientOcclusionPower": 0.7,
-            "_Cutoff": 0.45
-          }
+          "maxSteepness": 65
         },
         {
           "name": "Rock scrub - willow shoot",
-          "prefab": "Assets/NatureManufacture Assets/Meadow Environment Dynamic Nature/Bushes/Prefabs/prefab_grey_willow_01.prefab",
+          "model": "arborist:MeadowEnv_bush_grey_willow_01",
           "minScale": 0.45,
           "maxScale": 0.9,
-          "sampleDistance": 9.0,
+          "sampleDistance": 9,
           "noiseDensityScale": 9,
           "noiseScaleMin": 0.65,
           "noiseScaleMax": 1.4,
           "noiseScaleScale": 9,
           "maxDensity": 1,
-          "maxSteepness": 65,
-          "healthy": "#9aa9a8",
-          "dry": "#a3ada6",
-          "material": {
-            "_BackFaceMirrorNormal": 0,
-            "_SmoothnessPower": 0,
-            "_SpecularPower": 0,
-            "_Smooothness": 0.1,
-            "_AmbientOcclusionPower": 0.65
-          }
+          "maxSteepness": 65
         },
         {
           "name": "Rock scrub - willow round",
-          "prefab": "Assets/NatureManufacture Assets/Meadow Environment Dynamic Nature/Bushes/Prefabs/prefab_grey_willow_02.prefab",
+          "model": "arborist:MeadowEnv_bush_grey_willow_02",
           "minScale": 0.45,
           "maxScale": 0.95,
-          "sampleDistance": 8.0,
+          "sampleDistance": 8,
           "noiseDensityScale": 7,
           "noiseScaleMin": 0.65,
           "noiseScaleMax": 1.4,
           "noiseScaleScale": 9,
           "maxDensity": 1,
-          "maxSteepness": 65,
-          "healthy": "#96a4cb",
-          "dry": "#a0a9c4",
-          "material": {
-            "_BackFaceMirrorNormal": 0,
-            "_SmoothnessPower": 0,
-            "_SpecularPower": 0,
-            "_Smooothness": 0.1,
-            "_AmbientOcclusionPower": 0.65
-          }
+          "maxSteepness": 65
         },
         {
           "name": "Rock scrub - willow wide",
-          "prefab": "Assets/NatureManufacture Assets/Meadow Environment Dynamic Nature/Bushes/Prefabs/prefab_grey_willow_03.prefab",
+          "model": "arborist:MeadowEnv_bush_grey_willow_03",
           "minScale": 0.45,
           "maxScale": 0.95,
-          "sampleDistance": 9.0,
+          "sampleDistance": 9,
           "noiseDensityScale": 11,
           "noiseScaleMin": 0.65,
           "noiseScaleMax": 1.4,
           "noiseScaleScale": 9,
           "maxDensity": 1,
-          "maxSteepness": 65,
-          "healthy": "#8fa3b4",
-          "dry": "#9aa9b0",
-          "material": {
-            "_BackFaceMirrorNormal": 0,
-            "_SmoothnessPower": 0,
-            "_SpecularPower": 0,
-            "_Smooothness": 0.1,
-            "_AmbientOcclusionPower": 0.65
-          }
+          "maxSteepness": 65
         },
         {
           "name": "Rock scrub - willow tall",
-          "prefab": "Assets/NatureManufacture Assets/Meadow Environment Dynamic Nature/Bushes/Prefabs/prefab_grey_willow_04.prefab",
+          "model": "arborist:MeadowEnv_bush_grey_willow_04",
           "minScale": 0.5,
-          "maxScale": 1.0,
-          "sampleDistance": 14.0,
+          "maxScale": 1,
+          "sampleDistance": 14,
           "noiseDensityScale": 15,
           "noiseScaleMin": 0.65,
           "noiseScaleMax": 1.4,
           "noiseScaleScale": 9,
           "maxDensity": 1,
-          "maxSteepness": 65,
-          "healthy": "#869acd",
-          "dry": "#8b9ac4",
-          "material": {
-            "_BackFaceMirrorNormal": 0,
-            "_SmoothnessPower": 0,
-            "_SpecularPower": 0,
-            "_Smooothness": 0.1,
-            "_AmbientOcclusionPower": 0.65
-          }
+          "maxSteepness": 65
         },
         {
           "name": "Rock scrub - maple bush",
-          "prefab": "Assets/NatureManufacture Assets/Meadow Environment Dynamic Nature/Bushes/Prefabs/prefab_maple_bush_01.prefab",
+          "model": "arborist:MeadowEnv_maple_bush_01",
           "minScale": 0.5,
           "maxScale": 1.1,
           "sampleDistance": 4.5,
@@ -3118,45 +2469,27 @@
           "noiseScaleMax": 1.4,
           "noiseScaleScale": 9,
           "maxDensity": 1,
-          "maxSteepness": 65,
-          "healthy": "#7088b0",
-          "dry": "#8794b0",
-          "material": {
-            "_BackFaceMirrorNormal": 0,
-            "_SmoothnessPower": 0.1,
-            "_SpecularPower": 0,
-            "_Smooothness": 0.1,
-            "_AmbientOcclusionPower": 0.7
-          }
+          "maxSteepness": 65
         },
         {
           "name": "Rock scrub - maple bush low",
-          "prefab": "Assets/NatureManufacture Assets/Meadow Environment Dynamic Nature/Bushes/Prefabs/prefab_maple_bush_02.prefab",
+          "model": "arborist:MeadowEnv_maple_bush_02",
           "minScale": 0.5,
-          "maxScale": 1.0,
+          "maxScale": 1,
           "sampleDistance": 4.5,
           "noiseDensityScale": 14,
           "noiseScaleMin": 0.65,
           "noiseScaleMax": 1.4,
           "noiseScaleScale": 9,
           "maxDensity": 1,
-          "maxSteepness": 65,
-          "healthy": "#7a8eaa",
-          "dry": "#8c98ac",
-          "material": {
-            "_BackFaceMirrorNormal": 0,
-            "_SmoothnessPower": 0.1,
-            "_SpecularPower": 0,
-            "_Smooothness": 0.1,
-            "_AmbientOcclusionPower": 0.7
-          }
+          "maxSteepness": 65
         },
         {
           "name": "Rock scrub - birch sapling",
-          "prefab": "Assets/GolfMap/Omberg/Looks/birch/darker/PF Birch F Sapling.prefab",
+          "model": "arborist:MeadowEnv_00_Poplar_plant_A",
           "minScale": 0.45,
-          "maxScale": 1.0,
-          "sampleDistance": 9.0,
+          "maxScale": 1,
+          "sampleDistance": 9,
           "noiseDensityScale": 8,
           "noiseScaleMin": 0.65,
           "noiseScaleMax": 1.4,
@@ -3166,10 +2499,10 @@
         },
         {
           "name": "Rock scrub - pine sapling",
-          "prefab": "Assets/NatureManufacture Assets/Mountain Environment/0-Prefab-OPCD-Optimized/Plants/Prefab_Forest_pine_plant_00_A.prefab",
+          "model": "arborist:MountainEnv_Forest_pine_plant_00_A",
           "minScale": 0.6,
           "maxScale": 1.2,
-          "sampleDistance": 6.0,
+          "sampleDistance": 6,
           "noiseDensityScale": 7,
           "noiseScaleMin": 0.65,
           "noiseScaleMax": 1.4,
@@ -3179,10 +2512,10 @@
         },
         {
           "name": "Rock scrub - young pine",
-          "prefab": "Assets/NatureManufacture Assets/Mountain Environment/0-Prefab-OPCD-Optimized/Plants/Prefab_Forest_pine_plant_01.prefab",
+          "model": "arborist:MountainEnv_Forest_pine_plant_01",
           "minScale": 0.4,
           "maxScale": 0.85,
-          "sampleDistance": 8.0,
+          "sampleDistance": 8,
           "noiseDensityScale": 7,
           "noiseScaleMin": 0.65,
           "noiseScaleMax": 1.4,
@@ -3192,10 +2525,10 @@
         },
         {
           "name": "Rock scrub - young pine tall",
-          "prefab": "Assets/NatureManufacture Assets/Mountain Environment/0-Prefab-OPCD-Optimized/Plants/Prefab_Forest_pine_plant_04.prefab",
+          "model": "arborist:MountainEnv_Forest_pine_plant_04",
           "minScale": 0.4,
           "maxScale": 0.8,
-          "sampleDistance": 12.0,
+          "sampleDistance": 12,
           "noiseDensityScale": 9,
           "noiseScaleMin": 0.65,
           "noiseScaleMax": 1.4,
@@ -3205,10 +2538,10 @@
         },
         {
           "name": "Rock scrub - dwarf pine",
-          "prefab": "Assets/NatureManufacture Assets/Mountain Environment/0-Prefab-OPCD-Optimized/Bushes/Prefab_dwarf_pine_small_01.prefab",
+          "model": "arborist:MountainEnv_bush_dwarf_pine_small_01",
           "minScale": 0.7,
           "maxScale": 1.2,
-          "sampleDistance": 10.0,
+          "sampleDistance": 10,
           "noiseDensityScale": 9,
           "noiseScaleMin": 0.65,
           "noiseScaleMax": 1.4,
@@ -3218,10 +2551,10 @@
         },
         {
           "name": "Rock scrub - dwarf pine medium",
-          "prefab": "Assets/NatureManufacture Assets/Mountain Environment/0-Prefab-OPCD-Optimized/Bushes/Prefab_dwarf_pine_medium_01.prefab",
+          "model": "arborist:MountainEnv_bush_dwarf_pine_medium_01",
           "minScale": 0.6,
-          "maxScale": 1.0,
-          "sampleDistance": 14.0,
+          "maxScale": 1,
+          "sampleDistance": 14,
           "noiseDensityScale": 11,
           "noiseScaleMin": 0.65,
           "noiseScaleMax": 1.4,
@@ -3242,9 +2575,7 @@
       "items": [
         {
           "name": "Rock shore grass - green base",
-          "source": "Assets/RUSTIC Grass/Textures/Rustic Grass_15.psd",
-          "healthy": "#537649",
-          "dry": "#5d754c",
+          "model": "vsp:texture:Rustic Grass_15#green-tufts",
           "width": 0.9,
           "height": 0.55,
           "minScale": 0.7,
@@ -3264,10 +2595,8 @@
         },
         {
           "name": "Rock shore grass - tall green",
-          "source": "Assets/RUSTIC Grass/Textures/Rustic Grass_07.psd",
-          "healthy": "#59784f",
-          "dry": "#657551",
-          "width": 1.0,
+          "model": "vsp:texture:Rustic Grass_07#grass-tall-green",
+          "width": 1,
           "height": 0.85,
           "minScale": 0.7,
           "maxScale": 1.35,
@@ -3287,10 +2616,8 @@
         },
         {
           "name": "Rock shore grass - dry straw",
-          "source": "Assets/RUSTIC Grass/Textures/Rustic Grass_18.psd",
-          "healthy": "#8c8360",
-          "dry": "#72654a",
-          "width": 1.0,
+          "model": "vsp:texture:Rustic Grass_18#dry-straw",
+          "width": 1,
           "height": 0.8,
           "minScale": 0.7,
           "maxScale": 1.35,
@@ -3305,9 +2632,7 @@
         },
         {
           "name": "Rock shore grass - seed tips",
-          "source": "Assets/RUSTIC Grass/Textures/Rustic Grass_06.psd",
-          "healthy": "#86925f",
-          "dry": "#7e8a5a",
+          "model": "vsp:texture:Rustic Grass_06#grass-seed-tips",
           "width": 0.6,
           "height": 1.1,
           "minScale": 0.7,
@@ -3334,13 +2659,11 @@
       "items": [
         {
           "name": "Pond weed - broad leaves",
-          "source": "Assets/RUSTIC Grass/Textures/Rustic Grass_23.psd",
-          "healthy": "#7d9a4c",
-          "dry": "#8a8a4a",
+          "model": "vsp:texture:Rustic Grass_23#broad-leaves",
           "width": 0.7,
           "height": 0.8,
           "minScale": 0.75,
-          "maxScale": 1.0,
+          "maxScale": 1,
           "sampleDistance": 0.35,
           "noiseDensityScale": 0,
           "maxDensity": 1,
@@ -3348,18 +2671,15 @@
           "lodFactor": 40,
           "noiseScaleMin": 0.75,
           "noiseScaleMax": 1.1,
-          "noiseScaleScale": 6,
-          "randomDarkening": 0.3
+          "noiseScaleScale": 6
         },
         {
           "name": "Pond weed - ribbon leaves",
-          "source": "Assets/RUSTIC Grass/Textures/Rustic Grass_12.psd",
-          "healthy": "#76964a",
-          "dry": "#868548",
+          "model": "vsp:texture:Rustic Grass_12",
           "width": 0.8,
           "height": 0.85,
           "minScale": 0.75,
-          "maxScale": 1.0,
+          "maxScale": 1,
           "sampleDistance": 0.5,
           "noiseDensityScale": 9,
           "maxDensity": 1,
@@ -3367,18 +2687,15 @@
           "lodFactor": 40,
           "noiseScaleMin": 0.75,
           "noiseScaleMax": 1.1,
-          "noiseScaleScale": 7,
-          "randomDarkening": 0.3
+          "noiseScaleScale": 7
         },
         {
           "name": "Pond weed - fine ribbons",
-          "source": "Assets/RUSTIC Grass/Textures/Rustic Grass_14.psd",
-          "healthy": "#82a050",
-          "dry": "#8c8c4a",
+          "model": "vsp:texture:Rustic Grass_14",
           "width": 0.7,
           "height": 0.75,
           "minScale": 0.75,
-          "maxScale": 1.0,
+          "maxScale": 1,
           "sampleDistance": 0.45,
           "noiseDensityScale": 11,
           "maxDensity": 1,
@@ -3386,14 +2703,11 @@
           "lodFactor": 40,
           "noiseScaleMin": 0.75,
           "noiseScaleMax": 1.1,
-          "noiseScaleScale": 9,
-          "randomDarkening": 0.3
+          "noiseScaleScale": 9
         },
         {
           "name": "Pond weed - tall blades",
-          "source": "Assets/RUSTIC Grass/Textures/Rustic Grass_11.psd",
-          "healthy": "#7f9c4c",
-          "dry": "#908a48",
+          "model": "vsp:texture:Rustic Grass_11#tall-blades",
           "width": 0.6,
           "height": 0.9,
           "minScale": 0.7,
@@ -3404,19 +2718,16 @@
           "maxSteepness": 80,
           "lodFactor": 40,
           "noiseScaleMin": 0.75,
-          "noiseScaleMax": 1.0,
-          "noiseScaleScale": 11,
-          "randomDarkening": 0.3
+          "noiseScaleMax": 1,
+          "noiseScaleScale": 11
         },
         {
           "name": "Pond weed - brown strands",
-          "source": "Assets/RUSTIC Grass/Textures/Rustic Grass_13.psd",
-          "healthy": "#8a7a46",
-          "dry": "#8c7440",
+          "model": "vsp:texture:Rustic Grass_13",
           "width": 0.6,
           "height": 0.7,
           "minScale": 0.7,
-          "maxScale": 1.0,
+          "maxScale": 1,
           "sampleDistance": 0.8,
           "noiseDensityScale": 15,
           "maxDensity": 1,
@@ -3424,8 +2735,7 @@
           "lodFactor": 40,
           "noiseScaleMin": 0.75,
           "noiseScaleMax": 1.05,
-          "noiseScaleScale": 12,
-          "randomDarkening": 0.3
+          "noiseScaleScale": 12
         }
       ],
       "comment": "Submerged leafy grass on Omberg's hole 13 pond bed (2026-10-19): cards at most 0.9 x 1.0 x 1.1 = 0.9 m, the zone is the ortho's weed mat 2.6 m in from the outline, where the flat bed lies 1.2-1.35 m under the water, so the tops stay 0.3-0.45 m below the surface. Tints are light because the water is nearly opaque and dark."

@@ -1,15 +1,8 @@
 {
-  "comment": "Omberg's Arborist looks (copied from Vreta's file and tuned since). 'species' maps the lower vegetation's palette prefabs that pipeline/arborist.py's name rule cannot match to an Arborist catalogue label (null = leave it out). Which trees Arborist draws is not set here: the trees are models of models.json (their own looks there) and the routing (vegetation-rules.json `routing`) decides before planting who draws each one. treeSettings / plantSettings cap how bright the leaf and bark tints may be (see arborist.py apply_look): Arborist's defaults (0.8-1.0) are far too bright under this course's light; the values follow WaterfrontGC_GSP's (birch 0.36, oak and poplar about 0.5, pine 0.6-0.7, saturation left at 1). lodFactor: the detailed model is kept this many times further out; the simpler distance models of the broadleaves are a few large leaf cards, each lit on its own, which mottles the crowns at 50-150 m (seen in Arborist 2026-10-12, where the quality setting's LOD bias is 0.7).",
+  "comment": "Omberg's Arborist looks (copied from Vreta's file and tuned since). Who draws a zone palette item (grass-palette.json) is its model's renderer (models.json); plantSettings are the course-wide defaults for the lower vegetation Arborist draws, and a model's own look wins over them. Which trees Arborist draws is not set here: the trees are models of models.json (their own looks there) and the routing (vegetation-rules.json `routing`) decides before planting who draws each one. treeSettings / plantSettings cap how bright the leaf and bark tints may be (see arborist.py apply_look): Arborist's defaults (0.8-1.0) are far too bright under this course's light; the values follow WaterfrontGC_GSP's (birch 0.36, oak and poplar about 0.5, pine 0.6-0.7, saturation left at 1). lodFactor: the detailed model is kept this many times further out; the simpler distance models of the broadleaves are a few large leaf cards, each lit on its own, which mottles the crowns at 50-150 m (seen in Arborist 2026-10-12, where the quality setting's LOD bias is 0.7).",
   "vegeSettings_comment": "Written into the file's VSProSettings.vegeSettings, which GSPro's Arborist system runs with (only keys the file has). PlantDistance (Marcus 2026-10-14): 350 -> 250 m saved 0.6 ms a frame at tee 1 (live in GSPro, main-thread CPU: the system culls fewer cells) with no visible difference from tee 1, the hole 4 tee and hole 6; trees stay full models to PlantDistance + AdditionalTreeMeshDistance (563 m). Omberg 2026-10-16 (Marcus): the course is open and one sees further, so PlantDistance 300: the bushes draw to all of it (renderDistance 1), the small ground plants to 0.5 of it (150 m), and everything thins out from 40 % of its distance (falloffStart) instead of ending in a line.",
   "vegeSettings": {
     "PlantDistance": 300
-  },
-  "species": {
-    "Common Fern_Var2": "Forest_fern_01_1",
-    "Common Fern_Var3": "Forest_fern_01_3",
-    "PF Birch F Sapling": "MeadowEnv_00_Poplar_plant_A",
-    "Cottonwood-Giant-Canopy PREFAB": "MeadowEnv_maple_bush_03",
-    "Prefab_billberry_04": null
   },
   "treeSettings": [
     {
@@ -290,6 +283,6 @@
       "sampleDistance": 1.3
     }
   ],
-  "species_comment": "Prefab_billberry_04 (the tall bilberry) is left out and the ferns are made small: NatureManufacture's grass-shader plants light their back faces as fronts, so from the sun's side a big bilberry bush or fern frond is white (seen in Arborist and GSPro 2026-10-12; the cure, _BackFaceMirrorNormal, is not among the values Arborist stores).",
-  "routing_comment": "2026-10-20: who draws each tree is the routing, decided before planting (vegetation-rules.json `routing`: the far rule and outerKeep moved there); the poplars, pines and firs are Arborist models of models.json with their looks; the Forst oaks and birches stay the course's VSP models, their billboard stand-ins are models.json billboardAs."
+  "routing_comment": "2026-10-20: who draws each tree is the routing, decided before planting (vegetation-rules.json `routing`: the far rule and outerKeep moved there); the poplars, pines and firs are Arborist models of models.json with their looks; the Forst oaks and birches stay the course's VSP models, their billboard stand-ins are models.json billboardAs.",
+  "lower_comment": "2026-10-21: the 'species' map moved into the model library: each bush or ground plant Arborist draws is an arborist:<label> model of models.json (PF Birch F Sapling -> MeadowEnv_00_Poplar_plant_A, Cottonwood -> MeadowEnv_maple_bush_03, the ferns Forest_fern_01_1/3). Prefab_billberry_04 (the tall bilberry) and the ferns stay VSP models: NatureManufacture's grass-shader plants light their back faces as fronts, so from the sun's side a big bilberry bush or fern frond is white in Arborist (the cure, _BackFaceMirrorNormal, is not among the values Arborist stores)."
 }

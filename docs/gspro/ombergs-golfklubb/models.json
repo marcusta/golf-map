@@ -1,6 +1,6 @@
 {
   "format": "golfmap-models-v1",
-  "comment": "Every tree model Omberg can draw (CONTEXT.md 'Model library'). id: arborist:<Arborist catalogue label> or vsp:<Unity prefab>; renderer: what draws it in GSPro. Sizes: a vsp model's from the Unity catalogue, an Arborist model's from data/arborist/catalog-sizes.json (first LOD). The palette refers to these by id. Beech and elm are Arborist-only (Marcus, Arborist Ultra lineup 2026-10-18); the S7 elm's look is his darkened one. Add one: bun run models -- add \"Ombergs Golfklubb\" arborist:<label> --species <species>. Poplars, pines, firs and dwarf pines are Arborist models since 2026-10-20 (their looks moved here from arborist-species.json). billboardAs (a vsp model): the Arborist model drawn as its billboard where the routing makes the tree one (vegetation-rules.json `routing`).",
+  "comment": "Every model Omberg can draw (CONTEXT.md 'Model library'): its trees, and since 2026-10-21 the lower vegetation its zone palettes (grass-palette.json) refer to - form grass (vsp:texture:<texture stem>, a VSP texture item), plant or shrub (vsp:<prefab> for the course's own VSP, arborist:<label> for Arborist), no kind, a vsp one sized by its zone items; one asset in several looks is several models (#<variant>). A lower model's look is what every zone item wearing it shows: healthy / dry, material (shader floats), randomDarkening, rootAmbient, alphaCutoff, whitePoint, shadows for VSP; Arborist's own keys (tint, saturation, ...) over plantSettings for Arborist. Change one: bun run models -- look \"Ombergs Golfklubb\" <model> --set healthy=#rrggbb. The migrated Arborist bushes carry no colours: plantSettings' tint decides them, as before. id: arborist:<Arborist catalogue label> or vsp:<Unity prefab>; renderer: what draws it in GSPro. Sizes: a vsp model's from the Unity catalogue, an Arborist model's from data/arborist/catalog-sizes.json (first LOD). The palette refers to these by id. Beech and elm are Arborist-only (Marcus, Arborist Ultra lineup 2026-10-18); the S7 elm's look is his darkened one. Add one: bun run models -- add \"Ombergs Golfklubb\" arborist:<label> --species <species>. Poplars, pines, firs and dwarf pines are Arborist models since 2026-10-20 (their looks moved here from arborist-species.json). billboardAs (a vsp model): the Arborist model drawn as its billboard where the routing makes the tree one (vegetation-rules.json `routing`).",
   "models": [
     {
       "id": "arborist:S7_AmurCork_Winter",
@@ -119,6 +119,971 @@
     {
       "id": "vsp:VS_prefab_03_Poplar",
       "disabled": true
+    },
+    {
+      "id": "vsp:texture:Rustic Grass_15",
+      "renderer": "vsp",
+      "form": "grass",
+      "unity": {
+        "path": "Assets/RUSTIC Grass/Textures/Rustic Grass_15.psd"
+      },
+      "look": {
+        "healthy": "#5e9154",
+        "dry": "#6d9058",
+        "randomDarkening": 0.3
+      }
+    },
+    {
+      "id": "vsp:texture:Rustic Grass_07",
+      "renderer": "vsp",
+      "form": "grass",
+      "unity": {
+        "path": "Assets/RUSTIC Grass/Textures/Rustic Grass_07.psd"
+      },
+      "look": {
+        "healthy": "#67945c",
+        "dry": "#78905f",
+        "randomDarkening": 0.3
+      }
+    },
+    {
+      "id": "vsp:texture:Rustic Grass_18",
+      "renderer": "vsp",
+      "form": "grass",
+      "unity": {
+        "path": "Assets/RUSTIC Grass/Textures/Rustic Grass_18.psd"
+      },
+      "look": {
+        "healthy": "#867f56",
+        "dry": "#6d6242"
+      }
+    },
+    {
+      "id": "vsp:texture:Sea Grass_09",
+      "renderer": "vsp",
+      "form": "grass",
+      "unity": {
+        "path": "Assets/RUSTIC Grass/Textures/Sea Grass_09.psd"
+      },
+      "look": {
+        "healthy": "#9b9774",
+        "dry": "#85805f",
+        "whitePoint": 0.8
+      }
+    },
+    {
+      "id": "vsp:texture:grass14",
+      "renderer": "vsp",
+      "form": "grass",
+      "unity": {
+        "path": "Assets/Grasses_Flowers/Grass Textures/grass14.psd"
+      },
+      "look": {
+        "healthy": "#326232",
+        "dry": "#3e6034",
+        "randomDarkening": 0.1
+      }
+    },
+    {
+      "id": "vsp:texture:grass24",
+      "renderer": "vsp",
+      "form": "grass",
+      "unity": {
+        "path": "Assets/Grasses_Flowers/Grass Textures/grass24.psd"
+      },
+      "look": {
+        "healthy": "#326232",
+        "dry": "#3e6034",
+        "randomDarkening": 0.1
+      }
+    },
+    {
+      "id": "vsp:texture:041",
+      "renderer": "vsp",
+      "form": "grass",
+      "unity": {
+        "path": "Assets/Grasses_Flowers/Grass Textures2/041.psd"
+      },
+      "look": {
+        "healthy": "#346532",
+        "dry": "#426438",
+        "randomDarkening": 0.1
+      }
+    },
+    {
+      "id": "vsp:texture:Rustic Grass_06",
+      "renderer": "vsp",
+      "form": "grass",
+      "unity": {
+        "path": "Assets/RUSTIC Grass/Textures/Rustic Grass_06.psd"
+      },
+      "look": {
+        "healthy": "#7b8b54",
+        "dry": "#738450",
+        "whitePoint": 0.85
+      }
+    },
+    {
+      "id": "vsp:texture:grass14#green-foot",
+      "renderer": "vsp",
+      "form": "grass",
+      "unity": {
+        "path": "Assets/Grasses_Flowers/Grass Textures/grass14.psd"
+      },
+      "look": {
+        "healthy": "#55683a",
+        "dry": "#5d683d",
+        "randomDarkening": 0.15
+      }
+    },
+    {
+      "id": "vsp:texture:grass24#straw-blades",
+      "renderer": "vsp",
+      "form": "grass",
+      "unity": {
+        "path": "Assets/Grasses_Flowers/Grass Textures/grass24.psd"
+      },
+      "look": {
+        "healthy": "#838465",
+        "dry": "#7a775b",
+        "randomDarkening": 0.1
+      }
+    },
+    {
+      "id": "vsp:texture:041#straw-wisps",
+      "renderer": "vsp",
+      "form": "grass",
+      "unity": {
+        "path": "Assets/Grasses_Flowers/Grass Textures2/041.psd"
+      },
+      "look": {
+        "healthy": "#8a8a69",
+        "dry": "#807c60",
+        "randomDarkening": 0.1
+      }
+    },
+    {
+      "id": "vsp:texture:Rustic Grass_06#seed-tips",
+      "renderer": "vsp",
+      "form": "grass",
+      "unity": {
+        "path": "Assets/RUSTIC Grass/Textures/Rustic Grass_06.psd"
+      },
+      "look": {
+        "healthy": "#8f8e6f",
+        "dry": "#818065",
+        "whitePoint": 0.85
+      }
+    },
+    {
+      "id": "vsp:texture:Rustic Grass_15#dark-tussock",
+      "renderer": "vsp",
+      "form": "grass",
+      "unity": {
+        "path": "Assets/RUSTIC Grass/Textures/Rustic Grass_15.psd"
+      },
+      "look": {
+        "healthy": "#647054",
+        "dry": "#6f7457",
+        "randomDarkening": 0.2
+      }
+    },
+    {
+      "id": "vsp:texture:Rustic Grass_19",
+      "renderer": "vsp",
+      "form": "grass",
+      "unity": {
+        "path": "Assets/RUSTIC Grass/Textures/Rustic Grass_19.psd"
+      },
+      "look": {
+        "healthy": "#8b8465",
+        "dry": "#908866"
+      }
+    },
+    {
+      "id": "vsp:texture:grass14#grass-base",
+      "renderer": "vsp",
+      "form": "grass",
+      "unity": {
+        "path": "Assets/Grasses_Flowers/Grass Textures/grass14.psd"
+      },
+      "look": {
+        "healthy": "#4b5e37",
+        "dry": "#535e39",
+        "randomDarkening": 0.2
+      }
+    },
+    {
+      "id": "vsp:texture:Dry Grass_02",
+      "renderer": "vsp",
+      "form": "grass",
+      "unity": {
+        "path": "Assets/RUSTIC Grass/Textures/Dry Grass_02.psd"
+      },
+      "look": {
+        "healthy": "#6d625a",
+        "dry": "#655c52"
+      }
+    },
+    {
+      "id": "vsp:texture:Dry Silybum_03",
+      "renderer": "vsp",
+      "form": "grass",
+      "unity": {
+        "path": "Assets/RUSTIC Grass/Textures/Dry Silybum_03.psd"
+      },
+      "look": {
+        "healthy": "#938f86",
+        "dry": "#87847a",
+        "whitePoint": 0.85
+      }
+    },
+    {
+      "id": "vsp:texture:Dry Silybum_02",
+      "renderer": "vsp",
+      "form": "grass",
+      "unity": {
+        "path": "Assets/RUSTIC Grass/Textures/Dry Silybum_02.psd"
+      },
+      "look": {
+        "healthy": "#938f86",
+        "dry": "#87847a",
+        "whitePoint": 0.85
+      }
+    },
+    {
+      "id": "vsp:texture:Dry Grass_06",
+      "renderer": "vsp",
+      "form": "grass",
+      "unity": {
+        "path": "Assets/RUSTIC Grass/Textures/Dry Grass_06.psd"
+      },
+      "look": {
+        "healthy": "#817759",
+        "dry": "#766c51"
+      }
+    },
+    {
+      "id": "vsp:texture:Rustic Grass_15#green-base",
+      "renderer": "vsp",
+      "form": "grass",
+      "unity": {
+        "path": "Assets/RUSTIC Grass/Textures/Rustic Grass_15.psd"
+      },
+      "look": {
+        "healthy": "#487140",
+        "dry": "#537043",
+        "randomDarkening": 0.3
+      }
+    },
+    {
+      "id": "vsp:texture:Rustic Grass_07#tall-green",
+      "renderer": "vsp",
+      "form": "grass",
+      "unity": {
+        "path": "Assets/RUSTIC Grass/Textures/Rustic Grass_07.psd"
+      },
+      "look": {
+        "healthy": "#4f7347",
+        "dry": "#5c6f49",
+        "randomDarkening": 0.3
+      }
+    },
+    {
+      "id": "arborist:MeadowEnv_bush_grey_willow_02",
+      "species": "willow",
+      "renderer": "arborist",
+      "heightM": 2.310303,
+      "crownWidthM": 3.5369,
+      "form": "shrub"
+    },
+    {
+      "id": "arborist:MeadowEnv_bush_grey_willow_03",
+      "species": "willow",
+      "renderer": "arborist",
+      "heightM": 2.35674977,
+      "crownWidthM": 4.13832045,
+      "form": "shrub"
+    },
+    {
+      "id": "arborist:MeadowEnv_bush_grey_willow_04",
+      "species": "willow",
+      "renderer": "arborist",
+      "heightM": 3.105375,
+      "crownWidthM": 4.57366562,
+      "form": "shrub"
+    },
+    {
+      "id": "arborist:MountainEnv_bush_hazel_00_bush",
+      "species": "hazel",
+      "renderer": "arborist",
+      "heightM": 0.728494942,
+      "crownWidthM": 2.148997,
+      "form": "shrub"
+    },
+    {
+      "id": "arborist:MountainEnv_bush_hazel_04_cluster",
+      "species": "hazel",
+      "renderer": "arborist",
+      "heightM": 2.836558,
+      "crownWidthM": 2.31126213,
+      "form": "shrub"
+    },
+    {
+      "id": "arborist:MountainEnv_bush_hazel_01",
+      "species": "hazel",
+      "renderer": "arborist",
+      "heightM": 0.971485555,
+      "crownWidthM": 1.12136507,
+      "form": "shrub"
+    },
+    {
+      "id": "arborist:MeadowEnv_maple_bush_01",
+      "species": "maple",
+      "renderer": "arborist",
+      "heightM": 2.10837865,
+      "crownWidthM": 1.61534429,
+      "form": "shrub"
+    },
+    {
+      "id": "arborist:MeadowEnv_maple_bush_02",
+      "species": "maple",
+      "renderer": "arborist",
+      "heightM": 3.175864,
+      "crownWidthM": 2.84061956,
+      "form": "shrub"
+    },
+    {
+      "id": "arborist:MeadowEnv_maple_bush_03",
+      "species": "cottonwood",
+      "renderer": "arborist",
+      "heightM": 4.239814,
+      "crownWidthM": 2.012105,
+      "form": "shrub"
+    },
+    {
+      "id": "arborist:MeadowEnv_00_Poplar_plant_A",
+      "species": "birch",
+      "renderer": "arborist",
+      "heightM": 3.17399168,
+      "crownWidthM": 2.20412612,
+      "form": "plant"
+    },
+    {
+      "id": "vsp:texture:Rustic Grass_23",
+      "renderer": "vsp",
+      "form": "grass",
+      "unity": {
+        "path": "Assets/RUSTIC Grass/Textures/Rustic Grass_23.psd"
+      },
+      "look": {
+        "healthy": "#648854",
+        "dry": "#708859",
+        "randomDarkening": 0.15
+      }
+    },
+    {
+      "id": "vsp:texture:Rustic Grass_11",
+      "renderer": "vsp",
+      "form": "grass",
+      "unity": {
+        "path": "Assets/RUSTIC Grass/Textures/Rustic Grass_11.psd"
+      },
+      "look": {
+        "healthy": "#6b8e5b",
+        "dry": "#7a9062"
+      }
+    },
+    {
+      "id": "vsp:texture:Dune Grass_04",
+      "renderer": "vsp",
+      "form": "grass",
+      "unity": {
+        "path": "Assets/RUSTIC Grass/Textures/Dune Grass_04.psd"
+      },
+      "look": {
+        "healthy": "#719663",
+        "dry": "#839668"
+      }
+    },
+    {
+      "id": "vsp:texture:026",
+      "renderer": "vsp",
+      "form": "grass",
+      "unity": {
+        "path": "Assets/Grasses_Flowers/Grass Textures2/026.psd"
+      },
+      "look": {
+        "healthy": "#717654",
+        "dry": "#7b7254",
+        "whitePoint": 0.8
+      }
+    },
+    {
+      "id": "vsp:texture:Rustic Grass_19#brown-dead-grass",
+      "renderer": "vsp",
+      "form": "grass",
+      "unity": {
+        "path": "Assets/RUSTIC Grass/Textures/Rustic Grass_19.psd"
+      },
+      "look": {
+        "healthy": "#756043",
+        "dry": "#826b49"
+      }
+    },
+    {
+      "id": "vsp:texture:Dune Grass_02",
+      "renderer": "vsp",
+      "form": "grass",
+      "unity": {
+        "path": "Assets/RUSTIC Grass/Textures/Dune Grass_02.psd"
+      },
+      "look": {
+        "healthy": "#547247",
+        "dry": "#5e734b",
+        "randomDarkening": 0.15
+      }
+    },
+    {
+      "id": "vsp:texture:010",
+      "renderer": "vsp",
+      "form": "grass",
+      "unity": {
+        "path": "Assets/Grasses_Flowers/Grass Textures2/010.psd"
+      },
+      "look": {
+        "healthy": "#4f6f44",
+        "dry": "#5b6f48"
+      }
+    },
+    {
+      "id": "vsp:texture:024",
+      "renderer": "vsp",
+      "form": "grass",
+      "unity": {
+        "path": "Assets/Grasses_Flowers/Grass Textures2/024.psd"
+      },
+      "look": {
+        "healthy": "#636b50",
+        "dry": "#6b6a50",
+        "whitePoint": 0.75
+      }
+    },
+    {
+      "id": "vsp:texture:Dry Cattails_05",
+      "renderer": "vsp",
+      "form": "grass",
+      "unity": {
+        "path": "Assets/RUSTIC Grass/Textures/Dry Cattails_05.psd"
+      },
+      "look": {
+        "healthy": "#666a48",
+        "dry": "#655a42"
+      }
+    },
+    {
+      "id": "vsp:texture:Dry Cattails_01",
+      "renderer": "vsp",
+      "form": "grass",
+      "unity": {
+        "path": "Assets/RUSTIC Grass/Textures/Dry Cattails_01.psd"
+      },
+      "look": {
+        "healthy": "#666a48",
+        "dry": "#655a42"
+      }
+    },
+    {
+      "id": "vsp:texture:013",
+      "renderer": "vsp",
+      "form": "grass",
+      "unity": {
+        "path": "Assets/Grasses_Flowers/Grass Textures2/013.psd"
+      },
+      "look": {
+        "healthy": "#6b804c",
+        "dry": "#71824d",
+        "randomDarkening": 0.2
+      }
+    },
+    {
+      "id": "vsp:texture:013#reed-stand-2",
+      "renderer": "vsp",
+      "form": "grass",
+      "unity": {
+        "path": "Assets/Grasses_Flowers/Grass Textures2/013.psd"
+      },
+      "look": {
+        "healthy": "#758646",
+        "dry": "#7d8848",
+        "randomDarkening": 0.2
+      }
+    },
+    {
+      "id": "vsp:texture:013#reed-stand-3",
+      "renderer": "vsp",
+      "form": "grass",
+      "unity": {
+        "path": "Assets/Grasses_Flowers/Grass Textures2/013.psd"
+      },
+      "look": {
+        "healthy": "#607b4a",
+        "dry": "#657e4a",
+        "randomDarkening": 0.2
+      }
+    },
+    {
+      "id": "vsp:texture:Rustic Grass_11#leafy-reed",
+      "renderer": "vsp",
+      "form": "grass",
+      "unity": {
+        "path": "Assets/RUSTIC Grass/Textures/Rustic Grass_11.psd"
+      },
+      "look": {
+        "healthy": "#6e8049",
+        "dry": "#748148",
+        "randomDarkening": 0.2
+      }
+    },
+    {
+      "id": "vsp:texture:014",
+      "renderer": "vsp",
+      "form": "grass",
+      "unity": {
+        "path": "Assets/Grasses_Flowers/Grass Textures2/014.psd"
+      },
+      "look": {
+        "healthy": "#858056",
+        "dry": "#877e54"
+      }
+    },
+    {
+      "id": "vsp:texture:Dry Grass_12",
+      "renderer": "vsp",
+      "form": "grass",
+      "unity": {
+        "path": "Assets/RUSTIC Grass/Textures/Dry Grass_12.psd"
+      },
+      "look": {
+        "healthy": "#7d7752",
+        "dry": "#80754e"
+      }
+    },
+    {
+      "id": "vsp:texture:Rustic Grass_23#grass-base",
+      "renderer": "vsp",
+      "form": "grass",
+      "unity": {
+        "path": "Assets/RUSTIC Grass/Textures/Rustic Grass_23.psd"
+      },
+      "look": {
+        "healthy": "#5f8250",
+        "dry": "#6b8254",
+        "randomDarkening": 0.15
+      }
+    },
+    {
+      "id": "vsp:texture:Rustic Grass_11#grass-tall",
+      "renderer": "vsp",
+      "form": "grass",
+      "unity": {
+        "path": "Assets/RUSTIC Grass/Textures/Rustic Grass_11.psd"
+      },
+      "look": {
+        "healthy": "#658856",
+        "dry": "#74895d"
+      }
+    },
+    {
+      "id": "vsp:texture:Dune Grass_04#grass-fine",
+      "renderer": "vsp",
+      "form": "grass",
+      "unity": {
+        "path": "Assets/RUSTIC Grass/Textures/Dune Grass_04.psd"
+      },
+      "look": {
+        "healthy": "#6c8e5e",
+        "dry": "#7c8e63"
+      }
+    },
+    {
+      "id": "vsp:texture:041#sunk-wisps",
+      "renderer": "vsp",
+      "form": "grass",
+      "unity": {
+        "path": "Assets/Grasses_Flowers/Grass Textures2/041.psd"
+      },
+      "look": {
+        "healthy": "#7c8a58",
+        "dry": "#888a5c",
+        "randomDarkening": 0.1
+      }
+    },
+    {
+      "id": "vsp:texture:Rustic Grass_06#sunk-seed-tips",
+      "renderer": "vsp",
+      "form": "grass",
+      "unity": {
+        "path": "Assets/RUSTIC Grass/Textures/Rustic Grass_06.psd"
+      },
+      "look": {
+        "healthy": "#8c8a64",
+        "dry": "#807c5a",
+        "whitePoint": 0.75
+      }
+    },
+    {
+      "id": "vsp:Prefab_heath_A_01",
+      "species": "heather",
+      "renderer": "vsp",
+      "form": "plant",
+      "unity": {
+        "path": "Assets/NatureManufacture Assets/Mountain Environment/0-Prefab-OPCD-Optimized/Foliage and Grass/Prefab_heath_A_01.prefab"
+      },
+      "look": {
+        "healthy": "#8c9684",
+        "dry": "#868c7c",
+        "shadows": false,
+        "material": {
+          "_BackFaceMirrorNormal": 0,
+          "_WindNormalInfluence": -3,
+          "_SmoothnessPower": 0,
+          "_Specular": 0,
+          "_AmbientOcclusionPower": 0.8
+        }
+      }
+    },
+    {
+      "id": "vsp:Prefab_heath_B_02",
+      "species": "heather",
+      "renderer": "vsp",
+      "form": "plant",
+      "unity": {
+        "path": "Assets/NatureManufacture Assets/Mountain Environment/0-Prefab-OPCD-Optimized/Foliage and Grass/Prefab_heath_B_02.prefab"
+      },
+      "look": {
+        "healthy": "#8c9684",
+        "dry": "#868c7c",
+        "shadows": false,
+        "material": {
+          "_BackFaceMirrorNormal": 0,
+          "_WindNormalInfluence": -3,
+          "_SmoothnessPower": 0,
+          "_Specular": 0,
+          "_AmbientOcclusionPower": 0.8
+        }
+      }
+    },
+    {
+      "id": "vsp:Prefab_lingonberry_01",
+      "species": "heather",
+      "renderer": "vsp",
+      "form": "plant",
+      "unity": {
+        "path": "Assets/NatureManufacture Assets/Mountain Environment/0-Prefab-OPCD-Optimized/Foliage and Grass/Prefab_lingonberry_01.prefab"
+      },
+      "look": {
+        "healthy": "#66785e",
+        "dry": "#6d755c",
+        "shadows": false,
+        "material": {
+          "_BackFaceMirrorNormal": 0,
+          "_WindNormalInfluence": -3,
+          "_SmoothnessPower": 0,
+          "_Specular": 0,
+          "_AmbientOcclusionPower": 0.8
+        }
+      }
+    },
+    {
+      "id": "vsp:Prefab_billberry_dry_02",
+      "species": "heather",
+      "renderer": "vsp",
+      "form": "plant",
+      "unity": {
+        "path": "Assets/NatureManufacture Assets/Mountain Environment/0-Prefab-OPCD-Optimized/Foliage and Grass/Prefab_billberry_dry_02.prefab"
+      },
+      "look": {
+        "healthy": "#66785e",
+        "dry": "#6d755c",
+        "shadows": false,
+        "material": {
+          "_BackFaceMirrorNormal": 0,
+          "_WindNormalInfluence": -3,
+          "_SmoothnessPower": 0,
+          "_Specular": 0,
+          "_AmbientOcclusionPower": 0.8
+        }
+      }
+    },
+    {
+      "id": "arborist:MountainEnv_Forest_pine_plant_01",
+      "species": "heather",
+      "renderer": "arborist",
+      "heightM": 1.63703537,
+      "crownWidthM": 1.53773582,
+      "form": "plant"
+    },
+    {
+      "id": "vsp:Prefab_billberry_01",
+      "species": "bilberry",
+      "renderer": "vsp",
+      "form": "plant",
+      "unity": {
+        "path": "Assets/NatureManufacture Assets/Mountain Environment/0-Prefab-OPCD-Optimized/Foliage and Grass/Prefab_billberry_01.prefab"
+      },
+      "look": {
+        "healthy": "#66785e",
+        "dry": "#6d755c",
+        "shadows": false,
+        "material": {
+          "_BackFaceMirrorNormal": 0,
+          "_WindNormalInfluence": -3,
+          "_SmoothnessPower": 0,
+          "_Specular": 0,
+          "_AmbientOcclusionPower": 0.8
+        }
+      }
+    },
+    {
+      "id": "vsp:Prefab_billberry_04",
+      "species": "bilberry",
+      "renderer": "vsp",
+      "form": "plant",
+      "unity": {
+        "path": "Assets/NatureManufacture Assets/Mountain Environment/0-Prefab-OPCD-Optimized/Foliage and Grass/Prefab_billberry_04.prefab"
+      },
+      "look": {
+        "healthy": "#66785e",
+        "dry": "#6d755c",
+        "shadows": false,
+        "material": {
+          "_BackFaceMirrorNormal": 0,
+          "_WindNormalInfluence": -3,
+          "_SmoothnessPower": 0,
+          "_Specular": 0,
+          "_AmbientOcclusionPower": 0.8
+        }
+      }
+    },
+    {
+      "id": "vsp:Common Fern_Var2",
+      "species": "fern",
+      "renderer": "vsp",
+      "form": "plant",
+      "unity": {
+        "path": "Assets/CESimgolf 3D Assets/Plants/Common Fern/2018 Prefabs/Common Fern_Var2.prefab"
+      },
+      "look": {
+        "healthy": "#8ea285",
+        "dry": "#87937a",
+        "shadows": false,
+        "material": {
+          "_BackFaceMirrorNormal": 0,
+          "_WindNormalInfluence": -3,
+          "_SmoothnessPower": 0,
+          "_Specular": 0,
+          "_AmbientOcclusionPower": 1
+        }
+      }
+    },
+    {
+      "id": "vsp:Common Fern_Var3",
+      "species": "fern",
+      "renderer": "vsp",
+      "form": "plant",
+      "unity": {
+        "path": "Assets/CESimgolf 3D Assets/Plants/Common Fern/2018 Prefabs/Common Fern_Var3.prefab"
+      },
+      "look": {
+        "healthy": "#8ea285",
+        "dry": "#87937a",
+        "shadows": false,
+        "material": {
+          "_BackFaceMirrorNormal": 0,
+          "_WindNormalInfluence": -3,
+          "_SmoothnessPower": 0,
+          "_Specular": 0,
+          "_AmbientOcclusionPower": 1
+        }
+      }
+    },
+    {
+      "id": "arborist:MountainEnv_Forest_pine_plant_04",
+      "species": "pine",
+      "renderer": "arborist",
+      "heightM": 3.367566,
+      "crownWidthM": 3.34519,
+      "form": "plant"
+    },
+    {
+      "id": "arborist:MountainEnv_bush_hazel_02",
+      "species": "hazel",
+      "renderer": "arborist",
+      "heightM": 1.68142343,
+      "crownWidthM": 1.19188607,
+      "form": "shrub"
+    },
+    {
+      "id": "arborist:MountainEnv_Forest_pine_plant_00_A",
+      "species": "pine",
+      "renderer": "arborist",
+      "heightM": 1.06476915,
+      "crownWidthM": 0.8561666,
+      "form": "plant"
+    },
+    {
+      "id": "vsp:texture:Rustic Grass_15#green-tufts",
+      "renderer": "vsp",
+      "form": "grass",
+      "unity": {
+        "path": "Assets/RUSTIC Grass/Textures/Rustic Grass_15.psd"
+      },
+      "look": {
+        "healthy": "#537649",
+        "dry": "#5d754c"
+      }
+    },
+    {
+      "id": "vsp:texture:Rustic Grass_15#moss-tufts",
+      "renderer": "vsp",
+      "form": "grass",
+      "unity": {
+        "path": "Assets/RUSTIC Grass/Textures/Rustic Grass_15.psd"
+      },
+      "look": {
+        "healthy": "#4b6739",
+        "dry": "#55693c"
+      }
+    },
+    {
+      "id": "vsp:texture:Rustic Grass_18#dry-straw",
+      "renderer": "vsp",
+      "form": "grass",
+      "unity": {
+        "path": "Assets/RUSTIC Grass/Textures/Rustic Grass_18.psd"
+      },
+      "look": {
+        "healthy": "#8c8360",
+        "dry": "#72654a"
+      }
+    },
+    {
+      "id": "vsp:texture:Rustic Grass_19#brown-tufts",
+      "renderer": "vsp",
+      "form": "grass",
+      "unity": {
+        "path": "Assets/RUSTIC Grass/Textures/Rustic Grass_19.psd"
+      },
+      "look": {
+        "healthy": "#92896e",
+        "dry": "#978d70"
+      }
+    },
+    {
+      "id": "arborist:MountainEnv_bush_dwarf_pine_small_01",
+      "species": "dwarf pine",
+      "renderer": "arborist",
+      "heightM": 1.003646,
+      "crownWidthM": 1.34774959,
+      "form": "shrub"
+    },
+    {
+      "id": "arborist:MountainEnv_bush_dwarf_pine_medium_01",
+      "species": "dwarf pine",
+      "renderer": "arborist",
+      "heightM": 1.75341654,
+      "crownWidthM": 2.0055728,
+      "form": "shrub"
+    },
+    {
+      "id": "vsp:texture:Rustic Grass_07#grass-tall-green",
+      "renderer": "vsp",
+      "form": "grass",
+      "unity": {
+        "path": "Assets/RUSTIC Grass/Textures/Rustic Grass_07.psd"
+      },
+      "look": {
+        "healthy": "#59784f",
+        "dry": "#657551"
+      }
+    },
+    {
+      "id": "vsp:texture:Rustic Grass_06#grass-seed-tips",
+      "renderer": "vsp",
+      "form": "grass",
+      "unity": {
+        "path": "Assets/RUSTIC Grass/Textures/Rustic Grass_06.psd"
+      },
+      "look": {
+        "healthy": "#86925f",
+        "dry": "#7e8a5a"
+      }
+    },
+    {
+      "id": "vsp:texture:Rustic Grass_23#broad-leaves",
+      "renderer": "vsp",
+      "form": "grass",
+      "unity": {
+        "path": "Assets/RUSTIC Grass/Textures/Rustic Grass_23.psd"
+      },
+      "look": {
+        "healthy": "#7d9a4c",
+        "dry": "#8a8a4a",
+        "randomDarkening": 0.3
+      }
+    },
+    {
+      "id": "vsp:texture:Rustic Grass_12",
+      "renderer": "vsp",
+      "form": "grass",
+      "unity": {
+        "path": "Assets/RUSTIC Grass/Textures/Rustic Grass_12.psd"
+      },
+      "look": {
+        "healthy": "#76964a",
+        "dry": "#868548",
+        "randomDarkening": 0.3
+      }
+    },
+    {
+      "id": "vsp:texture:Rustic Grass_14",
+      "renderer": "vsp",
+      "form": "grass",
+      "unity": {
+        "path": "Assets/RUSTIC Grass/Textures/Rustic Grass_14.psd"
+      },
+      "look": {
+        "healthy": "#82a050",
+        "dry": "#8c8c4a",
+        "randomDarkening": 0.3
+      }
+    },
+    {
+      "id": "vsp:texture:Rustic Grass_11#tall-blades",
+      "renderer": "vsp",
+      "form": "grass",
+      "unity": {
+        "path": "Assets/RUSTIC Grass/Textures/Rustic Grass_11.psd"
+      },
+      "look": {
+        "healthy": "#7f9c4c",
+        "dry": "#908a48",
+        "randomDarkening": 0.3
+      }
+    },
+    {
+      "id": "vsp:texture:Rustic Grass_13",
+      "renderer": "vsp",
+      "form": "grass",
+      "unity": {
+        "path": "Assets/RUSTIC Grass/Textures/Rustic Grass_13.psd"
+      },
+      "look": {
+        "healthy": "#8a7a46",
+        "dry": "#8c7440",
+        "randomDarkening": 0.3
+      }
     }
   ]
 }

@@ -44,16 +44,30 @@
 // or a new "prefab") is replaced: re-run golfmap.zones.import so it gets its mask
 // rules again, then apply.
 //
-// "prefabItems": "arborist" at the top of the file: the course's bushes and ground
-// plants come from Arborist (pipeline/arborist.py lower reads the same prefab items
-// and their zone masks), so apply leaves every prefab item out of VSP and removes
-// the ones a package still has, with their height twins. The texture grass is not
-// affected. Without the key the prefab items are VSP's, as above.
-// "prefabItemsInVsp": ["bilberry", "fern", ...] beside it names the exceptions (parts of item
-// names): prefab items the course's own VSP still draws, because Arborist cannot give them the
-// "material" overrides they need (NatureManufacture's grass-shader plants light their back faces
-// as fronts and go white from the sun's side unless _BackFaceMirrorNormal is set; Arborist stores
-// no such value). pipeline/arborist.py lower leaves the same items out.
+// Zone items on the model library (CONTEXT.md "Model library"; shared/vegetation/zone-models.ts):
+// an item with "model": "<model id>" names no texture, prefab or look itself. It keeps where and how
+// densely it grows and its size (sampleDistance, density, maxDensity, noise*, maxSteepness, lodFactor,
+// copies, renderDistance, width, height, minScale, maxScale, verticalOffset); the rest is its model's,
+// read from the resolved model library beside this file (models.json, generated with this file by the
+// repo's `bun run models -- sync`; never hand-edited here):
+//   model.unity.path    the asset: a texture (.psd/.png, a vsp:texture:<stem> model, form grass) or a
+//                       prefab (a vsp:<prefab> model, form plant | shrub);
+//   model.look          healthy, dry, material, randomDarkening, rootAmbient, alphaCutoff, whitePoint,
+//                       shadows - set once on the model, worn by every zone item that refers to it.
+// The model's renderer decides who draws the item: a vsp model's item is built into VSP as above, an
+// arborist model's item is Arborist's (pipeline/arborist.py lower --models draws it into its "GolfMap
+// lower vegetation" package), so apply leaves it out of VSP and removes it from the package with its
+// height twin and distance copies. Change a look with `bun run models -- look`, a zone item's model or
+// size with `bun run models -- zone` (the vegetation palette editor's Save runs both).
+//
+// The older form (Vreta: items with "source"/"prefab" and their own look keys, no "model") reads as
+// before: "prefabItems": "arborist" at the top of the file makes the course's bushes and ground plants
+// Arborist's (pipeline/arborist.py lower reads the same prefab items and their zone masks), so apply
+// leaves every prefab item out of VSP and removes the ones a package still has, with their height
+// twins; "prefabItemsInVsp": ["bilberry", "fern", ...] beside it names the exceptions (parts of item
+// names) the course's own VSP still draws, because Arborist cannot give them the "material" overrides
+// they need (NatureManufacture's grass-shader plants light their back faces as fronts and go white
+// from the sun's side unless _BackFaceMirrorNormal is set; Arborist stores no such value).
 using System;
 using System.Collections.Generic;
 using System.IO;
@@ -75,6 +89,8 @@ namespace GolfMap.Editor
         public sealed class Item
         {
             public string name, source, prefab;
+            public string model;                   // the model id it refers to (null: the older form, its own source/prefab and look)
+            public string renderer;                // the model's renderer: "vsp" or "arborist" (null for the older form)
             public Color healthy, dry;
             public bool tinted = true;             // prefab items: only when the palette gives colours
             public bool shadows;                   // prefab items cast shadows unless "shadows": false
@@ -112,6 +128,7 @@ namespace GolfMap.Editor
             public string[] prefabsInVsp = new string[0];   // the file's "prefabItemsInVsp": the exceptions
             public bool ArboristDraws(Item item)
             {
+                if (item.model != null) return item.renderer == GolfMapModels.Arborist;
                 return prefabsInArborist && item.prefab != null && !prefabsInVsp.Any(part => item.name.IndexOf(part, StringComparison.OrdinalIgnoreCase) >= 0);
             }
             public float tintAreaScale = 40f;
@@ -133,6 +150,7 @@ namespace GolfMap.Editor
             if (!File.Exists(path)) throw new BridgeError("No grass palette at " + path + ".");
             var doc = GolfMapJsonDoc.ParseObject(File.ReadAllText(path));
             if (doc.String("format") != Format) throw new BridgeError(path + " is not " + Format + ".");
+            Dictionary<string, GolfMapJsonObject> models = null;   // read once, when an item refers to a model
             var palettes = new List<Palette>();
             foreach (GolfMapJsonObject p in doc.Array("palettes") ?? new List<object>())
             {
@@ -150,15 +168,21 @@ namespace GolfMap.Editor
                 {
                     var d = new Item();
                     var prefab = i.String("prefab");
+                    var source = i.String("source");
+                    var look = i;              // the older form holds its own look
+                    string modelId = i.String("model"), renderer = null;
+                    if (modelId != null) look = ResolveModel(modelId, p.String("key"), i.String("name"), path, ref models, out renderer, out prefab, out source);
                     var item = new Item
                     {
                         name = i.String("name"),
-                        source = i.String("source"),
+                        source = source,
                         prefab = prefab,
-                        tinted = prefab == null || i.String("healthy") != null,
-                        shadows = prefab != null && i.Bool("shadows", true),
-                        healthy = GolfMapZones.ParseColor(i.String("healthy"), Color.green),
-                        dry = GolfMapZones.ParseColor(i.String("dry"), Color.yellow),
+                        model = modelId,
+                        renderer = renderer,
+                        tinted = prefab == null || look.String("healthy") != null,
+                        shadows = prefab != null && look.Bool("shadows", true),
+                        healthy = GolfMapZones.ParseColor(look.String("healthy"), Color.green),
+                        dry = GolfMapZones.ParseColor(look.String("dry"), Color.yellow),
                         width = F(i, "width", d.width), height = F(i, "height", d.height),
                         minScale = F(i, "minScale", d.minScale), maxScale = F(i, "maxScale", d.maxScale),
                         sampleDistance = F(i, "sampleDistance", d.sampleDistance), density = F(i, "density", d.density),
@@ -169,29 +193,58 @@ namespace GolfMap.Editor
                         noiseScaleMin = F(i, "noiseScaleMin", d.noiseScaleMin), noiseScaleMax = F(i, "noiseScaleMax", d.noiseScaleMax),
                         noiseScaleScale = F(i, "noiseScaleScale", d.noiseScaleScale),
                         maxSteepness = F(i, "maxSteepness", d.maxSteepness),
-                        randomDarkening = F(i, "randomDarkening", d.randomDarkening), rootAmbient = F(i, "rootAmbient", d.rootAmbient),
-                        alphaCutoff = F(i, "alphaCutoff", d.alphaCutoff), whitePoint = F(i, "whitePoint", d.whitePoint),
+                        randomDarkening = F(look, "randomDarkening", d.randomDarkening), rootAmbient = F(look, "rootAmbient", d.rootAmbient),
+                        alphaCutoff = F(look, "alphaCutoff", d.alphaCutoff), whitePoint = F(look, "whitePoint", d.whitePoint),
                         lodFactor = F(i, "lodFactor", F(p, "lodFactor", d.lodFactor)),
                         renderDistance = F(i, "renderDistance", F(p, "renderDistance", d.renderDistance)),
                         copies = (i.Array("copies") ?? new List<object>()).OfType<GolfMapJsonNumber>().Select(n => (float)n.Value).Where(m => m > 0).Distinct().OrderBy(m => m).ToArray(),
                     };
-                    var overrides = i.Object("material");
-                    if (overrides != null)
+                    var overrides = look.Object("material");
+                    if (overrides != null && renderer != GolfMapModels.Arborist)
                     {
-                        if (prefab == null) throw new BridgeError("Palette '" + palette.key + "', item '" + item.name + "': \"material\" is for prefab items.");
+                        if (prefab == null) throw new BridgeError("Palette '" + palette.key + "', item '" + item.name + "': \"material\" is for prefab items" + (modelId != null ? " (model " + modelId + ")" : "") + ".");
                         foreach (var k in overrides.keys) item.material[k] = (float)overrides.Number(k);
                     }
                     palette.items.Add(item);
                 }
                 if (string.IsNullOrEmpty(palette.key)) throw new BridgeError("A palette in " + path + " has no key.");
-                if (palette.items.Any(i => string.IsNullOrEmpty(i.name) || string.IsNullOrEmpty(i.source) == string.IsNullOrEmpty(i.prefab)))
-                    throw new BridgeError("Palette '" + palette.key + "': every item needs a name and either a source texture or a prefab.");
+                if (palette.items.Any(i => string.IsNullOrEmpty(i.name) || (i.renderer != GolfMapModels.Arborist && string.IsNullOrEmpty(i.source) == string.IsNullOrEmpty(i.prefab))))
+                    throw new BridgeError("Palette '" + palette.key + "': every item needs a name and a model, or a source texture or a prefab.");
                 palettes.Add(palette);
             }
             return palettes;
         }
 
         static float F(GolfMapJsonObject o, string key, float fallback) { return (float)o.Number(key, fallback); }
+
+        // A zone item's model, from the library beside the palette (read once, into `models`, when the first item
+        // refers to one): who draws it, and for a vsp model its asset (unity.path) - a prefab, else a texture
+        // (source). Returns the model's look, which the item reads instead of its own (the keys are
+        // shared/vegetation/zone-models.ts VSP_LOOK_KEYS). Throws for a model the library lacks and a vsp model
+        // without unity.path.
+        static GolfMapJsonObject ResolveModel(string modelId, string paletteKey, string itemName, string palettePath, ref Dictionary<string, GolfMapJsonObject> models,
+            out string renderer, out string prefab, out string source)
+        {
+            var libraryPath = GolfMapModels.PathBeside(palettePath);
+            if (models == null)
+            {
+                try { models = GolfMapModels.Load(libraryPath); }
+                catch (Exception e) { throw new BridgeError(e.Message); }
+            }
+            GolfMapJsonObject model;
+            if (!models.TryGetValue(modelId, out model))
+                throw new BridgeError("Palette '" + paletteKey + "', item '" + itemName + "': model " + modelId + " is not in " + libraryPath + " (bun run models -- sync).");
+            string label; GolfMapModels.Parse(modelId, out renderer, out label);
+            prefab = source = null;
+            if (renderer == GolfMapModels.Vsp)
+            {
+                var unity = model.Object("unity");
+                var asset = unity == null ? null : unity.String("path");
+                if (string.IsNullOrEmpty(asset)) throw new BridgeError("Model " + modelId + " has no unity.path (its texture or prefab).");
+                if (asset.EndsWith(".prefab", StringComparison.OrdinalIgnoreCase)) prefab = asset; else source = asset;
+            }
+            return model.Object("look") ?? new GolfMapJsonObject();
+        }
 
         // ---- greyscale textures --------------------------------------------
 
@@ -316,6 +369,21 @@ namespace GolfMap.Editor
             system.AddVegetationPackage(package);
             log.Add("created package '" + name + "' " + AssetDatabase.GetAssetPath(package) + " on " + system.name + " (" + role + ")");
             return package;
+        }
+
+        // Every path this file makes is "<course>/Grass/..."; a folder spelt otherwise ("grass", made by hand or an
+        // older tool) still works on Windows but leaves the asset paths VSP reports in another case. Renamed once
+        // (two moves, as a case-only rename is refused; the GUIDs stay, so nothing loses its reference).
+        static void GrassFolderCase(string courseFolder, List<string> log)
+        {
+            var root = courseFolder.TrimEnd('/');
+            if (!Directory.Exists(root)) return;
+            var found = Directory.GetDirectories(root).Select(d => Path.GetFileName(d)).FirstOrDefault(n => string.Equals(n, "Grass", StringComparison.OrdinalIgnoreCase));
+            if (found == null || found == "Grass") return;
+            string from = root + "/" + found, temp = root + "/Grass-case-" + Guid.NewGuid().ToString("N").Substring(0, 6), to = root + "/Grass";
+            var error = AssetDatabase.MoveAsset(from, temp);
+            if (string.IsNullOrEmpty(error)) error = AssetDatabase.MoveAsset(temp, to);
+            log.Add(string.IsNullOrEmpty(error) ? "renamed " + from + " to " + to : "could not rename " + from + " to " + to + ": " + error);
         }
 
         static bool HasControllerProperty(VegetationItemInfoPro item, string name)
@@ -510,7 +578,7 @@ namespace GolfMap.Editor
             item.EnableRuntimeSpawn = spawn && GolfMapZoneImporter.HasLiveIncludeRule(package, item);
         }
 
-        [BridgeCommand("golfmap.grass.apply", "Build a grass palette from <course>/grass-palette.json into VSP: greyscale textures, the lower-vegetation package on the terrain's system, texture grass items with tints, scale and spacing. Items spawn only once the zone import gave them an include rule. With \"prefabItems\": \"arborist\" in the file, prefab items (bushes, ground plants) are left out and removed from the package: they come from Arborist.",
+        [BridgeCommand("golfmap.grass.apply", "Build a grass palette from <course>/grass-palette.json into VSP: greyscale textures, the lower-vegetation package on the terrain's system, texture grass items with tints, scale and spacing. Items spawn only once the zone import gave them an include rule. An item whose model (models.json beside it) is an Arborist model - or, in the older form, a prefab item under \"prefabItems\": \"arborist\" - is left out and removed from the package: Arborist draws it.",
             args = "palette (zone type key; default all), terrain=inner|outer (default inner), rebuildTextures=false, spawn=true (false hides the palette's items, e.g. to compare against the bare ground), " + GolfMapSceneSave.Arg)]
         static object Apply(BridgeArgs a)
         {
@@ -528,6 +596,7 @@ namespace GolfMap.Editor
             var terrain = TerrainFor(course, role);
             var system = SystemFor(terrain);
             var log = new List<string>();
+            GrassFolderCase(courseFolder, log);
             // the plant distance the items' render distances are shares of: what this run sets, else the system's
             float plantDistanceM = palettes.Max(p => p.plantDistance);
             if (plantDistanceM <= 0) plantDistanceM = system.VegetationSettings.PlantDistance;
@@ -540,8 +609,9 @@ namespace GolfMap.Editor
                 {
                     if (palette.ArboristDraws(spec))
                     {
-                        int removed = package.VegetationInfoList.RemoveAll(i => i != null && (i.Name == spec.name || i.Name == GolfMapZones.TwinName(spec.name)));
-                        if (removed > 0) log.Add("removed '" + spec.name + "' (" + removed + " item(s)): prefab items are Arborist's");
+                        // With its height twin and its distance copies: none of it is VSP's.
+                        int removed = package.VegetationInfoList.RemoveAll(i => i != null && (i.Name == spec.name || i.Name == GolfMapZones.TwinName(spec.name) || GolfMapZones.DistanceCopyBase(i.Name) == spec.name));
+                        if (removed > 0) log.Add("removed '" + spec.name + "' (" + removed + " item(s)): " + (spec.model != null ? spec.model + " is an Arborist model" : "prefab items are Arborist's"));
                         continue;
                     }
                     var texture = spec.prefab == null ? GreyTexture(courseFolder, spec, a.Bool("rebuildTextures", false), log) : null;

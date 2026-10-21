@@ -189,7 +189,10 @@ def trial(args) -> None:
     print("  items: " + ", ".join(i["Name"] for i in items))
 
 
-# ---- lower vegetation: the palettes' prefab items, spread by the zones export's masks ------------
+# ---- lower vegetation: the zone palettes' items Arborist draws, spread by the zones export's masks ----
+# An item with "model" is drawn by its model's renderer (--models, the resolved library): an arborist model as its
+# label, in plantSettings then the model's look. The older form (no "model": a prefab and its own look) keeps the
+# palette's prefabItemsInVsp and the species file's "species" map.
 
 LOWER_PACKAGE = "GolfMap lower vegetation"
 INCLUDE_THRESHOLD = 0.02  # as unity/Editor/GolfMap/GolfMapZoneImporterVsp.cs: below this mask value nothing grows
@@ -247,6 +250,7 @@ def lower(args) -> None:
     by_label = {item["Name"].strip(): item for item in library["VegetationInfoList"]}
     palette_doc = json.loads(Path(args.palette).read_text(encoding="utf-8"))
     palettes, in_vsp = palette_doc["palettes"], palette_doc.get("prefabItemsInVsp", [])
+    models = {m["id"]: m for m in json.loads(Path(args.models).read_text(encoding="utf-8-sig"))["models"]} if args.models else {}
     zones_path = Path(args.zones)
     zones = json.loads(zones_path.read_text(encoding="utf-8"))
     species_path = Path(args.species)
@@ -263,15 +267,15 @@ def lower(args) -> None:
     unmapped, unzoned, written, kept = [], [], [], []
     for palette in palettes:
         for spec in palette["items"]:
-            name, prefab = spec["name"], spec.get("prefab")
-            if not prefab or (args.only and not any(o.lower() in name.lower() for o in args.only)):
+            name = spec["name"]
+            if args.only and not any(o.lower() in name.lower() for o in args.only):
                 continue
-            if any(part.lower() in name.lower() for part in in_vsp):   # the palette's "prefabItemsInVsp": the course's own VSP draws it
+            route, label, model = resolve_lower_item(spec, palette["key"], models, args.models, in_vsp, by_label, overrides)
+            if route == KEPT:
                 kept.append(name)
-                continue
-            label = species_for(prefab, list(by_label), overrides)
-            if label is None or label not in by_label:
-                unmapped.append(f"{name} ({Path(prefab).stem}" + (f" -> {label}, not in the library" if label else "") + ")")
+            elif route == UNMAPPED:
+                unmapped.append(label)
+            if route != ARBORIST:
                 continue
             if name not in channel_of:
                 unzoned.append(name)
@@ -304,11 +308,16 @@ def lower(args) -> None:
                 "UseTextureMaskExcludeRules": False, "TextureMaskExcludeRuleList": [],
                 "UseTextureMaskScaleRules": False, "TextureMaskScaleRuleList": [],
             })
-            # The palette's own leaf colours (tuned in Unity on the same models) come along; they win
-            # over the caps of plantSettings and lose to a tint named there (rules match the palette
-            # item's name or its Arborist species).
-            carried = [{"match": ["*"], "tint1": spec["healthy"], "tint2": spec.get("dry", spec["healthy"])}] if spec.get("healthy") else []
-            apply_look(item, carried + plant_look, also=label)
+            if model is not None:
+                # The model's look over the course-wide plantSettings: set once on the model, it shows in
+                # every zone that uses it.
+                apply_look(item, plant_look + model_look_rules(model), also=label)
+            else:
+                # The palette's own leaf colours (tuned in Unity on the same models) come along; they win
+                # over the caps of plantSettings and lose to a tint named there (rules match the palette
+                # item's name or its Arborist species).
+                carried = [{"match": ["*"], "tint1": spec["healthy"], "tint2": spec.get("dry", spec["healthy"])}] if spec.get("healthy") else []
+                apply_look(item, carried + plant_look, also=label)
             package["VegetationInfoList"].append(item)
             written.append(f"{name} = {label} (mask {texture}, channel {channel})")
     package["TextureMaskGroupList"] = [groups[k] for k in sorted(groups)]
@@ -332,7 +341,59 @@ def lower(args) -> None:
     if unzoned:
         print(f"not in the zones export, left out: {', '.join(unzoned)}")
     if kept:
-        print(f"left to the course's own VSP (the palette's prefabItemsInVsp): {', '.join(kept)}")
+        why = "their models are vsp models" if models else "the palette's prefabItemsInVsp"
+        print(f"left to the course's own VSP ({why}): {', '.join(kept)}")
+
+
+# Where resolve_lower_item routes a zone item: Arborist (ARBORIST), the course's own VSP (KEPT), nobody for
+# want of an Arborist library item (UNMAPPED), or nothing for Arborist to do (SKIP: a VSP texture grass, an
+# item of neither model nor prefab).
+KEPT, UNMAPPED, SKIP = "kept", "unmapped", "skip"
+
+
+def resolve_lower_item(spec: dict, palette_key: str, models: dict, models_path: str | None, in_vsp: list[str],
+                       by_label: dict, overrides: dict) -> tuple[str, str | None, dict | None]:
+    """Who draws one zone item and as what: (route, label, model). An item that refers to a model: the model's
+    renderer decides who draws it, its label what Arborist draws (its look how: model_look_rules); a model the
+    library lacks stops the run. An item of the older form (Vreta's): its prefab, unless the palette's
+    "prefabItemsInVsp" keeps it in the course's own VSP, becomes the species file's Arborist label (species_for).
+    For ARBORIST the label is the Arborist library item; for UNMAPPED it is the line saying why; model is the
+    item's model (None for the older form)."""
+    name, prefab = spec["name"], spec.get("prefab")
+    model = None
+    if spec.get("model"):
+        model = models.get(spec["model"])
+        if model is None:
+            sys.exit(f"{palette_key} / {name}: model {spec['model']} is not in the model library"
+                     + (f" ({models_path})" if models_path else " (pass the course's resolved library with --models)"))
+        renderer, label = parse_model_id(model["id"])
+        if renderer != ARBORIST:
+            return (SKIP if model.get("form") == GRASS_FORM else KEPT), None, model
+        prefab = label
+    elif not prefab:
+        return SKIP, None, None
+    elif any(part.lower() in name.lower() for part in in_vsp):
+        return KEPT, None, None
+    else:
+        label = species_for(prefab, list(by_label), overrides)
+    if label is None or label not in by_label:
+        return UNMAPPED, f"{name} ({Path(prefab).stem}" + (f" -> {label}, not in the library" if label else "") + ")", model
+    return ARBORIST, label, model
+
+
+def model_look_rules(model: dict) -> list[dict]:
+    """A lower-vegetation model's look as an apply_look rule for every item that wears it: its Arborist keys
+    (tint, saturation, brightness, ao, ...) as they are, its Unity colours healthy / dry as the carried
+    tint1 / tint2 (which a tint wins over), shadows. The Unity-only keys (material, randomDarkening, ...: the
+    rest of shared/vegetation/zone-models.ts VSP_LOOK_KEYS) mean nothing to Arborist and are ignored by apply_look."""
+    look = dict(model.get("look") or {})
+    if not look:
+        return []
+    healthy, dry = look.pop("healthy", None), look.pop("dry", None)
+    if healthy:
+        look.setdefault("tint1", healthy)
+        look.setdefault("tint2", dry or healthy)
+    return [{**look, "match": ["*"]}]
 
 
 # ---- the planted trees --------------------------------------------------------------------------
@@ -341,20 +402,31 @@ TREES_PACKAGE = "GolfMap trees"
 TREE_SOURCE_ID = 42  # as the Unity planter's imported trees
 FAR_SUFFIX = " (far)"
 
-# A tree model's id (CONTEXT.md "Model"): '<renderer>:<label>', the label being what the renderer calls
-# it - 'arborist:<catalogue label>' or 'vsp:<Unity prefab>'. Parsed and built only here in Python; the
-# twins are shared/vegetation/model-id.ts and GolfMapModels.Parse/Id in Unity.
+# A model's id (CONTEXT.md "Model"): '<renderer>:<label>[#<variant>]', the label being what the renderer
+# calls it - 'arborist:<catalogue label>', 'vsp:<Unity prefab>' or 'vsp:texture:<texture file stem>'. Parsed
+# and built only here in Python; the twins are shared/vegetation/model-id.ts and GolfMapModels.Parse/Id in
+# Unity. The good and bad ids all three must agree on: shared/vegetation/model-ids.fixture.json.
 ARBORIST, VSP = "arborist", "vsp"
+TEXTURE_PREFIX = "texture:"   # vsp:texture:<texture file stem>: a VSP texture grass of the zone palettes
+GRASS_FORM = "grass"          # a model's form for a VSP texture grass (tree-models.ts MODEL_FORMS)
 
 
-def model_id(renderer: str, label: str) -> str:
-    return f"{renderer}:{label}"
+def model_id(renderer: str, label: str, variant: str | None = None, texture: bool = False) -> str:
+    """('vsp', 'PF_Oak_tall Terrain') -> 'vsp:PF_Oak_tall Terrain'; with a variant 'arborist:X#dark'; a texture 'vsp:texture:<stem>'."""
+    return f"{renderer}:{TEXTURE_PREFIX if texture else ''}{label}{'#' + variant if variant else ''}"
 
 
 def parse_model_id(model: str) -> tuple[str | None, str]:
-    """'arborist:S7_American_Elm' -> ('arborist', 'S7_American_Elm'); an id of another shape -> (None, the id)."""
-    renderer, sep, label = str(model).partition(":")
-    return (renderer, label) if sep and label and renderer in (ARBORIST, VSP) else (None, str(model))
+    """'arborist:S7_American_Elm' -> ('arborist', 'S7_American_Elm'); an id of another shape -> (None, the id).
+    The label is what the renderer calls the model: the part before '#<variant>' (several looks of one asset,
+    'arborist:MountainEnv_bush_hazel_01#edge'), without 'texture:' for a VSP texture grass ('vsp:texture:<stem>').
+    An empty variant ('arborist:X#') is no id, as in the twins."""
+    renderer, sep, rest = str(model).partition(":")
+    label, hash_, variant = rest.partition("#")
+    if renderer == VSP and label.startswith(TEXTURE_PREFIX):
+        label = label[len(TEXTURE_PREFIX):]
+    ok = sep and label.strip() and renderer in (ARBORIST, VSP) and not (hash_ and not variant)
+    return (renderer, label) if ok else (None, str(model))
 
 
 # The dump's trees are matched to their placements by position in whole centimetres, within
@@ -1722,14 +1794,15 @@ def main() -> None:
     p.add_argument("--library", default=str(HERE.parent / "data" / "arborist" / "GolfMap library.biome"), help="for an item the package lacks")
     p.add_argument("--species", help="the course's arborist-species.json (its treeSettings) for an item the package lacks")
     p.add_argument("--key-file")
-    p = sub.add_parser("lower", help="the palettes' prefab items (bushes, woodland floor) spread by the zones export's masks")
+    p = sub.add_parser("lower", help="the zone palettes' items Arborist draws (bushes, woodland floor; an arborist model's items, or the older form's prefab items) spread by the zones export's masks")
     p.add_argument("--course-dir", required=True, help="GSPro course folder; its arboristdata.dat is the document the package goes into")
     p.add_argument("--base", help="another arboristdata.dat / .json to start from")
     p.add_argument("--out-dir", help="where to write (default: the course folder)")
     p.add_argument("--palette", required=True, help="the course's grass-palette.json")
     p.add_argument("--zones", required=True, help="the inner zones export (<course>-inner-zones.json, its PNGs beside it)")
     p.add_argument("--library", default=str(HERE.parent / "data" / "arborist" / "GolfMap library.biome"))
-    p.add_argument("--species", required=True, help="JSON {\"species\": {<prefab file stem>: <Arborist label or null>}} for what the name rule does not find")
+    p.add_argument("--species", required=True, help="the course's arborist-species.json: plantSettings (the course-wide look), and for the palette's prefab items {\"species\": {<prefab file stem>: <Arborist label or null>}} for what the name rule does not find")
+    p.add_argument("--models", help="the course's resolved model library (golfmap-models-v1, <slug>-models.resolved.json): a palette item with \"model\" is drawn by its model's renderer, as its label, in its look")
     p.add_argument("--only", nargs="*", help="only items whose name contains one of these")
     p.add_argument("--key-file")
     p = sub.add_parser("post", help="look.json's post values into the course folder's arborist_postprocess.dat (what GSPro reads)")

@@ -39,7 +39,13 @@ export const SHARED_LIBRARY_FORMAT = 'golfmap-model-library-v1';
 export const SHARED_LIBRARY_FILE = 'model-library.json';
 export const PALETTE_FORMAT = 'golfmap-tree-palette-v1';
 export const MODEL_KINDS = ['broadleaf', 'conifer'] as const;
-export const MODEL_FORMS = ['tree', 'shrub'] as const;
+/** tree: a tree; shrub: a bush (a tree palette's or a zone palette's); plant: a ground plant; grass: a VSP texture grass. */
+export const MODEL_FORMS = ['tree', 'shrub', 'plant', 'grass'] as const;
+/** The forms a zone palette item (grass-palette.json) may refer to: lower vegetation. They need no kind. */
+export const LOWER_FORMS = ['grass', 'plant', 'shrub'] as const;
+export const isLowerForm = (form: unknown): boolean => (LOWER_FORMS as readonly string[]).includes(String(form));
+/** Whether zone items wear `model` rather than tree palettes: a lower form, a bush only without a tree's kind. */
+export const isZoneModel = (model: { form?: string; kind?: string }): boolean => isLowerForm(model.form) && !(model.form === 'shrub' && model.kind);
 
 const UNITY_FIELDS = ['path', 'assetType', 'catalogueGuid', 'originalPath'] as const;
 
@@ -49,9 +55,11 @@ export interface LibraryModel {
     id: string;
     species?: string;
     renderer: Renderer;
+    /** Required for a tree; optional for a lower-vegetation model (a vsp texture or prefab is sized by its zone item). */
     heightM: number;
     crownWidthM: number;
-    kind: string;
+    /** broadleaf | conifer: a tree's; a lower-vegetation model needs none. */
+    kind?: string;
     form: string;
     look?: Record<string, unknown>;
     unity?: UnityPrefab;
@@ -94,14 +102,17 @@ export interface ResolvedAsset {
 
 export interface CatalogueModel { label: string; heightM: number; crownWidthM: number; address?: unknown }
 
-const readJson = (file: string) => JSON.parse(fs.readFileSync(file, 'utf8').replace(/^﻿/, ''));
+/** A JSON file, a UTF-8 byte order mark allowed (the files Unity and Windows editors write). */
+export const readJson = (file: string) => JSON.parse(fs.readFileSync(file, 'utf8').replace(/^﻿/, ''));
 
 /** Every entry has an id, no id twice, and a renderer (when given) that is its id's. */
 function checkModels(models: ModelOverride[], file: string): void {
     const seen = new Set<string>();
     for (const m of models) {
-        const { renderer } = parseModelId(m.id);
+        const { renderer, texture } = parseModelId(m.id);
         if (m.renderer !== undefined && m.renderer !== renderer) throw Error(`Model ${m.id} in ${file} says renderer '${m.renderer}', but its id is ${renderer}'s`);
+        if (m.form !== undefined && !(MODEL_FORMS as readonly string[]).includes(m.form)) throw Error(`Model ${m.id} in ${file}: form must be ${MODEL_FORMS.join(', ')}, not '${m.form}'`);
+        if (texture && m.form !== undefined && m.form !== 'grass') throw Error(`Model ${m.id} in ${file} is a texture grass: its form must be grass, not '${m.form}'`);
         if (seen.has(m.id)) throw Error(`Model ${m.id} is in ${file} twice`);
         seen.add(m.id);
     }
@@ -134,12 +145,16 @@ export function loadCourseModels(courseDocsDir: string): CourseModels {
 
 const isObject = (v: unknown): v is Record<string, unknown> => typeof v === 'object' && v !== null && !Array.isArray(v);
 
-/** `over` onto `base`: objects merge key by key, anything else replaces; null removes the key. */
+/**
+ * `over` onto `base`: objects merge key by key (onto an empty one when `base` has none), anything else
+ * replaces; null removes the key, at any depth. The one merge of the model library: a course's override onto
+ * its shared model, a look change (`models -- look`), a zone item's --set.
+ */
 export function deepMerge<T extends Record<string, unknown>>(base: T, over: Record<string, unknown>): T {
     const out: Record<string, unknown> = { ...base };
     for (const [k, v] of Object.entries(over)) {
         if (v === null) delete out[k];
-        else if (isObject(v) && isObject(out[k])) out[k] = deepMerge(out[k] as Record<string, unknown>, v);
+        else if (isObject(v)) out[k] = deepMerge(isObject(out[k]) ? out[k] as Record<string, unknown> : {}, v);
         else out[k] = v;
     }
     return out as T;
@@ -235,17 +250,20 @@ export interface NewArboristModel { id: string; species: string; kind?: string; 
  * Refuses a label the catalogue does not have, and an id the library already holds. Returns the new
  * library document and the model; writes nothing.
  */
-export function addArboristModel(library: ModelLibrary, { id, species, kind = 'broadleaf', form = 'tree', look }: NewArboristModel,
+export function addArboristModel(library: ModelLibrary, { id, species, kind, form = 'tree', look }: NewArboristModel,
     catalogue: Map<string, CatalogueModel>): { library: ModelLibrary; model: LibraryModel } {
     const { renderer, label } = parseModelId(id);
     if (renderer !== ARBORIST) throw Error(`${id}: only Arborist models are added here; a vsp model joins from Unity's Palette panel (it needs the prefab)`);
     if (!species) throw Error('A model needs its species (--species)');
-    if (!(MODEL_KINDS as readonly string[]).includes(kind)) throw Error(`kind must be broadleaf or conifer, not '${kind}'`);
-    if (!(MODEL_FORMS as readonly string[]).includes(form)) throw Error(`form must be tree or shrub, not '${form}'`);
+    const forms = MODEL_FORMS.filter((f) => f !== 'grass') as readonly string[];
+    if (!forms.includes(form)) throw Error(`form must be ${forms.join(', ')} for an Arborist model, not '${form}'`);
+    // A tree needs its kind (broadleaf when not given); a bush or ground plant of the zone palettes needs none.
+    if (form === 'tree' && kind === undefined) kind = 'broadleaf';
+    if (kind !== undefined && !(MODEL_KINDS as readonly string[]).includes(kind)) throw Error(`kind must be broadleaf or conifer, not '${kind}'`);
     const size = catalogue.get(label);
     if (!size) throw Error(`Arborist has no model '${label}' (not in its catalogue sizes)`);
     if ((library.models ?? []).some((m) => m.id === id)) throw Error(`${id} is already in the model library`);
-    const model: LibraryModel = { id, species, renderer, heightM: size.heightM, crownWidthM: size.crownWidthM, kind, form };
+    const model = { id, species, renderer, heightM: size.heightM, crownWidthM: size.crownWidthM, ...(kind !== undefined ? { kind } : {}), form } as LibraryModel;
     if (look) model.look = look;
     return { library: { ...library, format: library.format ?? MODELS_FORMAT, models: [...(library.models ?? []), model] }, model };
 }

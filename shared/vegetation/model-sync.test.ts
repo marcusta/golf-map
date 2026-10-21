@@ -1,4 +1,4 @@
-// The repo's models.json / palette.json into Unity's course folder: byte-equal, a Unity copy changed by
+// The repo's models.json / palette.json / grass-palette.json into Unity's course folder: byte-equal, a Unity copy changed by
 // hand refused (with its diff) unless forced, a dry run writes nothing.
 import { describe, expect, test } from 'bun:test';
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
@@ -9,6 +9,7 @@ import { loadModelLibrary, modelLibraryText } from './tree-models';
 
 const MODELS = '{\r\n  "format": "golfmap-models-v1",\r\n  "models": [\r\n    {"id": "arborist:S7_American_Elm", "species": "elm", "renderer": "arborist", "heightM": 18, "crownWidthM": 12, "kind": "broadleaf", "form": "tree"}\r\n  ]\r\n}\r\n';
 const PALETTE = JSON.stringify({ format: 'golfmap-tree-palette-v1', seed: 's', rules: {}, assets: [{ model: 'arborist:S7_American_Elm', enabled: true }] }, null, 2) + '\n';
+const GRASS = JSON.stringify({ format: 'golfmap-grass-v1', palettes: [{ key: 'rough_tall', items: [{ name: 'Tall rough', model: 'arborist:S7_American_Elm', sampleDistance: 1 }] }] }, null, 2) + '\n';
 const SHARED = { format: 'golfmap-model-library-v1', models: [
     { id: 'arborist:CE_DA_Forest_Tree_16018', species: 'beech', renderer: 'arborist', heightM: 22.9, crownWidthM: 14, kind: 'broadleaf', form: 'tree', look: { hue: 0, brightness: 1 } },
 ] };
@@ -21,6 +22,7 @@ function fixture() {
     mkdirSync(unity, { recursive: true });
     writeFileSync(path.join(docs, 'models.json'), MODELS);
     writeFileSync(path.join(docs, 'palette.json'), PALETTE);
+    writeFileSync(path.join(docs, 'grass-palette.json'), GRASS);
     return { root, docs, unity, base: path.join(root, 'proj', 'Library', 'GolfMapBridge', 'course-docs-sync.json') };
 }
 
@@ -31,11 +33,12 @@ describe('syncCourseModels', () => {
         const f = fixture();
         writeFileSync(path.join(f.docs, 'palette.json'), PALETTE.replace(/\n/g, '\r\n'));
         const first = syncCourseModels({ docsDir: f.docs, unityDir: f.unity });
-        expect(first.map(r => [r.file, r.state, r.action])).toEqual([['models.json', 'new', 'copied'], ['palette.json', 'new', 'copied']]);
+        expect(first.map(r => [r.file, r.state, r.action])).toEqual([['models.json', 'new', 'copied'], ['palette.json', 'new', 'copied'], ['grass-palette.json', 'new', 'copied']]);
         expect(readFileSync(path.join(f.unity, 'models.json'), 'utf8')).toBe(modelLibraryText(loadModelLibrary(f.docs)));
         expect(bytes(path.join(f.unity, 'palette.json')).equals(bytes(path.join(f.docs, 'palette.json')))).toBe(true);
         expect(existsSync(f.base)).toBe(true);
-        expect(syncCourseModels({ docsDir: f.docs, unityDir: f.unity }).map(r => r.state)).toEqual(['same', 'same']);
+        expect(bytes(path.join(f.unity, 'grass-palette.json')).equals(bytes(path.join(f.docs, 'grass-palette.json')))).toBe(true);
+        expect(syncCourseModels({ docsDir: f.docs, unityDir: f.unity }).map(r => r.state)).toEqual(['same', 'same', 'same']);
     });
 
     test('a repo change since the last sync is copied without --force', () => {
@@ -112,7 +115,7 @@ describe('syncCourseModels', () => {
     test('a dry run writes nothing, not even the base', () => {
         const f = fixture();
         const report = syncCourseModels({ docsDir: f.docs, unityDir: f.unity, dryRun: true });
-        expect(report.map(r => r.action)).toEqual(['would-copy', 'would-copy']);
+        expect(report.map(r => r.action)).toEqual(['would-copy', 'would-copy', 'would-copy']);
         expect(existsSync(path.join(f.unity, 'models.json'))).toBe(false);
         expect(existsSync(path.join(f.unity, 'palette.json'))).toBe(false);
         expect(existsSync(f.base)).toBe(false);
@@ -124,7 +127,7 @@ describe('syncCourseModels', () => {
         mkdirSync(docs);
         writeFileSync(path.join(f.unity, 'palette.json'), PALETTE);
         const report = syncCourseModels({ docsDir: docs, unityDir: f.unity });
-        expect(report.map(r => r.state)).toEqual(['absent', 'unity-only']);
+        expect(report.map(r => r.state)).toEqual(['absent', 'unity-only', 'absent']);
         expect(existsSync(path.join(f.unity, 'palette.json'))).toBe(true);
     });
 });

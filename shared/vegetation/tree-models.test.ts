@@ -4,7 +4,8 @@ import { createHash } from 'node:crypto';
 import { mkdirSync, mkdtempSync, writeFileSync } from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
-import { deepMerge, loadModelLibrary, promoteModel, resolveModelLibrary, type CourseModels, type ModelLibrary } from './tree-models';
+import { deepMerge, loadCourseModels, loadModelLibrary, modelId, parseModelId, promoteModel, resolveModelLibrary, type CourseModels, type ModelLibrary } from './tree-models';
+import { itemsWearing, loadZonePalettes } from './zone-models';
 
 const REPO = path.resolve(import.meta.dir, '../..');
 
@@ -71,8 +72,21 @@ test('promote: an override goes into the shared model, a course-only model joins
 });
 
 test("Omberg's resolved library is its models.json of 2026-10-21 before the shared library (same models, same fields)", () => {
-    // sha1 of canonical() of docs/gspro/ombergs-golfklubb/models.json as it was before the split (66 models).
-    const omberg = loadModelLibrary(path.join(REPO, 'docs/gspro/ombergs-golfklubb'));
-    expect(omberg.models.length).toBe(66);
-    expect(createHash('sha1').update(canonical(omberg)).digest('hex')).toBe('11477f68f2bfe461496ca0f35076acebe1b2e342');
+    // Omberg's models.json as it was before the split (66 models).
+    // The zone palettes' course-only models (lower vegetation, 2026-10-21) came later: left out here.
+    const docs = path.join(REPO, 'docs/gspro/ombergs-golfklubb');
+    const lower = new Set(loadCourseModels(docs).models.filter(m => itemsWearing(loadZonePalettes(docs), m.id).length).map(m => m.id));
+    const all = loadModelLibrary(docs);
+    const models = all.models.filter(m => !lower.has(m.id));
+    expect(models.length).toBe(66);
+    // The models alone (the file's comment has moved on since): sha1 of the sorted, key-sorted models at f525ce6.
+    expect(createHash('sha1').update(canonical({ models }).replace(/^\{"models":|\}$/g, '')).digest('hex')).toBe('36ad992f3c167021fce184d15bc96427909f037b');
+});
+
+test('model ids: a variant after #, a texture grass, the label is what the renderer calls it', () => {
+    expect(parseModelId('arborist:MountainEnv_bush_hazel_01#edge')).toEqual({ renderer: 'arborist', label: 'MountainEnv_bush_hazel_01', variant: 'edge' });
+    expect(parseModelId('vsp:texture:Rustic Grass_15#blond')).toEqual({ renderer: 'vsp', label: 'Rustic Grass_15', variant: 'blond', texture: true });
+    expect(parseModelId('vsp:Prefab_heath_A_01')).toEqual({ renderer: 'vsp', label: 'Prefab_heath_A_01' });
+    expect(modelId('vsp', 'Rustic Grass_15', { texture: true, variant: 'blond' })).toBe('vsp:texture:Rustic Grass_15#blond');
+    for (const bad of ['vsp:texture:', 'arborist:#x', 'arborist:X#', 'tree:X']) expect(() => parseModelId(bad)).toThrow(/Invalid model id/);
 });

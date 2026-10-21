@@ -15,7 +15,12 @@
 //
 // The files stay the source of truth and keep their exact text: grass values go through the
 // lossless document (untouched numbers keep their tokens), tree looks through GolfMapPalette
-// and GolfMapLooks.Capture. Tree look values live in the look's material copies, edited in
+// and GolfMapLooks.Capture. A zone item that refers to a model (grass-palette.json "model"; the
+// copies here are generated from the repo's) wears its model's look: its colour, shading and
+// material values are the model's (IsLookRole), shared by every item of that model, and Save
+// writes them with the repo's `bun run models -- look`, its size and placement with
+// `models -- zone --set` (GolfMapVegSession.Save). Items of Arborist models are not listed: Arborist
+// draws them. Tree look values live in the look's material copies, edited in
 // place (that is what the Lab and VSP draw); Save records them in palette.json.
 // Pushing values into the scene is GolfMapVegLive's job; the window is GolfMapVegPaletteWindow.
 using System;
@@ -62,6 +67,7 @@ namespace GolfMap.Editor
         public GolfMapVegKind kind;
         public string species, look;         // trees
         public string source;                // texture or prefab asset path (grass/bush), first shape's prefab (trees)
+        public string model;                 // grass/bush: the model id the zone item refers to (its look is the model's); null for the older form
         public bool readOnly;                // a tree species' source materials: tune a look copy instead
         public string readOnlyWhy;
         public string note;                  // worth knowing before editing (materials outside the look, ...)
@@ -186,6 +192,12 @@ namespace GolfMap.Editor
         public static readonly string[] Sections = { "Colours", "Size", "Placement", "Shading", "Rendering", "Material", "Look", "Palette" };
 
         public static bool IsMaterial(string role) { return role.StartsWith("mat:", StringComparison.Ordinal); }
+
+        // A grass/bush value that belongs to the model's look (model.look in models.json), not to the zone item:
+        // colours, shading, shadows and the shader floats. The rest (size, placement) is the item's. The twin of
+        // shared/vegetation/zone-models.ts VSP_LOOK_KEYS (its "material" = the "mat:" roles; zone-models.test.ts checks).
+        static readonly HashSet<string> LookRoles = new HashSet<string> { "healthy", "dry", "randomDarkening", "rootAmbient", "alphaCutoff", "whitePoint", "shadows" };
+        public static bool IsLookRole(string role) { return LookRoles.Contains(role) || IsMaterial(role); }
         public const string BakeSlot = "bake:";
         public static bool IsBaked(GolfMapVegValue v) { return v.slot != null && v.slot.StartsWith(BakeSlot, StringComparison.Ordinal); }
 
@@ -269,6 +281,7 @@ namespace GolfMap.Editor
             var resolved = GolfMapGrass.Load(course);      // the values apply uses: defaults and palette-level fallbacks filled in
             var nodes = (doc.Array("palettes") ?? new List<object>()).Cast<GolfMapJsonObject>().ToList();
             var byKey = new Dictionary<string, GolfMapVegEntry>();
+            var arborist = new HashSet<string>();
             for (int p = 0; p < resolved.Count && p < nodes.Count; p++)
             {
                 var palette = resolved[p];
@@ -282,6 +295,7 @@ namespace GolfMap.Editor
                 for (int i = 0; i < palette.items.Count && i < itemNodes.Count; i++)
                 {
                     var spec = palette.items[i];
+                    if (spec.renderer == GolfMapModels.Arborist) { arborist.Add(spec.name); continue; }   // Arborist draws it: tuned there
                     string key = "g:" + spec.name;
                     GolfMapVegEntry e;
                     if (!byKey.TryGetValue(key, out e))
@@ -301,12 +315,14 @@ namespace GolfMap.Editor
                     pe.members.Add(key);
                 }
             }
+            if (arborist.Count > 0)
+                result.notes.Add(arborist.Count + " zone item(s) have Arborist models and are drawn by Arborist, not listed here (bun run models -- zone swaps a model; Arborist's own look: bun run models -- look).");
         }
 
         static GolfMapVegEntry GrassEntry(GolfMapCourse course, GolfMapGrass.Item spec)
         {
             bool bush = spec.prefab != null;
-            var e = new GolfMapVegEntry { key = "g:" + spec.name, name = spec.name, kind = bush ? GolfMapVegKind.Bush : GolfMapVegKind.Grass, source = bush ? spec.prefab : spec.source };
+            var e = new GolfMapVegEntry { key = "g:" + spec.name, name = spec.name, kind = bush ? GolfMapVegKind.Bush : GolfMapVegKind.Grass, source = bush ? spec.prefab : spec.source, model = spec.model };
             Color healthy = spec.healthy, dry = spec.dry;
             var materials = bush ? BushMaterials(spec.prefab) : new List<Material>();
             if (bush && !spec.tinted)
@@ -546,6 +562,8 @@ namespace GolfMap.Editor
 
         // Writes the grass values that differ from `saved` into the file's text (every palette
         // listing the item). Returns the new text; unchanged values keep their exact tokens.
+        // Items that refer to a model are left alone: their values go through the repo's CLI
+        // (GolfMapVegSession.Save), which writes the repo's files and generates this copy.
         public static string GrassText(string text, GolfMapVegState current, GolfMapVegState saved)
         {
             var doc = GolfMapJsonDoc.ParseObject(text);
@@ -556,6 +574,7 @@ namespace GolfMap.Editor
                 if (pe != null && ps != null) WriteChanged(p, pe, ps, null);
                 foreach (GolfMapJsonObject i in p.Array("items") ?? new List<object>())
                 {
+                    if (i.String("model") != null) continue;
                     var e = current.Get("g:" + i.String("name")); var s = saved.Get("g:" + i.String("name"));
                     if (e != null && s != null) WriteChanged(i, e, s, key);
                 }

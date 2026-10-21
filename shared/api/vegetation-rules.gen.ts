@@ -10,6 +10,7 @@ export interface PlantingRules {
     treeAreas: TreeAreaRule[];
     treeAssets: { species: string; enabled: number; total: number }[];
     treeModels: TreeSpeciesModels[];
+    zoneModels: ({ palette: string; items: ({ name: string; model: string; renderer: 'arborist' | 'vsp' | '?' })[] })[];
 }
 
 export interface PlantingRuleSection {

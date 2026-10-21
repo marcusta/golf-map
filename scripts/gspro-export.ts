@@ -31,6 +31,10 @@
 //   unity-terrain[:inner|:outer]  the heightmap export, then into the open Unity editor's terrain (golfmap.terrain.update)
 //   unity-sculpt[:inner|:outer]   what was sculpted in Unity since, back as that terrain's sculpt layer (golfmap.terrain.capture)
 //   unity-ortho                   the inner orthophoto (--source, e.g. the .cleaned.tif), then its -meshes file onto the Unity course meshes (golfmap.orthos.apply)
+//   vegetation[:inner|:outer]  Update vegetation for that terrain, as the web's command bar: the zone generators, the
+//                            zones export, the import and grass apply in the open Unity editor (the course's own VSP),
+//                            then the Arborist file (the lower vegetation, the trees); --force runs and renders all of
+//                            it, --arborist-out <folder> writes the Arborist file there. The outer plants nothing.
 //   creeks                   the creeks as R.A.M. splines at the water surface (inner; needs the inner dem)
 //   ramroads                 the paths with render=ram as R.A.M. splines on the ground meshes (inner; colours from
 //                            the newest raw photo). Which roads: bun run ramroads -- <course> propose|set|list
@@ -77,8 +81,8 @@ import { GSPRO_TARGET_IDS, isGsproTargetId, gsproTarget, type GsproTargetId } fr
 import type { JobPhase } from '../server/services/job-phases';
 
 const ROOT = path.resolve(import.meta.dir, '..');
-const KINDS: GsproExportKind[] = ['svg', 'ortho', 'outer-ortho', 'dem', 'unity-terrain', 'unity-sculpt', 'unity-ortho', 'hillshade', 'trees', 'buildings', 'zones', 'creeks', 'ramroads', 'waterfalls', 'gkd', 'arborist'];
-const TERRAIN_KINDS = new Set<GsproExportKind>(['dem', 'unity-terrain', 'unity-sculpt', 'hillshade', 'trees', 'buildings', 'zones']);
+const KINDS: GsproExportKind[] = ['svg', 'ortho', 'outer-ortho', 'dem', 'unity-terrain', 'unity-sculpt', 'unity-ortho', 'hillshade', 'trees', 'buildings', 'zones', 'vegetation', 'creeks', 'ramroads', 'waterfalls', 'gkd', 'arborist'];
+const TERRAIN_KINDS = new Set<GsproExportKind>(['dem', 'unity-terrain', 'unity-sculpt', 'hillshade', 'trees', 'buildings', 'zones', 'vegetation']);
 
 function usage(message?: string): never {
     if (message) console.error(`error: ${message}\n`);

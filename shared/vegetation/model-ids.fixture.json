@@ -1,0 +1,13 @@
+{
+  "_comment": "The model id grammar (shared/vegetation/model-id.ts) as its three twins must read it: model-id.ts, pipeline/arborist.py parse_model_id/model_id and Unity's GolfMapModels.TryParse/Id. Read by shared/vegetation/model-id.test.ts and pipeline/tests/test_model_id.py.",
+  "good": [
+    { "id": "arborist:S7_American_Elm", "renderer": "arborist", "label": "S7_American_Elm" },
+    { "id": "arborist:MountainEnv_bush_hazel_01#edge", "renderer": "arborist", "label": "MountainEnv_bush_hazel_01", "variant": "edge" },
+    { "id": "vsp:Prefab_heath_A_01", "renderer": "vsp", "label": "Prefab_heath_A_01" },
+    { "id": "vsp:PF_Oak_tall Terrain", "renderer": "vsp", "label": "PF_Oak_tall Terrain" },
+    { "id": "vsp:texture:Rustic Grass_15", "renderer": "vsp", "label": "Rustic Grass_15", "texture": true },
+    { "id": "vsp:texture:Rustic Grass_15#blond", "renderer": "vsp", "label": "Rustic Grass_15", "variant": "blond", "texture": true },
+    { "id": "arborist:texture:X", "renderer": "arborist", "label": "texture:X" }
+  ],
+  "bad": ["vsp:texture:", "arborist:#x", "arborist:X#", "vsp:texture:#blond", "tree:X", "arborist:", "arborist: ", "S7_American_Elm", ""]
+}

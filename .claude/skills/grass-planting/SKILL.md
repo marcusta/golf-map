@@ -142,7 +142,16 @@ Hand-drawn `rough_tall` zones also get the grass. Check them against the rules (
 zone on the surface map) and ask before deleting; setting `weight 0` (`bun run zones -- set
 <course> <id> --weight 0`) makes one inert and keeps it.
 
-## The palette (`Assets/GolfMap/<Course>/grass-palette.json`, snapshot `docs/gspro/<course>/`)
+## The palette (`docs/gspro/<course>/grass-palette.json`; Unity's `Assets/GolfMap/<Course>/` copy is generated)
+
+**On the model library** (Omberg; Vreta still has the older form): an item is `{name, model, <placement and
+size keys>}`; the texture/prefab is the model's `unity.path` and the look (`healthy`, `dry`, `material`,
+`randomDarkening`, `rootAmbient`, `alphaCutoff`, `whitePoint`, `shadows`) is the model's `look` in models.json,
+shared by every zone that uses the model. Change a look with `bun run models -- look "<course>" <model>
+--set healthy=#rrggbb,material._BackFaceMirrorNormal=1`, an item's size or its model with `bun run models --
+zone "<course>" <palette key> "<item>" [--model <id>] [--set width=0.9,...]` (both `--dry-run`; both sync
+Unity's copies, `bun run models -- sync` too). The model's renderer decides who draws it: `vsp:` models
+the course's VSP, `arborist:` models Arborist. Never hand-edit Unity's copy.
 
 `golfmap-grass-v1`: per zone type key, VSP texture grass items. `golfmap.grass.apply` makes a
 **greyscale** copy of each source texture (levelled so bright blades sit near white) and colours
@@ -236,7 +245,7 @@ leaves a fifth of the blades near black - raise it to lighten the dark mix close
 |height|width|density|spread, set: {role: value}}` changes the working copy and the scene at once (colours
 graded in linear light: `brightness: -0.15` = x0.85 linear), `golfmap.vegpalette.spots {select, goto: 0}`
 frames where it grows, screenshot, measure, repeat (the live push reaches an item's distance copies too); `golfmap.vegpalette.save` writes grass-palette.json
-(every palette listing a shared item; minimal diff) or `.revert` puts it back. The user does the same in
+(every palette listing a shared item; minimal diff; an item with a model through `models -- look` / `models -- zone --set`, and a model's colour edit moves every item of that model) or `.revert` puts it back. The user does the same in
 `GolfMap > Vegetation Palettes` (`golfmap.vegpalette.show {select}` opens it on what you changed). Texture
 white point and a bush's first `material` override still need `golfmap.vegpalette.rebuild` (= apply).
 
@@ -484,7 +493,7 @@ the module doc; tuning flags `--lake-reach --slab-reach --crack-cover --heath-co
 - `crack` (mix): VSP texture grass and moss on ~35 % of the slab, favouring ledges, none on faces over 70°,
   plus a ragged fringe in over its edge and a skirt beside it. `grass` (mix): under and between the scrub.
   Both at about 1.75x the tall rough's texture density.
-- `heath`: sparse patches on the ledges and 3 m out. Heather and lingonberry are `prefabItemsInVsp` on
+- `heath`: sparse patches on the ledges and 3 m out. Heather and lingonberry are `vsp:` models on
   Omberg, so the course's VSP draws them, not Arborist.
 - `scrub` (replace): Arborist bushes 0.5-8 m out from the slab (full to 2.5 m, 0.3 at 8 m) and along the
   lake within 25 m, in clumps that close up against the rock.

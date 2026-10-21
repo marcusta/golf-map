@@ -11,6 +11,8 @@
 //   the species/model pick from the course's palette.json, who draws what from its
 //   arborist-species.json (each described by a notes file in vegetation-rules/), and
 //   the drawn tree species areas.
+// - The zone palettes (grass-palette.json): each zone item with the model it refers to and who draws it
+//   (the model's renderer; shared/vegetation/zone-models.ts).
 import * as path from 'node:path';
 import { readFile } from 'node:fs/promises';
 import type { CoursesService } from './courses.service';
@@ -19,6 +21,7 @@ import type { ZoneTypesService } from './zone-types.service';
 import { courseSlug } from './gspro-export.service';
 import { loadModelLibrary, resolveAsset, type PaletteAsset } from '../../shared/vegetation/tree-models';
 import { rendererOf } from '../../shared/vegetation/model-id';
+import { loadZonePalettes, zoneModels, type ZoneModels } from '../../shared/vegetation/zone-models';
 import { DEFAULT_PIPELINE_DIR } from './pipeline-dir';
 import {
     VEGETATION_GENERATORS, VEGETATION_RULES_FILE, readRuleDefaults,
@@ -94,6 +97,8 @@ export interface PlantingRules {
     treeAssets: { species: string; enabled: number; total: number }[];
     /** Each species of the palette with its weight and its models (model library: who draws it, its size), by species name. */
     treeModels: TreeSpeciesModels[];
+    /** Each zone palette (grass-palette.json) in file order with its items' models and who draws each (the model's renderer); palettes of the older form, whose items name no model, are left out. */
+    zoneModels: ZoneModels[];
 }
 
 export interface TreeModelRule {
@@ -251,7 +256,17 @@ export class VegetationRulesService {
             courseId, courseName: course.name, courseDocs: rel(docs), generators, trees, treeAreas,
             treeAssets: [...bySpecies].map(([species, n]) => ({ species, ...n })).sort((a, b) => b.total - a.total),
             treeModels,
+            zoneModels: courseZoneModels(docs),
         };
+    }
+}
+
+/** The course's zone palettes on its model library; none when it has no grass-palette.json (or one that does not read). */
+function courseZoneModels(docs: string): ZoneModels[] {
+    try {
+        return zoneModels(loadZonePalettes(docs), loadModelLibrary(docs));
+    } catch {
+        return [];
     }
 }
 

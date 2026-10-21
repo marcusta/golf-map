@@ -1,10 +1,12 @@
-// The repo's model libraries and tree palette are the course's only hand-kept copies; Unity's
-// (Assets/GolfMap/<Course>/models.json and palette.json, which GolfMapPalette.Load reads) are generated
+// The repo's model libraries, tree palette and zone palettes are the course's only hand-kept copies; Unity's
+// (Assets/GolfMap/<Course>/models.json, palette.json and grass-palette.json, which GolfMapPalette.Load and
+// GolfMapGrass.Load read) are generated
 // from them by `syncCourseModels` (`bun run models -- sync`, and after every `models -- add / promote /
 // palette` that finds the course's Unity folder):
 //   models.json   the course's RESOLVED library: docs/gspro/model-library.json with the course's
 //                 docs/gspro/<course>/models.json over it (tree-models.ts loadModelLibrary, modelLibraryText);
-//   palette.json  docs/gspro/<course>/palette.json, byte for byte.
+//   palette.json  docs/gspro/<course>/palette.json, byte for byte;
+//   grass-palette.json  docs/gspro/<course>/grass-palette.json (the zone palettes), byte for byte.
 //
 // Unity's copy may still be edited by hand (or by an old tool), and a plain copy would lose that. The
 // project keeps a base: the content hash of each file as of the last sync, in
@@ -18,7 +20,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { PALETTE_FORMAT, SHARED_LIBRARY_FILE, loadModelLibrary, modelLibraryText, resolvePalette, sharedLibraryFile } from './tree-models';
 
-export const SYNCED_FILES = ['models.json', 'palette.json'] as const;
+export const SYNCED_FILES = ['models.json', 'palette.json', 'grass-palette.json'] as const;
 export type SyncedFile = (typeof SYNCED_FILES)[number];
 
 export type SyncState = 'same' | 'new' | 'repo-changed' | 'drift' | 'unity-only' | 'absent';
@@ -96,7 +98,7 @@ export function sameJson(a: Buffer, b: Buffer): boolean {
 
 /**
  * What Unity's copy of `file` is made of: models.json = the course's resolved library (none while neither
- * the shared library nor the course file exists), palette.json = the course's file.
+ * the shared library nor the course file exists), palette.json and grass-palette.json = the course's file.
  */
 export function sourceOf(docsDir: string, file: SyncedFile): { bytes?: Buffer; label: string } {
     if (file === 'models.json') {

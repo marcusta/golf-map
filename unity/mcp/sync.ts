@@ -11,7 +11,7 @@
 // Folders come from unity/install.json. .meta files are Unity's and never synced.
 import { createHash } from "node:crypto";
 import { copyFileSync, existsSync, mkdirSync, readdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
-import { dirname, join } from "node:path";
+import { dirname, join, resolve } from "node:path";
 
 export type SyncMode = "check" | "push" | "pull";
 
@@ -85,10 +85,13 @@ function loadBase(projectPath: string): Record<string, string> {
   return existsSync(file) ? JSON.parse(readFileSync(file, "utf8")).files ?? {} : {};
 }
 
-function saveBase(projectPath: string, files: Record<string, string>) {
+// `repo`: the golf-map checkout the scripts came from (the folder above unity/), so the editor tools that run the
+// repo's CLI (GolfMapModels.RepoRoot: `bun run models`) find it without being told.
+function saveBase(projectPath: string, files: Record<string, string>, repoRoot: string) {
   const file = statePath(projectPath);
   mkdirSync(dirname(file), { recursive: true });
-  writeFileSync(file, JSON.stringify({ updated: new Date().toISOString(), files }, null, 2) + "\n");
+  const repo = resolve(repoRoot, "..").replace(/\\/g, "/");
+  writeFileSync(file, JSON.stringify({ updated: new Date().toISOString(), repo, files }, null, 2) + "\n");
 }
 
 function classify(repoHash: string | undefined, unityHash: string | undefined, base: string | undefined): FileState {
@@ -148,7 +151,7 @@ export function sync(opts: SyncOptions): FileReport[] {
     }
   }
 
-  saveBase(opts.projectPath, base);
+  saveBase(opts.projectPath, base, opts.repoRoot);
   return reports;
 }
 

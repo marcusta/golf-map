@@ -35,7 +35,7 @@ const RULES: PlantingRules = {
     }],
     trees: [],
     treeAreas: [{ name: 'Oak grove', mix: 'oak 9, birch 1', ignoreKind: false }],
-    treeAssets: [{ species: 'oak', enabled: 4, total: 4 }],
+    treeAssets: [{ species: 'oak', enabled: 4, total: 4 }], treeModels: [], zoneModels: [],
 };
 
 function mount() {

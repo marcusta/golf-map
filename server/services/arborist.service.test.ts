@@ -313,3 +313,28 @@ test('one rule for a routed course: a routing file left on a course without `rou
     await expect(svc.trees(f.course, editorWithTrees([]))).rejects.toThrow(/planted by the routing of a routed course/);
     expect(existsSync(routing)).toBe(false);
 }, 60_000);
+
+test.skipIf(!!MISSING)("zone items on the model library: an arborist model's item is drawn as its label in the model's look, a vsp model's is left to the course's VSP", async () => {
+    const f = await fixture();
+    await writeBase(f);
+    await writeFile(path.join(f.docs, 'linkan', 'arborist-species.json'), JSON.stringify({ plantSettings: [{ match: ['*'], tint: '#6f7c63' }] }));
+    await writeFile(path.join(f.docs, 'linkan', 'models.json'), JSON.stringify({ format: 'golfmap-models-v1', models: [
+        { id: 'vsp:texture:grass', renderer: 'vsp', form: 'grass', unity: { path: 'Assets/grass.png' }, look: { healthy: '#5e9154' } },
+        { id: 'arborist:MeadowEnv_bush_grey_willow_02#dark', species: 'willow', renderer: 'arborist', heightM: 2, crownWidthM: 2, form: 'shrub', look: { tint: '#3a5f2b' } },
+    ] }));
+    await writeFile(path.join(f.docs, 'linkan', 'grass-palette.json'), JSON.stringify({ format: 'golfmap-grass-v1', palettes: [{ key: 'shrub', items: [
+        { name: 'Tall rough - green base', model: 'vsp:texture:grass' },
+        { name: 'Shrub thicket - grey willow round', model: 'arborist:MeadowEnv_bush_grey_willow_02#dark', sampleDistance: 4 },
+    ] }] }));
+    const svc = new ArboristService({ dataDir: f.data, pipelineDir: PIPELINE, courseDocsRoot: f.docs, runner: real });
+
+    const report = await svc.lower(f.course);
+
+    expect(report[0]).toBe(`Arborist lower vegetation written: 1 items, 1 mask textures (${path.join(f.courseDir, 'arboristdata.dat')})`);
+    expect(existsSync(path.join(f.exportDir, 'linkan-models.resolved.json'))).toBe(true);
+    const lower = packages(await decode(path.join(f.courseDir, 'arboristdata.dat'), f.key))['GolfMap lower vegetation'];
+    expect(lower.VegetationInfoList.map((i: any) => i.Name)).toEqual(['Shrub thicket - grey willow round']);
+    const willow = lower.VegetationInfoList[0];
+    expect(willow.SampleDistance).toBe(4);
+    expect(willow.ShaderControllerSettings.ControlerPropertyList.map((p: any) => p.ColorValue)).toEqual(['RGBA(0.227, 0.373, 0.169, 1.000)', 'RGBA(0.227, 0.373, 0.169, 1.000)']);
+});

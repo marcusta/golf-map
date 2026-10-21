@@ -5,8 +5,9 @@
 // it, one package per command; this service finds the command's inputs from
 // the course and runs it through the export runner:
 //
-//   - `lower`  the palette's prefab items spread by the inner zones export's
-//              masks. Needs no Unity.
+//   - `lower`  the zone palettes' bushes and ground plants Arborist draws (an
+//              arborist model's zone items, or the older form's prefab items),
+//              spread by the inner zones export's masks. Needs no Unity.
 //   - `trees`  the planted trees. Their positions and ground heights are the
 //              Unity scene's (`golfmap.trees.dump`, hand edits included), so
 //              it runs only with the course's Unity project open.
@@ -248,15 +249,30 @@ export class ArboristService {
         return args;
     }
 
-    /** `arborist.py lower`: the palette's prefab items on the inner zones export's masks. Throws what is missing. */
+    /**
+     * The course's model library resolved (the shared library with the course's overrides and own models), written
+     * beside the export as <slug>-models.resolved.json for arborist.py: the course's models.json alone holds only its
+     * overrides. Null when the course has no models at all.
+     */
+    private async resolvedModels(course: ArboristCourse): Promise<string | null> {
+        const library = loadModelLibrary(path.dirname(this.docs(course, 'models.json')));
+        if (!library.models.length) return null;
+        const models = path.join(course.exportDir, `${courseSlug(course.name)}-models.resolved.json`);
+        await writeFile(models, modelLibraryText(library));
+        return models;
+    }
+
+    /** `arborist.py lower`: the palette's bushes and ground plants Arborist draws (an arborist model's zone items, or the old form's prefab items) on the inner zones export's masks. Throws what is missing. */
     async lower(course: ArboristCourse): Promise<string[]> {
         const common = await this.common(course);
         const palette = this.docs(course, 'grass-palette.json');
         if (!await statOrNull(palette)) throw new Error(`Arborist lower vegetation not written: no palette at ${palette}`);
         const zones = path.join(course.exportDir, zonesExportFileName(course.name, 'inner'));
         if (!await statOrNull(zones)) throw new Error(`Arborist lower vegetation not written: no zones export yet (${zones}) - plant once first`);
+        // A zone item that refers to a model is drawn by its model's renderer in its look: the resolved library, as for the trees.
+        const models = await this.resolvedModels(course);
         const stdout = await this.run('Arborist lower vegetation', [
-            'lower', ...common.args, '--palette', palette, '--zones', zones,
+            'lower', ...common.args, '--palette', palette, '--zones', zones, ...(models ? ['--models', models] : []),
         ], ARBORIST_LOWER_TIMEOUT_MS);
         const counts = /(\d+) item\(s\), (\d+) mask texture\(s\)/.exec(stdout);
         return [
@@ -314,12 +330,8 @@ export class ArboristService {
         if (placements.length) args.push('--placements', ...placements);
         // The course's model library resolved (the shared library with the course's overrides and own models),
         // written beside the export for arborist.py: the course's models.json alone holds only its overrides.
-        const library = loadModelLibrary(path.dirname(this.docs(course, 'models.json')));
-        if (library.models.length) {
-            const models = path.join(course.exportDir, `${courseSlug(course.name)}-models.resolved.json`);
-            await writeFile(models, modelLibraryText(library));
-            args.push('--models', models);
-        }
+        const models = await this.resolvedModels(course);
+        if (models) args.push('--models', models);
         // A routed course: the routing decided before planting who draws each tree, so the placements go where it
         // says and nothing is trimmed in Unity afterwards.
         const rules = await this.routingRules(course);

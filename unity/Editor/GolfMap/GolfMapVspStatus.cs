@@ -55,6 +55,12 @@ namespace GolfMap.Editor
                                     { "renderMode", i.VegetationRenderMode.ToString() },
                                     { "include", i.TextureMaskIncludeRuleList.Count }, { "density", i.TextureMaskDensityRuleList.Count },
                                 }).ToList() },
+                            // The mesh items that are not trees: a zone palette's bushes and ground plants (GolfMapGrass), with
+                            // the prefab VSP draws (the model's, or the course-local copy with its material floats).
+                            { "plants", p.VegetationInfoList.Where(i => i.VegetationType != VegetationType.Grass && i.VegetationType != VegetationType.Tree && i.VegetationPrefab).Select(i => (object)new Dictionary<string, object>
+                                {
+                                    { "name", i.Name }, { "spawning", i.EnableRuntimeSpawn }, { "prefab", AssetDatabase.GetAssetPath(i.VegetationPrefab) },
+                                }).ToList() },
                         }).ToList() },
                 };
             }).ToList();

@@ -5,7 +5,11 @@
 // course's resolved library, palette.json = the repo's byte for byte (shared/vegetation/model-sync.ts).
 //
 //   bun run models -- add "<course>" arborist:<label> --species <species> [--kind broadleaf|conifer]
-//                     [--form tree|shrub] [--shared] [--dry-run] [--docs <course docs root>] [--unity <folder>] [--force]
+//                     [--form tree|shrub|plant] [--shared] [--dry-run] [--docs <course docs root>] [--unity <folder>] [--force]
+//   bun run models -- look "<course>" <model id> --set <key>=<value>[,<key>=<value>...] [--dry-run] [--docs <root>]
+//                     [--unity <folder>] [--force]
+//   bun run models -- zone "<course>" <palette key> "<item name>" [--model <model id>] [--set <key>=<value>,...]
+//                     [--dry-run] [--docs <root>] [--unity <folder>] [--force]
 //   bun run models -- promote "<course>" <model id> [--dry-run] [--docs <root>] [--unity <folder>] [--force]
 //   bun run models -- palette "<course>" --from <palette.json> [--replace-unity] [--dry-run] [--docs <root>]
 //                     [--unity <folder>] [--force]
@@ -28,23 +32,37 @@
 // palette.json has changes Unity's copy has not got yet (the draft was made without them). --dry-run
 // prints what would happen and writes nothing. Unity's Palette panel runs exactly these verbs
 // (GolfMapTreePalette.cs, GolfMapModels.RunCli).
+//
+// The zone palettes (grass-palette.json: lower vegetation, shared/vegetation/zone-models.ts) refer to models
+// too. `add --form plant|shrub` adds an Arborist ground plant or bush (no kind needed). `look` sets keys of a
+// model's look - colours (#rrggbb), numbers, booleans, material.<shader float> - in the course's models.json
+// (an override when the model is shared) and names the zone items that wear it; `zone` swaps one zone item's
+// model (--model) and/or sets its placement and size keys (--set), saying who draws it before and after
+// (VSP / Arborist). Both refuse a model the course's library lacks and write nothing then. Unity's vegetation
+// palette editor saves through these two (GolfMapVegPaletteWindow, GolfMapModels.RunCli).
 import * as path from 'node:path';
-import { existsSync, readFileSync } from 'node:fs';
+import { existsSync, readFileSync, writeFileSync } from 'node:fs';
 import { courseSlug } from '../server/services/gspro-export.service';
 import { listBridges } from '../unity/mcp/bridge';
 import {
-    SHARED_LIBRARY_FILE, addArboristModel, loadArboristCatalogue, loadCourseModels, loadModelLibrary, loadSharedLibrary, promoteModel,
+    SHARED_LIBRARY_FILE, addArboristModel, isZoneModel, loadArboristCatalogue, loadCourseModels, loadModelLibrary, loadSharedLibrary, promoteModel,
     writeModelLibrary, writeSharedLibrary, type ModelOverride,
 } from '../shared/vegetation/tree-models';
+import { rendererName } from '../shared/vegetation/model-id';
 import {
-    checkCourseModels, checkCoursePalette, findUnityCourseFolders, formatSync, lineDiff, sameJson, syncCourseModels, syncRefused,
+    GRASS_PALETTE_FILE, itemsWearing, loadZonePalettes, parseSetValues, setModelLook, setZoneItem, zonePalettesText,
+} from '../shared/vegetation/zone-models';
+import {
+    SYNCED_FILES, checkCourseModels, checkCoursePalette, findUnityCourseFolders, formatSync, lineDiff, sameJson, syncCourseModels, syncRefused,
     writeCoursePalette, type SyncedFile,
 } from '../shared/vegetation/model-sync';
 
 const ROOT = path.resolve(import.meta.dir, '..');
-const USAGE = 'usage: bun run models -- add "<course>" arborist:<label> --species <species> [--kind broadleaf|conifer] [--form tree|shrub] [--shared] [--dry-run] [--docs <root>] [--unity <folder>] [--force]\n'
+const USAGE = 'usage: bun run models -- add "<course>" arborist:<label> --species <species> [--kind broadleaf|conifer] [--form tree|shrub|plant] [--shared] [--dry-run] [--docs <root>] [--unity <folder>] [--force]\n'
     + '       bun run models -- promote "<course>" <model id> [--dry-run] [--docs <root>] [--unity <folder>] [--force]\n'
     + '       bun run models -- palette "<course>" --from <palette.json> [--replace-unity] [--dry-run] [--docs <root>] [--unity <folder>] [--force]\n'
+    + '       bun run models -- look "<course>" <model id> --set <key>=<value>[,...] [--dry-run] [--docs <root>] [--unity <folder>] [--force]\n'
+    + '       bun run models -- zone "<course>" <palette key> "<item>" [--model <model id>] [--set <key>=<value>,...] [--dry-run] [--docs <root>] [--unity <folder>] [--force]\n'
     + '       bun run models -- sync "<course>" [--dry-run] [--force] [--docs <root>] [--unity <folder>]\n'
     + '       bun run models -- list "<course>" [--docs <root>]';
 
@@ -53,9 +71,9 @@ const flag = (name: string): string | undefined => {
     const at = args.indexOf(name);
     return at >= 0 ? args[at + 1] : undefined;
 };
-const VALUED = new Set(['--species', '--kind', '--form', '--docs', '--unity', '--from']);
+const VALUED = new Set(['--species', '--kind', '--form', '--docs', '--unity', '--from', '--model', '--set']);
 const positional = args.filter((a, i) => !a.startsWith('--') && !VALUED.has(args[i - 1] ?? ''));
-const [verb, course, id] = positional;
+const [verb, course, id, itemName] = positional;
 const dryRun = args.includes('--dry-run');
 const force = args.includes('--force');
 
@@ -64,8 +82,18 @@ function fail(message: string): never {
     process.exit(1);
 }
 
-if (!verb || !course || ((verb === 'add' || verb === 'promote') && !id) || (verb === 'palette' && !flag('--from'))
-    || !['add', 'promote', 'list', 'sync', 'palette'].includes(verb)) {
+/** Each verb's arguments: how many positionals (the verb and the course included), the flags it needs, and flags of which it needs one. */
+const VERBS: Record<string, { positionals: number; flags?: string[]; anyOf?: string[] }> = {
+    list: { positionals: 2 },
+    sync: { positionals: 2 },
+    add: { positionals: 3 },
+    promote: { positionals: 3 },
+    palette: { positionals: 2, flags: ['--from'] },
+    look: { positionals: 3, flags: ['--set'] },
+    zone: { positionals: 4, anyOf: ['--model', '--set'] },
+};
+const spec = verb && Object.hasOwn(VERBS, verb) ? VERBS[verb] : undefined;
+if (!spec || positional.slice(0, spec.positionals).filter(Boolean).length < spec.positionals || (spec.flags ?? []).some(f => !flag(f)) || (spec.anyOf && !spec.anyOf.some(f => flag(f)))) {
     console.error(USAGE);
     process.exit(2);
 }
@@ -97,6 +125,11 @@ function unityFolder(required: boolean): string | null {
     return null;
 }
 
+/** Whether `modelId` is a model of the shared library (a course's change to it is an override). */
+function inShared(modelId: string): boolean {
+    return loadSharedLibrary(docsRoot).models.some(m => m.id === modelId);
+}
+
 /** Before a write: a drifted Unity copy of `file` refuses the whole command (unless --force / allowed). */
 function refuseDrift(unity: string | null, file: SyncedFile, allowDrift = false): void {
     if (!unity || force || allowDrift) return;
@@ -114,6 +147,15 @@ function sync(unity: string | null, files: SyncedFile[], forceFiles = force): vo
     if (syncRefused(report)) process.exit(1);
 }
 
+/** --dry-run prints `preview()`; else `write()` writes and says what it did, and the written files sync into Unity. */
+function writeOrPreview(unity: string | null, files: SyncedFile[], preview: () => string, write: () => string, forceFiles = force): void {
+    if (dryRun) console.log(preview());
+    else {
+        console.log(write());
+        sync(unity, files, forceFiles);
+    }
+}
+
 try {
     if (verb === 'list') {
         const library = loadModelLibrary(docs);
@@ -121,17 +163,18 @@ try {
         const own = new Set(loadCourseModels(docs).models.map(m => m.id));
         for (const m of library.models) {
             const from = !shared.has(m.id) ? 'course-only' : own.has(m.id) ? 'shared+override' : 'shared';
-            console.log(`${m.id}  ${m.species ?? m.kind}  ${m.renderer}  ${m.heightM.toFixed(1)} m x ${m.crownWidthM.toFixed(1)} m  (${from})`);
+            const size = m.heightM ? `${m.heightM.toFixed(1)} m x ${(m.crownWidthM ?? 0).toFixed(1)} m` : 'sized by its zone items';
+            console.log(`${m.id}  ${m.species ?? m.kind ?? m.form}  ${m.renderer}  ${size}  (${from})`);
         }
         if (!library.models.length) console.log(`no models for ${slug} (${path.join(docsRoot, SHARED_LIBRARY_FILE)}, ${path.join(docs, 'models.json')})`);
     } else if (verb === 'sync') {
-        sync(unityFolder(true), ['models.json', 'palette.json']);
+        sync(unityFolder(true), [...SYNCED_FILES]);
     } else if (verb === 'add') {
         const toShared = args.includes('--shared');
         const dataDir = process.env.DATA_DIR ?? path.join(ROOT, 'data');
         const catalogueFile = path.join(dataDir, 'arborist', 'catalog-sizes.json');
         if (!existsSync(catalogueFile)) fail(`no Arborist catalogue sizes at ${catalogueFile} (the mod's arb.catalog with sizes, docs/gspro/arborist.md)`);
-        const fresh = { id: id!, species: flag('--species')!, kind: flag('--kind') ?? 'broadleaf', form: flag('--form') ?? 'tree' };
+        const fresh = { id: id!, species: flag('--species')!, kind: flag('--kind'), form: flag('--form') ?? 'tree' };
         const catalogue = loadArboristCatalogue(catalogueFile);
         const own = loadCourseModels(docs);
         if (own.models.some(m => m.id === id)) {
@@ -141,19 +184,18 @@ try {
         const { model } = addArboristModel(loadModelLibrary(docs), fresh, catalogue);
         const target = toShared ? path.join(docsRoot, SHARED_LIBRARY_FILE) : path.join(docs, 'models.json');
         const next = toShared ? addArboristModel(loadSharedLibrary(docsRoot), fresh, catalogue).library : { ...own, models: [...own.models, model as unknown as ModelOverride] };
-        const line = `${model.id}: ${model.species}, ${model.renderer}, ${model.heightM.toFixed(1)} m tall, ${model.crownWidthM.toFixed(1)} m crown (${model.kind} ${model.form})`;
+        const line = `${model.id}: ${model.species}, ${model.renderer}, ${model.heightM.toFixed(1)} m tall, ${model.crownWidthM.toFixed(1)} m crown (${model.kind ? `${model.kind} ` : ''}${model.form})`;
         const unity = unityFolder(false);
         refuseDrift(unity, 'models.json');
-        if (dryRun) {
-            console.log(`would add to ${target}:\n  ${line}\n${JSON.stringify(model, null, 2)}`);
-        } else {
+        writeOrPreview(unity, ['models.json'], () => `would add to ${target}:\n  ${line}\n${JSON.stringify(model, null, 2)}`, () => {
             if (toShared) writeSharedLibrary(docsRoot, next as never);
             else writeModelLibrary(docs, next);
-            console.log(`added to ${target}:\n  ${line}\n`
+            return `added to ${target}:\n  ${line}\n`
                 + (toShared ? 'Every course without its own entry for it inherits it (sync each course\'s Unity copy).\n' : '')
-                + `The course plants it once its palette refers to it: {"model": "${model.id}", "enabled": true} under assets (Unity's Palette panel).`);
-            sync(unity, ['models.json']);
-        }
+                + (isZoneModel(model)
+                    ? `A zone item draws it once it refers to it: bun run models -- zone "${course}" <palette key> "<item>" --model ${model.id}`
+                    : `The course plants it once its palette refers to it: {"model": "${model.id}", "enabled": true} under assets (Unity's Palette panel).`);
+        });
     } else if (verb === 'promote') {
         const shared = loadSharedLibrary(docsRoot);
         const own = loadCourseModels(docs);
@@ -162,17 +204,43 @@ try {
         const unity = unityFolder(false);
         refuseDrift(unity, 'models.json');
         const what = joined ? `${id} joins the shared library` : `${id}: the course's override goes into the shared model`;
-        if (dryRun) {
-            console.log(`would promote (${what}) from ${path.join(docs, 'models.json')} to ${path.join(docsRoot, SHARED_LIBRARY_FILE)}:\n${JSON.stringify(model, null, 2)}`);
-        } else {
-            writeSharedLibrary(docsRoot, nextShared);
-            writeModelLibrary(docs, nextCourse);
-            const after = loadModelLibrary(docs);
-            const same = JSON.stringify(after.models.find(m => m.id === id)) === JSON.stringify(before.models.find(m => m.id === id));
-            console.log(`promoted: ${what}; dropped from ${path.join(docs, 'models.json')}.${same ? '' : ' WARNING: the course\'s resolved model changed.'}\n`
-                + 'Every course without its own entry for it now gets the shared one (sync each course\'s Unity copy).');
-            sync(unity, ['models.json']);
-        }
+        writeOrPreview(unity, ['models.json'],
+            () => `would promote (${what}) from ${path.join(docs, 'models.json')} to ${path.join(docsRoot, SHARED_LIBRARY_FILE)}:\n${JSON.stringify(model, null, 2)}`,
+            () => {
+                writeSharedLibrary(docsRoot, nextShared);
+                writeModelLibrary(docs, nextCourse);
+                const after = loadModelLibrary(docs);
+                const same = JSON.stringify(after.models.find(m => m.id === id)) === JSON.stringify(before.models.find(m => m.id === id));
+                return `promoted: ${what}; dropped from ${path.join(docs, 'models.json')}.${same ? '' : ' WARNING: the course\'s resolved model changed.'}\n`
+                    + 'Every course without its own entry for it now gets the shared one (sync each course\'s Unity copy).';
+            });
+    } else if (verb === 'look') {
+        const change = parseSetValues(flag('--set')!);
+        const { course: next, look, model } = setModelLook(loadCourseModels(docs), loadModelLibrary(docs), id!, change);
+        const wearing = itemsWearing(loadZonePalettes(docs), id!);
+        const unity = unityFolder(false);
+        refuseDrift(unity, 'models.json');
+        const lines = [`${model.id} (${rendererName(model.renderer)}${inShared(model.id) ? ', an override of the shared model' : ''}): look ${JSON.stringify(look)}`,
+            wearing.length ? `worn by ${wearing.length} zone item(s):` : 'worn by no zone item (a tree palette may refer to it)',
+            ...wearing.map(w => `  ${w.palette} / ${w.name}`)];
+        const file = path.join(docs, 'models.json');
+        writeOrPreview(unity, ['models.json'], () => `would write ${file}:\n${lines.join('\n')}`, () => {
+            writeModelLibrary(docs, next);
+            return `wrote ${file}:\n${lines.join('\n')}`;
+        });
+    } else if (verb === 'zone') {
+        const palettes = loadZonePalettes(docs);
+        if (!palettes) fail(`no zone palettes ${path.join(docs, GRASS_PALETTE_FILE)}`);
+        const library = loadModelLibrary(docs);
+        const set = flag('--set') ? parseSetValues(flag('--set')!) : undefined;
+        const { doc, report } = setZoneItem(palettes, id!, itemName!, library, { model: flag('--model'), set });
+        const unity = unityFolder(false);
+        refuseDrift(unity, GRASS_PALETTE_FILE);
+        const file = path.join(docs, GRASS_PALETTE_FILE);
+        writeOrPreview(unity, [GRASS_PALETTE_FILE], () => `would write ${file}:\n${report.join('\n')}`, () => {
+            writeFileSync(file, zonePalettesText(doc));
+            return `wrote ${file}:\n${report.join('\n')}`;
+        });
     } else if (verb === 'palette') {
         const from = path.resolve(flag('--from')!);
         if (!existsSync(from)) fail(`no palette file ${from}`);
@@ -191,14 +259,13 @@ try {
             }
         }
         refuseDrift(unity, 'palette.json', replaceUnity);
-        if (dryRun) {
+        writeOrPreview(unity, ['palette.json'], () => {
             checkCoursePalette(docs, bytes);
-            console.log(`would write ${from} as ${path.join(docs, 'palette.json')}${unity ? ` and copy it to ${path.join(unity, 'palette.json')}` : ''}`);
-        } else {
+            return `would write ${from} as ${path.join(docs, 'palette.json')}${unity ? ` and copy it to ${path.join(unity, 'palette.json')}` : ''}`;
+        }, () => {
             writeCoursePalette(docs, bytes);
-            console.log(`wrote ${path.join(docs, 'palette.json')}`);
-            sync(unity, ['palette.json'], force || replaceUnity);
-        }
+            return `wrote ${path.join(docs, 'palette.json')}`;
+        }, force || replaceUnity);
     }
 } catch (e) {
     fail((e as Error).message);

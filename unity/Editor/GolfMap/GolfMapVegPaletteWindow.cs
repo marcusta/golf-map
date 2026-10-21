@@ -501,10 +501,17 @@ namespace GolfMap.Editor
                 string what = e.kind == GolfMapVegKind.Grass ? "Texture grass" : e.kind == GolfMapVegKind.Bush ? "Mesh bush" : "Tree look";
                 if (e.kind != GolfMapVegKind.Tree && e.palettes.Count > 0) what += "  ·  in " + string.Join(", ", e.palettes.ToArray()) + (e.palettes.Count > 1 ? " (one VSP item: a change shows in all)" : "");
                 EditorGUILayout.LabelField(what, EditorStyles.miniLabel);
+                if (e.model != null) DrawModelLine(e);
                 if (e.readOnly) EditorGUILayout.HelpBox(e.readOnlyWhy, MessageType.Info);
                 if (!string.IsNullOrEmpty(e.note)) EditorGUILayout.HelpBox(e.note, MessageType.Warning);
             }
-            else if (items.Any(e => !string.IsNullOrEmpty(e.note)))
+            else if (items.Any(e => e.model != null))
+            {
+                var models = items.Where(e => e.model != null).Select(e => e.model).Distinct().ToList();
+                EditorGUILayout.LabelField(new GUIContent("Models: " + string.Join(", ", models.Take(3).ToArray()) + (models.Count > 3 ? " +" + (models.Count - 3) : ""),
+                    "Colours, shading and material (marked 'model') belong to the models: a change shows in every item that wears one."), EditorStyles.miniLabel);
+            }
+            if (items.Count > 1 && items.Any(e => !string.IsNullOrEmpty(e.note)))
                 EditorGUILayout.HelpBox(string.Join(", ", items.Where(e => !string.IsNullOrEmpty(e.note)).Select(e => e.species + "/" + e.name).ToArray()) + ": draw with materials outside their look folder (select one for details).", MessageType.Warning);
             // Tiles: the selection as it looks now (grass: healthy | dry halves).
             int size = items.Count == 1 ? 96 : 40;
@@ -522,6 +529,15 @@ namespace GolfMap.Editor
                 }
             }
             if (items.Count > shown.Count) EditorGUILayout.LabelField("+ " + (items.Count - shown.Count) + " more", EditorStyles.miniLabel);
+        }
+
+        // One line: the model the item wears, and how many items share its look.
+        static void DrawModelLine(GolfMapVegEntry e)
+        {
+            var others = GolfMapVegSession.Current.entries.Where(o => o.model == e.model && o != e).Select(o => o.name).ToList();
+            string tip = "Colours, shading and material are the model's (models.json, bun run models -- look): a change shows in "
+                + (others.Count > 0 ? "these items too: " + string.Join(", ", others.ToArray()) : "every item that wears it") + ". Size and placement are this item's.";
+            EditorGUILayout.LabelField(new GUIContent("Model " + e.model + (others.Count > 0 ? "  ·  " + (others.Count + 1) + " items" : ""), tip), EditorStyles.miniLabel);
         }
 
         // ---- adjust together ------------------------------------------------------------------
@@ -706,7 +722,10 @@ namespace GolfMap.Editor
             if (!string.IsNullOrEmpty(f.part)) label = char.ToUpperInvariant(f.part[0]) + f.part.Substring(1) + " · " + label;
             if (f.slot != null) label += " · " + f.slot;
             if (f.entries < entries.Count) label += "  (" + f.entries + "/" + entries.Count + ")";
-            string tip = role.tip + (role.live == GolfMapVegRefresh.Rebuild ? "\n(Shows after Rebuild VSP.)" : role.live == GolfMapVegRefresh.File ? "\n(Only in the file: not shown live.)" : "");
+            bool model = GolfMapVegPalette.IsLookRole(role.id) && entries.Any(e => e.model != null && e.values.Any(f.values.Contains));
+            if (model) label += " · model";
+            string tip = role.tip + (role.live == GolfMapVegRefresh.Rebuild ? "\n(Shows after Rebuild VSP.)" : role.live == GolfMapVegRefresh.File ? "\n(Only in the file: not shown live.)" : "")
+                + (model ? "\n(The model's: every item of the model changes with it.)" : "");
             var first = f.values[0];
             bool mixed = f.values.Any(v => !v.Same(first));
             var content = new GUIContent(label + (role.live == GolfMapVegRefresh.Rebuild ? "  ↻" : role.live == GolfMapVegRefresh.File ? "  ↓" : ""), tip);
