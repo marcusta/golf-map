@@ -88,3 +88,18 @@ test('rule values read as one short line', () => {
     expect(formatRuleValue(null)).toBe('—');
     expect(formatRuleValue(false)).toBe('off');
 });
+
+test("a zone item whose model the library lacks reads 'missing', though its id names a renderer", () => {
+    const { host, svc } = mount();
+    svc.rules.set({ ...RULES, zoneModels: [{ palette: 'woodland_floor/edge', items: [
+        { name: 'Woodland edge - hazel', model: 'arborist:MountainEnv_bush_hazel_01', renderer: 'arborist' },
+        { name: 'Woodland edge - gone', model: 'arborist:MountainEnv_bush_gone_01', renderer: 'arborist', missing: true },
+    ] }] });
+    const rows = [...host.querySelectorAll<HTMLElement>('[data-testid="planting-rules-zone-item"]')];
+    expect(rows[0]!.textContent).toContain('Arborist');
+    expect(rows[0]!.textContent).not.toContain('missing');
+    expect(rows[1]!.textContent).toContain('missing');
+    expect(rows[1]!.textContent).not.toContain('Arborist');
+    expect(rows[1]!.title).toContain('not in the model library');
+    expect(rows[1]!.className).toContain('empty');
+});

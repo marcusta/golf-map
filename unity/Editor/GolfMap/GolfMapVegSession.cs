@@ -132,7 +132,7 @@ namespace GolfMap.Editor
             var list = edited.ToList();
             var extra = new List<GolfMapVegEntry>();
             // A zone item's look is its model's: every other item of the model takes the change (live, and saved once).
-            PropagateTo(list, extra, e => e.model != null, v => GolfMapVegPalette.IsLookRole(v.role), (e, o) => o.model == e.model);
+            PropagateTo(list, extra, e => e.HasModel, v => GolfMapVegPalette.IsLookRole(v.role), (e, o) => o.model == e.model);
             // A tree value keyed by a material or a baked texture: every other tree look that shares it.
             PropagateTo(list, extra, e => e.kind == GolfMapVegKind.Tree, v => !string.IsNullOrEmpty(v.slot), (e, o) => o.kind == GolfMapVegKind.Tree && !o.readOnly);
             return list.Concat(extra).ToList();
@@ -197,21 +197,26 @@ namespace GolfMap.Editor
             var course = Course();
             var dirty = DirtyEntries();
             var notes = new List<string>();
-            // Zone items on the model library: through the repo (bun run models -- look / zone), which writes the
-            // repo's models.json and grass-palette.json and generates this project's copies.
-            var modelled = dirty.Where(e => e.model != null && e.kind != GolfMapVegKind.Tree).ToList();
-            if (modelled.Count > 0) notes.AddRange(SaveThroughRepo(course, modelled));
-            if (dirty.Any(e => e.kind != GolfMapVegKind.Tree && e.model == null) && File.Exists(saved.grassPath))
+            var grassText = File.Exists(saved.grassPath) ? File.ReadAllText(saved.grassPath) : null;
+            var modelPalettes = grassText == null ? new HashSet<string>() : GolfMapVegPalette.ModelPalettes(grassText);
+            // Zone items on the model library, and the own values ('p:') of the palettes holding them: through the
+            // repo (bun run models -- look / zone), which writes the repo's models.json and grass-palette.json and
+            // generates this project's copies.
+            var modelled = dirty.Where(e => e.HasModel && e.kind != GolfMapVegKind.Tree).ToList();
+            var paletteSets = dirty.Where(e => e.kind == GolfMapVegKind.Palette && modelPalettes.Contains(e.name)).ToList();
+            // The older form first, straight into this project's copy: the repo's CLI below syncs that copy, and
+            // nothing may write it after the sync (the next CLI save would refuse it as drift).
+            if (grassText != null && dirty.Any(e => e.kind != GolfMapVegKind.Tree && !e.HasModel && !paletteSets.Contains(e)))
             {
-                var text = File.ReadAllText(saved.grassPath);
-                var updated = GolfMapVegPalette.GrassText(text, current, saved);
-                if (updated != text)
+                var updated = GolfMapVegPalette.GrassText(grassText, current, saved);
+                if (updated != grassText)
                 {
                     File.WriteAllText(saved.grassPath, updated);
                     if (GolfMapCourses.Owns(saved.grassPath)) AssetDatabase.ImportAsset(saved.grassPath);
                     notes.Add("grass-palette.json");
                 }
             }
+            if (modelled.Count > 0 || paletteSets.Count > 0) notes.AddRange(SaveThroughRepo(course, modelled, paletteSets));
             var trees = dirty.Where(e => e.kind == GolfMapVegKind.Tree).ToList();
             // Tints baked into CTI albedo copies: the texture files and trial.json.
             GolfMapVegLive.FlushBakes(course);
@@ -257,9 +262,10 @@ namespace GolfMap.Editor
         }
 
         // The edited look values per model (`models -- look <model> --set ...`), then each item's edited size and
-        // placement per palette listing it (`models -- zone <palette> <item> --set ...`). Throws the CLI's output when
-        // one fails (nothing of that call written); the calls before it stay written.
-        static List<string> SaveThroughRepo(GolfMapCourse course, List<GolfMapVegEntry> entries)
+        // placement per palette listing it (`models -- zone <palette> <item> --set ...`), then each palette's own
+        // edited values (`models -- zone <palette> --set ...`: tintAreaScale, distanceFalloff, plantDistance). Throws
+        // the CLI's output when one fails (nothing of that call written); the calls before it stay written.
+        static List<string> SaveThroughRepo(GolfMapCourse course, List<GolfMapVegEntry> entries, List<GolfMapVegEntry> palettes)
         {
             var repo = GolfMapModels.RepoRoot();
             var unity = GolfMapModels.UnityFolderOf(saved.grassPath);
@@ -281,6 +287,13 @@ namespace GolfMap.Editor
                 {
                     GolfMapModels.RunCli(repo, "zone", prefix, z.palette, z.item, "--set", join(z.set), "--unity", unity);
                     notes.Add(z.palette + " / " + z.item);
+                }
+                foreach (var p in palettes)
+                {
+                    var set = p.values.Where(v => Edited(p, v)).ToDictionary(v => v.prop, v => CliValue(v));
+                    if (set.Count == 0) continue;
+                    GolfMapModels.RunCli(repo, "zone", prefix, p.name, "--set", join(set), "--unity", unity);
+                    notes.Add(p.name);
                 }
             }
             finally { EditorUtility.ClearProgressBar(); }
@@ -506,7 +519,7 @@ namespace GolfMap.Editor
         static object Describe(GolfMapVegEntry e)
         {
             var d = new Dictionary<string, object> { { "key", e.key }, { "name", e.name }, { "kind", e.kind.ToString().ToLowerInvariant() }, { "palettes", e.palettes.Cast<object>().ToList() } };
-            if (e.model != null) d["model"] = e.model;   // its colour, shading and material values are this model's
+            if (e.HasModel) d["model"] = e.model;   // its colour, shading and material values are this model's
             if (e.readOnly) d["readOnly"] = e.readOnlyWhy;
             if (IsDirty(e)) d["unsaved"] = true;
             if (!GolfMapVegLive.InScene(e)) d["inScene"] = false;

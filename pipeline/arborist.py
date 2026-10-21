@@ -311,7 +311,7 @@ def lower(args) -> None:
             if model is not None:
                 # The model's look over the course-wide plantSettings: set once on the model, it shows in
                 # every zone that uses it.
-                apply_look(item, plant_look + model_look_rules(model), also=label)
+                apply_look(item, lower_look_rules(plant_look, model), also=label)
             else:
                 # The palette's own leaf colours (tuned in Unity on the same models) come along; they win
                 # over the caps of plantSettings and lose to a tint named there (rules match the palette
@@ -394,6 +394,21 @@ def model_look_rules(model: dict) -> list[dict]:
         look.setdefault("tint1", healthy)
         look.setdefault("tint2", dry or healthy)
     return [{**look, "match": ["*"]}]
+
+
+# The leaf-colour keys of a plantSettings rule that a model's own healthy / dry replace (apply_look: a "tint"
+# would beat the model's carried tint1 / tint2, and "even" would fold its dry onto its healthy).
+LEAF_COLOUR_RULE_KEYS = ("tint", "tint1", "tint2", "tintCap", "even")
+
+
+def lower_look_rules(plant_look: list[dict], model: dict) -> list[dict]:
+    """The apply_look rules of an item that wears `model`: the course-wide plantSettings, then the model's look,
+    which wins. A model with its own leaf colours (healthy, and dry) takes none of plantSettings' leaf colours
+    (LEAF_COLOUR_RULE_KEYS), whatever its rules match; a model without them keeps plantSettings' as they are."""
+    look = model.get("look") or {}
+    if look.get("healthy"):   # model_look_rules carries healthy (and dry) as tint1 / tint2
+        plant_look = [{k: v for k, v in rule.items() if k not in LEAF_COLOUR_RULE_KEYS} for rule in plant_look]
+    return plant_look + model_look_rules(model)
 
 
 # ---- the planted trees --------------------------------------------------------------------------

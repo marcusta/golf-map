@@ -206,3 +206,46 @@ describe('the shared library', () => {
         expect(readFileSync(path.join(f.unity, 'models.json'), 'utf8')).toBe(before);
     });
 });
+
+describe("zone: a palette's own keys (Unity's vegetation palette editor saves its 'p:' entries this way)", () => {
+    const PALETTES = {
+        format: 'golfmap-grass-v1',
+        palettes: [{ key: 'rough_tall', package: 'GolfMap lower vegetation', tintAreaScale: 30, distanceFalloff: 0.15, plantDistance: 300, items: [
+            { name: 'Tall rough - green base', model: 'vsp:texture:Rustic Grass_15', sampleDistance: 0.4 },
+        ] }],
+    };
+    const text = JSON.stringify(PALETTES, null, 2) + '\n';
+
+    test('--dry-run writes nothing; the real run writes the repo and Unity gets it byte-equal; other keys are refused', () => {
+        const f = fixture();
+        const repoFile = path.join(f.docs, 'grass-palette.json'), unityFile = path.join(f.unity, 'grass-palette.json');
+        writeFileSync(repoFile, text);
+        expect(models('sync', COURSE, '--docs', f.docsRoot, '--unity', f.unity).code).toBe(0);
+
+        const dry = models('zone', COURSE, 'rough_tall', '--set', 'tintAreaScale=42', '--dry-run', '--docs', f.docsRoot, '--unity', f.unity);
+        expect(dry.code).toBe(0);
+        expect(dry.out).toContain('tintAreaScale: 30 -> 42');
+        expect(readFileSync(repoFile, 'utf8')).toBe(text);
+
+        const real = models('zone', COURSE, 'rough_tall', '--set', 'tintAreaScale=42,distanceFalloff=0.2', '--docs', f.docsRoot, '--unity', f.unity);
+        expect(real.code).toBe(0);
+        const written = JSON.parse(readFileSync(repoFile, 'utf8')).palettes[0];
+        expect(written).toMatchObject({ tintAreaScale: 42, distanceFalloff: 0.2, plantDistance: 300 });
+        expect(written.items).toEqual(PALETTES.palettes[0]!.items);
+        expect(same(repoFile, unityFile)).toBe(true);
+
+        const after = readFileSync(repoFile, 'utf8');
+        for (const set of ['sampleDistance=1', 'healthy=#ffffff', 'package=x']) {
+            const refused = models('zone', COURSE, 'rough_tall', '--set', set, '--docs', f.docsRoot, '--unity', f.unity);
+            expect(refused.code).not.toBe(0);
+            expect(refused.out).toContain('a zone palette holds only');
+        }
+        expect(models('zone', COURSE, 'rough_tall', '--model', 'vsp:texture:Rustic Grass_15', '--docs', f.docsRoot, '--unity', f.unity).code).toBe(2);
+        expect(readFileSync(repoFile, 'utf8')).toBe(after);
+
+        // Back to the start: the files are as they were, byte for byte.
+        expect(models('zone', COURSE, 'rough_tall', '--set', 'tintAreaScale=30,distanceFalloff=0.15', '--docs', f.docsRoot, '--unity', f.unity).code).toBe(0);
+        expect(readFileSync(repoFile, 'utf8')).toBe(text);
+        expect(readFileSync(unityFile, 'utf8')).toBe(text);
+    });
+});

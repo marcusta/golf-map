@@ -501,13 +501,13 @@ namespace GolfMap.Editor
                 string what = e.kind == GolfMapVegKind.Grass ? "Texture grass" : e.kind == GolfMapVegKind.Bush ? "Mesh bush" : "Tree look";
                 if (e.kind != GolfMapVegKind.Tree && e.palettes.Count > 0) what += "  ·  in " + string.Join(", ", e.palettes.ToArray()) + (e.palettes.Count > 1 ? " (one VSP item: a change shows in all)" : "");
                 EditorGUILayout.LabelField(what, EditorStyles.miniLabel);
-                if (e.model != null) DrawModelLine(e);
+                if (e.HasModel) DrawModelLine(e);
                 if (e.readOnly) EditorGUILayout.HelpBox(e.readOnlyWhy, MessageType.Info);
                 if (!string.IsNullOrEmpty(e.note)) EditorGUILayout.HelpBox(e.note, MessageType.Warning);
             }
-            else if (items.Any(e => e.model != null))
+            else if (items.Any(e => e.HasModel))
             {
-                var models = items.Where(e => e.model != null).Select(e => e.model).Distinct().ToList();
+                var models = items.Where(e => e.HasModel).Select(e => e.model).Distinct().ToList();
                 EditorGUILayout.LabelField(new GUIContent("Models: " + string.Join(", ", models.Take(3).ToArray()) + (models.Count > 3 ? " +" + (models.Count - 3) : ""),
                     "Colours, shading and material (marked 'model') belong to the models: a change shows in every item that wears one."), EditorStyles.miniLabel);
             }
@@ -722,7 +722,7 @@ namespace GolfMap.Editor
             if (!string.IsNullOrEmpty(f.part)) label = char.ToUpperInvariant(f.part[0]) + f.part.Substring(1) + " · " + label;
             if (f.slot != null) label += " · " + f.slot;
             if (f.entries < entries.Count) label += "  (" + f.entries + "/" + entries.Count + ")";
-            bool model = GolfMapVegPalette.IsLookRole(role.id) && entries.Any(e => e.model != null && e.values.Any(f.values.Contains));
+            bool model = GolfMapVegPalette.IsLookRole(role.id) && entries.Any(e => e.HasModel && e.values.Any(f.values.Contains));
             if (model) label += " · model";
             string tip = role.tip + (role.live == GolfMapVegRefresh.Rebuild ? "\n(Shows after Rebuild VSP.)" : role.live == GolfMapVegRefresh.File ? "\n(Only in the file: not shown live.)" : "")
                 + (model ? "\n(The model's: every item of the model changes with it.)" : "");

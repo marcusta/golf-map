@@ -16,7 +16,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { rendererName, rendererOf, type Renderer } from './model-id';
-import { deepMerge, readJson, type CourseModels, type LibraryModel, type ModelLibrary } from './tree-models';
+import { deepMerge, isZoneModel, readJson, type CourseModels, type LibraryModel, type ModelLibrary } from './tree-models';
 
 export const GRASS_PALETTE_FORMAT = 'golfmap-grass-v1';
 export const GRASS_PALETTE_FILE = 'grass-palette.json';
@@ -26,6 +26,14 @@ export const ZONE_ITEM_KEYS = [
     'sampleDistance', 'density', 'maxDensity', 'noiseDensityScale', 'noiseCutoff', 'noiseCutoffScale', 'noiseScaleMin', 'noiseScaleMax',
     'noiseScaleScale', 'maxSteepness', 'lodFactor', 'copies', 'renderDistance', 'width', 'height', 'minScale', 'maxScale', 'verticalOffset',
 ] as const;
+
+/**
+ * What a zone palette itself holds for all its items (palette-level, beside key / package / comment / items): the
+ * healthy/dry noise size, the distance thinning, VSP's draw distance, and the lodFactor / renderDistance an item
+ * without its own takes. Unity's GolfMapGrass.Load reads them; the vegetation palette editor's 'p:' entries edit
+ * the first three (`bun run models -- zone "<course>" <palette key> --set k=v`, setPaletteKeys).
+ */
+export const PALETTE_KEYS = ['tintAreaScale', 'distanceFalloff', 'plantDistance', 'lodFactor', 'renderDistance'] as const;
 
 /**
  * A model's look keys a VSP item reads: what belongs to the model, not to the zone item. The one list; its
@@ -44,7 +52,8 @@ export interface ZonePaletteDoc { format: string; palettes: ZonePalette[]; [key:
 
 /** Who draws a zone item: its model's renderer, '?' for an id of no known shape. */
 export type ZoneRenderer = Renderer | '?';
-export interface ZoneModelItem { name: string; model: string; renderer: ZoneRenderer }
+/** missing: the course's model library lacks the model (renderer is then the one its id names). */
+export interface ZoneModelItem { name: string; model: string; renderer: ZoneRenderer; missing?: true }
 export interface ZoneModels { palette: string; items: ZoneModelItem[] }
 
 /** The course's grass-palette.json, or null when it has none. */
@@ -64,16 +73,18 @@ export function zonePalettesText(doc: ZonePaletteDoc): string {
 /**
  * Each palette's items that refer to a model, in palette order, with the model each refers to and who draws it
  * (the model's renderer; for a model the library lacks the renderer its id names, '?' when the id has no known
- * shape). Palettes of the older form (no item with a model) are left out.
+ * shape, and missing: true). Palettes of the older form (no item with a model) are left out.
  */
 export function zoneModels(doc: ZonePaletteDoc | null, library: ModelLibrary): ZoneModels[] {
     if (!doc) return [];
     const byId = new Map(library.models.map((m) => [m.id, m]));
     const out: ZoneModels[] = [];
     for (const p of doc.palettes) {
-        const items = p.items.filter((i) => typeof i.model === 'string').map((i) => ({
-            name: i.name, model: i.model!, renderer: (byId.get(i.model!)?.renderer ?? rendererOf(i.model) ?? '?') as ZoneRenderer,
-        }));
+        const items = p.items.filter((i) => typeof i.model === 'string').map((i): ZoneModelItem => {
+            const model = byId.get(i.model!);
+            if (model) return { name: i.name, model: i.model!, renderer: model.renderer as ZoneRenderer };
+            return { name: i.name, model: i.model!, renderer: (rendererOf(i.model) ?? '?') as ZoneRenderer, missing: true };
+        });
         if (items.length) out.push({ palette: p.key, items });
     }
     return out;
@@ -136,6 +147,11 @@ function requireModel(library: ModelLibrary, id: string): LibraryModel {
 export function setModelLook(course: CourseModels, library: ModelLibrary, modelId: string,
     change: Record<string, unknown>): { course: CourseModels; look: Record<string, unknown>; model: LibraryModel } {
     const model = requireModel(library, modelId);
+    const placement = Object.keys(change).filter((k) => (ZONE_ITEM_KEYS as readonly string[]).includes(k));
+    if (placement.length) {
+        throw Error(`--set ${placement.join(', ')}: placement and size belong to the zone item, not the model's look `
+            + `(bun run models -- zone "<course>" <palette key> "<item>" --set ...)`);
+    }
     for (const key of COLOUR_LOOK_KEYS) {
         if (change[key] !== undefined && change[key] !== null && !COLOUR.test(String(change[key]))) throw Error(`${key} must be #rrggbb, not '${change[key]}'`);
     }
@@ -161,7 +177,13 @@ function drawnBy(library: ModelLibrary, model: unknown): string {
 export function setZoneItem(doc: ZonePaletteDoc, key: string, name: string, library: ModelLibrary,
     { model, set }: { model?: string; set?: Record<string, unknown> }): { doc: ZonePaletteDoc; before: ZoneItem; after: ZoneItem; report: string[] } {
     const before = zoneItem(doc, key, name);
-    if (model !== undefined) requireModel(library, model);
+    if (model !== undefined) {
+        const m = requireModel(library, model);
+        if (!isZoneModel(m)) {
+            throw Error(`${model} is a ${m.kind ? `${m.kind} ` : ''}${m.form ?? '(no form)'}, not lower vegetation: a zone item wears only a `
+                + `grass, plant or shrub model (a tree belongs in the tree palette, palette.json)`);
+        }
+    }
     for (const k of Object.keys(set ?? {})) {
         if (!(ZONE_ITEM_KEYS as readonly string[]).includes(k)) {
             throw Error(`--set ${k}: a zone item holds only its placement and size (${ZONE_ITEM_KEYS.join(', ')}); a look key belongs to the model (bun run models -- look)`);
@@ -174,5 +196,27 @@ export function setZoneItem(doc: ZonePaletteDoc, key: string, name: string, libr
         `  before: ${before.model ?? '(no model)'} - ${drawnBy(library, before.model)}`,
         `  after:  ${after.model ?? '(no model)'} - ${drawnBy(library, after.model)}`,
         ...changed.map((k) => `  ${k}: ${JSON.stringify(before[k])} -> ${JSON.stringify(after[k])}`)];
+    return { doc: { ...doc, palettes }, before, after, report };
+}
+
+/**
+ * The palettes with palette `key`'s own keys changed (`set`: only PALETTE_KEYS, numbers; null removes one). The
+ * palette's items and other keys stay. `report` says each changed key.
+ */
+export function setPaletteKeys(doc: ZonePaletteDoc, key: string, set: Record<string, unknown>): { doc: ZonePaletteDoc; before: ZonePalette; after: ZonePalette; report: string[] } {
+    const before = doc.palettes.find((p) => p.key === key);
+    if (!before) throw Error(`No zone palette '${key}' (${doc.palettes.map((p) => p.key).join(', ')})`);
+    for (const [k, v] of Object.entries(set)) {
+        if (!(PALETTE_KEYS as readonly string[]).includes(k)) {
+            throw Error(`--set ${k}: a zone palette holds only ${PALETTE_KEYS.join(', ')}; an item's placement and size: `
+                + `bun run models -- zone "<course>" <palette key> "<item>" --set ..., a look: bun run models -- look`);
+        }
+        if (v !== null && (typeof v !== 'number' || !Number.isFinite(v))) throw Error(`--set ${k}: must be a number, not '${String(v)}'`);
+    }
+    const after = deepMerge(before, set);
+    const palettes = doc.palettes.map((p) => (p === before ? after : p));
+    const changed = Object.keys({ ...before, ...after }).filter((k) => JSON.stringify(before[k]) !== JSON.stringify(after[k]));
+    const report = [`${key} (the palette, all its items):`, ...changed.map((k) => `  ${k}: ${JSON.stringify(before[k])} -> ${JSON.stringify(after[k])}`)];
+    if (!changed.length) report.push('  no change');
     return { doc: { ...doc, palettes }, before, after, report };
 }

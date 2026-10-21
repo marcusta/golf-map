@@ -368,12 +368,13 @@ export class VegetationRulesPanelComponent extends Component {
             const group = el('div', 'vr-group');
             group.appendChild(el('div', 'vr-group__title', p.palette));
             for (const item of p.items) {
-                const row = el('div', item.renderer === '?' ? 'vr-model empty' : 'vr-model');
+                const missing = item.missing === true;
+                const row = el('div', missing ? 'vr-model empty' : 'vr-model');
                 row.dataset.testid = 'planting-rules-zone-item';
                 row.dataset.model = item.model;
-                row.title = item.model + (item.renderer === '?' ? '\nnot in the model library (models.json)' : '');
+                row.title = item.model + (missing ? '\nnot in the model library (models.json)' : '');
                 row.append(el('span', 'vr-model__label', item.name),
-                    el('span', item.renderer === '?' ? 'vr-tag--off' : 'vr-tag', item.renderer === '?' ? 'missing' : rendererName(item.renderer)));
+                    el('span', missing ? 'vr-tag--off' : 'vr-tag', missing || item.renderer === '?' ? 'missing' : rendererName(item.renderer)));
                 group.appendChild(row);
             }
             b.appendChild(group);

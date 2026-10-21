@@ -10,6 +10,8 @@
 //                     [--unity <folder>] [--force]
 //   bun run models -- zone "<course>" <palette key> "<item name>" [--model <model id>] [--set <key>=<value>,...]
 //                     [--dry-run] [--docs <root>] [--unity <folder>] [--force]
+//   bun run models -- zone "<course>" <palette key> --set <palette key>=<value>,... [--dry-run] [--docs <root>]
+//                     [--unity <folder>] [--force]
 //   bun run models -- promote "<course>" <model id> [--dry-run] [--docs <root>] [--unity <folder>] [--force]
 //   bun run models -- palette "<course>" --from <palette.json> [--replace-unity] [--dry-run] [--docs <root>]
 //                     [--unity <folder>] [--force]
@@ -38,8 +40,11 @@
 // model's look - colours (#rrggbb), numbers, booleans, material.<shader float> - in the course's models.json
 // (an override when the model is shared) and names the zone items that wear it; `zone` swaps one zone item's
 // model (--model) and/or sets its placement and size keys (--set), saying who draws it before and after
-// (VSP / Arborist). Both refuse a model the course's library lacks and write nothing then. Unity's vegetation
-// palette editor saves through these two (GolfMapVegPaletteWindow, GolfMapModels.RunCli).
+// (VSP / Arborist). Both refuse a model the course's library lacks and write nothing then; `look` refuses a
+// placement or size key (the zone item's), `zone --model` a model that is not lower vegetation. `zone` without an
+// item name sets the palette's own keys (tintAreaScale, distanceFalloff, plantDistance, lodFactor, renderDistance:
+// zone-models.ts PALETTE_KEYS) and refuses any other. Unity's vegetation palette editor saves through these
+// (GolfMapVegSession.Save, GolfMapModels.RunCli).
 import * as path from 'node:path';
 import { existsSync, readFileSync, writeFileSync } from 'node:fs';
 import { courseSlug } from '../server/services/gspro-export.service';
@@ -50,7 +55,7 @@ import {
 } from '../shared/vegetation/tree-models';
 import { rendererName } from '../shared/vegetation/model-id';
 import {
-    GRASS_PALETTE_FILE, itemsWearing, loadZonePalettes, parseSetValues, setModelLook, setZoneItem, zonePalettesText,
+    GRASS_PALETTE_FILE, itemsWearing, loadZonePalettes, parseSetValues, setModelLook, setPaletteKeys, setZoneItem, zonePalettesText,
 } from '../shared/vegetation/zone-models';
 import {
     SYNCED_FILES, checkCourseModels, checkCoursePalette, findUnityCourseFolders, formatSync, lineDiff, sameJson, syncCourseModels, syncRefused,
@@ -63,6 +68,7 @@ const USAGE = 'usage: bun run models -- add "<course>" arborist:<label> --specie
     + '       bun run models -- palette "<course>" --from <palette.json> [--replace-unity] [--dry-run] [--docs <root>] [--unity <folder>] [--force]\n'
     + '       bun run models -- look "<course>" <model id> --set <key>=<value>[,...] [--dry-run] [--docs <root>] [--unity <folder>] [--force]\n'
     + '       bun run models -- zone "<course>" <palette key> "<item>" [--model <model id>] [--set <key>=<value>,...] [--dry-run] [--docs <root>] [--unity <folder>] [--force]\n'
+    + '       bun run models -- zone "<course>" <palette key> --set <palette key>=<value>,... [--dry-run] [--docs <root>] [--unity <folder>] [--force]\n'
     + '       bun run models -- sync "<course>" [--dry-run] [--force] [--docs <root>] [--unity <folder>]\n'
     + '       bun run models -- list "<course>" [--docs <root>]';
 
@@ -90,10 +96,12 @@ const VERBS: Record<string, { positionals: number; flags?: string[]; anyOf?: str
     promote: { positionals: 3 },
     palette: { positionals: 2, flags: ['--from'] },
     look: { positionals: 3, flags: ['--set'] },
-    zone: { positionals: 4, anyOf: ['--model', '--set'] },
+    zone: { positionals: 3, anyOf: ['--model', '--set'] },   // no item name: the palette's own keys (--set only)
 };
 const spec = verb && Object.hasOwn(VERBS, verb) ? VERBS[verb] : undefined;
-if (!spec || positional.slice(0, spec.positionals).filter(Boolean).length < spec.positionals || (spec.flags ?? []).some(f => !flag(f)) || (spec.anyOf && !spec.anyOf.some(f => flag(f)))) {
+const paletteLevel = verb === 'zone' && !itemName;
+if (!spec || positional.slice(0, spec.positionals).filter(Boolean).length < spec.positionals || (spec.flags ?? []).some(f => !flag(f)) || (spec.anyOf && !spec.anyOf.some(f => flag(f)))
+    || (paletteLevel && (flag('--model') || !flag('--set')))) {
     console.error(USAGE);
     process.exit(2);
 }
@@ -233,7 +241,7 @@ try {
         if (!palettes) fail(`no zone palettes ${path.join(docs, GRASS_PALETTE_FILE)}`);
         const library = loadModelLibrary(docs);
         const set = flag('--set') ? parseSetValues(flag('--set')!) : undefined;
-        const { doc, report } = setZoneItem(palettes, id!, itemName!, library, { model: flag('--model'), set });
+        const { doc, report } = paletteLevel ? setPaletteKeys(palettes, id!, set!) : setZoneItem(palettes, id!, itemName!, library, { model: flag('--model'), set });
         const unity = unityFolder(false);
         refuseDrift(unity, GRASS_PALETTE_FILE);
         const file = path.join(docs, GRASS_PALETTE_FILE);

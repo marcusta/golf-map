@@ -67,7 +67,10 @@ namespace GolfMap.Editor
         public GolfMapVegKind kind;
         public string species, look;         // trees
         public string source;                // texture or prefab asset path (grass/bush), first shape's prefab (trees)
-        public string model;                 // grass/bush: the model id the zone item refers to (its look is the model's); null for the older form
+        public string model;                 // grass/bush: the model id the zone item refers to (its look is the model's); null or "" for the older form
+        // Whether the entry is a zone item on the model library. Not model != null: Unity serialises the session's
+        // entries across script reloads and brings a null string back as "".
+        public bool HasModel { get { return !string.IsNullOrEmpty(model); } }
         public bool readOnly;                // a tree species' source materials: tune a look copy instead
         public string readOnlyWhy;
         public string note;                  // worth knowing before editing (materials outside the look, ...)
@@ -562,8 +565,9 @@ namespace GolfMap.Editor
 
         // Writes the grass values that differ from `saved` into the file's text (every palette
         // listing the item). Returns the new text; unchanged values keep their exact tokens.
-        // Items that refer to a model are left alone: their values go through the repo's CLI
-        // (GolfMapVegSession.Save), which writes the repo's files and generates this copy.
+        // Items that refer to a model are left alone, and so are the own values ('p:') of a palette with such
+        // items: they go through the repo's CLI (GolfMapVegSession.Save: models -- look / zone), which writes the
+        // repo's files and generates this copy.
         public static string GrassText(string text, GolfMapVegState current, GolfMapVegState saved)
         {
             var doc = GolfMapJsonDoc.ParseObject(text);
@@ -571,7 +575,7 @@ namespace GolfMap.Editor
             {
                 string key = p.String("key");
                 var pe = current.Get("p:" + key); var ps = saved.Get("p:" + key);
-                if (pe != null && ps != null) WriteChanged(p, pe, ps, null);
+                if (pe != null && ps != null && !HasModelItems(p)) WriteChanged(p, pe, ps, null);
                 foreach (GolfMapJsonObject i in p.Array("items") ?? new List<object>())
                 {
                     if (i.String("model") != null) continue;
@@ -580,6 +584,20 @@ namespace GolfMap.Editor
                 }
             }
             return GolfMapJsonDoc.Write(doc);
+        }
+
+        static bool HasModelItems(GolfMapJsonObject palette)
+        {
+            return (palette.Array("items") ?? new List<object>()).OfType<GolfMapJsonObject>().Any(i => i.String("model") != null);
+        }
+
+        // The keys of the palettes in grass-palette.json `text` that have items referring to a model: their own
+        // values ('p:' entries) are saved through the repo (models -- zone <palette> --set), not by GrassText.
+        public static HashSet<string> ModelPalettes(string text)
+        {
+            var doc = GolfMapJsonDoc.ParseObject(text);
+            return new HashSet<string>((doc.Array("palettes") ?? new List<object>()).OfType<GolfMapJsonObject>()
+                .Where(p => HasModelItems(p)).Select(p => p.String("key")).Where(k => k != null));
         }
 
         static void WriteChanged(GolfMapJsonObject node, GolfMapVegEntry e, GolfMapVegEntry s, string palette)
