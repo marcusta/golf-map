@@ -1,25 +1,25 @@
 {
- "recorded": "2026-10-18, matcher before the model library (461e428 + working tree), raw docs/gspro/vreta/palette.json",
+ "recorded": "2026-10-21, re-recorded with Unity's tuned Vreta palette (Assets/GolfMap/Vreta/palette.json of 2026-10-10, now the repo copy; Marcus approved), same matcher code as before",
  "inner": {
   "count": 25171,
-  "sha256": "eef79019ac8c5bcc37d7faa605f9e52785640eac011f202426a61cf7e9206c6c",
+  "sha256": "779d1b91a5111e7c050792f96f8cca35b6c0825e9e3e091c76acf2dc551bb0e5",
   "sample": [
-   "epsg3006:529671.50:6488718.50\treview\tPF Birch F Sapling\t0.75000\t104.414\t-\t0.0000\t0.000",
-   "epsg3006:529806.50:6488718.50\tproposed\tPrefab_Forest_pine_tree_00_C\t0.79717\t42.499\t-\t0.0000\t0.000",
-   "epsg3006:529848.50:6488718.50\treview\tFir_05_Standalone_cheap\t0.75000\t335.423\t-\t0.0000\t0.000",
-   "epsg3006:529853.50:6488718.50\treview\tPF_Oak_small Terrain\t0.75000\t312.267\t-\t0.0000\t0.000",
-   "epsg3006:529867.50:6488718.50\treview\tVS_prefab_01_Poplar\t0.75000\t168.270\t-\t0.0000\t0.000"
+   "epsg3006:529671.50:6488718.50\treview\tPrefab_Forest_pine_tree_00_C\t0.48287\t104.414\t-\t0.4488\t98.189",
+   "epsg3006:529806.50:6488718.50\tproposed\tPrefab_Forest_pine_tree_00_C\t0.85262\t42.499\t-\t1.0625\t217.452",
+   "epsg3006:529848.50:6488718.50\treview\tFir_05_Standalone_cheap\t0.58118\t335.423\t-\t1.3218\t91.721",
+   "epsg3006:529853.50:6488718.50\treview\tPF_Oak_tall Terrain\t0.49281\t312.267\t-\t1.7505\t2.794",
+   "epsg3006:529867.50:6488718.50\tproposed\tVS_prefab_01_Poplar\t0.73353\t168.270\t-\t1.9097\t188.999"
   ]
  },
  "outer": {
   "count": 119321,
-  "sha256": "8823ad9db82aaea9bf8b4d6203a0680ecfb9dadb70fc95388a08ebbfa8c10326",
+  "sha256": "e2cec065168a51490b1795245b22c713293c33f33a5655d80020bf22001c7c5a",
   "sample": [
-   "epsg3006:527574.00:6490193.00\treview\tFir_02_S\t0.81193\t152.955\t-\t0.0000\t0.000",
-   "epsg3006:527588.00:6490193.00\treview\tFir_02_S\t1.05482\t8.368\t-\t0.0000\t0.000",
-   "epsg3006:527594.00:6490193.00\treview\tVS_prefab_01_Poplar\t0.87700\t356.614\t-\t0.0000\t0.000",
-   "epsg3006:527634.00:6490193.00\treview\tFir_02_S\t0.81193\t245.699\t-\t0.0000\t0.000",
-   "epsg3006:527662.00:6490193.00\treview\tFir_02_S\t0.88961\t49.048\t-\t0.0000\t0.000"
+   "epsg3006:527574.00:6490193.00\treview\tFir_02_S\t0.83680\t152.955\t-\t1.2550\t26.101",
+   "epsg3006:527588.00:6490193.00\treview\tFir_02_S\t1.15345\t8.368\t-\t1.1251\t89.614",
+   "epsg3006:527594.00:6490193.00\treview\tVS_prefab_01_Poplar\t0.96027\t356.614\t-\t1.1054\t276.652",
+   "epsg3006:527634.00:6490193.00\treview\tFir_02_S\t0.78996\t245.699\t-\t0.9079\t311.437",
+   "epsg3006:527662.00:6490193.00\treview\tFir_02_S\t0.90003\t49.048\t-\t1.2730\t213.605"
   ]
  }
 }

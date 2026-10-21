@@ -3,27 +3,29 @@
   "catalogue": "tree-export/GolfMapCatalogue-20260911-205056-6fc852/catalogue.json",
   "seed": "vreta-palette-1",
   "rules": {
-    "minScale": 0.75,
+    "minScale": 0.5,
     "variationBand": 0.08,
-    "maxWidthError": 0.4,
-    "maxScale": 1.4,
+    "maxWidthError": 0.9,
+    "maxScale": 1.8,
     "shrubMaxHeightM": 3.5,
-    "maxHeightError": 0.25,
+    "maxHeightError": 0.8,
     "scalePenalty": 0.2,
     "speciesWeights": {
       "poplar": 0.118,
-      "broadleaf": 0.176,
-      "elm": 0.235,
-      "birch": 0.118,
-      "oak": 0.353
+      "broadleaf": 0.124,
+      "elm": 0.121,
+      "birch": 0.331,
+      "oak": 0.24
     },
     "speciesFitSlack": 0.8,
     "woodlandRadiusM": 20,
     "woodlandMinNeighbours": 4,
-    "woodlandCrownMultiplier": 1.12,
+    "woodlandCrownMultiplier": 1.16,
     "woodlandWidthWeight": 2,
     "woodlandScaleBoost": 1.1,
-    "woodlandSpeciesFitSlack": 1.5
+    "woodlandSpeciesFitSlack": 1.5,
+    "scaleJitter": 0.1,
+    "maxLeanDeg": 2.5
   },
   "zones": {},
   "assets": [
@@ -131,7 +133,7 @@
       "kind": "broadleaf",
       "form": "tree",
       "assetType": "prefab",
-      "enabled": true,
+      "enabled": false,
       "species": "elm",
       "catalogueGuid": "7400c9ee8996e1d4e8cf72d515b70ea5",
       "originalPath": "Assets/CESimgolf 3D Assets/TREES - ELM/PREFABS/Elm4-Tall PREFAB.prefab"
@@ -294,7 +296,7 @@
       "form": "tree",
       "species": "elm",
       "assetType": "prefab",
-      "enabled": true,
+      "enabled": false,
       "catalogueGuid": "40ebc5be4b8e5724d8e6073138ca596d",
       "originalPath": "Assets/CESimgolf 3D Assets/TREES - ELM/PREFABS/Elm-Split PREFAB.prefab"
     },
@@ -452,5 +454,110 @@
       "catalogueGuid": "c9257313c5ed05f4ab1d114e7cb447ef",
       "originalPath": "Assets/NatureManufacture Assets/Meadow Environment Dynamic Nature/Trees/VS Prefabs/VS_prefab_03_Poplar.prefab"
     }
-  ]
+  ],
+  "species": {
+    "birch": {
+      "looks": [
+        {
+          "id": "original",
+          "weight": 0,
+          "original": true
+        },
+        {
+          "id": "darker",
+          "weight": 1,
+          "materials": {
+            "7d14e4f319f24e074d2b9c9451304555": {
+              "name": "Birch Leaves",
+              "shader": "NatureManufacture Shaders/Trees/Tree Leaves Metalic",
+              "floats": {
+                "_Cutoff": 0.2,
+                "_ColorNoiseSpread": 50,
+                "_BumpScale": 1,
+                "_MetallicPower": 0,
+                "_AmbientOcclusionPower": 1,
+                "_SmoothnessPower": 0.8,
+                "_InitialBend": 1,
+                "_Stiffness": 1,
+                "_Drag": 1,
+                "_ShiverDrag": 0.05,
+                "_ShiverDirectionality": 0.5,
+                "_TouchReactActive": 0,
+                "_BackFaceMirrorNormal": 1,
+                "__dirty": 1
+              },
+              "colors": {
+                "_HealthyColor": [
+                  0.524,
+                  0.585,
+                  0.634,
+                  1
+                ],
+                "_DryColor": [
+                  0.5,
+                  0.558,
+                  0.605,
+                  1
+                ]
+              },
+              "vectors": {},
+              "textures": {
+                "_MainTex": "9b7b070c4b21e451abbfd41b3e991ae8",
+                "_BumpMap": "2d152f978ed082eb11b70f7d065245b9",
+                "_MetalicRAOGSmothnessA": "3da47e8d364e94e0ebb13a8a683ffe3c",
+                "_texcoord": ""
+              },
+              "keywords": [
+                "GEOM_TYPE_LEAF",
+                "_EMISSION",
+                "_METALLICGLOSSMAP",
+                "_NORMALMAP",
+                "_SPECULARHIGHLIGHTS_OFF"
+              ]
+            },
+            "00c0fa3c7d74b1dd04fb76a92463653c": {
+              "name": "Birch Bark",
+              "shader": "NatureManufacture Shaders/Trees/Tree Bark Metalic",
+              "floats": {
+                "_BumpScale": 1,
+                "_MetallicPower": 0,
+                "_AmbientOcclusionPower": 1,
+                "_SmoothnessPower": 0,
+                "_DetalUseUV3": 0,
+                "_DetailNormalMapScale": 1,
+                "_InitialBend": 1,
+                "_Stiffness": 1,
+                "_Drag": 1,
+                "_TouchReactActive": 0,
+                "__dirty": 1
+              },
+              "colors": {
+                "_Color": [
+                  0.68,
+                  0.68,
+                  0.68,
+                  1
+                ]
+              },
+              "vectors": {},
+              "textures": {
+                "_MainTex": "c37c868c7276548e593f66035f7251cc",
+                "_BumpMap": "",
+                "_MetalicRAOGSmothnessA": "",
+                "_DetailMask": "",
+                "_DetailAlbedoMap": "",
+                "_DetailNormalMap": "",
+                "_DetailMetalicRAOGSmothnessA": "",
+                "_texcoord3": "",
+                "_texcoord": ""
+              },
+              "keywords": [
+                "_METALLICGLOSSMAP"
+              ]
+            }
+          }
+        }
+      ]
+    }
+  }
 }

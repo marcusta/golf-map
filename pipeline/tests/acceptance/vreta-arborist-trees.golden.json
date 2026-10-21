@@ -1,10 +1,10 @@
 {
- "recorded": "2026-10-18, code before the model library (461e428 + working tree)",
+ "recorded": "2026-10-18, code at 70f9f0c with Unity's tuned Vreta palette (2026-10-21, Marcus approved)",
  "items": {
   "CE_Oak_CE_Large_Full (far)": {
    "settings": "f9a2acdbd179b5eefe5bd5637355e358b6b7101d7adba77af5c48fc565a5f749",
    "count": 2381,
-   "instances": "43230bbee077b65d876c59d1d22a445c8e61b72cfc8c8a5c6d52230f21c914c0"
+   "instances": "ab294a66af2b1d6c5154812617d966d0cdec169e9127def9efac0825ccff8520"
   },
   "Forest_Large_beech_tree_03 (far)": {
    "settings": "5f2c481951b491a11530781859ba2e0ac5514b116360f60b19a59f788a639497",
@@ -14,12 +14,12 @@
   "Forest_Large_beech_tree_04": {
    "settings": "5aa696eeac902ad6fa4c82d6e11188c37ccd074c7d00f934912c32087e172efb",
    "count": 312,
-   "instances": "8f17398abac3d8d15cbeac6ab7059b93b9bf9f8a48a358b5536c82292a13140e"
+   "instances": "88abcaa3c6c18f4f1001cea09c856a4b1b3c37add2949acfc91c2faff626b4af"
   },
   "Forest_Large_beech_tree_04 (far)": {
    "settings": "b18e54ad7ce5cd635ac88924c055f6acacc4df92e4dc120c895266269868d321",
    "count": 934,
-   "instances": "2b7aeacc3f08c0148df4eaf2c80cd6a64ecf2a147c1084fe068843e869940191"
+   "instances": "a20bd11936e7a445e3ce839e65dc30b9628b77190f65f97dc927e01e0551eefe"
   },
   "Forest_Large_beech_tree_05 (far)": {
    "settings": "4a2c0404b54af399bd56787d813232d8cc86b45fdbe0ba4cc97ff51713b779c0",
@@ -29,12 +29,12 @@
   "MeadowEnv_02_Poplar": {
    "settings": "fc5fef474dc474f1e96eba7274d5a06a5f1c2ed18d15de7f71d85daacbda7196",
    "count": 274,
-   "instances": "50720282e5ee84959b895c9689b07a73dd9f220fbb31499d4afcf3c8ba102906"
+   "instances": "d60d3a59019c39e9be7dc79c02bfab5d7658921e90b79127299b0beece465ddf"
   },
   "MeadowEnv_02_Poplar (far)": {
    "settings": "2942185a5245c672946d0c6442be4e5eee7d40df13f2917c91b202c4fffb12d8",
    "count": 534,
-   "instances": "3d01104604e28e4bfb72a2892e93be20c6d6f28d60ed3fe36a2f56b4c20ff386"
+   "instances": "888c3d7f0bdcb354cbc1ef39b8efb780592cdf46185df087a6ecff65e81105f5"
   },
   "MeadowEnv_03_Poplar": {
    "settings": "6f104051ed75515c8f55439ede94ad1ae8fc4df18d835515571109d5a86b653d",
@@ -79,12 +79,12 @@
   "ModdedOak2_Moline (far)": {
    "settings": "e8a34de0b2bebb80435f3d8d7911b06c1f695e7b417bad20b7c2a484252544ff",
    "count": 1805,
-   "instances": "812127021d2ded964cea39845ee2fc4ed80fc7ef5d9c75d6a49dc5041e52dd3d"
+   "instances": "7532e8dc3cafc7313d2d4b00602c99b5d39bb05e1c77c6862048a59b00388ac3"
   },
   "ModdedOak_Moline (far)": {
    "settings": "950b7f358df4415452c3c8c60a2f40726d498af97c2822853b22df8ad35af64f",
    "count": 3385,
-   "instances": "957099cef77bbf61d5feae4f99109951006fc0cd519e1c8339caad38e1d21061"
+   "instances": "6da94606613ab45ea43c78ca226c80b42650ca02fd18d8d938d6fa7dfef184f8"
   },
   "MountainEnv_Forest_pine_01": {
    "settings": "22efc12cc91978aaf45af2bfc0c8a391b9e9bc0829fe53285a3c960f73d79ea6",
@@ -209,12 +209,12 @@
   "S7_European_White_Birch [tint=#527e4b] (far)": {
    "settings": "01e0213d87d5556c0d657fcdb32fcb3d515dba1030965261669084a8a6fca647",
    "count": 3573,
-   "instances": "18741708e03b8498999bbce8734e543fedb0d875dcae8f84d0481d7713b64aa9"
+   "instances": "cdb00804c2c55bfd71fe8078b69511df19768f6e1c3d0f3a3a7f08df0450dd87"
   },
   "S7_White_Oak (far)": {
    "settings": "17bb71bf6395c364e2bad9c4a757642bf3ec70aba97335e85b3672ee82df9f4b",
    "count": 1978,
-   "instances": "817800b2699790ce2f5a3e1c779d167045acf40745febea50d3ecea3ef8c198d"
+   "instances": "67f64acc5e82aa68f745dbee1e061b371fe9e0e4cffc134597c88bcde2589a40"
   }
  },
  "vspFar": {
