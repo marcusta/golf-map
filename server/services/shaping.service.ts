@@ -763,7 +763,7 @@ export class ShapingService {
         warnings.push(...pathSurfaces.filter(l => l.startsWith('warning:')));
         if (opts.paths) notePhase(rec, 'gspro.py shaping-global');
         const layersDir = await this.layersDir(rec.job.courseId);
-        const layers = await this.writeLayers(rec.job.courseId, layersDir);
+        const layers = await this.writeLayers(rec.job.courseId, layersDir, exportDir);
         endPhase(rec, 'layers', 'done', layers.find(l => /\bops?\b|op\(s\)/.test(l))?.trim() ?? `${layers.length} report line(s)`);
 
         beginPhase(rec, 'worker', 'finding the .blend and the Unity project');
@@ -912,18 +912,23 @@ export class ShapingService {
 
     /**
      * The course's generated layers into its layer folder; their report lines: `gspro.py shaping-global` (00-global,
-     * 10-features from the database), then from the course's docs folder `shaping-walls` (80-walls: the ground under
-     * the stone walls, stone-walls.json) and `shaping-paint` (90-paint: the vertex paint, paint.json).
+     * 10-features from the database), `shaping-creek-beds` (22-creek-beds: the creek beds the meshes cannot carry,
+     * from the site's edited DEM and the export's inner heightmap sidecar), then from the course's docs folder
+     * `shaping-walls` (80-walls: the ground under the stone walls, stone-walls.json) and `shaping-paint` (90-paint:
+     * the vertex paint, paint.json).
      */
-    private async writeLayers(courseId: string, layersDir: string): Promise<string[]> {
+    private async writeLayers(courseId: string, layersDir: string, exportDir: string): Promise<string[]> {
         await ensureDir(layersDir);
         const gspro = path.join(this.pipelineDir, 'gspro.py');
         const courseDir = path.dirname(layersDir);
-        const global = [gspro, 'shaping-global', '--course', courseId, '--out-dir', layersDir, '--library', this.recipeLibrary];
-        if (this.dbPath) global.push('--db', this.dbPath);
+        const db = this.dbPath ? ['--db', this.dbPath] : [];
+        const global = [gspro, 'shaping-global', '--course', courseId, '--out-dir', layersDir, '--library', this.recipeLibrary, ...db];
+        const beds = [gspro, 'shaping-creek-beds', '--course', courseId, '--out-dir', layersDir, '--export-dir', exportDir,
+            '--sources-dir', path.join(this.dataDir, 'sources'), ...db];
         const lines: string[] = [];
         for (const [name, args] of [
             ['shaping-global', global],
+            ['shaping-creek-beds', beds],
             ['shaping-walls', [gspro, 'shaping-walls', '--course-dir', courseDir, '--out-dir', layersDir]],
             ['shaping-paint', [gspro, 'shaping-paint', '--course-dir', courseDir, '--out-dir', layersDir]],
         ] as const) {

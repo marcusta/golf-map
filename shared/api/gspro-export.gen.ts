@@ -63,6 +63,19 @@ export interface GkdLines {
     lines: GkdHazardLine[];
 }
 
+export interface CreekDepthReport {
+    format: string;
+    course: { id: string; name: string };
+    dem: { file: string; replayedEdits: null | number };
+    blenderBeds: { layers: string[]; beds: number; channels: number };
+    model: { nodeSpacingM: number; terrainSmooth: number; meshEdgeM: number; phases: number; waterAboveBedM: number; minFreeboardM: number; bankBandM: number };
+    summary: Record<string, number>;
+    creeks: CreekDepthCreek[];
+    skipped: string[];
+    demSource: 'applied' | 'replayed';
+    lines: string[];
+}
+
 export interface RoadRenderResult {
     render: 'ram' | 'opcd';
     changed: string[];
@@ -123,6 +136,26 @@ export interface GkdHazardLine {
     points: [number, number][];
 }
 
+export interface CreekDepthCreek {
+    id: string;
+    featureNo: null | number;
+    hole: null | number;
+    label: string;
+    widthM: number;
+    lengthM: number;
+    farFromPlay?: boolean;
+    status: 'ok' | 'shallow' | 'not-dug' | 'stale' | 'off' | 'on-lake';
+    dig: { state: 'stale' | 'off' | 'on-lake' | 'dug' | 'none'; depthM?: null | number; bankSlopeDeg?: null | number; outsideM?: number };
+    minDepthM?: number;
+    demDepthM?: null | CreekDepthStats;
+    meshDepthM?: null | CreekDepthStats;
+    bedM?: number;
+    shallowM?: number;
+    shallow?: CreekDepthStretch[];
+    crossings?: CreekDepthStretch[];
+    mouths?: CreekDepthMouth[];
+}
+
 export interface SquareBox {
     minX: number;
     minY: number;
@@ -143,6 +176,28 @@ export interface SvgCheckShape {
     featureIds: string[];
 }
 
+export interface CreekDepthStats {
+    median: number;
+    p10: number;
+}
+
+export interface CreekDepthStretch {
+    fromM: number;
+    toM: number;
+    x: number;
+    y: number;
+    meshDepthM: number;
+    demDepthM: number;
+}
+
+export interface CreekDepthMouth {
+    x: number;
+    y: number;
+    blockM: number;
+    demBlockM: number;
+    blocked: boolean;
+}
+
 export interface GsproExportApi {
     settings(input: { courseId: string }): Promise<GsproExportSettings>;
     setDir(input: { courseId: string; dir: null | string }): Promise<GsproExportSettings>;
@@ -160,6 +215,7 @@ export interface GsproExportApi {
     acceptSvgFinding(input: { note?: string; courseId: string; key: string; accepted: boolean }): Promise<{ file: string; keys: string[] }>;
     ramRoadsProposal(input: { minDistanceM?: number; courseId: string }): Promise<RamRoadsProposal>;
     gkdLines(input: { courseId: string }): Promise<GkdLines>;
+    creekDepth(input: { only?: string; courseId: string }): Promise<CreekDepthReport>;
     setRoadRender(input: { dryRun?: boolean; courseId: string; featureIds: string[]; render: 'ram' | 'opcd' }): Promise<RoadRenderResult>;
 }
 
@@ -242,6 +298,14 @@ export function createGsproExportClient(baseUrl: string): GsproExportApi {
                 if (!pathParams.has(k) && v !== undefined) params.set(k, String(v));
             const qs = params.toString();
             return apiFetch({ method: 'GET', url: `${baseUrl}/courses/${input.courseId}/gspro/gkd-lines${qs ? '?' + qs : ''}` });
+        },
+        async creekDepth(input) {
+            const pathParams = new Set(['courseId']);
+            const params = new URLSearchParams();
+            for (const [k, v] of Object.entries(input as any))
+                if (!pathParams.has(k) && v !== undefined) params.set(k, String(v));
+            const qs = params.toString();
+            return apiFetch({ method: 'GET', url: `${baseUrl}/courses/${input.courseId}/gspro/creek-depth${qs ? '?' + qs : ''}` });
         },
         async setRoadRender(input) {
             const pathParams = new Set(['courseId']);

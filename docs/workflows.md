@@ -198,4 +198,11 @@ A creek or a chain of ponds drawn as one or two features, really a run of flat p
 
 A fall the lidar does not show (drop 0 on a forced cut) keeps no levels on its feature: the export reads them from the ponds on either side.
 
+**A creek deep enough in the meshes.** A creek dug in the 0.5 m DEM comes out shallower in GSPro: terrain.obj takes every second heightmap sample, OPCD's import smooths it and the course meshes are ~1.2 m triangles, so a 1-2 m channel keeps about half its depth (Vreta 2026-10-22: 85 R.A.M. gaps). Check before the long round, not after it:
+1. **Dig creeks** (as step 3 above), then `bun run water:depth -- <course>` or the creek dig row's depth check in the Terrain editor (seconds; it replays edits not yet applied). Done when no creek is `not-dug` (drawn after the digs: dig again) or `stale` (it runs outside its dig), and every `mouth blocked` is dug through (extend the creek into the pond, dig again).
+2. **Update terrain**, then **Update meshes**: the shaping run writes `22-creek-beds.gen.json` (`gspro.py shaping-creek-beds`) and Blender cuts a fine bed set onto the DEM for every shallow stretch near play, with a channel where the creek is narrower than the DEM can dig. Done when the shaping report lists the `bed_<id>_<n>` objects.
+3. **Update creeks**: `golfmap.creeks.import` refits the R.A.M. water and writes its gaps per creek (`<prefix>-inner-creek-gaps.json`); the board's Creeks row names any creek that still needs a bed. Done when none does near play.
+
+A bed a generated one cannot make (a stretch far from play Marcus wants anyway, a special shape) goes into a hand layer (`docs/gspro/<course>/shaping/2N-*.json`): the check counts it as deep, and the generator keeps off it.
+
 **A creek's water ends in a visible edge on a pond** (another colour): `golfmap.creeks.import` fades each creek's water out `pondFadeM` (2 m) into a lake it runs into. If the creek's colour still differs, give its feature `ramWaterMaterial` = a course material whose colours match the ponds (Omberg: `Assets/GolfMap/Omberg/Creeks/Creek water (hole 17).mat`), then **Update creeks**. See [unity/README.md](../unity/README.md) "Creeks (R.A.M.)" and [docs/gspro/ombergs-golfklubb/creek-beds.md](gspro/ombergs-golfklubb/creek-beds.md).

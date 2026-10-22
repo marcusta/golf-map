@@ -30,6 +30,7 @@ import type { TerrainGeneratorsApi } from '../../../shared/api/terrain-generator
 import type { PondEdgeApi, PondEdgeProposal } from '../../../shared/api/pond-edge.gen';
 import { fitPondEdge } from './pond-edge-fit';
 import type { WaterStepsApi, WaterStepsProposal } from '../../../shared/api/water-steps.gen';
+import type { CreekDepthCreek, CreekDepthReport, GsproExportApi } from '../../../shared/api/gspro-export.gen';
 import { planWaterSteps, type WaterStepsFeatureInput } from './water-steps-apply';
 import type { EditHistory, HistoryEntry } from '../draw/history';
 
@@ -529,6 +530,8 @@ export class TerrainEditToolService {
         private waterStepsApi: WaterStepsApi = api.waterSteps,
         /** The undo history Find falls joins: Draw mode's, so ⌘Z there takes it back like any edit. */
         private stepsHistory: () => EditHistory = () => di.get(DrawToolService).history,
+        /** The creek depth check (GsproExportService.creekDepth). */
+        private creekDepthApi: Pick<GsproExportApi, 'creekDepth'> = api.gsproExport,
     ) {}
 
     // ─────────────────────────────────────────────────────────────────────────
@@ -557,6 +560,8 @@ export class TerrainEditToolService {
         this.notice.set(null);
         try {
             const result = await this.generatorsApi.generate({ courseId: ctx.courseId, kind });
+            // Dug again: the last depth check no longer says how the creeks come out.
+            if (kind === 'creek-digs') this.creekDepth.set(null);
             await this.reload();
             return result;
         } catch (e) {
@@ -565,6 +570,62 @@ export class TerrainEditToolService {
         } finally {
             this.generating.set(null);
         }
+    }
+
+    // ─────────────────────────────────────────────────────────────────────────
+    // Creek depth (GsproExportService.creekDepth, also `bun run water:depth`):
+    // how deep each creek comes out in the course meshes, worked out from the
+    // DEM before the bake (terrain.obj's 1 m grid, OPCD's smooth, ~1.2 m
+    // triangles). Read-only. The answer stays on the "Dig creeks (DEM)" row
+    // until the creeks are dug again; a creek's line flies the map to it.
+    // ─────────────────────────────────────────────────────────────────────────
+
+    /** The last creek depth check; null before one, and after the creeks are dug again. */
+    readonly creekDepth = new Signal<CreekDepthReport | null>(null);
+    /** True while the server measures the creeks. */
+    readonly checkingDepth = new Signal(false);
+    /** The list of creeks to fix is unfolded (one line when folded). */
+    readonly depthOpen = new Signal(false);
+
+    /** Runs the creek depth check for every creek of the course; false when busy or failed (the notice says why). */
+    async checkCreekDepth(): Promise<boolean> {
+        const ctx = this.ctx;
+        if (!ctx || this.checkingDepth.peek()) return false;
+        this.checkingDepth.set(true);
+        this.notice.set(null);
+        try {
+            this.creekDepth.set(await this.creekDepthApi.creekDepth({ courseId: ctx.courseId }));
+            return true;
+        } catch (e) {
+            this.notice.set(`Creek depth failed: ${message(e)}`);
+            return false;
+        } finally {
+            this.checkingDepth.set(false);
+        }
+    }
+
+    /**
+     * Selects the creek and flies the map to its first shallow stretch (else
+     * its first blocked mouth, EPSG:3006); a creek with neither is fitted whole.
+     */
+    showCreek(creek: CreekDepthCreek): void {
+        const ctx = this.ctx;
+        if (!ctx) return;
+        const feature = ctx.features.store.items.peek().find(f => f.id === creek.id) ?? null;
+        if (feature) this.selectFeature(feature.id);
+        const at = creekDepthSpot(creek);
+        if (!at) {
+            this.fitRings(featureRings(feature));
+            return;
+        }
+        const { lat, lon } = sweref99tmToWgs84(at.x, at.y);
+        ctx.map.flyTo({ lng: lon, lat }, CREEK_SPOT_ZOOM);
+    }
+
+    /** A creek's name in the depth list: its shape name when it is loaded (`hole_5_8`), else the check's label. */
+    creekName(creek: CreekDepthCreek): string {
+        const feature = this.ctxSignal.get()?.features.store.items.get().find(f => f.id === creek.id);
+        return feature ? shapeName(feature, this.holeNumberOf(feature.holeId) ?? undefined) : creek.label;
     }
 
     // ─────────────────────────────────────────────────────────────────────────
@@ -1229,6 +1290,8 @@ export class TerrainEditToolService {
         this.hoveredId.set(null);
         this.selectedFeatureIds.set([]);
         this.waterSteps.set(null);
+        this.creekDepth.set(null);
+        this.depthOpen.set(false);
         this.paint.cancel();
         this.ctx = null;
         this.ctxSignal.set(null);
@@ -1767,6 +1830,39 @@ function distToLine(p: { x: number; y: number }, line: ReadonlyArray<{ x: number
         best = Math.min(best, Math.hypot(p.x - a.x - t * dx, p.y - a.y - t * dy));
     }
     return best;
+}
+
+/** The map zoom a creek's shallow stretch is shown at. */
+const CREEK_SPOT_ZOOM = 19;
+
+/** The creek depth statuses that need work before the bake, in the order the list shows them. */
+export const CREEK_DEPTH_TODO: ReadonlyArray<CreekDepthCreek['status']> = ['not-dug', 'stale', 'shallow'];
+
+/** How each status that needs work reads on the panel. */
+export const CREEK_DEPTH_WORDS: Readonly<Record<string, string>> = { 'not-dug': 'not dug', stale: 'stale dig', shallow: 'shallow' };
+
+/** The creeks that need work, not dug first, then stale digs, then shallow ones. */
+export function creeksToFix(report: CreekDepthReport): CreekDepthCreek[] {
+    return report.creeks.filter(c => CREEK_DEPTH_TODO.includes(c.status))
+        .sort((a, b) => CREEK_DEPTH_TODO.indexOf(a.status) - CREEK_DEPTH_TODO.indexOf(b.status));
+}
+
+/** Where a creek's trouble is (EPSG:3006): its first shallow stretch, else its first blocked mouth; null for neither. */
+export function creekDepthSpot(creek: CreekDepthCreek): { x: number; y: number } | null {
+    const stretch = creek.shallow?.[0];
+    if (stretch) return { x: stretch.x, y: stretch.y };
+    const mouth = creek.mouths?.find(m => m.blocked);
+    return mouth ? { x: mouth.x, y: mouth.y } : null;
+}
+
+/** The creek depth check folded to one line: "deep enough", "3 shallow, 1 not dug", "no creeks". */
+export function creekDepthSummary(report: CreekDepthReport): string {
+    if (report.creeks.length === 0) return 'no creeks';
+    const parts = (['shallow', 'not-dug', 'stale'] as const)
+        .map(status => [report.creeks.filter(c => c.status === status).length, CREEK_DEPTH_WORDS[status]] as const)
+        .filter(([n]) => n > 0)
+        .map(([n, word]) => `${n} ${word}`);
+    return parts.length > 0 ? parts.join(', ') : 'deep enough';
 }
 
 /** "6 pieces, 5 falls", "6 pieces, 5 falls (2 exist)" when the course has some of them already. */

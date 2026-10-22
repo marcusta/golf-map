@@ -62,7 +62,9 @@
 // point on that side (or moves the end on) until the edge meets the ground,
 // lowering the water a little where widening alone cannot reach a bank, so no
 // ball rolls under the water's edge; what neither closes needs a deeper bed
-// (see CloseGaps).
+// (see CloseGaps). What is left open goes into <prefix>-inner-creek-gaps.json
+// beside the export (golfmap-creek-gaps-v1, see GapsDoc), which golf-map's
+// GSPro board reads, and its one line into the result's `summary`.
 //
 // The report compares each creek's exported surface with the ground under it
 // (the highest collider straight down: the course meshes) and gives the fit.
@@ -161,7 +163,7 @@ namespace GolfMap.Editor
         [MenuItem("GolfMap/Creeks/Water from the R.A.M. profile")]
         static void MenuProfile() { Debug.Log("[GolfMap Creeks] " + GolfMapJson.Serialize(Style("profile"), false)); }
 
-        [BridgeCommand("golfmap.creeks.import", "Import the course's unity-creeks-v1 export (<prefix>-inner-creeks.json) as NatureManufacture R.A.M. splines under 'GolfMap Creeks': one RamSpline per creek with its profile, fitted to the course meshes under it (water aboveBedM over the bed; each side out to where the bank rises above the water plus bankM; both ends run on into the bank the same way, or at a lake pondFadeM past its shore, the water fading out over the lake by vertex alpha), wearing the lakes' water (water=lake) or the profile's material (water=profile). Re-import after changing creeks, heightmap or meshes refits them in place (points and transform reset) and removes creeks no longer exported. Marks the scene dirty; save=true saves it (and the assets it changed) once the import has succeeded.",
+        [BridgeCommand("golfmap.creeks.import", "Import the course's unity-creeks-v1 export (<prefix>-inner-creeks.json) as NatureManufacture R.A.M. splines under 'GolfMap Creeks': one RamSpline per creek with its profile, fitted to the course meshes under it (water aboveBedM over the bed; each side out to where the bank rises above the water plus bankM; both ends run on into the bank the same way, or at a lake pondFadeM past its shore, the water fading out over the lake by vertex alpha), wearing the lakes' water (water=lake) or the profile's material (water=profile). Re-import after changing creeks, heightmap or meshes refits them in place (points and transform reset) and removes creeks no longer exported. Each water edge is closed onto the ground (CloseGaps: widen, extend, lower in levelStepM steps); what stays open is written per creek (needsBed spots near play, farFromPlay on a creek wholly far from it, collider errors) to <prefix>-inner-creek-gaps.json beside the export (not on a dry run) and summed up in the result's `summary`. Marks the scene dirty; save=true saves it (and the assets it changed) once the import has succeeded.",
             args = "file (default: the active course's export), dryRun=false, fit=true (false: the export's surface and width as they are), aboveBedM=0.15, bankM=2, buryM=0.05, searchM=8 (how far past the export's half width to look for a bank), widenM=2 (a side reaches at most the export's half width + bankM + widenM), gapWidenM=2 / gapExtendM=4 (closing gaps: the most a side widens / an end moves on), minDepthM=0.05 / maxLowerM=0.1 / levelStepM=0.02 (closing gaps: the water lowered in steps, no shallower over its bed), farFromPlayM=75 / farGapM=0.15 (a creek wholly that far from the playing field: an edge may hang that much, the rest is farFromPlay, not needsBed), trace (a creek id or part of one: its fit station by station), water=lake|profile, pondFadeM=2 (0: no fade at lakes), " + GolfMapSceneSave.Arg)]
         static object Command(BridgeArgs a)
         {
@@ -196,8 +198,10 @@ namespace GolfMap.Editor
             file = string.IsNullOrEmpty(file) ? GolfMapCourses.ExportFile(course, "inner", "creeks") : file;
             if (string.IsNullOrEmpty(file) || !File.Exists(file))
                 throw new InvalidOperationException("No creeks export at " + (file ?? "(the course has no export folder)") + ": run \"Export creeks\" on the Creeks row of golf-map's GSPro board.");
-            var creeks = Load(file);
+            double originX, originY;
+            var creeks = Load(file, out originX, out originY);
             int exported = creeks.Count;
+            var exportedIds = new HashSet<string>(creeks.Select(c => c.id));
             if (fit.within != null)
                 creeks = creeks.Where(c => c.points.Any(p => fit.within.Any(r => r.Contains(new Vector2(p.x, p.z))))).ToList();
 
@@ -314,8 +318,25 @@ namespace GolfMap.Editor
                 SceneView.RepaintAll();
             }
 
+            // What CloseGaps left, per creek, into <prefix>-inner-creek-gaps.json beside the export (merged with the
+            // creeks this run did not refit), and its one line for the bridge answer, the course refresh and the board.
+            string summary, gapsFile = null;
+            Dictionary<string, object> gapsDoc = null;
+            if (dryRun)
+            {
+                int updates = rows.Count(r => (string)((Dictionary<string, object>)r)["status"] == "update");
+                summary = "dry run: " + Plural(creeks.Count, "creek") + " to refit (" + updates + " update, " + (creeks.Count - updates) + " create), nothing written";
+            }
+            else
+            {
+                gapsFile = GapsFile(course, file);
+                gapsDoc = GapsDoc(course, file, gapsFile, rows, exportedIds, fit, originX, originY);
+                summary = (string)((Dictionary<string, object>)gapsDoc["summary"])["line"];
+            }
+
             var result = new Dictionary<string, object>
             {
+                { "summary", summary },
                 { "file", file }, { "dryRun", dryRun }, { "creeks", creeks.Count }, { "exported", exported },
                 { "fit", fit.fit ? (object)new Dictionary<string, object> { { "aboveBedM", fit.aboveBedM }, { "bankM", fit.bankM }, { "buryM", fit.buryM }, { "searchM", fit.searchM },
                     { "gapWidenM", fit.gapWidenM }, { "gapExtendM", fit.gapExtendM }, { "minDepthM", fit.minDepthM }, { "maxLowerM", fit.maxLowerM },
@@ -323,10 +344,179 @@ namespace GolfMap.Editor
                 { "created", created }, { "updated", updated }, { "removed", removed },
                 { "missingProfiles", missingProfiles.ToList() },
                 { "water", water ?? (object)fit.water },
+                { "gapsFile", gapsFile },
                 { "rows", rows },
             };
             WriteReport(course, result);
+            if (gapsDoc != null) File.WriteAllText(gapsFile, GolfMapJson.Serialize(gapsDoc) + "\n");
             return result;
+        }
+
+        // ------------------------------------------------------------ the gaps file (golfmap-creek-gaps-v1)
+        //
+        // <export folder>/<prefix>-inner-creek-gaps.json, beside the creeks export the import read: per creek id what
+        // CloseGaps left open (`gaps`: edge vertices still hanging over the ground), the spots near play whose bed must be
+        // dug deeper (`needsBed`) or, on a creek wholly far from play (`far`), the ones left as they are (`farFromPlay`),
+        // each in plot metres (x, z, hangM) and EPSG:3006 (e, n, from the export's plot origin), plus any collider error;
+        // and a summary over all creeks. golf-map's GSPro board reads it after "Update creeks" (Creeks row note, phase
+        // warning). An import that refits only some creeks (FitOptions.within) replaces their entries and keeps the others
+        // still in the export.
+        public const string GapsFormat = "golfmap-creek-gaps-v1";
+        const string CreeksSuffix = "-inner-creeks.json", GapsSuffix = "-inner-creek-gaps.json";
+        // How many short ids a summary line names before "+N more".
+        const int SummaryIds = 8;
+
+        // Beside the creeks export, with its prefix: vreta-inner-creeks.json -> vreta-inner-creek-gaps.json.
+        static string GapsFile(GolfMapCourse course, string creeksFile)
+        {
+            var dir = Path.GetDirectoryName(Path.GetFullPath(creeksFile));
+            var name = Path.GetFileName(creeksFile);
+            string prefix = name.EndsWith(CreeksSuffix, StringComparison.OrdinalIgnoreCase) ? name.Substring(0, name.Length - CreeksSuffix.Length)
+                : !string.IsNullOrEmpty(course.exportPrefix) ? course.exportPrefix : Path.GetFileNameWithoutExtension(name);
+            return Path.Combine(dir, prefix + GapsSuffix);
+        }
+
+        static Dictionary<string, object> GapsDoc(GolfMapCourse course, string creeksFile, string gapsFile, List<object> rows,
+            HashSet<string> exportedIds, FitOptions fit, double originX, double originY)
+        {
+            var at = DateTime.Now.ToString("yyyy-MM-ddTHH:mm:ss", CultureInfo.InvariantCulture);
+            var entries = new Dictionary<string, object>();
+            // A partial refit keeps the entries of the creeks it left alone (those still exported).
+            if (fit.within != null && File.Exists(gapsFile))
+            {
+                try
+                {
+                    var old = GolfMapJsonDoc.ParseObject(File.ReadAllText(gapsFile));
+                    var oldCreeks = old.String("format") == GapsFormat ? old.Object("creeks") : null;
+                    if (oldCreeks != null)
+                        foreach (var id in oldCreeks.keys)
+                            if (exportedIds.Contains(id)) entries[id] = Plain(oldCreeks[id]);
+                }
+                catch (Exception e) { Debug.LogWarning("[GolfMap Creeks] " + gapsFile + " could not be read, written anew: " + e.Message); }
+            }
+            int refitted = 0;
+            foreach (Dictionary<string, object> r in rows)
+            {
+                entries[(string)r["id"]] = GapsEntry(r, originX, originY, at);
+                refitted++;
+            }
+            var creeks = new Dictionary<string, object>();
+            foreach (var id in entries.Keys.OrderBy(k => k, StringComparer.Ordinal)) creeks[id] = entries[id];
+            return new Dictionary<string, object>
+            {
+                { "format", GapsFormat }, { "written", at }, { "course", GolfMapCourses.Name(course) },
+                { "creeksFile", Path.GetFullPath(creeksFile) },
+                { "plot", new Dictionary<string, object> { { "crs", "EPSG:3006" }, { "originX", originX }, { "originY", originY } } },
+                { "fit", new Dictionary<string, object> { { "farFromPlayM", fit.farFromPlayM }, { "farGapM", fit.farGapM }, { "gapWidenM", fit.gapWidenM },
+                    { "gapExtendM", fit.gapExtendM }, { "maxLowerM", fit.maxLowerM }, { "minDepthM", fit.minDepthM } } },
+                { "summary", GapsSummary(creeks, fit.within != null ? refitted : -1) },
+                { "creeks", creeks },
+            };
+        }
+
+        // One creek's row of the import as its entry in the gaps file.
+        static Dictionary<string, object> GapsEntry(Dictionary<string, object> row, double originX, double originY, string at)
+        {
+            var e = new Dictionary<string, object> { { "status", row["status"] }, { "importedAt", at }, { "far", row.ContainsKey("farFromPlay") } };
+            object g;
+            row.TryGetValue("gaps", out g);
+            var d = g as Dictionary<string, object>;
+            if (g is string) { e["onLake"] = true; e["gaps"] = 0; }
+            else if (d == null) e["error"] = "not checked";
+            else if (d.ContainsKey("error")) e["error"] = d["error"];
+            else
+            {
+                foreach (var k in new[] { "gaps", "widened", "endsMoved", "lowered", "mostLoweredM", "rounds" })
+                    if (d.ContainsKey(k)) e[k] = d[k];
+                foreach (var k in new[] { "needsBed", "farFromPlay" })
+                    if (d.ContainsKey(k)) e[k] = ((List<object>)d[k]).OfType<Dictionary<string, object>>().Select(s => (object)Spot(s, originX, originY)).ToList();
+            }
+            object collider;
+            e["colliderError"] = row.TryGetValue("colliderError", out collider) ? collider : null;
+            return e;
+        }
+
+        // A CloseGaps spot (plot x, z, hangM) with its EPSG:3006 easting / northing; a spot over no ground has hangM null.
+        static Dictionary<string, object> Spot(Dictionary<string, object> s, double originX, double originY)
+        {
+            double x = Convert.ToDouble(s["x"], CultureInfo.InvariantCulture), z = Convert.ToDouble(s["z"], CultureInfo.InvariantCulture);
+            var spot = new Dictionary<string, object>
+            {
+                { "x", x }, { "z", z }, { "hangM", s["hangM"] is string ? null : s["hangM"] },
+                { "e", Math.Round(originX + x, 1) }, { "n", Math.Round(originY + z, 1) },
+            };
+            if (s["hangM"] is string) spot["noGround"] = true;
+            return spot;
+        }
+
+        // Counts over every creek in the file, and their one line: "15 creeks, 2 need a bed (b37cf073, 4a8c6c7a),
+        // 3 far from play". refitted >= 0: only that many were refitted this time ("3 of 15 creeks refitted; ...").
+        static Dictionary<string, object> GapsSummary(Dictionary<string, object> creeks, int refitted)
+        {
+            Func<string, List<string>> having = key => creeks.Where(kv =>
+            {
+                var e = kv.Value as Dictionary<string, object>;
+                object v;
+                if (e == null || !e.TryGetValue(key, out v) || v == null) return false;
+                var list = v as List<object>;
+                return list == null || list.Count > 0;
+            }).Select(kv => kv.Key).ToList();
+            var bed = having("needsBed");
+            var far = having("farFromPlay");
+            var collider = having("colliderError");
+            var error = having("error");
+            int gaps = creeks.Values.OfType<Dictionary<string, object>>().Sum(e =>
+            {
+                object v;
+                return e.TryGetValue("gaps", out v) && v != null && !(v is string) ? Convert.ToInt32(v, CultureInfo.InvariantCulture) : 0;
+            });
+            var line = new StringBuilder();
+            if (refitted >= 0) line.Append(refitted + " of " + Plural(creeks.Count, "creek") + " refitted; ");
+            else line.Append(Plural(creeks.Count, "creek") + ", ");
+            line.Append(bed.Count == 0 ? "none needs a bed" : bed.Count + (bed.Count == 1 ? " needs" : " need") + " a bed (" + ShortIds(bed) + ")");
+            if (far.Count > 0) line.Append(", " + far.Count + " far from play");
+            if (collider.Count > 0) line.Append(", " + Plural(collider.Count, "collider error") + " (" + ShortIds(collider) + ")");
+            if (error.Count > 0) line.Append(", " + error.Count + " not checked (" + ShortIds(error) + ")");
+            return new Dictionary<string, object>
+            {
+                { "creeks", creeks.Count }, { "gaps", gaps }, { "needsBed", bed.Count }, { "farFromPlay", far.Count },
+                { "colliderErrors", collider.Count }, { "errors", error.Count }, { "line", line.ToString() },
+            };
+        }
+
+        // "feature:b37cf073-7ad6-..." -> "b37cf073".
+        internal static string ShortId(string id)
+        {
+            var s = id ?? "";
+            int colon = s.IndexOf(':');
+            if (colon >= 0) s = s.Substring(colon + 1);
+            int dash = s.IndexOf('-');
+            if (dash > 0) s = s.Substring(0, dash);
+            return s.Length > 12 ? s.Substring(0, 8) : s;
+        }
+
+        static string ShortIds(List<string> ids)
+        {
+            var shown = string.Join(", ", ids.Take(SummaryIds).Select(ShortId).ToArray());
+            return ids.Count > SummaryIds ? shown + " +" + (ids.Count - SummaryIds) + " more" : shown;
+        }
+
+        static string Plural(int n, string what) { return n + " " + what + (n == 1 ? "" : "s"); }
+
+        // A parsed GolfMapJsonDoc value as the plain dictionaries / lists / doubles GolfMapJson writes.
+        static object Plain(object value)
+        {
+            var obj = value as GolfMapJsonObject;
+            if (obj != null)
+            {
+                var d = new Dictionary<string, object>();
+                foreach (var k in obj.keys) d[k] = Plain(obj[k]);
+                return d;
+            }
+            var list = value as List<object>;
+            if (list != null) return list.Select(Plain).ToList();
+            var number = value as GolfMapJsonNumber;
+            return number != null ? (object)number.Value : value;
         }
 
         // The line (plot x, z, downstream) and the per-side paint depths of one exported creek, for GolfMapVertexPaint's object rules;
@@ -345,10 +535,19 @@ namespace GolfMap.Editor
 
         static List<Creek> Load(string file)
         {
+            double originX, originY;
+            return Load(file, out originX, out originY);
+        }
+
+        // originX / originY: the plot's south-west corner in EPSG:3006 (plot x = east - originX, z = north - originY).
+        static List<Creek> Load(string file, out double originX, out double originY)
+        {
             var root = GolfMapJsonDoc.ParseObject(File.ReadAllText(file));
             if (root.String("format") != Format) throw new InvalidOperationException(file + ": format must be " + Format + ".");
             var plot = root.Object("plot");
             if (plot == null || plot.String("terrain") != "inner") throw new InvalidOperationException(file + ": creeks are for the inner terrain.");
+            originX = plot.Number("originX");
+            originY = plot.Number("originY");
             var list = new List<Creek>();
             foreach (var o in (root.Array("creeks") ?? new List<object>()).OfType<GolfMapJsonObject>())
             {
@@ -1502,13 +1701,46 @@ namespace GolfMap.Editor
         {
             var sb = new StringBuilder();
             sb.AppendLine("GolfMap creeks " + DateTime.Now.ToString("yyyy-MM-dd HH:mm") + ((bool)result["dryRun"] ? " (dry run)" : ""));
+            bool dryRun = (bool)result["dryRun"];
             foreach (var kv in result.Where(kv => kv.Key != "rows")) sb.AppendLine(kv.Key + ": " + GolfMapJson.Serialize(kv.Value, false));
             foreach (Dictionary<string, object> r in (List<object>)result["rows"])
+            {
+                object colliderError;
                 sb.AppendLine("  " + r["id"] + ": " + r["status"] + ", " + r["points"] + " points, " + r["lengthM"] + " m, fall " + r["fallM"] + " m, "
                     + r["profile"] + ", ground above export surface " + GolfMapJson.Serialize(r["groundAboveExportSurfaceM"], false)
-                    + (r.ContainsKey("fit") ? ", fit " + GolfMapJson.Serialize(r["fit"], false) : "")
-                    + (r.ContainsKey("collider") ? ", collider " + GolfMapJson.Serialize(r["collider"], false) : ""));
+                    + (r.ContainsKey("fit") ? ", fit " + GolfMapJson.Serialize(r["fit"], false) : ""));
+                sb.AppendLine("    " + (dryRun ? "gaps not checked (dry run)" : GapsText(r))
+                    + "; collider " + (dryRun ? "not built (dry run)"
+                        : r.TryGetValue("colliderError", out colliderError) ? "ERROR: " + colliderError : "GSPwater MeshCollider on the water mesh"));
+            }
             File.WriteAllText(GolfMapCourses.ReportPath(course, "creeks.txt"), sb.ToString());
+        }
+
+        // One row's CloseGaps result in words: how many edge vertices still hang over the ground and where.
+        static string GapsText(Dictionary<string, object> r)
+        {
+            object g;
+            if (!r.TryGetValue("gaps", out g)) return "gaps not checked";
+            if (g is string) return "gaps: " + g;
+            var d = g as Dictionary<string, object>;
+            if (d == null) return "gaps not checked";
+            if (d.ContainsKey("error")) return "gaps not checked: " + d["error"];
+            int open = Convert.ToInt32(d["gaps"], CultureInfo.InvariantCulture);
+            var sb = new StringBuilder(open == 0 ? "gaps 0 (the water's edge meets the ground all round)" : "gaps " + open + " left");
+            foreach (var key in new[] { "needsBed", "farFromPlay" })
+            {
+                object v;
+                var spots = d.TryGetValue(key, out v) ? v as List<object> : null;
+                if (spots == null || spots.Count == 0) continue;
+                var hangs = spots.OfType<Dictionary<string, object>>().Select(s => s["hangM"]).Where(h => !(h is string)).Select(h => Convert.ToDouble(h, CultureInfo.InvariantCulture)).ToList();
+                sb.Append(key == "needsBed" ? ", needsBed " : ", far from play (left as they are) ").Append(spots.Count).Append(" spot(s)");
+                if (hangs.Count > 0) sb.Append(", deepest hang ").Append(hangs.Max().ToString("0.00", CultureInfo.InvariantCulture)).Append(" m");
+                sb.Append(' ').Append(GolfMapJson.Serialize(spots, false));
+            }
+            sb.Append("; widened ").Append(d["widened"]).Append(", ends moved ").Append(d["endsMoved"]).Append(", lowered ").Append(d["lowered"])
+                .Append(" (most ").Append(GolfMapJson.Serialize(d["mostLoweredM"], false)).Append(" m), rounds ").Append(d["rounds"]);
+            if (d.ContainsKey("trimmed")) sb.Append(", ends trimmed ").Append(GolfMapJson.Serialize(d["trimmed"], false));
+            return sb.ToString();
         }
     }
 }

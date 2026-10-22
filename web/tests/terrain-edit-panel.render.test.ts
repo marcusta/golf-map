@@ -9,6 +9,8 @@ import { ShapingService } from '../src/terrain-edit/shaping.service';
 import { ConfirmService } from '../src/app/confirm-dialog.component';
 import type { ShapingJob } from '../../shared/api/shaping.gen';
 import type { WaterStepsApi } from '../../shared/api/water-steps.gen';
+import type { CreekDepthCreek, CreekDepthReport, GsproExportApi } from '../../shared/api/gspro-export.gen';
+import { sweref99tmToWgs84 } from '../src/geo/transform';
 import { doneJob, fakeShapingApi, phases, shapingJob, type LibraryEntry } from './shaping-fakes';
 
 // Render smoke for the Terrain editor's "Shape in Blender" section and the
@@ -47,7 +49,7 @@ function recipeEdit(params: Record<string, unknown>): TerrainEdit {
 
 const B1 = { id: 'b1', type: 'bunker', holeId: 'h3', no: 28, attributes: null, geometry: { crs: 'EPSG:3006', rings: [] } };
 
-function mount(opts: { edits?: TerrainEdit[]; jobs?: ShapingJob[]; features?: Array<typeof B1>; waterSteps?: WaterStepsApi } = {}) {
+function mount(opts: { edits?: TerrainEdit[]; jobs?: ShapingJob[]; features?: Array<typeof B1>; waterSteps?: WaterStepsApi; creekDepth?: Pick<GsproExportApi, 'creekDepth'> } = {}) {
     const created: unknown[] = [];
     const updated: unknown[] = [];
     const edits: TerrainEditsApi = {
@@ -69,13 +71,18 @@ function mount(opts: { edits?: TerrainEdit[]; jobs?: ShapingJob[]; features?: Ar
     shapingApi.polls = opts.jobs ?? [];
     const applies = shapingApi.calls.apply;
     const tool = new TerrainEditToolService(edits, {} as never, 0, {} as never, new ShapingService(shapingApi, 0), {} as never, {} as never,
-        opts.waterSteps ?? { propose: async () => { throw new Error('unused'); } });
+        opts.waterSteps ?? { propose: async () => { throw new Error('unused'); } }, undefined,
+        opts.creekDepth ?? { creekDepth: async () => { throw new Error('unused'); } });
     di.set(TerrainEditToolService, tool);
 
     const items = new Signal(opts.features ?? [B1]);
     const renderer: TerrainEditRenderer = { render() {}, reset() {}, clear() {} };
+    const flights: Array<{ center: { lng: number; lat: number }; zoom?: number }> = [];
     const ctx = {
-        map: { interactionMode: new Signal('terrain-edit'), ready: new Signal(false), map: new Signal(null), onClick: () => () => {}, onMouseMove: () => () => {}, fitBounds() {} },
+        map: {
+            interactionMode: new Signal('terrain-edit'), ready: new Signal(false), map: new Signal(null), onClick: () => () => {}, onMouseMove: () => () => {}, fitBounds() {},
+            flyTo: (center: { lng: number; lat: number }, zoom?: number) => flights.push({ center, zoom }),
+        },
         elevation: null,
         tileset: { mapKey: new Signal(null) },
         courseDetail: { course: new Signal({ id: 'course-1', siteId: 'site-1' }), holes: new Signal([{ id: 'h3', number: 3 }]) },
@@ -106,7 +113,7 @@ function mount(opts: { edits?: TerrainEdit[]; jobs?: ShapingJob[]; features?: Ar
             label: row.querySelector('.param-row__label')!.textContent,
         };
     };
-    return { host, tool, q, qa, param, created, updated, applies, shapingApi };
+    return { host, tool, q, qa, param, created, updated, applies, shapingApi, flights };
 }
 
 test('the Shape in Blender section appears for the selected bunker with its recipes, the course default first', async () => {
@@ -477,4 +484,81 @@ test('Find falls: one line for the selected ponds and creeks, Find shows the cou
 
     q<HTMLButtonElement>('terrain-edit-steps-discard').click();
     expect(q('terrain-edit-steps-summary').textContent).toBe('2 ponds and creeks selected');
+});
+
+/** One creek of a creek depth report (the measured fields as the check gives them). */
+function depthCreek(id: string, status: CreekDepthCreek['status'], more: Partial<CreekDepthCreek> = {}): CreekDepthCreek {
+    return {
+        id, featureNo: 1, hole: null, label: id.slice(0, 8), widthM: 1.4, lengthM: 120, farFromPlay: false, status,
+        dig: status === 'not-dug' ? { state: 'none' } : { state: 'dug', depthM: 0.9, bankSlopeDeg: 45, outsideM: 0 },
+        minDepthM: 0.25, demDepthM: { median: 0.9, p10: 0.6 }, meshDepthM: { median: 0.4, p10: 0.2 }, bedM: 0, shallowM: 0,
+        shallow: [], crossings: [], mouths: [], ...more,
+    };
+}
+
+function depthReport(creeks: CreekDepthCreek[], demSource: CreekDepthReport['demSource'] = 'applied'): CreekDepthReport {
+    return {
+        format: 'golfmap-creek-depth-v1', course: { id: 'course-1', name: 'Linkan' }, dem: { file: 'dem-edited.tif', replayedEdits: null },
+        blenderBeds: { layers: [], beds: 0, channels: 0 },
+        model: { nodeSpacingM: 1, terrainSmooth: 1.5, meshEdgeM: 1.2, phases: 4, waterAboveBedM: 0.15, minFreeboardM: 0.1, bankBandM: 1 },
+        summary: { creeks: creeks.length }, creeks, skipped: [], demSource,
+        lines: ['Creek depth in the meshes: Linkan', ...creeks.map(c => `  ${c.status.padEnd(8)} ${c.label.padEnd(16)} 1.4 m wide, 120 m`)],
+    };
+}
+
+test('the creek depth check folds to one line on the Dig creeks row; a creek to fix flies the map to its first shallow spot and selects it', async () => {
+    const creek = (id: string, no: number) => ({ ...B1, id, type: 'water_creek', no });
+    const shallow = depthCreek('k1aaaaaaaa', 'shallow', {
+        shallowM: 36, shallow: [{ fromM: 7, toM: 11, x: 529640, y: 6488558, meshDepthM: 0.1, demDepthM: 0.5 }, { fromM: 40, toM: 70, x: 529660, y: 6488570, meshDepthM: 0.12, demDepthM: 0.5 }],
+    });
+    const mouth = depthCreek('k2bbbbbbbb', 'shallow', { mouths: [{ x: 529675, y: 6487494, blockM: 0.3, demBlockM: 0.1, blocked: true }] });
+    const undug = depthCreek('k3cccccccc', 'not-dug', { shallowM: 52, shallow: [{ fromM: 0, toM: 52, x: 530369, y: 6487096, meshDepthM: 0.06, demDepthM: 0.1 }] });
+    const fine = depthCreek('k4dddddddd', 'ok');
+    let answer = depthReport([fine, shallow, mouth, undug], 'replayed');
+    const asked: unknown[] = [];
+    const creekDepth = { creekDepth: async (input: { courseId: string; only?: string }) => { asked.push(input); return answer; } };
+    const { tool, q, qa, flights } = mount({ features: [B1, creek('k1aaaaaaaa', 8), creek('k2bbbbbbbb', 9), creek('k3cccccccc', 10)], creekDepth });
+    await tick();
+
+    // Before a check: one Depth button beside Dig creeks, no line.
+    expect(q('terrain-edit-creek-depth').textContent).toBe('Depth');
+    expect(q('terrain-edit-creek-depth').getAttribute('title')).toContain('bun run water:depth');
+    expect(q('terrain-edit-creek-depth-line').className).toContain('hidden');
+
+    q<HTMLButtonElement>('terrain-edit-creek-depth').click();
+    await tick();
+    expect(asked).toEqual([{ courseId: 'course-1' }]);
+    const line = q('terrain-edit-creek-depth-line');
+    expect(line.className).not.toContain('hidden');
+    expect(line.textContent).toBe('▸ 2 shallow, 1 not dug');
+    // The detail is in the tooltip: the check's lines, and that unapplied edits were replayed.
+    expect(line.title).toContain('ok       k4dddddd');
+    expect(line.title).toContain('replayed onto the raw DEM');
+    expect(q('terrain-edit-creek-depth-list').className).toContain('hidden');
+
+    // Unfolded: the creeks to fix, not dug first, by their shape names.
+    line.click();
+    expect(line.textContent).toBe('▾ 2 shallow, 1 not dug');
+    expect(qa('terrain-edit-creek-depth-item').map(el => el.textContent)).toEqual([
+        'not dug · hole_3_a · 52 m', 'shallow · hole_3_8 · 36 m', 'shallow · hole_3_9 · mouth',
+    ]);
+    expect(qa('terrain-edit-creek-depth-item')[1]!.title).toContain('shallow  k1aaaaaa');
+
+    // A creek's line: selected, the map flown to its first shallow stretch; a blocked mouth when it has no stretch.
+    qa('terrain-edit-creek-depth-item')[1]!.click();
+    expect(tool.selectedFeatureIds.peek()).toEqual(['k1aaaaaaaa']);
+    const at = sweref99tmToWgs84(529640, 6488558);
+    expect(flights).toEqual([{ center: { lng: at.lon, lat: at.lat }, zoom: 19 }]);
+    qa('terrain-edit-creek-depth-item')[2]!.click();
+    expect(tool.selectedFeatureIds.peek()).toEqual(['k2bbbbbbbb']);
+    expect(flights[1]!.center.lng).toBeCloseTo(sweref99tmToWgs84(529675, 6487494).lon, 9);
+
+    // All deep enough: one line, nothing to unfold.
+    answer = depthReport([fine]);
+    q<HTMLButtonElement>('terrain-edit-creek-depth').click();
+    await tick();
+    expect(line.textContent).toBe('✓ deep enough');
+    expect(line.className).not.toContain('bad');
+    expect(q('terrain-edit-creek-depth-list').className).toContain('hidden');
+    expect(qa('terrain-edit-creek-depth-item')).toHaveLength(0);
 });

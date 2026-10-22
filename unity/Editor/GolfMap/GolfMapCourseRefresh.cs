@@ -12,7 +12,7 @@
 //   4b. roughgrass.plant (GolfMapRoughGrass)  Stix 3D grass on the roughs and bunker lips (re-added meshes lack it)
 //   5. terrain.conform mode=match             terrain both ways to just under the meshes, feathered out
 //   6. waterplanes.build                      lake planes refilled from the new lake meshes
-//   7. creeks.import                          R.A.M. creeks refitted to the new banks
+//   7. creeks.import                          R.A.M. creeks refitted to the new banks (note: which need a deeper bed)
 //   8. walls.build                            stone walls rebuilt on the reshaped ground
 //   9. surfaces.export                        surface map for pipeline grass_zones
 // Not automatic, reported as pending: grass zones (pipeline grass:zones, then zones.import + grass.apply) and
@@ -214,7 +214,10 @@ namespace GolfMap.Editor
             if (string.IsNullOrEmpty(creeksExport) || !File.Exists(creeksExport))
                 steps.Add(new Step { id = "creeks.import", label = "Creeks refit (R.A.M.)", status = "skipped", note = "no creeks export at " + (creeksExport ?? "(no export folder)") });
             else
+            {
                 run("creeks.import", "Creeks refit (R.A.M.)", () => Creeks(dryRun), planned);
+                NoteCreeks(steps);
+            }
 
             // 8. stone walls on the reshaped ground (its own dry run prepares the stone models: import settings and
             // material assets, so a plan only reads the spec)
@@ -412,7 +415,11 @@ namespace GolfMap.Editor
             {
                 var within = creekMeshes.Where(where.ContainsKey).Select(n => { var b = where[n].bounds; return Rect.MinMaxRect(b.min.x - 1, b.min.z - 1, b.max.x + 1, b.max.z + 1); }).ToList();
                 if (within.Count == 0) notNeeded("creeks.import", "Creeks refit (R.A.M.)", "the named creek meshes have no bounds (not in the scene, FBX folder or shaping report)");
-                else run("creeks.import", "Creeks refit (R.A.M.): the creeks crossing them", () => Creeks(dryRun, within), planned);
+                else
+                {
+                    run("creeks.import", "Creeks refit (R.A.M.): the creeks crossing them", () => Creeks(dryRun, within), planned);
+                    NoteCreeks(steps);
+                }
             }
 
             // 8. walls whose bank meets them
@@ -601,12 +608,16 @@ namespace GolfMap.Editor
             return result;
         }
 
-        // within: refit only the creeks with a point in one of these (only=), null = every creek
+        // within: refit only the creeks with a point in one of these (only=), null = every creek.
+        // The per-creek rows stay out of the report (every creek's fit); their one line comes first instead - the import's
+        // `summary` ("15 creeks, 2 need a bed (b37cf073, 4a8c6c7a), 3 far from play") - with `gapsFile`, the
+        // <prefix>-inner-creek-gaps.json that lists each creek's open gaps (see GolfMapCreeks.GapsDoc).
         static Dictionary<string, object> Creeks(bool dryRun, List<Rect> within = null)
         {
             var r = GolfMapCreeks.Import(null, dryRun, new GolfMapCreeks.FitOptions { within = within });
             var rows = r.ContainsKey("rows") ? (r["rows"] as List<object> ?? new List<object>()) : new List<object>();
-            var result = WithoutKey(r, "rows");
+            var result = new Dictionary<string, object> { { "summary", r.ContainsKey("summary") ? r["summary"] : null } };
+            foreach (var kv in WithoutKey(r, "rows")) result[kv.Key] = kv.Value;
             if (dryRun)
             {
                 var statuses = rows.OfType<Dictionary<string, object>>().Select(x => x.ContainsKey("status") ? x["status"] as string : null).ToList();
@@ -677,6 +688,15 @@ namespace GolfMap.Editor
             }
             s.seconds = (DateTime.Now - t).TotalSeconds;
             return s;
+        }
+
+        // The creeks step's note: its summary line, so the report says at a glance what the refit left open.
+        static void NoteCreeks(List<Step> steps)
+        {
+            var s = steps.LastOrDefault(x => x.id == "creeks.import");
+            var r = s != null ? s.result as Dictionary<string, object> : null;
+            object line;
+            if (r != null && r.TryGetValue("summary", out line) && line is string) s.note = (string)line;
         }
 
         static Dictionary<string, object> WithoutKey(Dictionary<string, object> d, string key)

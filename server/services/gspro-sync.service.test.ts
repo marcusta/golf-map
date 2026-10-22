@@ -167,13 +167,54 @@ function mapBuildRunner() {
     return { steps, runner };
 }
 
+/** The test course's plot origin in EPSG:3006 (the creeks export's `plot.originX/originY`). */
+const PLOT_ORIGIN = { x: 529028, y: 6486667 };
+
+/** A spot CloseGaps left: plot x, z and how far the water hangs there, with its EPSG:3006 point as Unity adds it. */
+const gapSpot = (x: number, z: number, hangM: number) =>
+    ({ x, z, hangM, e: Math.round((PLOT_ORIGIN.x + x) * 10) / 10, n: Math.round((PLOT_ORIGIN.y + z) * 10) / 10 });
+
+/** One creek's entry in the gaps file as GolfMapCreeks.GapsEntry writes it. */
+function creekEntry(opts: { gaps?: number; needsBed?: ReturnType<typeof gapSpot>[]; farFromPlay?: ReturnType<typeof gapSpot>[]; colliderError?: string } = {}) {
+    return {
+        status: 'update', importedAt: '2026-10-22T10:00:00', far: !!opts.farFromPlay,
+        gaps: opts.gaps ?? 0, widened: 2, endsMoved: 1, lowered: 1, mostLoweredM: 0.04, rounds: 6,
+        ...(opts.needsBed ? { needsBed: opts.needsBed } : {}),
+        ...(opts.farFromPlay ? { farFromPlay: opts.farFromPlay } : {}),
+        colliderError: opts.colliderError ?? null,
+    };
+}
+
+/** `n` creeks whose water meets the ground all round, keyed by export id. */
+function cleanCreeks(n: number): Record<string, ReturnType<typeof creekEntry>> {
+    return Object.fromEntries(Array.from({ length: n }, (_, i) =>
+        [`feature:${(0xc0000000 + i).toString(16)}-0000-4000-8000-000000000000`, creekEntry()]));
+}
+
+/**
+ * What the stand-in editor's creek import leaves open. It does what the real
+ * `golfmap.creeks.import` does once it has fitted the splines: writes the gaps
+ * file beside the creeks export (`golfmap-creek-gaps-v1`) and answers with its
+ * one-line `summary` and a row per creek (each with its whole fit, so the
+ * answer is far longer than a report line). `'old scripts'` instead: a Unity
+ * project whose GolfMapCreeks.cs predates the gaps file — no file, no summary.
+ */
+interface FakeCreekImport {
+    creeks: Record<string, ReturnType<typeof creekEntry>>;
+    /** The summary line Unity's GapsSummary makes of them. */
+    line: string;
+}
+
 /**
  * A Unity editor whose active GolfMap course exports to `exportFolder`, on the
  * bridge protocol. A command run with `save: true` answers with the
  * `saved: {scenes, seconds}` the real bridge puts in its result
  * (unity/README.md, "Saving what a command changed").
  */
-function fakeEditor(exportFolder: string, projectName = 'linkan_v4', delayMs = 0) {
+function fakeEditor(
+    exportFolder: string, projectName = 'linkan_v4', delayMs = 0,
+    opts: { exportDir?: string; creekImport?: FakeCreekImport | 'old scripts' } = {},
+) {
     const calls: Array<{ command: string; args: any }> = [];
     const server = Bun.serve({
         port: 0,
@@ -212,7 +253,30 @@ function fakeEditor(exportFolder: string, projectName = 'linkan_v4', delayMs = 0
                 return Response.json({ ok: true, result: { target: 'Assets/Terrain/x.jpg', renderers: 761, status: 'backup x.jpg', ...saved } });
             }
             if (command === 'golfmap.trees.plant') return Response.json({ ok: true, result: { terrain: args.terrain, status: `Planted the ${args.terrain} trees`, ...saved } });
-            if (command === 'golfmap.creeks.import') return Response.json({ ok: true, result: { status: 'Imported 13 creeks', ...saved } });
+            if (command === 'golfmap.creeks.import') {
+                const run = opts.creekImport ?? { creeks: cleanCreeks(13), line: '13 creeks, none needs a bed' };
+                const ids = run === 'old scripts' ? Object.keys(cleanCreeks(13)) : Object.keys(run.creeks);
+                const file = path.join(opts.exportDir ?? exportFolder, 'linkan-inner-creeks.json');
+                const gapsFile = path.join(opts.exportDir ?? exportFolder, 'linkan-inner-creek-gaps.json');
+                const rows = ids.map(id => ({
+                    id, points: 24, lengthM: 61.5, fallM: 1.2, source: 'centerline', profile: 'Small Stream Profile', status: 'update',
+                    fit: { points: 26, densified: 2, widthM: { export: 1.2, min: 0.9, median: 1.4, max: 2.6 }, endsM: [1.4, 'lake 2'], check: [] },
+                    gaps: run === 'old scripts' ? { gaps: 0 } : run.creeks[id],
+                }));
+                const answer = {
+                    file, dryRun: false, creeks: ids.length, exported: ids.length, created: 0, updated: ids.length, removed: [],
+                    missingProfiles: [], water: { look: 'lake' }, rows, ...saved,
+                };
+                if (run === 'old scripts') return Response.json({ ok: true, result: answer });
+                await writeFile(gapsFile, JSON.stringify({
+                    format: 'golfmap-creek-gaps-v1', written: '2026-10-22T10:00:00', course: 'Linkan', creeksFile: file,
+                    plot: { crs: 'EPSG:3006', originX: PLOT_ORIGIN.x, originY: PLOT_ORIGIN.y },
+                    summary: { creeks: ids.length, line: run.line },
+                    // By id, as Unity writes them.
+                    creeks: Object.fromEntries(Object.entries(run.creeks).sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0))),
+                }, null, 2));
+                return Response.json({ ok: true, result: { summary: run.line, ...answer, gapsFile } });
+            }
             return Response.json({ ok: true, result: { status: `${command} ok`, ...saved } });
         },
     });
@@ -233,6 +297,8 @@ interface SetupOptions {
     shapingOver?: Partial<GsproSyncDeps['shaping']>;
     /** Which of the props chain's two commands refuses. */
     propsFails?: 'the spec' | 'the models' | 'the models, quietly';
+    /** What the stand-in editor's creek import leaves open (default: 13 creeks, all in their banks). */
+    creekImport?: FakeCreekImport | 'old scripts';
 }
 
 /**
@@ -269,7 +335,7 @@ async function setup(opts: SetupOptions = {}) {
 
     let editor: ReturnType<typeof fakeEditor> | null = null;
     if (opts.unity) {
-        editor = fakeEditor(path.relative(path.join(project, 'Assets'), exportDir));
+        editor = fakeEditor(path.relative(path.join(project, 'Assets'), exportDir), 'linkan_v4', 0, { exportDir, creekImport: opts.creekImport });
         writeFileSync(path.join(discovery, 'bridge-1.json'), JSON.stringify({
             pid: process.pid, port: editor.server.port, token: 'tok', projectPath: project,
             projectName: editor.projectName, unityVersion: '2018.2.8f1', started: '',
@@ -641,8 +707,73 @@ test('the creeks chain writes the file and imports it in Unity', async () => {
     // The heightmap sidecar the creeks need is exported first by the export service itself.
     expect(t.pipeline.commands()).toEqual(['dem', 'creeks']);
     expect(t.editor!.calls.map(c => c.command)).toEqual(['golfmap.course', 'golfmap.creeks.import']);
-    expect(job.results[0]!.report).toContain('Unity (linkan_v4): golfmap.creeks.import — Imported 13 creeks');
+    expect(job.results[0]!.report).toContain('Unity (linkan_v4): golfmap.creeks.import — 13 creeks, none needs a bed');
     expect(job.phases.map(p => [p.id, p.status])).toEqual([['creeks:file', 'done'], ['creeks:unity', 'done']]);
+    // Every creek's water meets the ground: the phase says so, nothing is a warning, and the row has no step left.
+    expect(job.phases[1]!.detail).toBe('Creeks run in linkan_v4 — no creek needs a bed (13 creeks)');
+    expect(job.results[0]!.report).toContain('creek gaps: no creek needs a bed (13 creeks)');
+    expect(job.results[0]!.report.some(l => l.startsWith('warning:'))).toBe(false);
+    const s = await t.svc.status(TEST_COURSE_ID);
+    expect(row(s, 'creeks').note).toBe('no creek needs a bed (13 creeks)');
+    expect(row(s, 'creeks').manual).toBeNull();
+});
+
+test('a creek the import could not close is a warning: on the phase, in the report, and as the Creeks row\'s note and step', async () => {
+    // 41 creeks, each answered with its whole fit: the bridge answer is far past the report line's 300 characters.
+    const creeks = cleanCreeks(38);
+    creeks['feature:b37cf073-7ad6-4843-b786-0b7b7d8967b0'] = creekEntry({ gaps: 14, needsBed: [gapSpot(512.3, 640.1, 0.12), gapSpot(513, 641.5, 0.08)] });
+    creeks['feature:4a8c6c7a-cab1-4af5-9b53-2a9e8ce081ef'] = creekEntry({ gaps: 9, needsBed: [gapSpot(301.2, 455.8, 0.21)] });
+    creeks['feature:0bfe60f0-9989-4e98-a8a6-e1572f1cb8af'] = creekEntry({ gaps: 3, farFromPlay: [gapSpot(40, 1900, 0.1)] });
+    const line = '41 creeks, 2 need a bed (4a8c6c7a, b37cf073), 1 far from play';
+    const t = await setup({ unity: true, creekImport: { creeks, line } });
+    await buildSite(t);
+
+    const started = await t.svc.update(TEST_COURSE_ID, 'creeks');
+    await t.svc.whenIdle(TEST_COURSE_ID);
+    const job = t.svc.job(started.id);
+    // The files are written and the import ran: the job is done, but not silently.
+    expect(job.status).toBe('succeeded');
+    const unity = job.phases.find(p => p.id === 'creeks:unity')!;
+    expect(unity.status).toBe('done');
+    expect(unity.detail).toBe('warning: 2 creeks need a bed: 4a8c6c7a, b37cf073');
+
+    const report = job.results[0]!.report;
+    // The import's own summary, whole, however long the answer it came in.
+    expect(report).toContain(`Unity (linkan_v4): golfmap.creeks.import — ${line}`);
+    expect(report).toContain('warning: 2 creeks need a bed: 4a8c6c7a, b37cf073 — dig deeper or a Blender bed: `bun run water:depth -- Linkan`');
+    expect(report).toContain('  b37cf073: 14 gaps open, 2 spots to dig, the water up to 0.12 m over the ground (first at E 529540.3 N 6487307.1)');
+    expect(report).toContain('  4a8c6c7a: 9 gaps open, 1 spot to dig, the water up to 0.21 m over the ground (first at E 529329.2 N 6487122.8)');
+    expect(report).toContain('creek gaps: 2 creeks need a bed: 4a8c6c7a, b37cf073; 1 far from play left open (26 open edge point(s) in all; linkan-inner-creek-gaps.json)');
+    expect(report.at(-1)).toBe('Saved Assets/Scenes/Linkan.unity (0.4 s)');
+
+    // The board keeps saying it until an import closes them.
+    const s = await t.svc.status(TEST_COURSE_ID);
+    expect(row(s, 'creeks').note).toBe('2 creeks need a bed: 4a8c6c7a, b37cf073; 1 far from play left open');
+    expect(row(s, 'creeks').manual).toBe('dig deeper or a Blender bed: `bun run water:depth -- Linkan`');
+    expect(row(s, 'shapes').manual).toBe('Build the SVG in Blender (OPCD), then Update meshes');
+    expect(row(s, 'roads').note).toBeNull();
+});
+
+test('a Unity project whose creek import writes no gaps file is a warning, not a "done" that claims none is open', async () => {
+    const t = await setup({ unity: true, creekImport: 'old scripts' });
+    await buildSite(t);
+    // A gaps file from an import long ago is not this import's.
+    const old = path.join(t.exportDir, 'linkan-inner-creek-gaps.json');
+    await writeFile(old, JSON.stringify({ format: 'golfmap-creek-gaps-v1', creeks: { 'feature:b37cf073-x': creekEntry({ gaps: 2, needsBed: [gapSpot(1, 2, 0.1)] }) } }));
+    await utimes(old, new Date('2026-01-01T00:00:00Z'), new Date('2026-01-01T00:00:00Z'));
+
+    const started = await t.svc.update(TEST_COURSE_ID, 'creeks');
+    await t.svc.whenIdle(TEST_COURSE_ID);
+    const job = t.svc.job(started.id);
+    expect(job.status).toBe('succeeded');
+    expect(job.phases.find(p => p.id === 'creeks:unity')!.detail).toBe('Creeks run in linkan_v4 — no gaps file, the open gaps are not known');
+    const report = job.results[0]!.report;
+    expect(report).toContain('warning: Unity wrote no linkan-inner-creek-gaps.json — its GolfMapCreeks.cs is older than this'
+        + ' server\'s (sync the Unity scripts), so the gaps the import left open are not known');
+    // No summary in the answer: its plain values come first, ahead of the rows that would have filled the cut.
+    const line = report.find(l => l.startsWith('Unity (linkan_v4): golfmap.creeks.import — '))!;
+    expect(line).toContain('"dryRun":false,"creeks":13,"exported":13,"created":0,"updated":13');
+    expect(line.length).toBeLessThanOrEqual('Unity (linkan_v4): golfmap.creeks.import — '.length + 300);
 });
 
 test('the R.A.M. roads chain writes the file from the raw photo and builds the splines in Unity', async () => {

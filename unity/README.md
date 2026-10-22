@@ -1316,6 +1316,9 @@ The Blender half: `blender/tools/course_check.py` (blender/README.md "Course che
   the scene actually has:
   - *height*: `aboveBedM` (0.15) over the lowest ground across the creek. Each point takes the highest bed along
     the stretch it stands for. The water is not forced to fall, because a bump would hold it up above its banks.
+    A steep stretch first gets more points, one where the bed has fallen 0.1 m since the last (at least 1 m from
+    every point), so the water steps down with its bed instead of hanging out over the slope (`densified`; not on
+    a creek with falls or on a lake).
   - *crossings*: bed that stands 0.3 m above lower bed on both sides within 20 m (a path over a culvert, or an
     undug hump), ramps included. The water runs under it at the level either side, hidden. The report
     lists each one, since an undug stretch shows as dry bed.
@@ -1335,17 +1338,42 @@ The Blender half: `blender/tools/course_check.py` (blender/README.md "Course che
     `endsM` says `lake <m>` (how far the end was moved on; negative: it already ran far enough in) and
     `lakeFadeVertices` how many vertices are see-through at all. `pondFadeM=0` turns it off (every vertex opaque).
   - A side or end that never meets a bank (flat ground, a creek into another creek) keeps the
-    export's width or end. It is counted as `open`, and the report's `check` list gives its plot x, z. Where the
-    ground beside a creek is not below the water, dig the creek deeper in golf-map.
-- **Water for GSPro, no gap at the edge**: each spline gets a MeshCollider on R.A.M.'s own mesh with the
-  `GSPwater` physic material (no extra mesh). That mesh must reach the ground on every side: where an edge of the
-  water hangs over lower ground, a ball rolls under it onto the bed and never touches water. So after R.A.M. builds
-  the mesh, every edge vertex (both sides of every loop, both end loops) more than 2 cm above the ground under it,
-  and not over a lake, is a gap. Its control point is widened on that side (the centre moved that way by half), or
-  the end point moved on along the line, out to where the ground has risen 2 cm above the water plus 0.2 m. Then the
-  spline is built again, up to 4 rounds. Each row's `gaps` says what was left (`gaps`, `open` = no ground above the
-  water within `searchM`, with `openAt`) and what was moved (`widened`, `endsMoved`). A creek's collider is not
-  ground: the fit and the lake checks leave the `Creek ` objects out.
+    export's width or end. The fit counts it in `openSides` (an end: `endsM` says `open`), and the report's
+    `check` list gives its plot x, z. Where the ground beside a creek is not below the water, dig the creek
+    deeper in golf-map.
+- **Water for GSPro, no gap at the edge** (`CloseGaps`): each spline gets a MeshCollider on R.A.M.'s own mesh
+  with the `GSPwater` physic material (no extra mesh). That mesh must reach the ground on every side: where an
+  edge of the water hangs over lower ground, a ball rolls under it onto the bed and never touches water. So after
+  R.A.M. builds the mesh, every edge vertex (both sides of every loop, both end loops) more than 2 cm above the
+  ground under it, and not over a lake, is a gap; a waterfall's neck (the points over its sill and down its face)
+  is left be. First an end out over the outer terrain is drawn back along the line onto the course meshes
+  (`trimmed`). Then each control point with gaps tries its water in `levelStepM` (2 cm) steps down from where the
+  fit put it, at most `maxLowerM` (0.1 m) and never shallower than `minDepthM` (0.05 m) over the bed under it. At
+  each level a gap the water no longer hangs over is closed, and the rest need the side widened (the centre moved
+  that way by half) or the end moved on along the line, out to where the ground has risen 2 cm above the water
+  plus 0.2 m, within `gapWidenM` (2 m) a side and `gapExtendM` (4 m) an end. The level that closes the most gaps
+  wins, then the highest: widen and extend first, lower only as far as that needs. The spline is built again, up
+  to 6 rounds (`CloseRounds`). Each row's `gaps` says what was left (`gaps`: edge vertices still hanging) and what
+  was done (`widened`, `endsMoved`, `lowered`, `mostLoweredM`, `rounds`). A gap no level closes is listed in
+  **`needsBed`** (plot x, z and `hangM`, how far the water hangs over the ground there; one per half metre, the
+  deepest 12): its bed must be dug deeper, in the DEM or as a Blender bed (`bun run water:depth -- <course>`
+  finds the shallow stretches; Vreta's `docs/gspro/vreta/shaping/25-creek-beds.json` is such a bed layer). A
+  creek wholly farther than `farFromPlayM` (75 m) from the playing field (tee, fairway, green, semi, rough and
+  bunker meshes) is held less strictly: an edge counts as a gap only past `farGapM` (0.15 m), and what is left is
+  listed as **`farFromPlay`** instead (a ball seldom gets there). A missing `GSPwater` material is the row's
+  `colliderError`. A creek's collider is not ground: the fit and the lake checks leave the `Creek ` objects out.
+- **The gaps file** (not on a dry run): `<prefix>-inner-creek-gaps.json` beside the creeks export it read
+  (`golfmap-creek-gaps-v1`). `creeks` holds an entry per creek id (`feature:<uuid>`): `status`, `importedAt`,
+  `far` (wholly far from play), `onLake`, the counts above, the `needsBed` / `farFromPlay` spots each with plot
+  `x`, `z`, `hangM` (null and `noGround: true` over no ground at all) and its EPSG:3006 `e`, `n` (from the
+  export's `plot.originX/originY`), and `colliderError` (or `error` when the gaps could not be checked). `summary`
+  counts over all creeks (`creeks`, `gaps`, `needsBed` and `farFromPlay` = creeks with such spots,
+  `colliderErrors`, `errors`) and its one `line`, e.g. `15 creeks, 2 need a bed (b37cf073, 4a8c6c7a), 3 far from
+  play`, which is also the import's `summary` and the course refresh's creeks step note. An import that refits
+  only some creeks (`golfmap.course.refresh only=`) replaces their entries and keeps the others still exported
+  (`3 of 15 creeks refitted; …`). golf-map's GSPro board reads it after **Update creeks**: a creek that needs a
+  bed is a warning on the Creeks phase and the row's note and next step
+  ([docs/gspro/export.md](../docs/gspro/export.md)).
 - **Refit after a remodel**: the fit reads the scene, so rebuild the scene first, then run both steps again. The
   order: edit the creeks → **Dig creeks** → **Update terrain** → Blender meshes +
   `golfmap.meshes.sync` → **Export creeks** (the lines, `bun run gspro:export -- <course> creeks`) →
@@ -1359,9 +1387,12 @@ The Blender half: `blender/tools/course_check.py` (blender/README.md "Course che
 - Skip OPCD's **Add Water Plane** for creeks: its one flat plane per mesh, at the lowest rim vertex, would sit
   under the bed upstream.
 
-The report (`GolfMapSpelunk/<Course>_creeks.txt`) gives each creek's exported surface against the ground
-under it (the highest collider straight down) and its fit: widths, how far the surface moved, the ends'
-reach into the bank, open sides, the largest climb, crossings and the places to check. The exported surface
+The report (`GolfMapSpelunk/<Course>_creeks.txt`) starts with the import's `summary` and `gapsFile`, then
+gives each creek's exported surface against the ground under it (the highest collider straight down) and its
+fit: widths, how far the surface moved, the ends' reach into the bank, open sides, the largest climb, crossings
+and the places to check. A second line per creek says what CloseGaps left (`gaps 0`, or how many are left with
+the `needsBed` / far-from-play spots and the deepest hang) and its collider (the `GSPwater` MeshCollider, or
+the error). The exported surface
 comes from the raw DEM and lands at or under the dug bed (Vreta after the 2026-09-26 remodel: median
 0–24 cm under it), which is why the splines are fitted to the scene. Known gap: where creeks meet,
 the end heights can differ by ~10 cm (each creek's profile is its own), and the splines are not joined

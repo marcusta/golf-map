@@ -74,6 +74,10 @@ import { fingerprint, mtimeMs, recordInputs, unchangedLine } from './export-fing
 import {
     PROPS_FOLDER, PROPS_MANIFEST, PROPS_PLACED, propsNote, propsSpecs, type PropsSpec,
 } from './gspro-props';
+import {
+    creekBedStep, creekGapsFileName, creekGapsFindings, creekGapsNote, needsBedDetails, needsBedLine, readCreekGaps,
+    type CreekGaps,
+} from './gspro-creek-gaps';
 import { FeatureHistoryService, sqlStamp, type ChangeCount, type ExportBuild } from './feature-history.service';
 import { TerrainEditsService } from './terrain-edits.service';
 import {
@@ -117,15 +121,20 @@ export interface GsproTargetStatus {
     changedSince: ChangeCount;
     /** `changedSince.count > 0 || lastRun === null`. */
     stale: boolean;
-    /** The step a human must do after an update of this target, else null. */
+    /**
+     * The step a human must do after an update of this target, else null: the
+     * shared target list's, or on the Creeks row the deeper bed the last
+     * import asked for.
+     */
     manual: string | null;
     /** Why an update cannot run now (and so is left out of a `'stale'` run), else null. */
     blocked: string | null;
     /**
      * One line of extra state this row has and no other way to say — `props`:
      * how many props an update keeps as they were moved by hand, read from
-     * Unity's `placed.json`. Null where the row has nothing to add (every
-     * other row today). The board shows it under the status line.
+     * Unity's `placed.json`; `creeks`: which creeks the last import left
+     * needing a bed (Unity's `<prefix>-inner-creek-gaps.json`). Null where the
+     * row has nothing to add. The board shows it under the status line.
      */
     note: string | null;
     /**
@@ -354,10 +363,11 @@ export class GsproSyncService {
         return Promise.all(GSPRO_TARGETS.map(async (target): Promise<GsproTargetStatus> => {
             const entry = ctx.record.targets[target.id];
             const lastRun = entry?.lastRun ?? await this.fallbackLastRun(ctx, target.id);
-            const [changedSince, blocked, note, builds] = await Promise.all([
+            const [changedSince, blocked, note, manual, builds] = await Promise.all([
                 this.changedSince(ctx, target.id, lastRun),
                 this.blocked(ctx, target.id),
                 this.note(ctx, target.id),
+                this.manual(ctx, target.id),
                 target.id === 'shapes' ? FeatureHistoryService.exportBuilds(ctx.dir) : Promise.resolve([]),
             ]);
             return {
@@ -367,7 +377,7 @@ export class GsproSyncService {
                 seconds: entry?.seconds ?? null,
                 changedSince,
                 stale: changedSince.count > 0 || lastRun === null,
-                manual: target.manual,
+                manual,
                 blocked,
                 note,
                 builds,
@@ -376,15 +386,44 @@ export class GsproSyncService {
     }
 
     /**
-     * The row's one line of extra state. Only `props` has one today: what
-     * Unity's `placed.json` says about the props standing in the scene, which
-     * needs the editor — without one there is nothing to read, and the row
-     * says nothing rather than guessing.
+     * The row's one line of extra state. `props`: what Unity's `placed.json`
+     * says about the props standing in the scene, which needs the editor —
+     * without one there is nothing to read, and the row says nothing rather
+     * than guessing. `creeks`: what the last creek import left open, from the
+     * gaps file it wrote into the export folder (none yet: nothing to say).
      */
     private async note(ctx: SyncContext, target: GsproTargetId): Promise<string | null> {
-        if (target !== 'props') return null;
-        const dir = await this.propsDir(ctx);
-        return dir ? propsNote(dir) : null;
+        switch (target) {
+            case 'props': {
+                const dir = await this.propsDir(ctx);
+                return dir ? propsNote(dir) : null;
+            }
+            case 'creeks': {
+                const gaps = await this.creekGaps(ctx);
+                return gaps ? creekGapsNote(gaps) : null;
+            }
+            default:
+                return null;
+        }
+    }
+
+    /**
+     * The step a human must do after an update: the target's own (shared
+     * target list), except on the Creeks row while the last import left a
+     * creek needing a bed — then digging it deeper is what is left to do.
+     */
+    private async manual(ctx: SyncContext, target: GsproTargetId): Promise<string | null> {
+        if (target === 'creeks') {
+            const gaps = await this.creekGaps(ctx);
+            if (gaps && creekGapsFindings(gaps).needsBed.length > 0) return creekBedStep(ctx.courseName);
+        }
+        return gsproTarget(target).manual;
+    }
+
+    /** The last creek import's gaps file, read once per call chain (the row's note and manual step share it). */
+    private creekGaps(ctx: SyncContext): Promise<CreekGaps | null> {
+        ctx.creekGaps ??= readCreekGaps(ctx.file(creekGapsFileName(ctx.courseName)));
+        return ctx.creekGaps;
     }
 
     /**
@@ -1256,14 +1295,48 @@ export class GsproSyncService {
         rec.phases.end(phaseId, 'done', `${num(placed?.placed)} prop(s) placed, ${kept} kept in ${editor.projectName}`);
     }
 
-    /** Creeks: the R.A.M. spline file, then the import in Unity. */
+    /**
+     * Creeks: the R.A.M. spline file, then the import in Unity — and what the
+     * import could not close. `golfmap.creeks.import` writes the gaps it left
+     * to `<prefix>-inner-creek-gaps.json` beside the creeks file
+     * (gspro-creek-gaps.ts); a creek whose water still hangs over the ground
+     * near play needs a deeper bed, which the phase and the report say as a
+     * warning, with the step that finds and digs it. An import that wrote no
+     * fresh file (a Unity project whose scripts predate it) is a warning too:
+     * the open gaps are then not known, and "done" would claim they are none.
+     */
     private async updateCreeks(rec: JobRecord, ctx: SyncContext, unity: UnityTarget, id: (s: string) => string): Promise<string[]> {
         rec.phases.begin(id('file'), 'gspro.py creeks');
         const exported = await this.exports.exportCreeks(ctx.courseId, { force: ctx.force });
         rec.phases.end(id('file'), 'done', path.basename(exported.path));
         const report = [...exported.report];
+        const gapsFile = ctx.file(creekGapsFileName(ctx.courseName));
+        const startedAt = Date.now();
         await this.intoUnity(rec, unity, id('unity'), 'Creeks',
-            [{ what: 'creeks', command: 'golfmap.creeks.import', args: {} }], report);
+            [{ what: 'creeks', command: 'golfmap.creeks.import', args: {} }], report,
+            async (done) => {
+                const written = await statOrNull(gapsFile);
+                // 2 s of slack: a file system's mtime is coarser than this clock.
+                const gaps = written && written.mtimeMs >= startedAt - 2000 ? await readCreekGaps(gapsFile) : null;
+                if (!gaps) {
+                    return {
+                        detail: `${done} — no gaps file, the open gaps are not known`,
+                        report: [`warning: Unity wrote no ${path.basename(gapsFile)} — its GolfMapCreeks.cs is older than this`
+                            + ' server\'s (sync the Unity scripts), so the gaps the import left open are not known'],
+                    };
+                }
+                const findings = creekGapsFindings(gaps);
+                const bed = needsBedLine(findings);
+                if (!bed) return { detail: `${done} — ${creekGapsNote(gaps)}`, report: [`creek gaps: ${creekGapsNote(gaps)}`] };
+                return {
+                    detail: `warning: ${bed}`,
+                    report: [
+                        `warning: ${bed} — ${creekBedStep(ctx.courseName)}`,
+                        ...needsBedDetails(gaps, gapsFile),
+                        `creek gaps: ${creekGapsNote(gaps)} (${findings.gaps} open edge point(s) in all; ${path.basename(gapsFile)})`,
+                    ],
+                };
+            });
         return report;
     }
 
@@ -1309,11 +1382,15 @@ export class GsproSyncService {
      * is SKIPPED when none works on the course — the files are written either
      * way, so "no Unity" is never a failure. Each command runs with
      * `save: true`, and the report names what it saved instead of asking for
-     * it (a command that saved nothing still gets the old line).
+     * it (a command that saved nothing still gets the old line). `finish`,
+     * when given, reads what the commands left behind before the phase ends:
+     * its `detail` replaces the phase's ("<what> run in <project>", passed to
+     * it) and its lines go into the report.
      */
     private async intoUnity(
         rec: JobRecord, unity: UnityTarget, phaseId: string, what: string,
         commands: Array<{ what: string; command: string; args: Record<string, unknown> }>, report: string[],
+        finish?: (done: string) => Promise<{ detail: string; report: string[] }>,
     ): Promise<void> {
         if (!unity.editor) {
             rec.phases.skip(phaseId, unity.why!);
@@ -1330,7 +1407,10 @@ export class GsproSyncService {
             const line = savedLine(result);
             if (line && !saved.includes(line)) saved.push(line);
         }
-        rec.phases.end(phaseId, 'done', `${what} run in ${editor.projectName}`);
+        const done = `${what} run in ${editor.projectName}`;
+        const after = finish ? await finish(done) : null;
+        rec.phases.end(phaseId, 'done', after?.detail ?? done);
+        if (after) report.push(...after.report);
         report.push(...(saved.length ? saved : ['Save the scene in Unity to keep it.']));
     }
 
@@ -1486,6 +1566,8 @@ interface SyncContext {
     specs?: Promise<PropsSpec[]>;
     /** The one Unity probe of this call chain — the Props row needs the matched editor's course folder. */
     unity?: Promise<GsproSyncUnity>;
+    /** The one read of the last creek import's gaps file (`GsproSyncService.creekGaps`). */
+    creekGaps?: Promise<CreekGaps | null>;
     file(name: string): string;
     /** Only safe with `terrain` non-null. */
     demSidecar(kind: TerrainKind): string;
@@ -1610,14 +1692,26 @@ function firstLine(text: string): string {
     return text.split('\n')[0] ?? text;
 }
 
-/** A bridge answer's own words, for the report; null when it says nothing useful. */
+/**
+ * A bridge answer's own words, for the report; null when it says nothing
+ * useful. Its `status`, `summary` or `message` line when it has one (the
+ * creek import's `summary`: how many creeks, which need a bed); else its JSON
+ * cut at 300 characters, the plain values first so a long list (a row per
+ * creek) does not push them past the cut.
+ */
 function describeUnityResult(result: unknown): string | null {
     const r = result as Record<string, unknown> | null | undefined;
     for (const key of ['status', 'summary', 'message']) {
         const value = r?.[key];
         if (typeof value === 'string' && value.trim()) return firstLine(value.trim());
     }
-    return r ? firstLine(JSON.stringify(r).slice(0, 300)) : null;
+    if (!r) return null;
+    if (typeof r !== 'object' || Array.isArray(r)) return firstLine(JSON.stringify(r).slice(0, 300));
+    const plainFirst = Object.fromEntries([
+        ...Object.entries(r).filter(([, v]) => v === null || typeof v !== 'object'),
+        ...Object.entries(r).filter(([, v]) => v !== null && typeof v === 'object'),
+    ]);
+    return firstLine(JSON.stringify(plainFirst).slice(0, 300));
 }
 
 /** A file's mtime as an ISO timestamp; null when it is not there. */

@@ -21,11 +21,16 @@ import {
     type WaterStepsReview,
     stepsSummary,
     shownFalls,
+    creeksToFix,
+    creekDepthSpot,
+    creekDepthSummary,
+    CREEK_DEPTH_WORDS,
     type PondProgress,
     type EditGroup,
     type TerrainEditOp,
 } from './terrain-edit-tool.service';
 import type { TerrainEdit } from '../../../shared/api/terrain-edits.gen';
+import type { CreekDepthCreek, CreekDepthReport } from '../../../shared/api/gspro-export.gen';
 import { PaintPanelComponent } from './paint-panel.component';
 import {
     BUNKER_DIG, CREEK_DIG_PRESETS, DEFAULT_CREEK_DIG_PRESET, DEFAULT_WATER_DIG_PRESET, WATER_DIG_PRESETS,
@@ -108,7 +113,12 @@ const tpl = template(`
             <button bind="genRoadsBtn" type="button" class="gen-btn" data-testid="terrain-edit-gen-roads"></button>
             <button bind="genPondsBtn" type="button" class="gen-btn" data-testid="terrain-edit-gen-ponds"></button>
             <button bind="genBunkersBtn" type="button" class="gen-btn" data-testid="terrain-edit-gen-bunkers"></button>
-            <button bind="genCreeksBtn" type="button" class="gen-btn" data-testid="terrain-edit-gen-creeks"></button>
+            <div class="gen-row">
+                <button bind="genCreeksBtn" type="button" class="gen-btn" data-testid="terrain-edit-gen-creeks"></button>
+                <button bind="depthBtn" type="button" class="gen-btn" data-testid="terrain-edit-creek-depth"></button>
+            </div>
+            <button bind="depthLine" type="button" class="depth-line" data-testid="terrain-edit-creek-depth-line"></button>
+            <div bind="depthList" class="depth-list" data-testid="terrain-edit-creek-depth-list"></div>
             <div class="hint">Building pads: every OSM building footprint in the map area, measured on the lidar, gets a flat pad. Road grades: every OSM road, smoothed along and levelled across. Each run replaces its own previous edits only — yours stay. Then Apply to terrain.</div>
             <div class="hint">Bunkers, ponds and creeks under the course meshes are shaped in Blender by their recipe (the course default unless you pick one — click the feature). The DEM digs here still shape the terrain around and outside the meshes.</div>
         </div>
@@ -304,6 +314,43 @@ export class TerrainEditPanelComponent extends Component {
                 cursor: pointer;
                 &:disabled { opacity: 0.45; cursor: not-allowed; }
                 &.hidden { display: none; }
+            }
+
+            /* Dig creeks (DEM) + its Depth check on one row; the check's answer folded to one line under it. */
+            & .gen-row {
+                display: flex;
+                gap: ${s('xs')};
+                & .gen-btn:first-child { flex: 1; }
+            }
+            & .depth-line {
+                font: inherit;
+                text-align: left;
+                padding: 0 ${s('sm')};
+                border: none;
+                background: none;
+                color: ${t('color-text-secondary')};
+                cursor: pointer;
+                &.bad { color: var(--data-bad); }
+                &.hidden { display: none; }
+            }
+            & .depth-list {
+                display: flex;
+                flex-direction: column;
+                gap: 2px;
+                padding-left: ${s('sm')};
+                &.hidden { display: none; }
+                & button {
+                    font: inherit;
+                    font-size: 0.72rem;
+                    text-align: left;
+                    padding: 2px ${s('sm')};
+                    border: none;
+                    border-radius: ${t('radius-sm')};
+                    background: none;
+                    color: ${t('color-text-secondary')};
+                    cursor: pointer;
+                    &:hover { background: color-mix(in srgb, ${t('color-text-primary')} 5%, transparent); }
+                }
             }
 
             & .shape {
@@ -586,6 +633,28 @@ export class TerrainEditPanelComponent extends Component {
                 title: 'DEM digs: each creek\'s bed dug below its water surface, which only falls downstream — the level the R.A.M. creeks export puts the water at. Along its centerline, or the line found down its polygon. Replaces the previous creek digs. Under the course meshes the creek is shaped in Blender by its recipe instead (the course default creek recipe unless you pick one), so this matters outside the meshes',
                 onclick: () => void this.tool.generate('creek-digs'),
             },
+            depthBtn: {
+                disabled: () => this.tool.checkingDepth.get() || this.tool.generating.get() !== null || this.tool.applying.get(),
+                textContent: () => this.tool.checkingDepth.get() ? '…' : 'Depth',
+                title: 'How deep each creek comes out in the course meshes (terrain.obj\'s 1 m grid, OPCD\'s smooth, ~1.2 m triangles), worked out from the DEM before the bake; digs not applied yet count. Same as bun run water:depth',
+                onclick: () => void this.tool.checkCreekDepth(),
+            },
+            depthLine: {
+                className: () => {
+                    const report = this.tool.creekDepth.get();
+                    if (!report) return 'depth-line hidden';
+                    return creeksToFix(report).length > 0 ? 'depth-line bad' : 'depth-line';
+                },
+                textContent: () => {
+                    const report = this.tool.creekDepth.get();
+                    if (!report) return '';
+                    const mark = creeksToFix(report).length > 0 ? (this.tool.depthOpen.get() ? '▾' : '▸') : report.creeks.length > 0 ? '✓' : '';
+                    return `${mark} ${creekDepthSummary(report)}`.trim();
+                },
+                title: () => depthDetails(this.tool.creekDepth.get()),
+                'aria-expanded': () => String(this.tool.depthOpen.get()),
+                onclick: () => this.tool.depthOpen.set(!this.tool.depthOpen.peek()),
+            },
             applyBtn: {
                 disabled: () => !this.tool.canApply.get(),
                 textContent: () => this.tool.applying.get() ? 'Applying…' : 'Apply to terrain',
@@ -722,6 +791,18 @@ export class TerrainEditPanelComponent extends Component {
             return scope !== null && scope === this.tool.selectionScope.get();
         });
         this.shapeJob(this.ref(frag, 'courseJob') as HTMLElement, () => this.tool.shaping.jobScope.get() === null);
+
+        // The creeks the depth check found to fix, one line each (unfolded from the check's line).
+        const depthList = this.ref(frag, 'depthList') as HTMLElement;
+        this.track(effect(() => {
+            const report = this.tool.creekDepth.get();
+            const open = this.tool.depthOpen.get();
+            untrack(() => {
+                const fix = report ? creeksToFix(report) : [];
+                depthList.className = open && fix.length > 0 ? 'depth-list' : 'depth-list hidden';
+                depthList.replaceChildren(...(report ? fix.map(creek => this.creekLine(creek, report)) : []));
+            });
+        }));
 
         // Op / params controls — imperative two-way wiring (range/number
         // inputs need input events; sam-panel select pattern).
@@ -1052,6 +1133,19 @@ export class TerrainEditPanelComponent extends Component {
         }));
     }
 
+    /** One creek to fix: what is wrong, its shape name, how much; the check's line for it in the tooltip; click shows it. */
+    private creekLine(creek: CreekDepthCreek, report: CreekDepthReport): HTMLButtonElement {
+        const blocked = creek.mouths?.some(m => m.blocked) ?? false;
+        const amount = creek.shallowM ? `${Math.round(creek.shallowM)} m` : blocked ? 'mouth' : '';
+        const el = button([CREEK_DEPTH_WORDS[creek.status] ?? creek.status, this.tool.creekName(creek), amount].filter(Boolean).join(' · '),
+            () => this.tool.showCreek(creek));
+        el.setAttribute('data-testid', 'terrain-edit-creek-depth-item');
+        el.dataset.creekId = creek.id;
+        const printed = report.lines.find(l => l.includes(creek.label))?.trim() ?? creek.label;
+        el.title = `${printed}\n${creekDepthSpot(creek) ? 'Click: select it and fly to the first shallow spot' : 'Click: select it and show it'}`;
+        return el;
+    }
+
     /** A group's header: click to fold or unfold it. */
     private groupHeader(group: EditGroup, track: (d: () => void) => void): HTMLElement {
         const open = () => this.expanded.get().has(group.key);
@@ -1252,6 +1346,14 @@ function stepsDetails(review: WaterStepsReview): string {
     const falls = shownFalls(review)
         .map(f => `${f.style} ${f.dropM.toFixed(2)} m${f.forced ? ' (cut)' : ''}${f.exists ? ' (exists: not added again)' : ''}`);
     return [...pieces, ...falls, 'Click the water: a cut there. Click a fall: take it out.'].join('\n');
+}
+
+/** The creek depth line's tooltip: what the check printed (the model, then a line per creek), and the DEM it read. */
+function depthDetails(report: CreekDepthReport | null): string {
+    if (!report) return '';
+    const lines = report.lines.map(l => l.trim());
+    if (report.demSource === 'replayed') lines.push('Terrain edits not applied yet were replayed onto the raw DEM.');
+    return lines.join('\n');
 }
 
 /** What a pond edge proposal changes, in a line or two. */

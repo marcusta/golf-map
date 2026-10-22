@@ -72,7 +72,7 @@ import { ConflictError, NotFoundError } from '@basics/core/server/auth';
 import type { Database } from '../db/schema';
 import type { CoursesService } from './courses.service';
 import type { AssetsService } from './assets.service';
-import { SCULPT_DIR, SCULPT_ORIGINS, TerrainEditsService, type TerrainEditInput } from './terrain-edits.service';
+import { SCULPT_DIR, SCULPT_ORIGINS, TerrainEditsService, type TerrainEdit, type TerrainEditInput } from './terrain-edits.service';
 import { defaultUnityBridge, editorForExportDir, type UnityBridge, type UnityEditor } from './unity-bridge';
 import { terrainEditsGeojson, ROOFS_SOURCE, DIG_WATER_LEVELS_SOURCE } from './map-build.service';
 import { resolveCourseMapBbox } from './course-bbox';
@@ -717,6 +717,101 @@ export interface GkdLines {
     crs: string;
     rule: GkdLinesRule;
     lines: GkdHazardLine[];
+}
+
+/** `gspro.py creek-depth`'s report format. */
+export const CREEK_DEPTH_FORMAT = 'golfmap-creek-depth-v1';
+
+/**
+ * A creek's verdict: `ok` deep enough in the meshes, `shallow` banks under the water (+ freeboard near play) somewhere
+ * or a bank left across its mouth, `not-dug` no `creek-digs` edit, `stale` its dig misses part of it or has another
+ * depth, `off` `dig: false`, `on-lake` R.A.M. water on a lake (not measured).
+ */
+export type CreekDepthStatus = 'ok' | 'shallow' | 'not-dug' | 'stale' | 'off' | 'on-lake';
+
+/** Depths below the water's banks along a creek, metres. */
+export interface CreekDepthStats {
+    median: number;
+    p10: number;
+}
+
+/** A stretch of a creek too shallow in the meshes: metres along it, its middle (EPSG:3006), the depths there. */
+export interface CreekDepthStretch {
+    fromM: number;
+    toM: number;
+    x: number;
+    y: number;
+    meshDepthM: number;
+    demDepthM: number;
+}
+
+/** A creek's mouth into a pond, measured from 3 m up the creek (EPSG:3006): how high a bank stands across it. */
+export interface CreekDepthMouth {
+    x: number;
+    y: number;
+    blockM: number;
+    demBlockM: number;
+    blocked: boolean;
+}
+
+/** One `water_creek` in the creek-depth report. The measured fields are missing for `on-lake`. */
+export interface CreekDepthCreek {
+    id: string;
+    featureNo: number | null;
+    hole: number | null;
+    /** `hole 5 0bfe60f0`, or the id's start for a creek on no hole. */
+    label: string;
+    widthM: number;
+    lengthM: number;
+    farFromPlay?: boolean;
+    status: CreekDepthStatus;
+    dig: { state: 'dug' | 'none' | 'stale' | 'off' | 'on-lake'; depthM?: number | null; bankSlopeDeg?: number | null; outsideM?: number };
+    /** The least depth that counts: the water over the bed, + the freeboard near play. */
+    minDepthM?: number;
+    demDepthM?: CreekDepthStats | null;
+    meshDepthM?: CreekDepthStats | null;
+    /** Metres of it in a creek bed a shaping layer cuts out in Blender. */
+    bedM?: number;
+    shallowM?: number;
+    shallow?: CreekDepthStretch[];
+    /** Shallow stretches under a `path` (a culvert or a bridge): listed, not counted as shallow. */
+    crossings?: CreekDepthStretch[];
+    mouths?: CreekDepthMouth[];
+}
+
+/**
+ * `GsproExportService.creekDepth`: how deep each creek comes out in the course meshes (`gspro.py creek-depth`,
+ * golfmap-creek-depth-v1), plus which DEM it was measured on and the pipeline's printed lines.
+ */
+export interface CreekDepthReport {
+    format: string;
+    course: { id: string; name: string };
+    /** The DEM file measured; `replayedEdits` is the number of terrain edits replayed onto it first (null: none were). */
+    dem: { file: string; replayedEdits: number | null };
+    blenderBeds: { layers: string[]; beds: number; channels: number };
+    model: {
+        nodeSpacingM: number;
+        terrainSmooth: number;
+        meshEdgeM: number;
+        phases: number;
+        waterAboveBedM: number;
+        minFreeboardM: number;
+        bankBandM: number;
+    };
+    /**
+     * `creeks` (how many were measured), then the count per CreekDepthStatus (`ok`, `shallow`, `not-dug`, …; a
+     * status no creek has is left out). A plain record: the API generator cannot write the hyphenated keys.
+     */
+    summary: Record<string, number>;
+    creeks: CreekDepthCreek[];
+    skipped: string[];
+    /**
+     * `applied`: the edited DEM Apply to terrain last wrote (no enabled edit changed after it); `replayed`: the raw
+     * DEM with the site's enabled edits replayed onto it in memory (edits not applied yet, or no edited DEM).
+     */
+    demSource: 'applied' | 'replayed';
+    /** What the check printed: a heightmap export it had to run first, then the summary and one line per creek. */
+    lines: string[];
 }
 
 /**
@@ -2605,6 +2700,69 @@ export class GsproExportService {
         return doc;
     }
 
+    /**
+     * How deep each creek comes out in the course meshes, before the bake
+     * (`gspro.py creek-depth`, golfmap-creek-depth-v1): every `water_creek`
+     * measured across on the DEM its digs are in and on a model of the
+     * meshes OPCD conforms onto terrain.obj, with what its dig is. The DEM is
+     * the edited one when no enabled terrain edit changed after the last
+     * Apply to terrain (`demSource: applied`), else the raw one with the
+     * site's enabled edits replayed onto it in memory (`replayed`) — so a dig
+     * stored but not applied yet is measured too. The terrain's zero comes
+     * from the inner heightmap sidecar, exported first when the folder has
+     * none (as the creeks export does). `only`: creek feature ids or their
+     * starts. Writes nothing but temp files; 404 without a built map.
+     */
+    async creekDepth(courseId: string, opts: { only?: string[] } = {}): Promise<CreekDepthReport> {
+        const course = await this.courses.get(courseId);
+        const siteId = this.builtSiteId(course);
+        const terrain = await this.resolveTerrain(courseId, 'check the creek depth of');
+        const dir = await this.exportDir(courseId);
+        const sidecar = path.join(dir, demSidecarName(demExportFileName(course.name, 'inner', terrain.inner.sideM)));
+        const prepared = await this.ensureDemSidecar(courseId, 'inner', sidecar);
+
+        const edited = path.join(this.sourcesDir(siteId), 'dem-edited.tif');
+        const raw = path.join(this.sourcesDir(siteId), 'dem.tif');
+        const appliedEdits = await statOrNull(edited) ? await this.innerDemEdits(siteId, edited) : null;
+        const demSource: CreekDepthReport['demSource'] = appliedEdits && appliedEdits.changed.length === 0 ? 'applied' : 'replayed';
+        if (demSource === 'replayed' && !await statOrNull(raw)) {
+            throw new NotFoundError(`No raw DEM for this course's site (${raw}) — build its map first`);
+        }
+        const work = await mkdtemp(path.join(os.tmpdir(), 'gspro-creek-depth-'));
+        try {
+            const out = path.join(work, 'creek-depth.json');
+            const args = [
+                path.join(this.pipelineDir, 'gspro.py'), 'creek-depth',
+                '--course', courseId,
+                '--sidecar', sidecar,
+                '--out', out,
+            ];
+            if (demSource === 'applied') {
+                args.push('--dem', edited);
+            } else {
+                const edits = appliedEdits?.edits ?? await this.terrainEdits.listDemEdits(siteId);
+                const editsPath = path.join(work, 'terrain-edits.geojson');
+                await writeFile(editsPath, JSON.stringify(terrainEditsGeojson(edits, { sculptDir: path.join(this.sourcesDir(siteId), SCULPT_DIR) })));
+                args.push('--dem', raw, '--edits', editsPath);
+            }
+            const only = (opts.only ?? []).map(s => s.trim()).filter(Boolean);
+            if (only.length > 0) args.push('--only', only.join(','));
+            args.push(...serverDbArgs());
+
+            const { code, stdout, stderr } = await this.runner(args, this.pipelineDir);
+            if (code !== 0) throw failure('Creek depth check', code, stdout, stderr);
+            const doc = JSON.parse(await readFile(out, 'utf8')) as Omit<CreekDepthReport, 'demSource' | 'lines'>;
+            if (doc.format !== CREEK_DEPTH_FORMAT || !Array.isArray(doc.creeks)) {
+                throw new ConflictError(`The creek depth check wrote no ${CREEK_DEPTH_FORMAT} report (${doc.format ?? 'no format'})`);
+            }
+            // As printed (the per-creek lines are indented under the summary), without the temp file it wrote.
+            const printed = stdout.split(/\r?\n/).map(l => l.trimEnd()).filter(l => l.trim() !== '' && !l.trim().startsWith('wrote '));
+            return { ...doc, demSource, lines: [...prepared, ...printed] };
+        } finally {
+            await rm(work, { recursive: true, force: true });
+        }
+    }
+
     // --- Jobs ---
 
     /**
@@ -2742,16 +2900,30 @@ export class GsproExportService {
      * disagree under it. (A deleted edit leaves no trace to compare.)
      */
     private async staleInnerDem(siteId: string, src: string): Promise<string | null> {
-        const edits = await this.terrainEdits.listDemEdits(siteId);
+        const { edits, applied, changed } = await this.innerDemEdits(siteId, src);
         if (edits.length === 0) return null;
-        if (path.basename(src) !== 'dem-edited.tif') {
+        if (!applied) {
             return `the site has ${edits.length} enabled terrain edit(s) but no edited DEM, so this heightmap has none of them: press Apply to terrain in the terrain tool, then export again`;
         }
-        const built = (await stat(src)).mtimeMs;
-        const changed = edits.filter(e => Date.parse(`${e.updatedAt.replace(' ', 'T')}Z`) > built + 1000);
         if (changed.length === 0) return null;
         const origins = [...new Set(changed.map(e => e.origin ?? 'hand-drawn'))].join(', ');
         return `${changed.length} terrain edit(s) (${origins}) changed after the last Apply to terrain, so this heightmap lacks them: press Apply to terrain in the terrain tool, then export again`;
+    }
+
+    /**
+     * The site's enabled DEM edits, and the ones the inner DEM `src` lacks:
+     * all of them when `src` is not the edited DEM (`applied: false`), else
+     * those created, changed or switched on after "Apply to terrain" last
+     * wrote it. The one check behind the heightmap's warning
+     * (`staleInnerDem`) and the creek-depth check's DEM choice.
+     */
+    private async innerDemEdits(siteId: string, src: string): Promise<{ edits: TerrainEdit[]; applied: boolean; changed: TerrainEdit[] }> {
+        const edits = await this.terrainEdits.listDemEdits(siteId);
+        if (path.basename(src) !== 'dem-edited.tif') return { edits, applied: false, changed: edits };
+        if (edits.length === 0) return { edits, applied: true, changed: [] };
+        const built = (await stat(src)).mtimeMs;
+        const changed = edits.filter(e => Date.parse(`${e.updatedAt.replace(' ', 'T')}Z`) > built + 1000);
+        return { edits, applied: true, changed };
     }
 
     /**

@@ -31,6 +31,7 @@
         "features:union": "bun scripts/features-union.ts",
         "water:edge": "bun scripts/water-edge.ts",
         "water:steps": "bun scripts/water-steps.ts",
+        "water:depth": "bun scripts/water-depth.ts",
         "ramroads": "bun scripts/ram-roads.ts",
         "trees:photo": "bun scripts/trees-photo.ts",
         "holes:assign": "bun scripts/holes-assign.ts",

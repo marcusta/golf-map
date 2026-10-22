@@ -7494,6 +7494,51 @@ def _load_creeks(db_path: Path, course_ident: str) -> tuple[sqlite3.Row, list[sq
     return course, rows
 
 
+def _creek_falls(db_path: Path, course_ident: str) -> list:
+    """The course's waterfall lips that cut a creek (shared/features/waterfall.ts), as (LineString, sill m): a
+    cascade's line runs down its own stream and a fountain stands in a pond, so neither is one."""
+    from shapely.geometry import LineString
+
+    conn = _open_course_db(db_path)
+    fall_rows = conn.execute("SELECT geometry_json, attributes_json FROM course_features WHERE course_id = ? AND type = ?",
+                             (_resolve_course(conn, course_ident)["id"], WATERFALL_FEATURE_TYPE)).fetchall()
+    conn.close()
+    falls = []
+    for r in fall_rows:
+        cl = json.loads(r["geometry_json"]).get("centerline")
+        lip = _transition_centerline(cl) if cl else []
+        if len(lip) >= 2:
+            a = json.loads(r["attributes_json"]) if r["attributes_json"] else {}
+            a = a if isinstance(a, dict) else {}
+            if a.get("style") in ("cascade", "fountain"):
+                continue
+            style = "outlet" if a.get("style") == "outlet" else "sill"
+            sill = float(a["sillM"]) if isinstance(a.get("sillM"), (int, float)) else (1.0 if style == "sill" else 0.0)
+            falls.append((LineString(lip), sill))
+    return falls
+
+
+def _creek_line(geometry: dict):
+    """A creek's line, width (m, None when the drawing has none), source ("centerline" | "polygon") and its
+    polygon (None for a centerline), or None when a polygon has no line down it: the drawn centerline's control
+    points, else golfpipe.creeks.ribbon_centerline down its largest polygon, simplified CREEK_SIMPLIFY_M."""
+    from shapely.geometry import LineString
+
+    from golfpipe.creeks import ribbon_centerline
+    from golfpipe.detect_common import _each_polygon
+
+    centerline = geometry.get("centerline")
+    if centerline and len(centerline.get("points") or []) >= 2:
+        line = LineString([(float(p["x"]), float(p["y"])) for p in centerline["points"]])
+        return line, float(centerline.get("widthM") or 0) or None, "centerline", None
+    shape = _zone_geometry_m(geometry)
+    polys = sorted(_each_polygon(shape), key=lambda g: g.area, reverse=True) if shape is not None else []
+    found = ribbon_centerline(polys[0]) if polys else None
+    if found is None:
+        return None
+    return found[0].simplify(CREEK_SIMPLIFY_M), found[1], "polygon", shape
+
+
 def _densify(points: np.ndarray, max_spacing: float) -> np.ndarray:
     """`points` with evenly spaced ones added wherever two are farther apart
     than `max_spacing`."""
@@ -7518,10 +7563,9 @@ def cmd_creeks(bbox, db_path: Path, course_ident: str, dem_path: Path, sidecar_p
     through them the way the editor does); a polygon creek the line down its
     middle (golfpipe.creeks.ribbon_centerline). `ram: false` skips a creek."""
     from scipy.spatial import cKDTree
-    from shapely.geometry import LineString, box
+    from shapely.geometry import box
 
-    from golfpipe.creeks import ribbon_centerline, surface_profile
-    from golfpipe.detect_common import _each_polygon
+    from golfpipe.creeks import surface_profile
 
     if not sidecar_path.is_file():
         raise SystemExit(f"error: no such heightmap sidecar: {sidecar_path} (export the inner heightmap first)")
@@ -7544,23 +7588,7 @@ def cmd_creeks(bbox, db_path: Path, course_ident: str, dem_path: Path, sidecar_p
     # The waterfalls (shared/features/waterfall.ts): a creek is cut at every lip on it into one spline per
     # stretch, each at its own water; golfmap.waterfalls.build puts the falling water between them.
     from shapely.geometry import Point as _Pt
-    falls = []
-    conn = _open_course_db(db_path)
-    fall_rows = conn.execute("SELECT geometry_json, attributes_json FROM course_features WHERE course_id = ? AND type = ?",
-                             (_resolve_course(conn, course_ident)["id"], WATERFALL_FEATURE_TYPE)).fetchall()
-    conn.close()
-    for r in fall_rows:
-        cl = json.loads(r["geometry_json"]).get("centerline")
-        lip = _transition_centerline(cl) if cl else []
-        if len(lip) >= 2:
-            a = json.loads(r["attributes_json"]) if r["attributes_json"] else {}
-            a = a if isinstance(a, dict) else {}
-            # A cascade's line runs down its own stream and a fountain stands in a pond: neither is a lip across a creek.
-            if a.get("style") in ("cascade", "fountain"):
-                continue
-            style = "outlet" if a.get("style") == "outlet" else "sill"
-            sill = float(a["sillM"]) if isinstance(a.get("sillM"), (int, float)) else (1.0 if style == "sill" else 0.0)
-            falls.append((LineString(lip), sill))
+    falls = _creek_falls(db_path, course_ident)
     creeks = []
     skipped: list[str] = []
     for r in rows:
@@ -7572,20 +7600,11 @@ def cmd_creeks(bbox, db_path: Path, course_ident: str, dem_path: Path, sidecar_p
         if attrs.get("ram") is False:
             skipped.append(f"{label}: ram: false")
             continue
-        centerline = geometry.get("centerline")
-        if centerline and len(centerline.get("points") or []) >= 2:
-            line = LineString([(float(p["x"]), float(p["y"])) for p in centerline["points"]])
-            width = float(centerline.get("widthM") or 0) or None
-            source = "centerline"
-        else:
-            shape = _zone_geometry_m(geometry)
-            polys = sorted(_each_polygon(shape), key=lambda g: g.area, reverse=True) if shape is not None else []
-            found = ribbon_centerline(polys[0]) if polys else None
-            if found is None:
-                skipped.append(f"{label}: no line down its polygon")
-                continue
-            line, width = found[0].simplify(CREEK_SIMPLIFY_M), found[1]
-            source = "polygon"
+        found = _creek_line(geometry)
+        if found is None:
+            skipped.append(f"{label}: no line down its polygon")
+            continue
+        line, width, source, shape = found
         clipped = line.intersection(square)
         if clipped.geom_type == "MultiLineString":
             clipped = max(clipped.geoms, key=lambda g: g.length)
@@ -7685,6 +7704,567 @@ def cmd_creeks(bbox, db_path: Path, course_ident: str, dem_path: Path, sidecar_p
           f"{sum(c['lengthM'] for c in creeks):.0f} m, surface from {dem_path.name})")
     for line in skipped:
         print(f"  skipped {line}")
+
+
+# --- creek-depth: how deep each creek comes out in the course meshes ------------
+# A pre-flight for the creek digs (golfpipe/creek_depth.py): every `water_creek` measured across, every
+# CREEK_DEPTH_STATION_M, on the DEM its digs are in and on the model of the meshes OPCD conforms onto it
+# (terrain.obj's 1 m nodes, OPCD's smooth, ~1.2 m triangles), with what its dig is: none (drawn after the digs,
+# or never dug), stale (the creek runs more than CREEK_DEPTH_DIG_OUTSIDE_M outside its dig, or its digDepthM is
+# not the dig's), off (`dig: false`) or dug. A creek on a lake (`ramOnLake`) has the lake's water and is not
+# measured. Stations inside a pond and round a waterfall's undug sill are left out; a creek ending within
+# CREEK_DEPTH_MOUTH_NEAR_M of a pond also gets its mouth measured (a bank left across it).
+
+CREEK_DEPTH_FORMAT = "golfmap-creek-depth-v1"
+CREEK_DEPTH_DIG_ORIGIN = "creek-digs"
+CREEK_DEPTH_DIG_OUTSIDE_M = 1.0
+CREEK_DEPTH_DIG_COVER_M = 0.3      # a dig's outline is grown this much before the line is held against it
+CREEK_DEPTH_MOUTH_NEAR_M = 3.0
+CREEK_DEPTH_MOUTH_INTO_M = 3.0     # how far into the pond a mouth is followed past its shore
+CREEK_DEPTH_MOUTH_FROM_M = 15.0    # the creek bed it is held against: this much further up the creek
+CREEK_DEPTH_MOUTH_HEADING_COS = 0.5  # a creek runs into a pond when its last leg heads within 60 degrees of the shore
+CREEK_DEPTH_POND_TYPES = ("water",)
+# A shallow stretch within this of a `path` is a crossing (a culvert or a bridge with the road's grade over it):
+# listed under `crossings`, not `shallow`.
+CREEK_DEPTH_CROSSING_M = 0.5
+
+
+def _creek_depth_area(geometry: dict):
+    """A drawn feature's area in EPSG:3006 metres: its rings, else its centerline as wide as drawn (2 m if not)."""
+    from shapely.geometry import LineString
+
+    if geometry.get("rings"):
+        return _zone_geometry_m(geometry)
+    cl = geometry.get("centerline")
+    if cl and len(cl.get("points") or []) >= 2:
+        return LineString([(float(p["x"]), float(p["y"])) for p in cl["points"]]).buffer(float(cl.get("widthM") or 2.0) / 2.0)
+    return None
+# A creek wholly this far from the playing field is held less strictly (GolfMapCreeks farFromPlayM, Marcus
+# 2026-10-22): it is shallow only where its banks do not even rise over its water, not under the freeboard too.
+CREEK_DEPTH_FAR_FROM_PLAY_M = 75.0
+CREEK_DEPTH_PLAY_TYPES = ("tee", "fairway", "green", "semi_rough", "rough", "bunker")
+# A creek bed already cut out of the meshes in Blender (golfmap.cut_out surface WaterBrook, rise dem: a fine mesh set
+# onto the 0.5 m DEM), maybe with a golfmap.creek_channel along it, in any of the course's shaping layers.
+CREEK_BED_SURFACE = "WaterBrook"
+
+
+def _creek_beds_in_layers(layers_dir: Path, ignore: tuple[str, ...] = ()) -> dict:
+    """The creek beds the course's shaping layers (`docs/gspro/<course>/shaping/*.json`) cut out in Blender:
+    {"beds": [Polygon], "channels": [(LineString, widthM, depthM)], "layers": [file names]}. A file named in
+    `ignore` is left out (the generated beds layer, when it is being made again)."""
+    from shapely.geometry import LineString, Polygon
+
+    found = {"beds": [], "channels": [], "layers": []}
+    if not layers_dir.is_dir():
+        return found
+    for path in sorted(layers_dir.glob("*.json")):
+        if path.name in ignore:
+            continue
+        try:
+            ops = json.loads(path.read_text(encoding="utf-8")).get("ops") or []
+        except (OSError, ValueError):
+            continue
+        used = False
+        for op in ops:
+            if op.get("op") == "golfmap.cut_out" and op.get("surface") == CREEK_BED_SURFACE and len(op.get("outline3006") or []) >= 3:
+                found["beds"].append(Polygon([(float(x), float(y)) for x, y in op["outline3006"]]).buffer(0))
+                used = True
+            elif op.get("op") == "golfmap.creek_channel" and len(op.get("centerline3006") or []) >= 2:
+                found["channels"].append((LineString([(float(x), float(y)) for x, y in op["centerline3006"]]),
+                                          float(op.get("widthM") or 0.7), float(op.get("depthM") or 0.0)))
+                used = True
+        if used:
+            found["layers"].append(path.name)
+    return found
+
+
+def _creek_dig_state(attrs: dict, dig, line) -> dict:
+    """What a creek's `creek-digs` edit is to it: {state, depthM?, bankSlopeDeg?, outsideM?}."""
+    from shapely.geometry import Polygon
+    from shapely.ops import unary_union
+
+    if attrs.get("dig") is False:
+        return {"state": "off"}
+    if dig is None:
+        return {"state": "none"}
+    params = json.loads(dig["params_json"]) if dig["params_json"] else {}
+    rings = json.loads(dig["rings_json"]) if dig["rings_json"] else []
+    polys = [Polygon([(float(p["x"]), float(p["y"])) for p in ring]) for ring in rings if len(ring) >= 3]
+    cover = unary_union([p.buffer(0) for p in polys]).buffer(CREEK_DEPTH_DIG_COVER_M) if polys else None
+    outside = float(line.length if cover is None else line.difference(cover).length)
+    out = {"state": "dug", "depthM": params.get("depthM"), "bankSlopeDeg": params.get("bankSlopeDeg"),
+           "outsideM": round(outside, 1)}
+    want = attrs.get("digDepthM")
+    if outside > CREEK_DEPTH_DIG_OUTSIDE_M or (
+            isinstance(want, (int, float)) and isinstance(params.get("depthM"), (int, float))
+            and abs(float(want) - float(params["depthM"])) > 0.005):
+        out["state"] = "stale"
+    return out
+
+
+def creek_depth_report(db_path: Path, course_ident: str, dem_path: Path, sidecar_path: Path,
+                       edits_path: Path | None = None, only: list[str] | None = None,
+                       terrain_smooth: float | None = None, mesh_edge_m: float | None = None,
+                       layers_dir: Path | None = None, ignore_layers: tuple[str, ...] = ()) -> dict:
+    """The golfmap-creek-depth-v1 report (see the section comment): `dem_path` is the DEM the digs are in
+    (sources/<site>/dem-edited.tif after Apply to terrain), or with `edits_path` (the D-TE5 GeoJSON of the
+    site's enabled edits) the raw DEM they are replayed onto first, in memory. `only`: feature ids or their
+    starts. A station inside a creek bed one of the course's shaping layers cuts out in Blender
+    (`layers_dir`, default docs/gspro/<course>/shaping; `ignore_layers` left out) is as deep as the DEM there
+    (the bed's fine mesh is set onto it), or as its channel where one runs."""
+    from shapely.geometry import LineString, Point, box
+    from shapely.ops import unary_union
+
+    from golfpipe import creek_depth as cdm
+    from golfpipe import dem_edit
+
+    if not sidecar_path.is_file():
+        raise SystemExit(f"error: no such heightmap sidecar: {sidecar_path} (export the inner heightmap first)")
+    if not dem_path.is_file():
+        raise SystemExit(f"error: no such DEM: {dem_path}")
+    sidecar = _read_sidecar_json(sidecar_path)
+    frame = cdm.HeightmapFrame.from_sidecar(sidecar)
+    band = _read_dem_band(dem_path)
+    if band.crs is None or band.crs.to_epsg() != 3006:
+        raise SystemExit(f"error: {dem_path} is not in EPSG:3006")
+    dem, transform, valid = band.values, band.transform, band.valid
+    replayed = None
+    if edits_path is not None:
+        edits = dem_edit.reproject_edits(dem_edit.load_edits(edits_path, log=lambda *_: None), band.crs)
+        dem = dem_edit.apply_edits(dem, transform, band.nodata, edits, log=lambda *_: None, terrain="inner")
+        dem = np.asarray(dem, np.float64)
+        replayed = len(edits)
+    smooth = cdm.DEFAULT_TERRAIN_SMOOTH if terrain_smooth is None else float(terrain_smooth)
+    edge = cdm.DEFAULT_MESH_EDGE_M if mesh_edge_m is None else float(mesh_edge_m)
+
+    conn = _open_course_db(db_path)
+    course = _resolve_course(conn, course_ident)
+    rows = conn.execute(
+        "SELECT f.id, f.feature_no, f.geometry_json, f.attributes_json, h.number AS hole FROM course_features f "
+        "LEFT JOIN holes h ON h.id = f.hole_id WHERE f.course_id = ? AND f.type = ? ORDER BY f.sort_order, f.id",
+        (course["id"], CREEK_FEATURE_TYPE)).fetchall()
+    pond_rows = conn.execute(
+        f"SELECT geometry_json FROM course_features WHERE course_id = ? AND type IN ({','.join('?' * len(CREEK_DEPTH_POND_TYPES))})",
+        (course["id"], *CREEK_DEPTH_POND_TYPES)).fetchall()
+    play_rows = conn.execute(
+        f"SELECT geometry_json FROM course_features WHERE course_id = ? AND type IN ({','.join('?' * len(CREEK_DEPTH_PLAY_TYPES))})",
+        (course["id"], *CREEK_DEPTH_PLAY_TYPES)).fetchall()
+    path_rows = conn.execute("SELECT geometry_json FROM course_features WHERE course_id = ? AND type = 'path'",
+                             (course["id"],)).fetchall()
+    digs = {}
+    site = conn.execute("SELECT site_id FROM courses WHERE id = ?", (course["id"],)).fetchone()
+    site_id = site["site_id"] if site else None
+    if site_id:
+        for d in conn.execute("SELECT origin_ref, params_json, rings_json FROM terrain_edits "
+                              "WHERE site_id = ? AND origin = ? AND enabled = 1", (site_id, CREEK_DEPTH_DIG_ORIGIN)):
+            digs[d["origin_ref"]] = d
+    conn.close()
+    ponds = [g for g in (_zone_geometry_m(json.loads(r["geometry_json"])) for r in pond_rows) if g is not None and not g.is_empty]
+    pond_union = unary_union(ponds) if ponds else None
+    play = [g for g in (_zone_geometry_m(json.loads(r["geometry_json"])) for r in play_rows) if g is not None and not g.is_empty]
+    play_union = unary_union(play) if play else None
+    paths = [g for g in (_creek_depth_area(json.loads(r["geometry_json"])) for r in path_rows) if g is not None and not g.is_empty]
+    path_union = unary_union(paths).buffer(CREEK_DEPTH_CROSSING_M) if paths else None
+    falls = _creek_falls(db_path, course_ident)
+    e0, n0, e1, n1 = (float(v) for v in sidecar["square3006"])
+    square = box(e0, n0, e1, n1)
+    layers_dir = layers_dir or REPO_ROOT / "docs" / "gspro" / _course_slug(course["name"]) / "shaping"
+    blender = _creek_beds_in_layers(layers_dir, ignore_layers)
+    beds_union = unary_union(blender["beds"]) if blender["beds"] else None
+
+    wanted = []
+    skipped = []
+    for r in rows:
+        if only and not any(r["id"].lower().startswith(o.lower()) for o in only):
+            continue
+        attrs = json.loads(r["attributes_json"]) if r["attributes_json"] else {}
+        attrs = attrs if isinstance(attrs, dict) else {}
+        found = _creek_line(json.loads(r["geometry_json"]))
+        if found is None:
+            skipped.append(f"creek {r['id']}: no line down its polygon")
+            continue
+        line, width = found[0].intersection(square), found[1] or 2.0
+        if line.geom_type == "MultiLineString":
+            line = max(line.geoms, key=lambda g: g.length)
+        if line.is_empty or line.geom_type != "LineString" or line.length < CREEK_MIN_LENGTH_M:
+            skipped.append(f"creek {r['id']}: outside the inner square")
+            continue
+        wanted.append((r, attrs, line, float(width), found[3] if found[2] == "polygon" else None))
+
+    creeks = []
+    terrain = mesh = None
+    if wanted:
+        reach = max(max(w, float(np.sqrt(shape.area)) if shape is not None else 0.0) for *_, w, shape in wanted)
+        pad = reach / 2 + cdm.BANK_BAND_M + CREEK_DEPTH_MOUTH_NEAR_M + 2 * CREEK_DEPTH_MOUTH_INTO_M + 2.0
+        x0, y0, x1, y1 = unary_union([ln for _, _, ln, _, _ in wanted]).bounds
+        terrain = cdm.terrain_surface(dem, transform, frame, (x0 - pad, y0 - pad, x1 + pad, y1 + pad), valid=valid, smooth=smooth)
+        mesh = cdm.MeshSurface(terrain, edge=edge)
+    dem_at = lambda x, y: cdm.dem_sample(dem, transform, x, y, valid)  # noqa: E731
+
+    import shapely
+
+    for r, attrs, line, width, shape in wanted:
+        hole = r["hole"]
+        entry = {"id": r["id"], "featureNo": r["feature_no"], "hole": hole,
+                 "label": (f"hole {hole} " if hole is not None else "") + r["id"][:8],
+                 "widthM": round(width, 2), "lengthM": round(float(line.length), 1)}
+        if attrs.get("ramOnLake") is True:
+            entry.update({"status": "on-lake", "dig": {"state": "on-lake"}})
+            creeks.append(entry)
+            continue
+        dig = _creek_dig_state(attrs, digs.get(f"feature:{r['id']}"), line)
+        above = float(attrs["ramAboveBedM"]) if isinstance(attrs.get("ramAboveBedM"), (int, float)) else cdm.WATER_ABOVE_BED_M
+        far = play_union is None or line.distance(play_union) > CREEK_DEPTH_FAR_FROM_PLAY_M
+        min_depth = above + (0.0 if far else cdm.MIN_FREEBOARD_M)
+        entry["farFromPlay"] = bool(far)
+        coords = np.asarray(line.coords)[:, :2]
+        # A polygon creek is as wide as its own outline at each station (the line runs down its middle).
+        across = width if shape is None else (
+            lambda x, y, edge=shape.boundary: np.maximum(2.0 * shapely.distance(edge, shapely.points(x, y)), 0.2))
+        on_dem = cdm.creek_sections(coords, across, dem_at)
+        in_mesh = cdm.creek_sections(coords, across, mesh.at)
+        s = in_mesh.s
+        in_bed = shapely.contains_xy(beds_union, in_mesh.x, in_mesh.y) if beds_union is not None else np.zeros(s.size, bool)
+        depth = np.where(in_bed, on_dem.depth, in_mesh.depth)
+        for chan, chan_w, chan_d in blender["channels"]:
+            near = in_bed & (shapely.distance(chan, shapely.points(in_mesh.x, in_mesh.y)) <= chan_w / 2 + 0.2)
+            depth = np.where(near, np.fmax(depth, chan_d), depth)
+        skip = np.zeros(s.size, bool)
+        if pond_union is not None:
+            skip |= shapely.contains_xy(pond_union, in_mesh.x, in_mesh.y)
+        for lip, sill in falls:
+            if lip.distance(line) <= width / 2 + CREEK_FALL_NEAR_M:
+                sb = float(line.project(lip.interpolate(0.5, normalized=True)))
+                skip |= (s >= sb - sill - 1.0) & (s <= sb + sill + 1.0)
+        keep = ~skip & np.isfinite(on_dem.depth)
+
+        def stats(v):
+            v = v[keep & np.isfinite(v)]
+            return {"median": round(float(np.median(v)), 2), "p10": round(float(np.percentile(v, 10)), 2)} if v.size else None
+
+        stretches = cdm.shallow_stretches(s, depth, min_depth, skip=skip | ~np.isfinite(on_dem.depth))
+        step = float(s[1] - s[0]) if s.size > 1 else 0.0
+        shallow, crossings, kept = [], [], []
+        for a, b in stretches:
+            mid = (a + b) // 2
+            seg = slice(a, b + 1)
+            item = {"fromM": round(float(s[a]), 1), "toM": round(float(s[b]), 1),
+                    "x": round(float(in_mesh.x[mid]), 2), "y": round(float(in_mesh.y[mid]), 2),
+                    "meshDepthM": round(float(np.nanmin(depth[seg])), 2),
+                    "demDepthM": round(float(np.nanmedian(on_dem.depth[seg])), 2)}
+            # A path over the creek: a culvert or a bridge, the road's grade over it - not a bed to dig.
+            on_path = path_union is not None and bool(
+                shapely.intersects(path_union, shapely.linestrings(np.column_stack([in_mesh.x[seg], in_mesh.y[seg]])))
+                if b > a else shapely.contains_xy(path_union, in_mesh.x[a], in_mesh.y[a]))
+            if on_path:
+                crossings.append(item)
+            else:
+                shallow.append(item)
+                kept.append((a, b))
+        stretches = kept
+        mouths = []
+        for pond in ponds:
+            for end, prev in ((0, 1), (-1, -2)):
+                tip = Point(coords[end])
+                if tip.distance(pond) > CREEK_DEPTH_MOUTH_NEAR_M:
+                    continue
+                # The creek's bed just up from the pond (CREEK_DEPTH_MOUTH_NEAR_M..MOUTH_FROM_M from the shore, out of
+                # reach of the pond's own bank) carried on along its own slope to the shore, then the ground along the
+                # line from the station MOUTH_NEAR_M out on into the pond: a bank left across the mouth stands over
+                # that bed, whichever way the creek runs; a steep creek climbing to a pond does not.
+                gap = shapely.distance(pond, shapely.points(in_mesh.x, in_mesh.y))
+                band = keep & (gap >= CREEK_DEPTH_MOUTH_NEAR_M) & (gap <= CREEK_DEPTH_MOUTH_FROM_M + CREEK_DEPTH_MOUTH_NEAR_M)
+                near = np.flatnonzero(keep & (gap <= CREEK_DEPTH_MOUTH_FROM_M + CREEK_DEPTH_MOUTH_NEAR_M))
+                if np.count_nonzero(band & np.isfinite(in_mesh.bed)) < 2 or near.size == 0:
+                    continue
+                start = int(near[np.argmin(np.abs(gap[near] - CREEK_DEPTH_MOUTH_NEAR_M))])
+
+                def carried(bed, g0=float(gap[start]), band=band, gap=gap):
+                    # The slope from the medians of the band's near and far halves: a bank reaching into the band
+                    # moves neither median much (a straight fit would follow it up to the shore).
+                    ok = band & np.isfinite(bed)
+                    if np.count_nonzero(ok) < 2:
+                        return float("nan")
+                    mid = 0.5 * (float(gap[ok].min()) + float(gap[ok].max()))
+                    nearer, farther = ok & (gap <= mid), ok & (gap > mid)
+                    if np.count_nonzero(nearer) and np.count_nonzero(farther):
+                        g1, b1 = float(np.median(gap[nearer])), float(np.median(bed[nearer]))
+                        g2, b2 = float(np.median(gap[farther])), float(np.median(bed[farther]))
+                        c1 = (b2 - b1) / (g2 - g1) if g2 > g1 else 0.0
+                    else:
+                        g1, b1, c1 = g0, float(np.median(bed[ok])), 0.0
+                    return lambda t: b1 + c1 * (np.maximum(g0 - t, 0.0) - g1)
+
+                at = np.array([in_mesh.x[start], in_mesh.y[start]])
+                shore = np.asarray(shapely.shortest_line(shapely.points(*at), pond).coords[-1])
+                heading = coords[end] - coords[prev]
+                to_shore = shore - at
+                if np.hypot(*heading) == 0 or np.hypot(*to_shore) == 0 or float(
+                        np.dot(heading, to_shore) / (np.hypot(*heading) * np.hypot(*to_shore))) < CREEK_DEPTH_MOUTH_HEADING_COS:
+                    continue                                 # it ends beside the pond, not into it
+                toward = shore
+                reach = min(float(gap[start]) + CREEK_DEPTH_MOUTH_INTO_M, 10.0)
+                walk = LineString([tuple(at), tuple(at + (shore - at) / np.hypot(*(shore - at)) * reach)])
+                if any(lip.distance(walk) <= CREEK_FALL_NEAR_M + CREEK_DEPTH_MOUTH_NEAR_M for lip, _ in falls):
+                    continue                                 # a waterfall drops there: the step is meant
+                block = cdm.mouth_block(at, toward, carried(in_mesh.bed), mesh.at, reach)
+                dem_block = cdm.mouth_block(at, toward, carried(on_dem.bed), dem_at, reach)
+                mouths.append({"x": round(float(at[0]), 2), "y": round(float(at[1]), 2), "blockM": round(block, 2),
+                               "demBlockM": round(dem_block, 2), "blocked": bool(block > cdm.MOUTH_BLOCK_M)})
+        shallow_m = sum(float(s[b] - s[a]) + step for a, b in stretches)
+        if dig["state"] == "none":
+            status = "not-dug"
+        elif dig["state"] == "stale":
+            status = "stale"
+        elif dig["state"] == "off":
+            status = "off"
+        elif shallow or any(m["blocked"] for m in mouths):
+            status = "shallow"
+        else:
+            status = "ok"
+        entry.update({"status": status, "dig": dig, "minDepthM": round(min_depth, 2),
+                      "demDepthM": stats(on_dem.depth), "meshDepthM": stats(depth),
+                      "bedM": round(float(np.count_nonzero(in_bed & keep)) * step, 1),
+                      "shallowM": round(shallow_m, 1), "shallow": shallow, "crossings": crossings, "mouths": mouths})
+        creeks.append(entry)
+
+    counts: dict[str, int] = {}
+    for c in creeks:
+        counts[c["status"]] = counts.get(c["status"], 0) + 1
+    return {
+        "format": CREEK_DEPTH_FORMAT,
+        "course": {"id": course["id"], "name": course["name"]},
+        "dem": {"file": str(dem_path), "replayedEdits": replayed},
+        "blenderBeds": {"layers": blender["layers"], "beds": len(blender["beds"]), "channels": len(blender["channels"])},
+        "model": {"nodeSpacingM": round(frame.spacing, 4), "terrainSmooth": smooth, "meshEdgeM": edge,
+                  "phases": len(cdm.MESH_PHASES), "waterAboveBedM": cdm.WATER_ABOVE_BED_M,
+                  "minFreeboardM": cdm.MIN_FREEBOARD_M, "bankBandM": cdm.BANK_BAND_M},
+        "summary": {"creeks": len(creeks), **counts},
+        "creeks": creeks,
+        "skipped": skipped,
+    }
+
+
+def cmd_creek_depth(db_path: Path, course_ident: str, dem_path: Path, sidecar_path: Path, out: Path | None = None,
+                    edits_path: Path | None = None, only: list[str] | None = None,
+                    terrain_smooth: float | None = None, mesh_edge_m: float | None = None) -> dict:
+    """Print the creek-depth report (and write it to `out` as JSON)."""
+    doc = creek_depth_report(db_path, course_ident, dem_path, sidecar_path, edits_path, only, terrain_smooth, mesh_edge_m)
+    sm = doc["summary"]
+    parts = [f"{sm.get(k)} {name}" for k, name in (("ok", "ok"), ("shallow", "shallow"), ("not-dug", "not dug"),
+                                                   ("stale", "stale dig"), ("off", "dig: false"), ("on-lake", "on a lake"))
+             if sm.get(k)]
+    src = f"{doc['dem']['replayedEdits']} edit(s) replayed onto {dem_path.name}" if doc["dem"]["replayedEdits"] is not None else dem_path.name
+    m = doc["model"]
+    print(f"Creek depth in the meshes: {doc['course']['name']}, {sm['creeks']} creek(s) - {', '.join(parts) or 'none'} (DEM: {src})")
+    print(f"  model: terrain.obj nodes {m['nodeSpacingM']:.2f} m, OPCD smooth {m['terrainSmooth']:g}, mesh {m['meshEdgeM']:g} m; "
+          f"shallow = bank under {m['waterAboveBedM']:g} m water over the bed + {m['minFreeboardM']:g} m")
+    if doc["blenderBeds"]["layers"]:
+        print(f"  Blender beds: {doc['blenderBeds']['beds']} bed(s), {doc['blenderBeds']['channels']} channel(s) in "
+              f"{', '.join(doc['blenderBeds']['layers'])} (as deep as the DEM or the channel there)")
+    order = {"not-dug": 0, "stale": 1, "shallow": 2, "off": 3, "ok": 4, "on-lake": 5}
+    for c in sorted(doc["creeks"], key=lambda c: (order.get(c["status"], 9), c["label"])):
+        head = (f"  {c['status']:8} {c['label']:16} {c['widthM']:.1f} m wide, {c['lengthM']:.0f} m"
+                + (", far from play" if c.get("farFromPlay") else ""))
+        if c["status"] == "on-lake":
+            print(f"{head}: on a lake's water, not measured")
+            continue
+        md, dd = c.get("meshDepthM"), c.get("demDepthM")
+        depth = (f": meshes {md['median']:.2f} m (DEM {dd['median']:.2f} m" if md and dd else ": no ground under it (")
+        dig = c["dig"]
+        depth += f", dug {dig['depthM']:g} m)" if dig.get("depthM") is not None else ")"
+        extra = [f"{c['bedM']:.0f} m in a Blender bed"] if c.get("bedM") else []
+        if c["shallowM"]:
+            first = c["shallow"][0]
+            extra.append(f"{c['shallowM']:.0f} m under {c['minDepthM']:.2f} m, first {first['fromM']:.0f}-{first['toM']:.0f} m "
+                         f"at {first['x']:.0f},{first['y']:.0f}")
+        extra += [f"mouth blocked {mo['blockM']:.2f} m at {mo['x']:.0f},{mo['y']:.0f}" for mo in c["mouths"] if mo["blocked"]]
+        if c.get("crossings"):
+            extra.append(f"{len(c['crossings'])} path crossing(s) (culvert or bridge, not counted)")
+        if dig["state"] == "stale":
+            extra.append(f"{dig['outsideM']:g} m of it outside its dig" if dig.get("outsideM") else "its digDepthM differs from the dig")
+        print(head + depth + ("; " + "; ".join(extra) if extra else ""))
+    for line in doc["skipped"]:
+        print(f"  skipped {line}")
+    if out is not None:
+        out.parent.mkdir(parents=True, exist_ok=True)
+        out.write_text(json.dumps(doc, indent=1) + "\n", encoding="utf-8")
+        print(f"  wrote {out}")
+    return doc
+
+
+# --- shaping-creek-beds: the creek beds the meshes cannot carry, cut out in Blender ---
+# Generated layer `22-creek-beds.gen.json` (golfmap-shaping-layer-v1), made from the creek-depth report so a creek
+# comes out deep enough on the first build, not after CloseGaps has listed its `needsBed` (Vreta 2026-10-22: 85 gaps,
+# beds by hand in 25-creek-beds.json). Every shallow stretch of a DUG creek (creek-depth's `shallow`, beds already
+# in the other layers counted deep) gets, CREEK_BEDS_PAD_M on either side:
+#   - `golfmap.cut_out` surface WaterBrook, rise dem: the creek's outline (shrunk CREEK_BEDS_SHRINK_M) cut out into
+#     its own fine mesh (maxEdgeM 0.25) set onto the 0.5 m DEM, the banks blending in over the apron;
+#   - and where the DEM itself is too shallow there (a creek narrower than its cells: the dig cannot get down), the
+#     corridor widened to the line +- CREEK_BEDS_CHANNEL_CORRIDOR_M and a `golfmap.creek_channel` along the line at
+#     the dig's depth under the ground beside it.
+# Kept off ponds (+1.5 m), paths (+0.75), greens/bunkers/tees (+1), rock slabs (+0.5) and the beds other layers cut;
+# parts under 2 m2 dropped. A creek not dug (or its dig stale) gets no bed: dig it (creek-digs) first. A creek wholly
+# far from play gets none either (held less strictly, and a bed costs Blender time): the report still names it.
+
+CREEK_BEDS_GEN_FILE = "22-creek-beds.gen.json"
+CREEK_BEDS_ID = "creek-beds-gen"
+CREEK_BEDS_PAD_M = 3.0
+CREEK_BEDS_SHRINK_M = 0.1
+CREEK_BEDS_MIN_PART_M2 = 2.0
+CREEK_BEDS_PROTECT = ["green", "bunker", "tee", "water", "water_lake", "lake"]
+CREEK_BEDS_KEEP_OFF = (("water", 1.5), ("path", 0.75), ("green", 1.0), ("bunker", 1.0), ("tee", 1.0), ("rock_slab", 0.5))
+CREEK_BEDS_RISE = {"mode": "dem", "apronM": 1.5, "noiseM": 0.0, "maxEdgeM": 0.25}
+CREEK_BEDS_CHANNEL_CORRIDOR_M = 0.85
+# A creek at least this wide that is shallow in the DEM itself was not dug there (a stale dig, a bank left at its
+# mouth): it gets a note to dig it, not a channel. Narrower ones are what the 0.5 m DEM cannot hold.
+CREEK_BEDS_CHANNEL_MAX_WIDTH_M = 1.5
+CREEK_BEDS_CHANNEL = {"wallM": 0.5, "rampM": 1.5}   # wallM 0.15 read as a sharp trench with a pale strip (Vreta)
+CREEK_BEDS_CHANNEL_MIN_LEG_M = 3.0
+CREEK_BEDS_DEFAULT_DEPTH_M = 0.35                   # shared/features/dig-presets.ts maintained_drain
+
+
+def shaping_creek_beds(db_path: Path, course_ident: str, dem_path: Path, sidecar_path: Path,
+                       layers_dir: Path) -> tuple[dict, list[str]]:
+    """The generated creek-beds layer and one note per creek (see the section comment)."""
+    from shapely.geometry import LineString
+    from shapely.ops import substring, unary_union
+
+    report = creek_depth_report(db_path, course_ident, dem_path, sidecar_path, layers_dir=layers_dir,
+                                ignore_layers=(CREEK_BEDS_GEN_FILE,))
+    conn = _open_course_db(db_path)
+    course = _resolve_course(conn, course_ident)
+    rows = {r["id"]: r for r in conn.execute(
+        "SELECT id, geometry_json FROM course_features WHERE course_id = ? AND type = ?", (course["id"], CREEK_FEATURE_TYPE))}
+    types = [t for t, _ in CREEK_BEDS_KEEP_OFF]
+    off_rows = conn.execute(f"SELECT type, geometry_json FROM course_features WHERE course_id = ? AND type IN ({','.join('?' * len(types))})",
+                            (course["id"], *types)).fetchall()
+    conn.close()
+    grow = dict(CREEK_BEDS_KEEP_OFF)
+    keep_off = [g.buffer(grow[r["type"]]) for r in off_rows
+                for g in [_zone_geometry_m(json.loads(r["geometry_json"]))] if g is not None and not g.is_empty]
+    keep_off += [b.buffer(0.3) for b in _creek_beds_in_layers(layers_dir, (CREEK_BEDS_GEN_FILE,))["beds"]]
+    taken = unary_union(keep_off) if keep_off else None
+    e0, n0, e1, n1 = (float(v) for v in _read_sidecar_json(sidecar_path)["square3006"])
+    from shapely.geometry import box
+    square = box(e0, n0, e1, n1)
+
+    ops, notes = [], []
+    for c in report["creeks"]:
+        if not c.get("shallow"):
+            continue
+        if c.get("farFromPlay"):
+            notes.append(f"{c['label']}: far from play - no bed ({c['shallowM']:.0f} m shallow; a hand layer can still cut one)")
+            continue
+        state = c["dig"]["state"]
+        if state != "dug":
+            notes.append(f"{c['label']}: {c['status']} - no bed (dig it first: Dig creeks)" if state in ("none", "stale")
+                         else f"{c['label']}: dig: false - no bed")
+            continue
+        found = _creek_line(json.loads(rows[c["id"]]["geometry_json"]))
+        line = found[0].intersection(square)
+        if line.geom_type == "MultiLineString":
+            line = max(line.geoms, key=lambda g: g.length)
+        width = found[1] or 2.0
+        base = found[3] if found[2] == "polygon" else line.buffer(width / 2.0)
+        depth = float(c["dig"].get("depthM") or CREEK_BEDS_DEFAULT_DEPTH_M)
+        pieces, channel_lines, undug = [], [], []
+        for st in c["shallow"]:
+            a, b = max(st["fromM"] - CREEK_BEDS_PAD_M, 0.0), min(st["toM"] + CREEK_BEDS_PAD_M, line.length)
+            sub = substring(line, a, b)
+            reach = sub.buffer(width / 2.0 + CREEK_BEDS_CHANNEL_CORRIDOR_M + 1.0, cap_style=2)
+            if st["demDepthM"] < c["minDepthM"] and width >= CREEK_BEDS_CHANNEL_MAX_WIDTH_M:
+                undug.append(f"{st['fromM']:.0f}-{st['toM']:.0f} m")   # wide enough to dig: the DEM is not dug there
+                continue
+            if st["demDepthM"] < c["minDepthM"]:
+                pieces.append(unary_union([base, sub.buffer(CREEK_BEDS_CHANNEL_CORRIDOR_M)]).intersection(reach))
+                channel_lines.append(sub)
+            else:
+                pieces.append(base.buffer(-CREEK_BEDS_SHRINK_M).intersection(reach))
+        corridor = unary_union(pieces)
+        if taken is not None:
+            corridor = corridor.difference(taken)
+        parts = sorted((g for g in getattr(corridor, "geoms", [corridor]) if g.geom_type == "Polygon" and g.area >= CREEK_BEDS_MIN_PART_M2),
+                       key=lambda g: -g.area)
+        chan = unary_union(channel_lines) if channel_lines else None
+        id8 = c["id"][:8].lower()
+        n_chan = 0
+        for k, part in enumerate(parts, start=1):
+            part = part.simplify(0.05)
+            name = f"bed_{id8}_{k}"
+            ops.append({
+                "id": name, "op": "golfmap.cut_out", "name": name, "surface": CREEK_BED_SURFACE,
+                "protect": list(CREEK_BEDS_PROTECT), "outline3006": _shaping_ring(part, 0.05), "uvM": 2.0,
+                "rise": dict(CREEK_BEDS_RISE),
+                "note": f"Creek {c['label']} ({c['id']}): {part.area:.0f} m2 of its {c['shallowM']:.0f} m shallow in the meshes "
+                        f"(meshes {c['meshDepthM']['median']:.2f} m, DEM {c['demDepthM']['median']:.2f} m, dug {depth:g} m).",
+            })
+            if chan is None:
+                continue
+            inside = chan.intersection(part.buffer(-0.3))
+            for m, leg in enumerate((g for g in getattr(inside, "geoms", [inside])
+                                     if g.geom_type == "LineString" and g.length >= CREEK_BEDS_CHANNEL_MIN_LEG_M), start=1):
+                w = min(max(width, 0.5), 1.0)
+                ops.append({
+                    "id": f"{name}_channel{m}", "op": "golfmap.creek_channel", "object": f"Spline_{name}_{CREEK_BED_SURFACE}_-_Mesh",
+                    "centerline3006": [[round(x, 2), round(y, 2)] for x, y, *_ in LineString(leg.coords).simplify(0.05).coords],
+                    "widthM": round(w, 2), "depthM": round(depth, 2), **CREEK_BEDS_CHANNEL,
+                    "refBandM": [round(CREEK_BEDS_CHANNEL_CORRIDOR_M - 0.09, 2), round(CREEK_BEDS_CHANNEL_CORRIDOR_M - 0.01, 2)],
+                    "note": f"The channel along creek {c['label']}: the DEM cannot hold its {depth:g} m dig ({width:.1f} m wide).",
+                })
+                n_chan += 1
+        notes.append(f"{c['label']}: {len(parts)} bed(s), {sum(p.area for p in parts):.0f} m2"
+                     + (f", {n_chan} channel(s)" if n_chan else "") + f" for {c['shallowM']:.0f} m shallow"
+                     + (f"; the DEM is not dug at {', '.join(undug)} (re-run Dig creeks)" if undug else ""))
+    doc = {
+        "format": SHAPING_LAYER_FORMAT, "id": CREEK_BEDS_ID,
+        "note": "Generated by gspro.py shaping-creek-beds from the creek-depth report: the creek beds the course meshes "
+                "cannot carry (terrain.obj's 1 m grid, OPCD's smooth, 1.2 m triangles), cut out in Blender and set onto "
+                "the DEM, with a channel where the DEM itself is too shallow. Do not edit: dig deeper, or add a hand layer.",
+        "ops": ops,
+    }
+    return doc, notes
+
+
+def _inner_sidecar_in(export_dir: Path) -> Path | None:
+    """The newest inner heightmap sidecar in a course's export folder (`<prefix>-inner-dem-<side>m.tif.json`)."""
+    found = sorted(export_dir.glob("*-inner-dem-*m.tif.json"), key=lambda p: p.stat().st_mtime, reverse=True)
+    return found[0] if found else None
+
+
+def cmd_shaping_creek_beds(db_path: Path, course_ident: str, out_dir: Path, export_dir: Path | None = None,
+                           sources_dir: Path | None = None, dem_path: Path | None = None,
+                           sidecar_path: Path | None = None) -> Path | None:
+    """Write 22-creek-beds.gen.json into `out_dir`. The DEM is the course site's `dem-edited.tif` under
+    `sources_dir` (default the repo's data/sources), the sidecar the newest inner one in `export_dir` (default the
+    course's gspro_export_dir); without either the file is left as it is and the run says so."""
+    conn = _open_course_db(db_path)
+    course = _resolve_course(conn, course_ident)
+    row = conn.execute("SELECT * FROM courses WHERE id = ?", (course["id"],)).fetchone()
+    conn.close()
+    cols = row.keys() if row is not None else []
+    site_id = row["site_id"] if "site_id" in cols else None
+    export_dir = export_dir or (Path(row["gspro_export_dir"]) if "gspro_export_dir" in cols and row["gspro_export_dir"] else None)
+    if dem_path is None and site_id:
+        dem_path = (sources_dir or REPO_ROOT / "data" / "sources") / site_id / "dem-edited.tif"
+    if sidecar_path is None:
+        folder = export_dir
+        sidecar_path = _inner_sidecar_in(folder) if folder is not None and folder.is_dir() else None
+    out = out_dir / CREEK_BEDS_GEN_FILE
+    if dem_path is None or not dem_path.is_file() or sidecar_path is None or not sidecar_path.is_file():
+        print(f"warning: creek beds not generated for {course['name']}: "
+              + ("no edited DEM (Apply to terrain)" if dem_path is None or not dem_path.is_file()
+                 else "no inner heightmap sidecar (Update terrain)") + f"; {out.name} left as it is")
+        return None
+    doc, notes = shaping_creek_beds(db_path, course_ident, dem_path, sidecar_path, out_dir)
+    out_dir.mkdir(parents=True, exist_ok=True)
+    out.write_text(_shaping_json(doc), encoding="utf-8", newline="\n")
+    beds = sum(1 for o in doc["ops"] if o["op"] == "golfmap.cut_out")
+    print(f"Wrote {out}")
+    print(f"  {len(doc['ops'])} op(s): {beds} creek bed(s) cut out, {len(doc['ops']) - beds} channel(s)")
+    for line in notes:
+        print(f"  {line}")
+    return out
 
 
 # --- waterfalls: the falls' lips for golfmap.waterfalls.build ------------------
@@ -8777,6 +9357,28 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--surface-offset", dest="surface_offset", type=float, default=0.0,
                    help="metres to raise (or lower, negative) every spline above the sampled water surface (default 0)")
 
+    p = sub.add_parser("creek-depth", help="how deep each creek comes out in the course meshes (terrain.obj's grid, "
+                                           "OPCD's smooth, ~1.2 m triangles), worked out from the DEM before the bake")
+    p.add_argument("--db", default=str(DEFAULT_DB), help=f"app database (default {DEFAULT_DB})")
+    p.add_argument("--course", required=True, help="course id, or a name substring (e.g. Vreta)")
+    p.add_argument("--dem", required=True, help="the DEM the digs are in (sources/<site>/dem-edited.tif), or with --edits the raw one")
+    p.add_argument("--edits", help="the site's enabled terrain edits (D-TE5 GeoJSON): replayed onto --dem in memory first")
+    p.add_argument("--sidecar", required=True, help="the inner terrain's heightmap sidecar (<dem>.tif.json): its square and grid")
+    p.add_argument("--out", help="also write the golfmap-creek-depth-v1 report here")
+    p.add_argument("--only", default="", help="comma-separated creek feature ids (or their starts)")
+    p.add_argument("--terrain-smooth", dest="terrain_smooth", type=float, help="OPCD's Terrain Smooth (default 1.5)")
+    p.add_argument("--mesh-edge", dest="mesh_edge", type=float, help="the course meshes' triangle edge in m (default 1.2)")
+
+    p = sub.add_parser("shaping-creek-beds", help="write a course's generated creek-bed layer 22-creek-beds.gen.json: the "
+                                                  "shallow stretches creek-depth finds, cut out in Blender onto the DEM")
+    p.add_argument("--db", default=str(DEFAULT_DB), help=f"app database (default {DEFAULT_DB})")
+    p.add_argument("--course", required=True, help="course id, or a name substring (e.g. Vreta)")
+    p.add_argument("--out-dir", dest="out_dir", required=True, help="the course's shaping layer folder")
+    p.add_argument("--export-dir", dest="export_dir", help="the course's GSPro export folder (its inner heightmap sidecar; default from the DB)")
+    p.add_argument("--sources-dir", dest="sources_dir", help="the sites' sources folder (<it>/<site>/dem-edited.tif; default data/sources)")
+    p.add_argument("--dem", help="the DEM the digs are in (default <sources>/<site>/dem-edited.tif)")
+    p.add_argument("--sidecar", help="the inner heightmap sidecar (default the newest in the export folder)")
+
     p = sub.add_parser("ramroads", help="write a course's render=ram paths as R.A.M. road splines (unity-ramroads-v1) for the inner terrain")
     _add_area(p)
     p.add_argument("--db", default=str(DEFAULT_DB), help=f"app database (default {DEFAULT_DB})")
@@ -8943,6 +9545,17 @@ def main(argv: list[str] | None = None) -> int:
         return 0
     if args.command == "ramroads-propose":
         cmd_ramroads_propose(Path(args.db), args.course, Path(args.out) if args.out else None, args.min_distance_m)
+        return 0
+    if args.command == "creek-depth":
+        cmd_creek_depth(Path(args.db), args.course, Path(args.dem), Path(args.sidecar),
+                        Path(args.out) if args.out else None, Path(args.edits) if args.edits else None,
+                        [s for s in args.only.split(",") if s.strip()], args.terrain_smooth, args.mesh_edge)
+        return 0
+    if args.command == "shaping-creek-beds":
+        cmd_shaping_creek_beds(Path(args.db), args.course, Path(args.out_dir),
+                               Path(args.export_dir) if args.export_dir else None,
+                               Path(args.sources_dir) if args.sources_dir else None,
+                               Path(args.dem) if args.dem else None, Path(args.sidecar) if args.sidecar else None)
         return 0
     if args.command == "svg-shapes":
         for svg in args.svgs:

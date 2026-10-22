@@ -649,7 +649,8 @@ Update*.
 `terrain`, `photo`, `shapes`, `meshes`, `vegetation`, `trees`, `buildings`, `props`, `creeks`,
 `waterfalls`, `course-file`, each with `label`, a one-line `description`, `manual` (the step a human must still do:
 `shapes` → "Build the SVG in Blender (OPCD), then Update meshes"; `buildings` → the Unity planter
-menu; the rest null) and `featureTypes` (the `course_features.type`s whose edits make it stale).
+menu; the rest null — the status gives `creeks` one while the last import left a creek needing a bed,
+see "The creeks' gaps") and `featureTypes` (the `course_features.type`s whose edits make it stale).
 `SVG_FEATURE_TYPES` lives there too — the pipeline's `TYPE_SURFACE` plus `trees` — and
 `web/src/export/svg-exclusions.ts` re-exports it.
 
@@ -669,7 +670,7 @@ order. The chains:
 | `trees` | `files` (`exportTrees` inner + outer) → `unity` (`golfmap.trees.plant` per terrain). |
 | `buildings` | `files` (`exportBuildings` inner + outer) → `unity` **skipped**: no `[BridgeCommand]` plants buildings, so the report names `GolfMap › Buildings › Plant from assignments`. |
 | `props` | `spec` (each `docs/gspro/<slug>/*-props.gen.py` under the pipeline venv's Python from the repo root → its `*-props.json`) → `models` (`<blender> -b --factory-startup --python blender/tools/build_props.py -- --spec <that json> --out <course folder>/Props`, 10 min cap, per spec file) → `unity` (`golfmap.props.record` first when the folder has no `placed.json`, then `golfmap.props.place {save: true}`). The last two need the editor — the out folder is inside the Unity project — so without one they are **skipped** and only the spec is written. |
-| `creeks` | `file` (`exportCreeks`) → `unity` (`golfmap.creeks.import`). |
+| `creeks` | `file` (`exportCreeks`) → `unity` (`golfmap.creeks.import`, then the gaps it left: see "The creeks' gaps" below). |
 | `waterfalls` | `file` (`exportWaterfalls`) → `unity` (`golfmap.waterfalls.build`; an editor without that command fails the phase with the bridge's message). Stale on edits to `waterfall`, `water` and `water_creek` features: the falls snap to the ponds' water planes in Unity. |
 | `course-file` | `gkd` (`exportGkd`). |
 
@@ -692,7 +693,7 @@ in the scene, and nothing on the server knew about any of it.
   and counting it would leave the row stale the moment an update finished.
 - **`blocked`**: `No props spec in docs/gspro/<slug>/`.
 - **`note`** (new optional field on `GsproTargetStatus`, one line of extra state a row has and no other
-  way to say; null on every other row today) comes from `<course folder>/Props/placed.json` when the
+  way to say; null on every row but this one and Creeks) comes from `<course folder>/Props/placed.json` when the
   editor is open — `golfmap-props-placed-v1`, `instances[].hand`: `3 hand-placed props are kept on
   update`, `no prop has been moved by hand: every one comes from the spec`, or `no placed.json yet: the
   first update records the scene before placing`. The board shows it under the status line
@@ -711,6 +712,33 @@ in the scene, and nothing on the server knew about any of it.
   permanent.
 - `props` sits after `buildings` in the `'stale'` order, and is NOT part of the `meshes` chain:
   `golfmap.course.refresh` still lists `props.place` as pending on purpose.
+
+**The creeks' gaps.** `golfmap.creeks.import` fits each R.A.M. creek to the meshes and closes the gaps
+under its water's edge (CloseGaps: widen, extend, lower in 2 cm steps; unity/README.md "Creeks
+(R.A.M.)"). What it cannot close needs a deeper bed, and "Update creeks" used to end "done" over it
+(Vreta: 85 gaps open), since the report kept only the first 300 characters of Unity's answer. Now:
+
+- Unity writes `<prefix>-inner-creek-gaps.json` beside the creeks file on every non-dry import
+  (`golfmap-creek-gaps-v1`: per creek id `gaps`, the `needsBed` spots near play and the `farFromPlay`
+  spots of a creek wholly far from it, each in plot x/z with `hangM` and EPSG:3006 e/n, `colliderError`;
+  a `summary`; a partial refit from `golfmap.course.refresh only=` merges). Its answer carries the same
+  `summary` line (`15 creeks, 2 need a bed (b37cf073, 4a8c6c7a), 3 far from play`), which the report
+  line `Unity (<project>): golfmap.creeks.import — …` prints whole; an answer with no
+  `status`/`summary`/`message` still gets its JSON cut at 300 characters, plain values first.
+- After the import the chain reads that file (`server/services/gspro-creek-gaps.ts`). A creek that
+  needs a bed is a **warning**: the `unity` phase's detail `warning: 2 creeks need a bed: 4a8c6c7a,
+  b37cf073`, the report's `warning: … — dig deeper or a Blender bed: \`bun run water:depth -- <course>\``
+  plus a line per such creek (its open gaps, the spots to dig, the worst hang, the first spot in
+  EPSG:3006) and a `creek gaps: …` line. None: the detail says `no creek needs a bed (N creeks)`. The
+  job still succeeds — the files and the splines are in. An import that wrote no fresh file (a Unity
+  project whose GolfMapCreeks.cs predates it; 2 s slack on the mtime) is a warning too: the gaps are
+  then not known.
+- The Creeks row's **`note`** is the last import's file in one line (`2 creeks need a bed: …; 3 far
+  from play left open`, or `no creek needs a bed (15 creeks)`; null before the first import), and its
+  **`manual`** — otherwise null for creeks — is `dig deeper or a Blender bed: \`bun run water:depth --
+  <course>\`` while any creek needs a bed. The bed itself: dig the creek deeper in the DEM
+  (`creek-digs`) or add a Blender bed layer (Vreta's `docs/gspro/vreta/shaping/25-creek-beds.json`),
+  then Update meshes and Update creeks again.
 
 **Jobs queue per course** (FIFO) instead of 409ing: a second Update while one runs comes back
 `status: 'queued'` and shows in `status().queue`; its first phase is `wait` ("Waiting for …"). A sync

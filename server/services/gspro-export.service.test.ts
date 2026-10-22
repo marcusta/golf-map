@@ -1536,6 +1536,193 @@ test.skipIf(NO_VENV)('the GKD hazard lines for real: a line staked round the pon
     expect((await svc.gkdLines(TEST_COURSE_ID)).lines.find(l => l.kind === 'water')!.noAsItLies).toBe(true);
 }, 60_000);
 
+/** A creek dig as the creek-digs generator stores it (reference: stream), for the creek along y = n0 + `y`. */
+function creekDig(siteId: string, featureId: string, e0: number, n0: number, y: number, widthM: number, depthM: number) {
+    return {
+        siteId, op: 'dig' as const, origin: 'creek-digs', originRef: `feature:${featureId}`,
+        params: {
+            featherM: 0, reference: 'stream' as const, rimM: 1, depthM, bankSlopeDeg: 60, widthM,
+            centerline: [{ x: e0 + 50, y: n0 + y }, { x: e0 + 150, y: n0 + y }],
+        },
+        rings: [[{ x: e0 + 50, y: n0 + y - widthM / 2 }, { x: e0 + 150, y: n0 + y - widthM / 2 }, { x: e0 + 150, y: n0 + y + widthM / 2 }, { x: e0 + 50, y: n0 + y + widthM / 2 }]],
+    };
+}
+
+test('the creek depth check measures the applied DEM, or the raw one with the site\'s edits replayed while some are not applied; it leaves no files', async () => {
+    let fail = false;
+    const seen: Array<{ args: string[]; edits: { features: Array<{ properties: Record<string, unknown> }> } | null }> = [];
+    const report = {
+        format: 'golfmap-creek-depth-v1', course: { id: TEST_COURSE_ID, name: 'Linkan' },
+        dem: { file: 'x', replayedEdits: null }, blenderBeds: { layers: [], beds: 0, channels: 0 },
+        model: { nodeSpacingM: 1, terrainSmooth: 1.5, meshEdgeM: 1.2, phases: 4, waterAboveBedM: 0.15, minFreeboardM: 0.1, bankBandM: 1 },
+        summary: { creeks: 1, shallow: 1 },
+        creeks: [{
+            id: 'k1', featureNo: 3, hole: null, label: 'k1', widthM: 1, lengthM: 61, farFromPlay: false, status: 'shallow',
+            dig: { state: 'dug', depthM: 0.35, bankSlopeDeg: 40, outsideM: 0 }, minDepthM: 0.25,
+            demDepthM: { median: 0.3, p10: 0.2 }, meshDepthM: { median: 0.15, p10: 0.1 }, bedM: 0, shallowM: 35,
+            shallow: [{ fromM: 0, toM: 35, x: 530438, y: 6487145, meshDepthM: 0.1, demDepthM: 0.3 }], mouths: [],
+        }],
+        skipped: [],
+    };
+    const runner: ExportRunner = async (args) => {
+        const editsFile = flag(args, '--edits');
+        seen.push({ args, edits: editsFile ? JSON.parse(await readFile(editsFile, 'utf8')) : null });
+        if (fail) return { code: 1, stdout: '', stderr: 'Traceback …\nerror: no such heightmap sidecar' };
+        await writeFile(flag(args, '--out')!, JSON.stringify(report));
+        return {
+            code: 0,
+            stdout: 'Creek depth in the meshes: Linkan, 1 creek(s) - 1 shallow (DEM: dem-edited.tif)\n'
+                + '  shallow  k1               1.0 m wide, 61 m: meshes 0.15 m (DEM 0.30 m, dug 0.35 m)\n'
+                + `  wrote ${flag(args, '--out')}\n`,
+            stderr: '',
+        };
+    };
+    const t = await setup(runner);
+    await expect(t.svc.creekDepth(TEST_COURSE_ID)).rejects.toThrow(/no built map/);
+    const sources = await buildSite(t, ['dem.tif', 'dem-edited.tif']);
+    const dir = await mkdtemp(path.join(os.tmpdir(), 'gspro-out-'));
+    await t.svc.setDir(TEST_COURSE_ID, dir);
+    const sidecar = path.join(dir, 'linkan-inner-dem-2050m.tif.json');
+    await writeFile(sidecar, '{}');
+
+    // No terrain edits: the DEM Apply to terrain wrote, as it is.
+    const applied = await t.svc.creekDepth(TEST_COURSE_ID);
+    expect(applied.demSource).toBe('applied');
+    expect(applied.creeks[0]!.shallow![0]).toMatchObject({ x: 530438, y: 6487145 });
+    expect(applied.summary).toEqual({ creeks: 1, shallow: 1 });
+    // The printed lines as printed (indented per creek), without the temp file it wrote.
+    expect(applied.lines).toEqual([
+        'Creek depth in the meshes: Linkan, 1 creek(s) - 1 shallow (DEM: dem-edited.tif)',
+        '  shallow  k1               1.0 m wide, 61 m: meshes 0.15 m (DEM 0.30 m, dug 0.35 m)',
+    ]);
+    let args = seen[0]!.args;
+    expect(args.slice(0, 2)).toEqual([path.join('/pipeline', 'gspro.py'), 'creek-depth']);
+    expect(flag(args, '--course')).toBe(TEST_COURSE_ID);
+    expect(flag(args, '--sidecar')).toBe(sidecar);
+    expect(flag(args, '--dem')).toBe(path.join(sources, 'dem-edited.tif'));
+    expect(args).not.toContain('--edits');
+    expect(args).not.toContain('--only');
+    expect(existsSync(path.dirname(flag(args, '--out')!))).toBe(false);   // read-only: the temp report is gone
+
+    // A creek dug after the last Apply to terrain: the raw DEM, every enabled edit replayed onto it.
+    const anHourAgo = new Date(Date.now() - 3600_000);
+    await utimes(path.join(sources, 'dem-edited.tif'), anHourAgo, anHourAgo);
+    const edits = new TerrainEditsService(t.db);
+    await edits.create(creekDig(SITE_ID, 'k1', 529400, 6487000, 100, 1, 0.35));
+    await edits.create({
+        siteId: SITE_ID, op: 'plane', params: { featherM: 4, flat: true }, origin: 'building-pads', originRef: 'osm:way/1',
+        rings: [[{ x: 529500, y: 6486700 }, { x: 529530, y: 6486700 }, { x: 529530, y: 6486740 }]],
+    });
+    seen.length = 0;
+    const replayed = await t.svc.creekDepth(TEST_COURSE_ID, { only: [' k1', '', '4a8c'] });
+    expect(replayed.demSource).toBe('replayed');
+    args = seen[0]!.args;
+    expect(flag(args, '--dem')).toBe(path.join(sources, 'dem.tif'));
+    expect(seen[0]!.edits!.features.map(f => `${f.properties.op} ${f.properties.reference ?? ''}`.trim()).sort()).toEqual(['dig stream', 'plane']);
+    expect(flag(args, '--only')).toBe('k1,4a8c');
+    expect(existsSync(path.dirname(flag(args, '--edits')!))).toBe(false);
+
+    // Applied since: the edited DEM again.
+    const soon = new Date(Date.now() + 5000);
+    await utimes(path.join(sources, 'dem-edited.tif'), soon, soon);
+    expect((await t.svc.creekDepth(TEST_COURSE_ID)).demSource).toBe('applied');
+
+    // No edited DEM at all: the edits replayed onto the raw one.
+    await rm(path.join(sources, 'dem-edited.tif'));
+    seen.length = 0;
+    expect((await t.svc.creekDepth(TEST_COURSE_ID)).demSource).toBe('replayed');
+    expect(seen[0]!.edits!.features).toHaveLength(2);
+
+    // A failed run says so with the pipeline's last words, and still cleans up.
+    fail = true;
+    seen.length = 0;
+    await expect(t.svc.creekDepth(TEST_COURSE_ID)).rejects.toThrow(/Creek depth check failed: .*no such heightmap sidecar/);
+    expect(existsSync(path.dirname(flag(seen[0]!.args, '--out')!))).toBe(false);
+});
+
+/** A 200 m inner square: flat ground at 20 m; `dug` adds a 4 m wide creek bed 0.6 m deep along y = 100. */
+const DEPTH_E0 = 510000, DEPTH_N0 = 6510000;
+const DEPTH_DEM = `
+import sys, numpy as np, rasterio
+from rasterio.transform import from_origin
+E0, N0, RES, SIDE = ${DEPTH_E0}.0, ${DEPTH_N0}.0, 0.5, 200.0
+n = int(SIDE / RES)
+rows, cols = np.mgrid[0:n, 0:n]
+x, y = (cols + 0.5) * RES, SIDE - (rows + 0.5) * RES
+z = np.full((n, n), 20.0)
+if sys.argv[2] == "dug":
+    d_in = 2.0 - np.abs(y - 100.0)
+    z -= np.where((d_in > 0) & (x >= 50) & (x <= 150), np.clip(d_in * np.tan(np.radians(60.0)), 0.0, 0.6), 0.0)
+with rasterio.open(sys.argv[1], "w", driver="GTiff", width=n, height=n, count=1, dtype="float32", crs="EPSG:3006",
+                   transform=from_origin(E0, N0 + SIDE, RES, RES), nodata=-9999) as dst:
+    dst.write(z.astype(np.float32), 1)
+`;
+
+test.skipIf(NO_VENV)('the creek depth check for real: a dug creek deep enough, one drawn after the digs not dug; an unapplied dig is replayed', async () => {
+    const ctx = await createTestDb(seedCourse);
+    const square = [DEPTH_E0, DEPTH_N0, DEPTH_E0 + 200, DEPTH_N0 + 200];
+    await ctx.db.updateTable('courses').set({ georeference_json: JSON.stringify({ bbox: square }) }).where('id', '=', TEST_COURSE_ID).execute();
+    await ctx.db.insertInto('sites').values({ id: SITE_ID, name: 'Test site', version: 1 }).execute();
+    await ctx.db.updateTable('courses').set({ site_id: SITE_ID }).where('id', '=', TEST_COURSE_ID).execute();
+    const dataDir = await mkdtemp(path.join(os.tmpdir(), 'creek-depth-data-'));
+    const dir = await mkdtemp(path.join(os.tmpdir(), 'creek-depth-out-'));
+    const sources = path.join(dataDir, 'sources', SITE_ID);
+    await mkdir(sources, { recursive: true });
+    const script = path.join(dataDir, 'write_dem.py');
+    await writeFile(script, DEPTH_DEM);
+    const writeDem = (file: string, kind: 'flat' | 'dug') => {
+        const made = Bun.spawnSync([PIPELINE_PYTHON, script, path.join(sources, file), kind], { stderr: 'pipe' });
+        if (made.exitCode !== 0) throw new Error(`writing ${file} failed: ${made.stderr.toString()}`);
+    };
+    // The inner heightmap's sidecar as the DEM export leaves it: its square, grid and the terrain's zero.
+    await writeFile(path.join(dir, 'linkan-inner-dem-200m.tif.json'),
+        JSON.stringify({ crs: 'EPSG:3006', terrain: 'inner', square3006: square, sideM: 200, resolution: 0.5, minM: 10, maxM: 20, raw: { size: 401 } }));
+
+    const features = new CourseFeaturesService(ctx.db);
+    const line = (y: number, widthM: number) => ({ crs: 'EPSG:3006', rings: [], centerline: {
+        points: [{ x: DEPTH_E0 + 50, y: DEPTH_N0 + y }, { x: DEPTH_E0 + 150, y: DEPTH_N0 + y }], widthM } });
+    const dug = await features.create({ courseId: TEST_COURSE_ID, holeId: null, type: 'water_creek', geometry: line(100, 4) });
+    const undug = await features.create({ courseId: TEST_COURSE_ID, holeId: null, type: 'water_creek', geometry: line(150, 1.5) });
+    // The dig stored first, then Apply to terrain wrote the edited DEM with it.
+    await new TerrainEditsService(ctx.db).create(creekDig(SITE_ID, dug.id, DEPTH_E0, DEPTH_N0, 100, 4, 0.6));
+    writeDem('dem.tif', 'flat');
+    writeDem('dem-edited.tif', 'dug');
+
+    const real = defaultRunner(PIPELINE_PYTHON);
+    const snapshot = path.join(dataDir, 'app-snapshot.sqlite');
+    const svc = new GsproExportService({
+        db: ctx.db, courses: new CoursesService(ctx.db), assets: new AssetsService(ctx.db, dataDir), dataDir, pipelineDir: PIPELINE,
+        runner: async (args, cwd, opts) => {
+            await rm(snapshot, { force: true });
+            await sql`VACUUM INTO ${snapshot}`.execute(ctx.db);
+            return real([...args, '--db', snapshot], cwd, opts);
+        },
+    });
+    await svc.setDir(TEST_COURSE_ID, dir);
+
+    const report = await svc.creekDepth(TEST_COURSE_ID);
+    expect(report.format).toBe('golfmap-creek-depth-v1');
+    expect(report.demSource).toBe('applied');
+    expect(report.dem).toEqual({ file: path.join(sources, 'dem-edited.tif'), replayedEdits: null });
+    expect(report.summary).toEqual({ creeks: 2, ok: 1, 'not-dug': 1 });
+    const byId = new Map(report.creeks.map(c => [c.id, c]));
+    expect(byId.get(dug.id)).toMatchObject({ status: 'ok', dig: { state: 'dug', depthM: 0.6 }, shallow: [] });
+    expect(byId.get(dug.id)!.meshDepthM!.median).toBeGreaterThan(byId.get(dug.id)!.minDepthM!);
+    expect(byId.get(undug.id)).toMatchObject({ status: 'not-dug', dig: { state: 'none' } });
+    expect(byId.get(undug.id)!.shallow!.length).toBeGreaterThan(0);
+    expect(report.lines[0]).toMatch(/^Creek depth in the meshes: Linkan, 2 creek\(s\) - 1 ok, 1 not dug/);
+    expect(report.lines.some(l => /^ {2}not-dug /.test(l))).toBe(true);
+
+    // The edited DEM older than the dig: the raw DEM, the dig replayed onto it, measured the same way.
+    const anHourAgo = new Date(Date.now() - 3600_000);
+    await utimes(path.join(sources, 'dem-edited.tif'), anHourAgo, anHourAgo);
+    const again = await svc.creekDepth(TEST_COURSE_ID, { only: [dug.id.slice(0, 8)] });
+    expect(again.demSource).toBe('replayed');
+    expect(again.dem).toEqual({ file: path.join(sources, 'dem.tif'), replayedEdits: 1 });
+    expect(again.creeks.map(c => c.id)).toEqual([dug.id]);
+    expect(again.creeks[0]!.demDepthM!.median).toBeGreaterThan(0.3);
+}, 60_000);
+
 /** A drawn road: a centerline `path` of the test course. */
 function centerlineRoad(features: CourseFeaturesService, attributes: Record<string, string> = { surface: 'gravel' }) {
     return features.create({

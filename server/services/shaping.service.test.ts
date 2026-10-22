@@ -198,6 +198,13 @@ test('apply: layers for the course, the worker loads its newest conformed .blend
     expect(args[args.indexOf('--out-dir') + 1]).toBe(layersDir);
     expect(args[args.indexOf('--library') + 1]).toBe(t.recipeLibrary);
     expect(args[args.indexOf('--db') + 1]).toBe('/data/app.sqlite');
+    // ... and the creek beds the meshes cannot carry, from the site's edited DEM and the export's heightmap sidecar
+    const beds = t.layers.calls.find(c => c[1] === 'shaping-creek-beds')!;
+    expect(beds.slice(2, 4)).toEqual(['--course', TEST_COURSE_ID]);
+    expect(beds[beds.indexOf('--out-dir') + 1]).toBe(layersDir);
+    expect(beds[beds.indexOf('--export-dir') + 1]).toBe(t.exportDir);
+    expect(beds[beds.indexOf('--sources-dir') + 1]).toMatch(/[\\/]sources$/);
+    expect(beds[beds.indexOf('--db') + 1]).toBe('/data/app.sqlite');
     // (b) the worker held nothing: /load with the course's paths, then /sync
     expect(worker.calls.filter(c => c.route !== '/status').map(c => c.route)).toEqual(['/load', '/sync']);
     expect(worker.calls.find(c => c.route === '/load')!.body).toEqual({ blend: conformed, layersDir, fbxFolder: fbx });

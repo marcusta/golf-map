@@ -111,6 +111,13 @@ const RamRoadsProposalInput = Type.Object({
     minDistanceM: Type.Optional(Type.Number({ minimum: 0, maximum: 1000 })),
 });
 
+/** The creek depth check, for every creek or some. */
+const CreekDepthInput = Type.Object({
+    courseId: Type.String(),
+    /** Comma-separated `water_creek` feature ids or their starts; omitted = every creek. */
+    only: Type.Optional(Type.String({ maxLength: 20000 })),
+});
+
 /** Draw these paths as R.A.M. splines (`ram`) or as OPCD meshes again (`opcd`, the attribute cleared). */
 const RoadRenderInput = Type.Object({
     courseId: Type.String(),
@@ -265,6 +272,19 @@ export function createGsproExportApi(svc: GsproExportService) {
             path: '/courses/:courseId/gspro/gkd-lines',
             fn: (input: Static<typeof CourseInput>) => svc.gkdLines(input.courseId),
             schema: CourseInput,
+            middleware: [...mw, noIdleTimeout],
+        },
+        /**
+         * How deep each creek comes out in the course meshes (`gspro.py creek-depth`, ~5 s): per creek its status
+         * (ok, shallow, not-dug, stale, off, on-lake), its depths in the DEM and the meshes, the shallow stretches
+         * and blocked mouths (EPSG:3006). Measured on the applied DEM, or the raw one with the site's edits replayed
+         * when some are not applied yet (`demSource`). Exports the inner heightmap first when there is none.
+         */
+        creekDepth: {
+            method: 'GET' as const,
+            path: '/courses/:courseId/gspro/creek-depth',
+            fn: (input: Static<typeof CreekDepthInput>) => svc.creekDepth(input.courseId, { only: input.only ? input.only.split(',') : undefined }),
+            schema: CreekDepthInput,
             middleware: [...mw, noIdleTimeout],
         },
         /** Set (`ram`) or clear (`opcd`) the paths' `render` attribute; one path that cannot take it fails the call (409) and nothing is written. */

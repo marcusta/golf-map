@@ -116,8 +116,12 @@ material, probe anchored to the nearest lake's); `golfmap.creeks.water water=lak
 A feature's `ramWaterMaterial` (asset path) overrides the look for that creek. An end at a lake runs `pondFadeM` (2 m) past the
 shore and fades out there by R.A.M.'s vertex colour alpha, so no hard edge shows on the pond (`pondFadeM=0`: off).
 GSPro's water is a MeshCollider on the spline itself, on R.A.M.'s own mesh, with `GSPwater` (Marcus: no extra mesh). The
-import widens control points / moves ends until no edge vertex hangs over lower ground (a ball would roll under it);
-the row's `gaps` must read `gaps 0, open 0`.
+import's CloseGaps widens control points / moves ends / lowers the water in 2 cm steps (up to 6 rounds) until no edge
+vertex hangs over lower ground (a ball would roll under it); the row's `gaps.gaps` must read 0. What it cannot close is
+`needsBed` (dig the bed deeper: `bun run water:depth -- <course>`, or a Blender bed layer), or `farFromPlay` on a creek
+wholly 75 m+ from play (left as it is). Every non-dry import writes them per creek to `<prefix>-inner-creek-gaps.json`
+beside the export (a partial refit merges), its one-line `summary` goes into the bridge answer and the refresh step's note,
+and the GSPro board's Creeks row reads the file (`creeks.txt` lists each creek's gaps and collider too).
 See [README.md](../unity/README.md#creeks-ram).
 
 R.A.M. roads (`render=ram` paths, `GolfMapRamRoads.cs`): `golfmap.ramroads.build` draws `<prefix>-inner-ramroads.json`
