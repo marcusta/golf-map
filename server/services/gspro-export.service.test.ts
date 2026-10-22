@@ -67,7 +67,7 @@ const GEOREF = JSON.stringify({ bbox: GEOREF_BBOX });
 /** …which the exports square and snap to the 10 m step: 2054 m -> 2050 m. */
 const GEOREF_INNER = innerSquareFrom3006(GEOREF_BBOX);
 
-async function setup(runner: ExportRunner, opts: { georeference?: boolean; unityBridge?: UnityBridge; courseDocsRoot?: string; dataDir?: string } = {}) {
+async function setup(runner: ExportRunner, opts: { georeference?: boolean; unityBridge?: UnityBridge; courseDocsRoot?: string; dataDir?: string; pipelineDir?: string } = {}) {
     const ctx = await createTestDb(seedCourse);
     if (opts.georeference !== false) {
         await ctx.db.updateTable('courses').set({ georeference_json: GEOREF })
@@ -78,7 +78,7 @@ async function setup(runner: ExportRunner, opts: { georeference?: boolean; unity
     const assets = new AssetsService(ctx.db, dataDir);
     const svc = new GsproExportService({
         db: ctx.db, courses, assets, dataDir,
-        pipelineDir: '/pipeline', runner, unityBridge: opts.unityBridge, courseDocsRoot: opts.courseDocsRoot,
+        pipelineDir: opts.pipelineDir ?? '/pipeline', runner, unityBridge: opts.unityBridge, courseDocsRoot: opts.courseDocsRoot,
     });
     return { ctx, svc, db: ctx.db, dataDir, assets };
 }
@@ -2859,6 +2859,22 @@ test('a second heightmap export with the same inputs is skipped; a touched DEM, 
     await t.svc.whenIdle(TEST_COURSE_ID);
     expect(t.svc.job(job.id).error).toBeNull();
     expect(w.commands()).toHaveLength(6);
+});
+
+test('an edit to any golfpipe module renders the creeks again, not only one to gspro.py or golfpipe/__init__.py', async () => {
+    const pipeline = await mkdtemp(path.join(os.tmpdir(), 'gspro-pipeline-'));
+    await mkdir(path.join(pipeline, 'golfpipe'));
+    for (const f of ['gspro.py', 'golfpipe/__init__.py', 'golfpipe/creeks.py']) await writeFile(path.join(pipeline, f), '#');
+    const w = writingRunner();
+    const t = await setup(w.runner, { pipelineDir: pipeline });
+    await buildSite(t, ['dem.tif', 'ortho-orto-l2-2025.tif']);
+    await t.svc.setDir(TEST_COURSE_ID, await mkdtemp(path.join(os.tmpdir(), 'gspro-out-')));
+    await t.svc.exportCreeks(TEST_COURSE_ID);
+    expect((await t.svc.exportCreeks(TEST_COURSE_ID)).report[0]).toMatch(/^unchanged: /);
+    w.calls.length = 0;
+    await utimes(path.join(pipeline, 'golfpipe', 'creeks.py'), later(), later());
+    await t.svc.exportCreeks(TEST_COURSE_ID);
+    expect(w.commands()).toEqual(['creeks']);
 });
 
 test('the photo, the masks, the trees and the creeks are skipped when their inputs are unchanged; a feature edit renders them again', async () => {

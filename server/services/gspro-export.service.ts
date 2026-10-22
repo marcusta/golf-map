@@ -3235,9 +3235,14 @@ export class GsproExportService {
 
     /** The mtimes of the pipeline code an export runs through, so an edited exporter renders again. */
     private async pipelineStamp(): Promise<Record<string, number | null>> {
+        // The newest module of golfpipe, not its __init__.py: the exports run through creeks.py, water_steps.py,
+        // dem_edit.py, creek_depth.py ... and an edit to one of them must render again.
+        const dir = path.join(this.pipelineDir, 'golfpipe');
+        const modules = await readdir(dir).then(names => names.filter(n => n.endsWith('.py')), () => [] as string[]);
+        const times = (await Promise.all(modules.map(n => mtimeMs(path.join(dir, n))))).filter((t): t is number => t !== null);
         return {
             'gspro.py': await mtimeMs(path.join(this.pipelineDir, 'gspro.py')),
-            golfpipe: await mtimeMs(path.join(this.pipelineDir, 'golfpipe', '__init__.py')),
+            golfpipe: times.length ? Math.max(...times) : null,
         };
     }
 

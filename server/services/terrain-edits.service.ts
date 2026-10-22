@@ -861,6 +861,11 @@ export class TerrainEditsService {
             assertValidParams(p);
             params = p;
         }
+        // What the op needs, as create checks it: a dig without depthM (or a wall without its level) would be
+        // skipped at replay without a word.
+        if (row.op !== 'recipe' && (patch.params !== undefined || patch.op !== undefined)) {
+            assertOpParams(patch.op ?? row.op as TerrainEditOp, params ?? JSON.parse(row.params_json) as TerrainEditParams);
+        }
         if (rings !== undefined) assertValidRings(rings);
 
         const dbInput: Record<string, unknown> = {};

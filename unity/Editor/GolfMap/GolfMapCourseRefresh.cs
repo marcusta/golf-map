@@ -204,6 +204,11 @@ namespace GolfMap.Editor
             // lift); lakes without one are listed, not given a plane
             run("waterplanes.build", "Lake water planes (every lake; ours rebuilt keeping their lift)", () => Waterplanes(dryRun), planned);
 
+            // 6a. the extra water planes (<course>/water-extra.json: water the lake meshes do not reach until the next OPCD
+            // build), refilled at their 'like' plane's surface as it is now
+            if (File.Exists(courseFolder + GolfMapWaterplanes.ExtraFile))
+                run("waterplanes.extra", "Extra water planes (water-extra.json)", () => GolfMapWaterplanes.Extra(dryRun), planned);
+
             // 6b. a big lake's bed material (golfmap.lake.bed; its sand band is Blender paint): OPCD's default materials undo it
             if (string.IsNullOrEmpty(lakePlane) || !File.Exists(lakePlane))
                 steps.Add(new Step { id = "lake.bed", label = "Big lake bed material", status = "skipped", note = "no lake plane at " + (lakePlane ?? "(no export folder)") });

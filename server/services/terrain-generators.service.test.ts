@@ -570,6 +570,9 @@ test('creek digs: a waterfall on a creek is sent as a step with its sill, one el
     const lip = (x: number, y: number) => ({ crs: 'EPSG:3006' as const, rings: [], centerline: { points: [{ x, y: y - 2 }, { x, y: y + 2 }], widthM: 2 } });
     await t.courseFeatures.create({ courseId: TEST_COURSE_ID, type: 'waterfall', geometry: lip(X + 40, Y + 2), attributes: { style: 'sill', sillM: 1.5 } });
     await t.courseFeatures.create({ courseId: TEST_COURSE_ID, type: 'waterfall', geometry: lip(X + 40, Y + 60), attributes: { style: 'outlet' } });
+    // A fountain in the creek's pond and a cascade down a runnel into it are no lips: no undug sill for them.
+    await t.courseFeatures.create({ courseId: TEST_COURSE_ID, type: 'waterfall', geometry: lip(X + 20, Y + 2), attributes: { style: 'fountain' } });
+    await t.courseFeatures.create({ courseId: TEST_COURSE_ID, type: 'waterfall', geometry: lip(X + 60, Y + 2), attributes: { style: 'cascade' } });
 
     const result = await t.svc.generate(TEST_COURSE_ID, 'creek-digs');
     expect(result.report).toContain('1 waterfall(s) cut into them: each stretch between falls keeps its own level, the sills stay');

@@ -94,6 +94,17 @@ test('update patches fields, bumps version; stale version conflicts', async () =
     await expect(svc.update(edit.id, 1, { enabled: true })).rejects.toBeInstanceOf(VersionConflictError);
 });
 
+test('update checks what the op needs, as create does: a dig left without depthM, or a plane turned into one, is refused', async () => {
+    const { svc, siteId } = await setup();
+    const dig = await svc.create({ siteId, op: 'dig', params: { featherM: 0, depthM: 0.5, reference: 'stream' }, rings: [SQUARE] });
+    await expect(svc.update(dig.id, 1, { params: { featherM: 0, depthM: 0, reference: 'stream' } })).rejects.toBeInstanceOf(InvalidTerrainEditError);
+    await expect(svc.update(dig.id, 1, { params: { featherM: 0, reference: 'stream' } })).rejects.toBeInstanceOf(InvalidTerrainEditError);
+    const plane = await svc.create({ siteId, op: 'plane', params: { featherM: 2 }, rings: [SQUARE] });
+    await expect(svc.update(plane.id, 1, { op: 'dig' })).rejects.toBeInstanceOf(InvalidTerrainEditError);
+    expect((await svc.update(dig.id, 1, { params: { featherM: 0, depthM: 0.7, reference: 'stream' } })).params.depthM).toBe(0.7);
+    expect((await svc.update(plane.id, 1, { enabled: false })).enabled).toBe(false);   // no op or params: nothing to check
+});
+
 test('remove deletes; stale version conflicts', async () => {
     const { svc, siteId } = await setup();
     const edit = await svc.create({ siteId, op: 'plane', params: { featherM: 2 }, rings: [SQUARE] });

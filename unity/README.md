@@ -1154,8 +1154,8 @@ paint"](#vertex-paint); never paint - the FBX brings Blender's; `skip=paint.appl
 (`GolfMapRamRoads.Build(dryRun)`, reached by reflection, when `<prefix>-inner-ramroads.json` is in the export folder;
 `skipped` without it or when the roads report says so), `roughgrass.plant` (Stix grass on the roughs
 and bunker lips; `grassMaterial`, `lipGrass=false`), `terrain.conform mode=match` (`margin`,
-`featherM`), `waterplanes.build` (every lake: a fresh OPCD `.blend` never has water planes - OPCD's Add Water Plane is a manual Blender step - so new lakes get one, ours are rebuilt keeping their lift, lakes another plane covers are left alone, and our stale planes plus any water plane whose mesh is gone - OPCD's after a new `.blend` - are deleted),
-`lake.bed` (the big lake's bed material), `creeks.import` (refit), `walls.build` and `surfaces.export`. `skip=<ids>` leaves steps out; a failed step stops the
+`featherM`), `waterplanes.build` (every lake: a fresh OPCD `.blend` never has water planes - OPCD's Add Water Plane is a manual Blender step - so new lakes get one, ours are rebuilt keeping their lift, lakes another plane covers are left alone, and our stale planes plus any water plane whose mesh is gone - OPCD's after a new `.blend` - are deleted; the planes `<course>/water-extra.json` lists are never stale),
+`waterplanes.extra` (only when the course has a `water-extra.json`: its planes refilled at their `like` plane's surface as it is now), `lake.bed` (the big lake's bed material), `creeks.import` (refit), `walls.build` and `surfaces.export`. `skip=<ids>` leaves steps out; a failed step stops the
 rest unless `continueOnError`. Not automatic, listed under `pending`: grass zones (`bun run grass:zones -- <course>`,
 then `golfmap.zones.import` + `golfmap.grass.apply`) and `props.place` (props moved by hand are kept now, but the
 spec is still the only place a hand move is permanent).
@@ -1491,6 +1491,11 @@ build succeeded, ["Saving what a command changed"](#saving-what-a-command-change
   stands through it), and every lake rim vertex within 2.5 m of a slab near the lake is left out of the level
   (reported `slabs`, `rimLeftOutNearSlabs`): a shore notch drawn round a rock lies down on the lake bed. Vreta's hole
   15 lake stood 1.5 m low on it (rim 7.66 m at the rock, the rest of the shore from 9.18 m), 2026-10-15.
+- **Extra planes: `<course>/water-extra.json`** (`golfmap-water-extra-v1`, `golfmap.waterplanes.extra`, Omberg's
+  `docs/gspro/ombergs-golfklubb/water-extra.gen.py`): water the lake meshes do not reach until the next OPCD build (a
+  pond outline changed in the app). Each plane is a copy of its `like` plane with its own mesh; the whole-course
+  refresh refills them after `waterplanes.build`, and that build's prune never counts them stale (until 2026-10-22 a
+  full refresh deleted them: they have no lake mesh of their own).
 - **Hand-set water levels: `<course>/water-levels.json`** (`golfmap-water-levels-v1`, repo copy
   `docs/gspro/<course>/water-levels.json`): `{"planes": {"<plane>": {"surfaceM": 9.553}}}`. The build gives a named
   plane the lift that puts its water there, whatever its level comes to, so a lake tuned by hand keeps its water

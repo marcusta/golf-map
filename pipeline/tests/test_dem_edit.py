@@ -848,3 +848,21 @@ def test_load_edits_reads_a_wall(tmp_path: Path):
     path = write_edits(tmp_path, [wgs84_feature("wall", ring, featherM=0, centerline=line, levelM=99.55, runM=0.4, minShelfM=0.6)])
     [e] = load_edits(path)
     assert (e.op, e.level_m, e.wall_run_m, e.wall_min_shelf_m, len(e.centerline)) == ("wall", 99.55, 0.4, 0.6, 2)
+
+
+def test_dig_stream_reads_its_water_off_the_heights_before_any_edit():
+    # A creek along row 40 falling 1 m west to east, 1 m below its banks, running through a pond dug 2 m under the
+    # creek's water (cols 30-49) before it. Off the edited heights the creek took the pond's bed for its water and,
+    # the profile only falling, dug everything downstream 2 m too deep; R.A.M. puts the water at the raw surface.
+    x, _ = cell_coords()
+    surface = (20.0 - 1.0 * (x - ORIGIN_X) / (SIZE * RES)).astype(np.float32)
+    dem = surface + 1.0
+    dem[38:43, :] = surface[38:43, :]
+    pond = edit_3006("plane", rect_3006(30, 50, 34, 47), feather_m=0.0, flat=True, level_m=float(surface[40, 40]) - 2.0)
+    creek = edit_3006("dig", rect_3006(4, 76, 38, 43), feather_m=0.0, depth_m=0.4, bank_slope_deg=60.0,
+                      reference="stream", rim_m=1.0)
+    out = apply_edits(dem, TRANSFORM, NODATA, [pond, creek], log=lambda *_: None).astype(float)
+    below = surface[40, 56:72].astype(float) - out[40, 56:72]
+    assert np.median(below) == pytest.approx(0.4, abs=0.08)        # downstream of the pond: its own 0.4 m
+    bank = out[37, 56:72]
+    assert np.all(bank >= surface[37, 56:72] - 1e-6)                # the bank never under the creek's water

@@ -91,6 +91,24 @@ namespace GolfMap.Editor
         public const string ExtraFile = "water-extra.json";
         const string ExtraFormat = "golfmap-water-extra-v1";
 
+        // golfmap.waterplanes.extra from code (course.refresh runs it after the planes are rebuilt).
+        internal static object Extra(bool dryRun)
+        {
+            return ExtraCommand(new BridgeArgs(new Dictionary<string, object> { { "dryRun", dryRun } }));
+        }
+
+        // The plane names <course>/water-extra.json lists (none without the file): Build keeps them out of its stale planes.
+        internal static HashSet<string> ExtraNames(GolfMapCourse course)
+        {
+            var names = new HashSet<string>();
+            var path = GolfMapCourses.Folder(course) + ExtraFile;
+            if (!File.Exists(path)) return names;
+            var root = GolfMapJsonDoc.ParseObject(File.ReadAllText(path));
+            foreach (var o in (root.Array("planes") ?? new List<object>()).OfType<GolfMapJsonObject>())
+                if (!string.IsNullOrEmpty(o.String("name"))) names.Add(o.String("name"));
+            return names;
+        }
+
         [BridgeCommand("golfmap.waterplanes.extra", "Build the extra water planes of <course>/water-extra.json (golfmap-water-extra-v1): water the lake meshes do not reach yet (a pond outline changed after the last OPCD build). Each is a copy of its 'like' plane (AQUAS material, GSPwater physics, reflection probe) at that plane's surface with its own mesh (vertices in scene XZ, triangles), saved to <course>/WaterPlanes/. A rerun refills the same objects. Marks the scene dirty; save=true saves it.",
             args = "file (default <course>/water-extra.json), dryRun=false, " + GolfMapSceneSave.Arg)]
         static object ExtraCommand(BridgeArgs a)
@@ -172,6 +190,7 @@ namespace GolfMap.Editor
             var course = GolfMapCourses.Require();
             var assetFolder = GolfMapCourses.Folder(course) + AssetFolder;
             var levels = FixedLevels(course);
+            var extraNames = ExtraNames(course);
             course = null;
 
             var scene = EditorSceneManager.GetActiveScene();
@@ -261,7 +280,8 @@ namespace GolfMap.Editor
             }
             // Stale: made here, and no mesh in the scene (a lake or any other) would give its name any more.
             var sourceNames = new HashSet<string>(all.Where(g => !IsWaterPlane(g.name) && MeshOf(g) != null).Select(g => KeyOf(g.name) + PlaneSuffix));
-            var stale = planes.Where(p => ours(p) && !sourceNames.Contains(p.name) && only.Length == 0 && !selected).ToList();
+            // A plane of water-extra.json has no mesh of its own by design: never stale (a whole-course refresh prunes).
+            var stale = planes.Where(p => ours(p) && !sourceNames.Contains(p.name) && !extraNames.Contains(p.name) && only.Length == 0 && !selected).ToList();
             // Lost: a water plane object (ours or OPCD's) whose mesh is gone - e.g. OPCD's plane after a new .blend
             // (a fresh OPCD .blend has no water plane, so its FBX disappears). It draws nothing and has no collider.
             var lost = all.Where(g => IsWaterPlane(g.name) && g.GetComponent<MeshFilter>() != null && g.GetComponent<MeshFilter>().sharedMesh == null &&

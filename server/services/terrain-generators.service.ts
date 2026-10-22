@@ -360,8 +360,11 @@ export class TerrainGeneratorsService {
         const siteId = this.builtSiteId(course);
         const all = await this.courseFeatures.listByCourse(courseId);
         const creeks = all.filter(f => f.type === 'water_creek');
-        // The waterfalls (shared/features/waterfall.ts): a creek is cut at each lip that lies on it.
+        // The waterfalls (shared/features/waterfall.ts): a creek is cut at each lip that lies on it. A cascade's line
+        // runs down its own stream and a fountain stands in a pond: neither is a lip across a creek (gspro.py
+        // _creek_falls skips them too, so the R.A.M. water and the dig agree).
         const falls = all.filter(f => f.type === WATERFALL_TYPE && f.geometry.centerline && f.geometry.centerline.points.length >= 2)
+            .filter(f => !['cascade', 'fountain'].includes((f.attributes ?? {} as Record<string, unknown>)[WATERFALL_STYLE_ATTRIBUTE] as string))
             .map(f => {
                 const attrs = (f.attributes ?? {}) as Record<string, unknown>;
                 const style = attrs[WATERFALL_STYLE_ATTRIBUTE] === 'outlet' ? 'outlet' : 'sill';

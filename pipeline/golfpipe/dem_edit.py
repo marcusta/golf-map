@@ -652,10 +652,15 @@ def apply_edits(
     if nodata is not None:
         valid &= current != nodata
 
+    # A creek's water surface is read off the heights as they came in, before any edit: the same surface the
+    # R.A.M. water is put at (gspro.py creeks reads the raw DEM). Off the edited heights a creek running into a
+    # pond dug before it (water-digs replay first) took the pond's bed for its water, and the profile only falls,
+    # so its bed went down with it - and its banks were cut under the water R.A.M. puts on top.
+    raw = dem.astype(np.float64)
     for index, edit in enumerate(edits):
         if edit.op == "shore" and terrain == "inner" and edit.inner_depth_m is not None:
             edit = replace(edit, depth_m=min(edit.depth_m, edit.inner_depth_m))
-        _apply_one(current, valid, transform, edit, index, log, water_levels)
+        _apply_one(current, valid, transform, edit, index, log, water_levels, raw=raw)
 
     return current.astype(np.float32)
 
@@ -668,10 +673,12 @@ def _apply_one(
     index: int,
     log,
     water_levels: dict | None = None,
+    raw: np.ndarray | None = None,
 ) -> None:
     """Applies one edit to `current` in place. All raster math runs on a
     mask-bbox window only (masks are small; whole-raster filtering is
     wasteful), padded so smooth reads and the feather band stay inside it.
+    `raw` is the DEM before any edit (a creek's water surface is read off it).
     """
     label = f"edit {index + 1} ({edit.op}{', flat' if edit.op == 'plane' and edit.flat else ''})"
     height, width = current.shape
@@ -712,7 +719,8 @@ def _apply_one(
         target = _corridor_target(cur_win, mask_win, valid_win, transform, r0, c0, cell_x, cell_y, edit, label, log)
     elif edit.op == "dig":
         target = _dig_target(cur_win, mask_win, valid_win, transform, r0, c0, cell_x, cell_y, edit, label, log,
-                             water_levels=water_levels, key=edit.origin_ref or f"edit:{index + 1}")
+                             water_levels=water_levels, key=edit.origin_ref or f"edit:{index + 1}",
+                             raw_win=raw[window] if raw is not None else None)
     elif edit.op == "delta":
         target = _delta_target(cur_win, mask_win, transform, r0, c0, edit)
     elif edit.op == "wall":
@@ -1030,6 +1038,7 @@ def _dig_target(
     log,
     water_levels: dict | None = None,
     key: str = "",
+    raw_win: np.ndarray | None = None,
 ) -> np.ndarray | None:
     inside = mask_win & valid_win
     if int(np.count_nonzero(inside)) < 4:
@@ -1062,7 +1071,7 @@ def _dig_target(
 
     if edit.reference == "stream":
         return _stream_target(cur_win, valid_win, mask_win, transform, r0, c0, rows, cols, xs, ys, d, cell,
-                              slope, shelf, edit, label, log)
+                              slope, shelf, edit, label, log, raw_win=raw_win)
     if edit.reference == "level":
         rim = inside & (d <= edit.rim_m)
         if not rim.any():
@@ -1150,9 +1159,11 @@ def _stream_target(
     edit: DemEdit,
     label: str,
     log,
+    raw_win: np.ndarray | None = None,
 ) -> np.ndarray | None:
-    """A creek bed below its water surface (creeks.surface_profile over the
-    pre-edit heights, along the edit's centerline, else the line down its
+    """A creek bed below its water surface (creeks.surface_profile over
+    `raw_win`, the heights before any edit - where the R.A.M. water is put -
+    else the current ones, along the edit's centerline, else the line down its
     polygon; each cell at its nearest station). The outline is the water's
     edge: inside it everything is dug below the surface, the bank steepened
     where the creek is too narrow for `bankSlopeDeg` to reach `depthM` by its
@@ -1169,8 +1180,8 @@ def _stream_target(
     win_transform = transform * rasterio.Affine.translation(c0, r0)
     steps = edit.steps or []
     lips = [np.asarray(st["line"], dtype=np.float64) for st in steps]
-    profile = surface_profile(cur_win, win_transform, np.asarray(line), width, valid=valid_win,
-                              breaks=[lip.mean(axis=0) for lip in lips])
+    profile = surface_profile(cur_win if raw_win is None else raw_win, win_transform, np.asarray(line), width,
+                              valid=valid_win, breaks=[lip.mean(axis=0) for lip in lips])
     if profile is None:
         log(f"warning: {label}: the creek line crosses no valid cells — skipped")
         return None
