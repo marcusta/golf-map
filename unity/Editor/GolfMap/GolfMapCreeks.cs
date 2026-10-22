@@ -54,10 +54,13 @@
 // under the bridge to fall E, where the AQUAS plane alone shows only the bed.
 //
 // GSPro's water is a collider: each spline gets a MeshCollider on R.A.M.'s
-// own mesh with the GSPwater physic material. Before that, every edge vertex
-// of the built mesh that hangs over lower ground widens its control point on
-// that side (or moves the end on) until the edge meets the ground, so no ball
-// rolls under the water's edge (see CloseGaps).
+// own mesh with the GSPwater physic material. Before that, an end out over
+// the outer terrain is drawn back onto the course meshes, and every edge
+// vertex of the built mesh that hangs over lower ground widens its control
+// point on that side (or moves the end on) until the edge meets the ground,
+// lowering the water a little where widening alone cannot reach a bank, so no
+// ball rolls under the water's edge; what neither closes needs a deeper bed
+// (see CloseGaps).
 //
 // The report compares each creek's exported surface with the ground under it
 // (the highest collider straight down: the course meshes) and gives the fit.
@@ -128,6 +131,13 @@ namespace GolfMap.Editor
         {
             public bool fit = true;
             public float aboveBedM = 0.15f, buryM = 0.05f, bankM = 2f, searchM = 8f;
+            // The most a side may reach past the export's half width and bankM: where the ground round a creek lies under
+            // its water (a mouth on a dug pond's shelf) the bank walk finds the pond, not the creek's banks (Landeryd
+            // hole_16_e5 on 2026-10-21: drawn 0.54 m wide, fitted 9-39 m and spread over the pond).
+            public float widenM = 2f;
+            // CloseGaps: the most a side may widen / an end move on in all, the shallowest the water may get over its bed when
+            // lowered, the most it may be lowered, and the steps it is lowered in (see CloseGaps).
+            public float gapWidenM = 2f, gapExtendM = 4f, minDepthM = 0.05f, maxLowerM = 0.1f, levelStepM = 0.02f;
             public string trace;  // a creek id (or part of one): its stations go into the result
             public string water = "lake";  // lake: the lakes' AQUAS water; profile: R.A.M.'s material
             public float pondFadeM = 2f;  // how far into a lake a creek's water runs and fades out; 0 = no fade, every vertex opaque
@@ -146,7 +156,7 @@ namespace GolfMap.Editor
         static void MenuProfile() { Debug.Log("[GolfMap Creeks] " + GolfMapJson.Serialize(Style("profile"), false)); }
 
         [BridgeCommand("golfmap.creeks.import", "Import the course's unity-creeks-v1 export (<prefix>-inner-creeks.json) as NatureManufacture R.A.M. splines under 'GolfMap Creeks': one RamSpline per creek with its profile, fitted to the course meshes under it (water aboveBedM over the bed; each side out to where the bank rises above the water plus bankM; both ends run on into the bank the same way, or at a lake pondFadeM past its shore, the water fading out over the lake by vertex alpha), wearing the lakes' water (water=lake) or the profile's material (water=profile). Re-import after changing creeks, heightmap or meshes refits them in place (points and transform reset) and removes creeks no longer exported. Marks the scene dirty; save=true saves it (and the assets it changed) once the import has succeeded.",
-            args = "file (default: the active course's export), dryRun=false, fit=true (false: the export's surface and width as they are), aboveBedM=0.15, bankM=2, buryM=0.05, searchM=8 (how far past the export's half width to look for a bank), trace (a creek id or part of one: its fit station by station), water=lake|profile, pondFadeM=2 (0: no fade at lakes), " + GolfMapSceneSave.Arg)]
+            args = "file (default: the active course's export), dryRun=false, fit=true (false: the export's surface and width as they are), aboveBedM=0.15, bankM=2, buryM=0.05, searchM=8 (how far past the export's half width to look for a bank), widenM=2 (a side reaches at most the export's half width + bankM + widenM), gapWidenM=2 / gapExtendM=4 (closing gaps: the most a side widens / an end moves on), minDepthM=0.05 / maxLowerM=0.1 / levelStepM=0.02 (closing gaps: the water lowered in steps, no shallower over its bed), trace (a creek id or part of one: its fit station by station), water=lake|profile, pondFadeM=2 (0: no fade at lakes), " + GolfMapSceneSave.Arg)]
         static object Command(BridgeArgs a)
         {
             var o = new FitOptions();
@@ -155,6 +165,12 @@ namespace GolfMap.Editor
             o.bankM = (float)a.Number("bankM", o.bankM);
             o.buryM = (float)a.Number("buryM", o.buryM);
             o.searchM = (float)a.Number("searchM", o.searchM);
+            o.widenM = (float)a.Number("widenM", o.widenM);
+            o.gapWidenM = (float)a.Number("gapWidenM", o.gapWidenM);
+            o.gapExtendM = (float)a.Number("gapExtendM", o.gapExtendM);
+            o.minDepthM = (float)a.Number("minDepthM", o.minDepthM);
+            o.maxLowerM = (float)a.Number("maxLowerM", o.maxLowerM);
+            o.levelStepM = (float)a.Number("levelStepM", o.levelStepM);
             o.trace = a.String("trace");
             o.water = a.String("water") ?? o.water;
             o.pondFadeM = (float)a.Number("pondFadeM", o.pondFadeM);
@@ -289,7 +305,8 @@ namespace GolfMap.Editor
             var result = new Dictionary<string, object>
             {
                 { "file", file }, { "dryRun", dryRun }, { "creeks", creeks.Count }, { "exported", exported },
-                { "fit", fit.fit ? (object)new Dictionary<string, object> { { "aboveBedM", fit.aboveBedM }, { "bankM", fit.bankM }, { "buryM", fit.buryM }, { "searchM", fit.searchM } } : false },
+                { "fit", fit.fit ? (object)new Dictionary<string, object> { { "aboveBedM", fit.aboveBedM }, { "bankM", fit.bankM }, { "buryM", fit.buryM }, { "searchM", fit.searchM },
+                    { "gapWidenM", fit.gapWidenM }, { "gapExtendM", fit.gapExtendM }, { "minDepthM", fit.minDepthM }, { "maxLowerM", fit.maxLowerM } } : false },
                 { "created", created }, { "updated", updated }, { "removed", removed },
                 { "missingProfiles", missingProfiles.ToList() },
                 { "water", water ?? (object)fit.water },
@@ -679,11 +696,21 @@ namespace GolfMap.Editor
             // Points standing only on a crossing take the width either side of it.
             var half = new float[n, 2];
             var crossed = new bool[n];
-            int openSides = 0;
+            int openSides = 0, capped = 0;
             for (int i = 0; i < n; i++)
             {
                 crossed[i] = stations.Any(st => st.owner == i && st.crossing) && !stations.Any(st => st.owner == i && !st.crossing && !float.IsNaN(st.bed));
-                for (int side = 0; side < 2; side++) half[i, side] = found[i, side] ? extent[i, side] : pts[i].w / 2f;
+                for (int side = 0; side < 2; side++)
+                {
+                    half[i, side] = found[i, side] ? extent[i, side] : pts[i].w / 2f;
+                    float most = pts[i].w / 2f + o.bankM + o.widenM;
+                    if (half[i, side] > most)
+                    {
+                        flag(XZ(pts[i]), "the " + (side == 0 ? "left" : "right") + " bank lies " + M(half[i, side]) + " m out (a pond or a flat?): kept to " + M(most) + " m");
+                        half[i, side] = most;
+                        capped++;
+                    }
+                }
                 // On a lake the drawn width is the most: the lake's own water lies beyond it.
                 if (c.onLake) for (int side = 0; side < 2; side++) half[i, side] = Mathf.Min(half[i, side], pts[i].w / 2f);
                 if (crossed[i] || atLake[i]) continue;
@@ -817,7 +844,7 @@ namespace GolfMap.Editor
                 { "widthM", new Dictionary<string, object> { { "export", Math.Round(c.widthM, 2) }, { "min", Math.Round(widths[0], 2) }, { "median", Math.Round(widths[widths.Count / 2], 2) }, { "max", Math.Round(widths[widths.Count - 1], 2) } } },
                 { "surfaceMinusExportM", Math.Round(diff[diff.Count / 2], 2) },
                 { "fallM", Math.Round(fitted[0].y - fitted[fitted.Count - 1].y, 2) },
-                { "endsM", ends }, { "openSides", openSides }, { "maxShiftM", Math.Round(maxShift, 2) },
+                { "endsM", ends }, { "openSides", openSides }, { "sidesKeptToMost", capped }, { "maxShiftM", Math.Round(maxShift, 2) },
                 { "maxClimbM", Math.Round(climb, 2) }, { "crossings", crossings }, { "cornersDropped", corners },
                 { "lakeEndPoints", atLake.Count(v => v) },
                 { "check", check },
@@ -922,7 +949,12 @@ namespace GolfMap.Editor
         // The top of the course meshes (Spline_*, Gap_Issue*) at (x, z), else the
         // terrain; NaN over neither. Buildings, trees, water planes and the splines
         // themselves are not ground.
-        static float GroundAt(Vector2 p)
+        static float GroundAt(Vector2 p) { return GroundAt(p, false); }
+
+        // The course meshes alone: NaN where there are none (out over the outer terrain).
+        static float MeshAt(Vector2 p) { return GroundAt(p, true); }
+
+        static float GroundAt(Vector2 p, bool meshOnly)
         {
             float mesh = float.NegativeInfinity, terrain = float.NegativeInfinity;
             foreach (var h in Physics.RaycastAll(new Vector3(p.x, 10000f, p.y), Vector3.down, 20000f, ~0, QueryTriggerInteraction.Ignore))
@@ -932,7 +964,7 @@ namespace GolfMap.Editor
                 if (name.StartsWith("Spline_", StringComparison.Ordinal) || name.StartsWith("Gap_Issue", StringComparison.Ordinal)) mesh = Mathf.Max(mesh, h.point.y);
                 else if (h.collider is TerrainCollider) terrain = Mathf.Max(terrain, h.point.y);
             }
-            return !float.IsNegativeInfinity(mesh) ? mesh : !float.IsNegativeInfinity(terrain) ? terrain : float.NaN;
+            return !float.IsNegativeInfinity(mesh) ? mesh : !meshOnly && !float.IsNegativeInfinity(terrain) ? terrain : float.NaN;
         }
 
         // How far a creek on a lake lies over the lake's water plane (m): over AQUAS's surface, not in it.
@@ -1011,21 +1043,56 @@ namespace GolfMap.Editor
         // both end loops: one more than GapM above the ground under it (and not over a lake, whose plane takes the ball)
         // is a gap. A waterfall's neck (the points over its sill and down its face) is left be: water falling hangs over the
         // lower ground by nature, and widening the face (hole 3's fall C, 6 -> 12 m, its centre moved 2 m) folded the mesh.
-        // Elsewhere the control point a gap's loop belongs to is widened on that side (its centre moved that way by half), or
-        // an end point moved on along the line, out to where the ground has risen MeetM above the water and BuryM on, and
-        // the spline built again, up to CloseRounds times. A gap with no ground above the water within searchM is `open`.
+        // First an end out over the outer terrain (no course mesh under it or an edge: Vreta's 0bfe60f0 and b88e40c4 hung
+        // 1.4 m over it, where no bank ever meets the water) is drawn back along the line onto the meshes.
+        // Then each control point with gaps tries its water in levelStepM steps down from where the fit put it, at most
+        // maxLowerM and never shallower than minDepthM over the bed under it. At each level a gap the water no longer hangs
+        // over is closed, and the rest need the side widened (its centre moved that way by half) or the end moved on along
+        // the line, out to where the ground has risen MeetM above the water and BuryM on, within what is left of gapWidenM
+        // a side or gapExtendM an end (or on to searchM where it runs into a lake), so the water never spreads out over a
+        // flat (Vreta's b37cf073 widened 7 -> 30 m and stood 6-29 cm over the rough, water to GSPro that looked like
+        // grass). The level that closes the most gaps wins,
+        // then the highest: widen and extend first, lower only as far as that needs. Raising never helps: a gap is water
+        // standing above the ground. The spline is built again, up to CloseRounds times. A gap no level closes is left
+        // and listed in needsBed with how far the water hangs there: its bed must be dug deeper (in Blender).
         const string WaterPhysics = "Assets/Resources/Physics/GSPwater.physicMaterial";
-        const float GapM = 0.02f, MeetM = 0.02f, BuryM = 0.2f, ReachStepM = 0.1f;
-        const int CloseRounds = 4;
+        const float GapM = 0.02f, MeetM = 0.02f, BuryM = 0.2f, ReachStepM = 0.1f, BedStepM = 0.25f;
+        const int CloseRounds = 6;
+
+        // An edge vertex hanging over lower ground: on side 0/1 (left/right looking downstream) of `point`, or (end 0/1)
+        // on the first/last end loop.
+        sealed class Gap
+        {
+            public int point, side = -1, end = -1;
+            public Vector3 v;
+            public Vector2 dir;
+        }
+
+        // One level tried for one point's gaps: how many it closes, how far each side widens and the end moves on.
+        sealed class Level
+        {
+            public float dy, endM;
+            public float[] sideM = new float[2];
+            public int closed;
+        }
 
         static Dictionary<string, object> CloseGaps(Component spline, Type splineType, FitOptions o, HashSet<int> neck)
         {
             var go = spline.gameObject;
             var field = splineType.GetField("controlPoints");
-            var pts = (List<Vector4>)field.GetValue(spline);
+            var pts = new List<Vector4>((List<Vector4>)field.GetValue(spline));
+            neck = new HashSet<int>(neck);
+            var trimmed = TrimOffMeshEnds(pts, neck);
+            if (trimmed.Count > 0)
+            {
+                field.SetValue(spline, pts);
+                splineType.GetMethod("GenerateSpline").Invoke(spline, new object[] { null });
+            }
             int n = pts.Count, widened = 0, moved = 0, rounds = 0;
-            var open = new List<object>();
-            int gaps = 0, openGaps = 0;
+            var widen = new float[n, 2];
+            var extend = new float[2];
+            var lowered = new float[n];
+            var gaps = new List<Gap>();
             for (; ; rounds++)
             {
                 var filter = go.GetComponent<MeshFilter>();
@@ -1036,79 +1103,199 @@ namespace GolfMap.Editor
                 int loops = mesh.vertexCount / per;
                 var w = mesh.vertices.Select(v => go.transform.TransformPoint(v)).ToArray();
                 var centre = new Vector2[loops];
+                var owner = new int[loops];
+                // How deep the water stands over the bed (the lowest ground across a loop) under each point's loops.
+                var depth = Enumerable.Repeat(float.PositiveInfinity, n).ToArray();
                 for (int l = 0; l < loops; l++)
                 {
                     Vector3 sum = Vector3.zero;
                     for (int j = 0; j < per; j++) sum += w[l * per + j];
                     centre[l] = new Vector2(sum.x / per, sum.z / per);
-                }
-                var side = new float[n, 2];
-                var end = new float[2];
-                gaps = openGaps = 0;
-                open.Clear();
-                Func<Vector3, Vector2, float> need = (v, dir) =>
-                {
-                    var p = new Vector2(v.x, v.z);
-                    float g = GroundAt(p);
-                    if ((!float.IsNaN(g) && g >= v.y - GapM) || OverLake(p)) return 0;
-                    gaps++;
-                    float reach = Reach(v, dir, o.searchM);
-                    if (float.IsNaN(reach))
-                    {
-                        openGaps++;
-                        if (open.Count < 12) open.Add(new Dictionary<string, object> { { "x", Math.Round(v.x, 1) }, { "z", Math.Round(v.z, 1) } });
-                        return 0;
-                    }
-                    return reach;
-                };
-                for (int l = 0; l < loops; l++)
-                {
                     int i = 0;
                     for (int k = 1; k < n; k++) if ((XZ(pts[k]) - centre[l]).sqrMagnitude < (XZ(pts[i]) - centre[l]).sqrMagnitude) i = k;
+                    owner[l] = i;
+                    Vector2 a = new Vector2(w[l * per].x, w[l * per].z), b = new Vector2(w[l * per + per - 1].x, w[l * per + per - 1].z);
+                    float across = Vector2.Distance(a, b), bed = float.PositiveInfinity;
+                    for (float s = 0; s <= across + 1e-3f; s += BedStepM)
+                    {
+                        float g = GroundAt(Vector2.Lerp(a, b, across > 0 ? s / across : 0));
+                        if (!float.IsNaN(g)) bed = Mathf.Min(bed, g);
+                    }
+                    if (!float.IsPositiveInfinity(bed)) depth[i] = Mathf.Min(depth[i], sum.y / per - bed);
+                }
+                gaps.Clear();
+                for (int l = 0; l < loops; l++)
+                {
+                    int i = owner[l];
                     if (neck.Contains(i)) continue;
                     var right = Right(pts, i);
                     foreach (int j in new[] { 0, per - 1 })
                     {
                         var v = w[l * per + j];
+                        if (!Hangs(v)) continue;
                         var inner = w[l * per + (j == 0 ? 1 : per - 2)];
-                        float m = need(v, new Vector2(v.x - inner.x, v.z - inner.z));
-                        if (m <= 0) continue;
-                        int s = Vector2.Dot(new Vector2(v.x, v.z) - XZ(pts[i]), right) >= 0 ? 1 : 0;
-                        side[i, s] = Mathf.Max(side[i, s], m);
+                        int side = Vector2.Dot(new Vector2(v.x, v.z) - XZ(pts[i]), right) >= 0 ? 1 : 0;
+                        gaps.Add(new Gap { point = i, side = side, v = v, dir = new Vector2(v.x - inner.x, v.z - inner.z) });
                     }
                 }
                 for (int e = 0; e < 2; e++)
                 {
-                    int l = e == 0 ? 0 : loops - 1, inward = e == 0 ? 1 : loops - 2;
-                    var dir = centre[l] - centre[inward];
-                    for (int j = 0; j < per; j++) end[e] = Mathf.Max(end[e], need(w[l * per + j], dir));
+                    int l = e == 0 ? 0 : loops - 1, inward = e == 0 ? 1 : loops - 2, i = e == 0 ? 0 : n - 1;
+                    if (neck.Contains(i)) continue;
+                    for (int j = 0; j < per; j++)
+                        if (Hangs(w[l * per + j])) gaps.Add(new Gap { point = i, end = e, v = w[l * per + j], dir = centre[l] - centre[inward] });
                 }
-                bool any = end[0] > 0 || end[1] > 0;
-                for (int i = 0; i < n && !any; i++) any = side[i, 0] > 0 || side[i, 1] > 0;
-                if (!any || rounds == CloseRounds) break;
+                if (gaps.Count == 0 || rounds == CloseRounds) break;
 
                 var next = new List<Vector4>(pts);
-                for (int i = 0; i < n; i++)
+                bool changed = false;
+                foreach (var at in gaps.GroupBy(g => g.point))
                 {
-                    if (side[i, 0] <= 0 && side[i, 1] <= 0) continue;
-                    var c = XZ(pts[i]) + Right(pts, i) * ((side[i, 1] - side[i, 0]) / 2f);
-                    next[i] = new Vector4(c.x, pts[i].y, c.y, pts[i].w + side[i, 0] + side[i, 1]);
-                    widened++;
+                    int i = at.Key, count = at.Count();
+                    float room = Mathf.Min(o.maxLowerM - lowered[i], float.IsPositiveInfinity(depth[i]) ? 0 : depth[i] - o.minDepthM);
+                    Level best = null;
+                    for (int step = 0; best == null || best.closed < count; step++)
+                    {
+                        float dy = -step * o.levelStepM;
+                        if (step > 0 && -dy > room + 1e-4f) break;
+                        var level = TryLevel(at, dy, widen, extend, o);
+                        if (best == null || level.closed > best.closed) best = level;
+                    }
+                    var p = next[i];
+                    if (best.dy < 0)
+                    {
+                        p.y += best.dy;
+                        lowered[i] -= best.dy;
+                        changed = true;
+                    }
+                    if (best.sideM[0] > 0 || best.sideM[1] > 0)
+                    {
+                        var c = XZ(pts[i]) + Right(pts, i) * ((best.sideM[1] - best.sideM[0]) / 2f);
+                        p = new Vector4(c.x, p.y, c.y, p.w + best.sideM[0] + best.sideM[1]);
+                        widen[i, 0] += best.sideM[0];
+                        widen[i, 1] += best.sideM[1];
+                        widened++;
+                        changed = true;
+                    }
+                    if (best.endM > 0)
+                    {
+                        int e = i == 0 ? 0 : 1, inward = e == 0 ? 1 : n - 2;
+                        var q = XZ(p) + (XZ(p) - XZ(next[inward])).normalized * best.endM;
+                        p = new Vector4(q.x, p.y, q.y, p.w);
+                        extend[e] += best.endM;
+                        moved++;
+                        changed = true;
+                    }
+                    next[i] = p;
                 }
-                for (int e = 0; e < 2; e++)
-                {
-                    if (end[e] <= 0) continue;
-                    int i = e == 0 ? 0 : n - 1, inward = e == 0 ? 1 : n - 2;
-                    var p = XZ(next[i]) + (XZ(next[i]) - XZ(next[inward])).normalized * end[e];
-                    next[i] = new Vector4(p.x, next[i].y, p.y, next[i].w);
-                    moved++;
-                }
-                field.SetValue(spline, pts = next);
+                if (!changed) break;
+                pts = next;
+                field.SetValue(spline, pts);
                 splineType.GetMethod("GenerateSpline").Invoke(spline, new object[] { null });
             }
-            var result = new Dictionary<string, object> { { "gaps", gaps }, { "open", openGaps }, { "widened", widened }, { "endsMoved", moved }, { "rounds", rounds } };
-            if (open.Count > 0) result["openAt"] = open;
+            // What is left: where the water still hangs, and how far (one entry per half metre).
+            var needsBed = new List<object>();
+            var listed = new HashSet<string>();
+            foreach (var g in gaps.OrderByDescending(g => g.v.y - GroundAt(new Vector2(g.v.x, g.v.z))))
+            {
+                var key = Mathf.RoundToInt(g.v.x * 2) + "," + Mathf.RoundToInt(g.v.z * 2);
+                if (needsBed.Count >= 12 || !listed.Add(key)) continue;
+                float ground = GroundAt(new Vector2(g.v.x, g.v.z));
+                needsBed.Add(new Dictionary<string, object>
+                {
+                    { "x", Math.Round(g.v.x, 1) }, { "z", Math.Round(g.v.z, 1) },
+                    { "hangM", float.IsNaN(ground) ? (object)"no ground" : Math.Round(g.v.y - ground, 2) },
+                });
+            }
+            var result = new Dictionary<string, object>
+            {
+                { "gaps", gaps.Count }, { "widened", widened }, { "endsMoved", moved },
+                { "lowered", lowered.Count(v => v > 0) }, { "mostLoweredM", Math.Round(lowered.Length > 0 ? lowered.Max() : 0, 2) }, { "rounds", rounds },
+            };
+            if (trimmed.Count > 0) result["trimmed"] = trimmed;
+            if (needsBed.Count > 0) result["needsBed"] = needsBed;
             return result;
+        }
+
+        // Does this edge vertex hang over lower ground (not over a lake, whose plane takes the ball)?
+        static bool Hangs(Vector3 v)
+        {
+            var p = new Vector2(v.x, v.z);
+            float g = GroundAt(p);
+            return !(!float.IsNaN(g) && g >= v.y - GapM) && !OverLake(p);
+        }
+
+        // One point's gaps with its water dy lower: each closed by the lower water, else by widening its side or moving
+        // its end on within what is left of gapWidenM / gapExtendM.
+        static Level TryLevel(IEnumerable<Gap> gaps, float dy, float[,] widen, float[] extend, FitOptions o)
+        {
+            var level = new Level { dy = dy };
+            foreach (var g in gaps)
+            {
+                var v = new Vector3(g.v.x, g.v.y + dy, g.v.z);
+                if (!Hangs(v)) { level.closed++; continue; }
+                float left = g.end >= 0 ? o.gapExtendM - extend[g.end] : o.gapWidenM - widen[g.point, g.side];
+                float reach = left >= ReachStepM ? Reach(v, g.dir, left) : float.NaN;
+                // Into a lake is no spreading: its plane takes the ball, so that reach may run on to searchM.
+                if (float.IsNaN(reach))
+                {
+                    float far = Reach(v, g.dir, o.searchM);
+                    if (!float.IsNaN(far) && OverLake(new Vector2(v.x, v.z) + g.dir.normalized * far)) reach = far;
+                }
+                if (float.IsNaN(reach)) continue;
+                level.closed++;
+                if (g.end >= 0) level.endM = Mathf.Max(level.endM, reach);
+                else level.sideM[g.side] = Mathf.Max(level.sideM[g.side], reach);
+            }
+            return level;
+        }
+
+        // Draws each end back along the line until the course meshes lie under it and both its edges (half its width
+        // across): out over the outer terrain no bank ever meets the water. A point with no such place before the next
+        // one goes, down to two points. `neck` (indices into pts) follows.
+        static List<object> TrimOffMeshEnds(List<Vector4> pts, HashSet<int> neck)
+        {
+            var trimmed = new List<object>();
+            for (int e = 0; e < 2; e++)
+            {
+                float movedM = 0;
+                int dropped = 0;
+                while (pts.Count >= 2)
+                {
+                    int i = e == 0 ? 0 : pts.Count - 1, inward = e == 0 ? 1 : pts.Count - 2;
+                    if (neck.Contains(i) || OnMeshes(pts, i, XZ(pts[i]))) break;
+                    Vector2 from = XZ(pts[i]), to = XZ(pts[inward]);
+                    float len = Vector2.Distance(from, to), s = BedStepM;
+                    while (s < len && !OnMeshes(pts, i, Vector2.Lerp(from, to, s / len))) s += BedStepM;
+                    if (s < len)
+                    {
+                        var q = Vector2.Lerp(from, to, s / len);
+                        pts[i] = new Vector4(q.x, pts[i].y, q.y, pts[i].w);
+                        movedM += s;
+                        break;
+                    }
+                    if (pts.Count == 2) break;  // two points and no mesh between them: left as it is
+                    pts.RemoveAt(i);
+                    movedM += len;
+                    dropped++;
+                    if (e == 0)
+                    {
+                        var shifted = neck.Select(k => k - 1).ToList();
+                        neck.Clear();
+                        foreach (var k in shifted) neck.Add(k);
+                    }
+                }
+                if (movedM > 0)
+                    trimmed.Add(new Dictionary<string, object> { { "end", e == 0 ? "first" : "last" }, { "m", Math.Round(movedM, 2) }, { "pointsDropped", dropped } });
+            }
+            return trimmed;
+        }
+
+        // Are there course meshes under p and under both edges of a section of point i's width there?
+        static bool OnMeshes(List<Vector4> pts, int i, Vector2 p)
+        {
+            var half = Right(pts, i) * (pts[i].w / 2f);
+            return !float.IsNaN(MeshAt(p)) && !float.IsNaN(MeshAt(p + half)) && !float.IsNaN(MeshAt(p - half));
         }
 
         // The GSPwater MeshCollider on the spline, on the mesh R.A.M. built last.
