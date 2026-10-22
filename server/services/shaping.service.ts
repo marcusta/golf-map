@@ -52,7 +52,10 @@
 // The worker may be on another machine: GOLFMAP_SHAPING_URL points at it,
 // GOLFMAP_SHAPING_TOKEN is the shared secret both sides use (`X-Golfmap-Token`
 // on every request), and the paths it is given (blend, layersDir, fbxFolder)
-// must be ones it can open — the same mount on both sides, or UNC.
+// must be ones it can open: GOLFMAP_SHAPING_PATH_MAP moves each prefix to the
+// worker's (a local copy of the export folder, SMB mounts for the layers and
+// the FBX folder) and the paths it reports back; with a map set the worker is
+// never started from here (docs/mac-blender-machine.md).
 // One worker for the machine, so one apply at a time across courses. Paths,
 // all overridable (env, or deps in tests):
 //   - blend:      GOLFMAP_SHAPING_BLEND (absolute, or a name in the export
@@ -369,6 +372,12 @@ export interface ShapingDeps {
     /** The shared secret the worker wants as `X-Golfmap-Token` (default GOLFMAP_SHAPING_TOKEN; unset = no header). */
     token?: string;
     /**
+     * A worker on another machine: `<local prefix>=<worker prefix>;...` (default GOLFMAP_SHAPING_PATH_MAP), applied to
+     * every path sent to the worker and back to every path it reports; the longest matching prefix wins. Set = the
+     * worker is never started from here.
+     */
+    pathMap?: string;
+    /**
      * Every `/sync` with `{allowGaps: true}`: a gap, T-junction step, upside-down top face or NaN the sync made is a
      * warning instead of a failed job, and the FBX are exported anyway — the escape hatch, not the way to work
      * (default GOLFMAP_SHAPING_ALLOW_GAPS=1; unset = the gates fail the job).
@@ -418,6 +427,7 @@ export class ShapingService {
     private readonly dbPath: string | undefined;
     private readonly workerUrl: string;
     private readonly token: string | undefined;
+    private readonly pathMap: PathMapEntry[];
     private readonly allowGaps: boolean;
     private readonly workerLauncher: string[];
     private readonly layersRoot: string;
@@ -447,6 +457,7 @@ export class ShapingService {
         this.dbPath = deps.dbPath ?? process.env.DB_PATH;
         this.workerUrl = (deps.workerUrl ?? process.env.GOLFMAP_SHAPING_URL ?? DEFAULT_SHAPING_URL).replace(/\/+$/, '');
         this.token = deps.token ?? process.env.GOLFMAP_SHAPING_TOKEN ?? undefined;
+        this.pathMap = parsePathMap(deps.pathMap ?? process.env.GOLFMAP_SHAPING_PATH_MAP ?? '');
         this.allowGaps = deps.allowGaps ?? process.env.GOLFMAP_SHAPING_ALLOW_GAPS === '1';
         this.workerLauncher = deps.workerLauncher ?? [
             blenderExecutable(), '-b', '--python', path.join(REPO_DIR, 'blender', 'tools', 'shape_worker.py'),
@@ -993,9 +1004,9 @@ export class ShapingService {
                 reachable: true,
                 state: str(body.state) ?? (res.ok ? null : 'error'),
                 phase: str(body.phase),
-                blend: str(body.blend),
-                conformed: str(body.conformed),
-                layersDir: str(body.layersDir),
+                blend: this.fromWorker(str(body.blend)),
+                conformed: this.fromWorker(str(body.conformed)),
+                layersDir: this.fromWorker(str(body.layersDir)),
                 appliedOps: body.appliedOps ?? null,
                 lastRun: body.lastRun ?? null,
                 job: workerJob(body.job),
@@ -1020,6 +1031,10 @@ export class ShapingService {
         let st = await this.workerStatus();
         let cold = false;
         if (!st.reachable) {
+            if (this.pathMap.length) {
+                throw new ConflictError(`The shaping worker at ${this.workerUrl} does not answer (${st.error}): it runs on another machine`
+                    + ' (GOLFMAP_SHAPING_PATH_MAP is set), so start it there with `bun run shaping:worker`');
+            }
             cold = true;
             notePhase(rec, 'cold start: starting Blender');
             await this.spawnWorker(target);
@@ -1043,7 +1058,9 @@ export class ShapingService {
         notePhase(rec, `loading ${name}`);
         try {
             // A job: it answers at once and the load goes on (minutes, when the conformed cache has to be made).
-            await this.post('/load', { blend: target.blend, layersDir: target.layersDir, fbxFolder: target.fbxFolder }, this.timeouts.startMs);
+            await this.post('/load', {
+                blend: this.toWorker(target.blend), layersDir: this.toWorker(target.layersDir), fbxFolder: this.toWorker(target.fbxFolder),
+            }, this.timeouts.startMs);
         } catch (e) {
             // An older worker holds the connection for the whole load, and a long one can outlast the
             // request: its own status says how it went. A refusal leaves it idle and untouched, so that stands.
@@ -1225,6 +1242,16 @@ export class ShapingService {
         } catch {
             return null;
         }
+    }
+
+    /** A path as the worker opens it (GOLFMAP_SHAPING_PATH_MAP; unchanged without one). */
+    toWorker<T extends string | null>(p: T): T {
+        return (p === null ? p : mapPath(this.pathMap, p, 'toWorker')) as T;
+    }
+
+    /** A path the worker reported, as this server opens it. */
+    fromWorker<T extends string | null>(p: T): T {
+        return (p === null ? p : mapPath(this.pathMap, p, 'fromWorker')) as T;
     }
 
     /** The shared secret both sides use, when there is one. */
@@ -1415,6 +1442,45 @@ async function pruneLogs(dir: string): Promise<void> {
             // in use, or gone already
         }
     }
+}
+
+/** One prefix of GOLFMAP_SHAPING_PATH_MAP: where this server has it, and where the worker does. */
+export interface PathMapEntry {
+    local: string;
+    worker: string;
+}
+
+/** `D:\gspro_courses=/Users/m/gspro_courses;D:\golf-map\docs\gspro=/Volumes/golf-map/docs/gspro` -> entries. */
+export function parsePathMap(spec: string): PathMapEntry[] {
+    const entries: PathMapEntry[] = [];
+    for (const part of spec.split(';').map(s => s.trim()).filter(Boolean)) {
+        const eq = part.indexOf('=');
+        const local = eq > 0 ? part.slice(0, eq).trim() : '';
+        const worker = eq > 0 ? part.slice(eq + 1).trim() : '';
+        if (!local || !worker) throw new Error(`GOLFMAP_SHAPING_PATH_MAP: "${part}" is not <local prefix>=<worker prefix>`);
+        entries.push({ local, worker });
+    }
+    return entries;
+}
+
+/**
+ * `p` moved from one side's prefix to the other's, the longest matching prefix first (a Unity project's FBX folder
+ * over SMB inside a folder kept as a local copy). A prefix matches whole path segments, either slash, any case; the
+ * rest takes the other side's slashes. A path no prefix matches is returned as it is.
+ */
+export function mapPath(map: PathMapEntry[], p: string, dir: 'toWorker' | 'fromWorker'): string {
+    const norm = (s: string) => s.replace(/\\/g, '/').replace(/\/+$/, '').toLowerCase();
+    const target = norm(p);
+    let best: { from: string; to: string } | null = null;
+    for (const e of map) {
+        const [from, to] = dir === 'toWorker' ? [e.local, e.worker] : [e.worker, e.local];
+        const f = norm(from);
+        if ((target === f || target.startsWith(`${f}/`)) && (!best || f.length > norm(best.from).length)) best = { from, to };
+    }
+    if (!best) return p;
+    const rest = p.replace(/\\/g, '/').replace(/\/+$/, '').slice(norm(best.from).length);
+    const slash = best.to.includes('\\') || /^[A-Za-z]:/.test(best.to) ? '\\' : '/';
+    return best.to.replace(/[\\/]+$/, '') + rest.replace(/\//g, slash);
 }
 
 const samePath = (a: string | null, b: string) => a !== null && path.resolve(a).replace(/\\/g, '/').toLowerCase() === path.resolve(b).replace(/\\/g, '/').toLowerCase();

@@ -12,7 +12,9 @@ import { ConflictError, NotFoundError } from '@basics/core/server/auth';
 import { createTestDb } from '../testing/db';
 import { seedCourse, TEST_COURSE_ID } from '../db/seeds/course';
 import { startFakeShapingWorker, type FakeShapingWorker } from '../testing/fake-shaping-worker';
-import { ShapingService, objectName, isRockSlab, newerBlendFirst, LATEST_LOG, LOG_KEEP_DAYS, type ShapingTimeouts } from './shaping.service';
+import {
+    ShapingService, objectName, isRockSlab, newerBlendFirst, mapPath, parsePathMap, LATEST_LOG, LOG_KEEP_DAYS, type ShapingTimeouts,
+} from './shaping.service';
 import { defaultUnityBridge } from './unity-bridge';
 import { GsproExportService, type ExportRunner } from './gspro-export.service';
 
@@ -120,6 +122,8 @@ async function setup(opts: {
     worker?: FakeShapingWorker; workerUrl?: string; workerLauncher?: string[]; unity?: 'ours' | 'none' | 'reject-only';
     library?: unknown; runner?: ExportRunner; editor?: { refreshMs?: number; steps?: object[]; failSurfaces?: boolean };
     plantFails?: boolean; token?: string; timeouts?: Partial<ShapingTimeouts>; queueDir?: string; allowGaps?: boolean;
+    /** GOLFMAP_SHAPING_PATH_MAP, from the folders this setup makes. */
+    pathMap?: (dirs: { exportDir: string; project: string }) => string;
 } = {}) {
     const ctx = await createTestDb(seedCourse);
     const exportDir = await tmp('shaping-export-');
@@ -151,6 +155,7 @@ async function setup(opts: {
         pipelineDir: '/pipeline', runner: opts.runner ?? layers.runner, unityBridge: defaultUnityBridge(discovery),
         workerUrl: opts.worker?.url ?? opts.workerUrl ?? 'http://127.0.0.1:9', workerLauncher: opts.workerLauncher,
         token: opts.token, layersRoot, recipeLibrary, dbPath: '/data/app.sqlite', queueDir: opts.queueDir, allowGaps: opts.allowGaps,
+        pathMap: opts.pathMap?.({ exportDir, project }) ?? '',
         timeouts: { pollMs: 25, startMs: 20_000, loadMs: 20_000, syncMs: 20_000, unitySec: 30, heartbeatMs: 50, ...opts.timeouts },
     });
     cleanup.push(() => svc.stopWorker());
@@ -865,6 +870,57 @@ test('a worker that wants a token: the service sends it, and without it the job 
     expect(refused.error).toMatch(/X-Golfmap-Token is missing or wrong/);
     expect((await blind.svc.status(TEST_COURSE_ID)).worker.state).toBe('error');
     expect((await fetch(`${worker.url}/status`, { headers: { 'X-Golfmap-Token': 'sekret' } })).ok).toBe(true);
+});
+
+test('a worker on another machine: the path map moves what is sent to its prefixes and what it reports back, and it is never started from here', async () => {
+    const worker = startFakeShapingWorker();
+    cleanup.push(() => worker.stop());
+    // The worker's side: its own copy of the export folder, and the Unity project over a share (a real folder, so the FBX land).
+    const share = await tmp('mac-volumes-');
+    const t = await setup({
+        worker,
+        pathMap: ({ exportDir, project }) => `${exportDir}=/Users/m/gspro_courses/linkan-opcd;${project}=${share}`,
+    });
+    await blends(t.exportDir);
+    const layersDir = path.join(t.layersRoot, 'linkan', 'shaping');
+
+    const job = await run(t.svc);
+    expect(job.error).toBeNull();
+    const blend = job.result!.blend;
+    expect(path.dirname(blend)).toBe(t.exportDir);
+    const load = worker.calls.find(c => c.route === '/load')!.body as Record<string, string>;
+    expect(load.blend).toBe(`/Users/m/gspro_courses/linkan-opcd/${path.basename(blend)}`);
+    expect(load.fbxFolder).toBe(path.join(share, 'Assets', 'fbx'));
+    // No prefix covers the layers: sent as they are.
+    expect(load.layersDir).toBe(layersDir);
+    expect((await readdir(path.join(share, 'Assets', 'fbx'))).sort()).toEqual(job.result!.exported.slice().sort());
+
+    // What it reports comes back as this server's paths, so the next run sees the course loaded and does not /load again.
+    const status = await t.svc.status(TEST_COURSE_ID);
+    expect(status.worker.blend).toBe(blend);
+    await run(t.svc);
+    expect(worker.calls.filter(c => c.route === '/load')).toHaveLength(1);
+
+    // Nothing answers on its URL: a clear failure, no Blender started here.
+    const away = await setup({ workerUrl: 'http://127.0.0.1:9', pathMap: () => 'D:\\gspro_courses=/Users/m/gspro_courses' });
+    await blends(away.exportDir);
+    const failed = await run(away.svc);
+    expect(failed.status).toBe('failed');
+    expect(failed.error).toMatch(/runs on another machine .*start it there/);
+    expect((await away.svc.status(TEST_COURSE_ID)).worker.spawnedPid).toBeNull();
+});
+
+test('mapPath: longest prefix, whole segments, either slash and any case; the rest takes the other side\'s slashes', () => {
+    const map = parsePathMap('D:\\gspro_courses=/Users/m/gspro_courses; D:\\gspro_courses\\omberg_v4=/Volumes/gspro_courses/omberg_v4;D:\\golf-map\\docs\\gspro=/Volumes/golf-map/docs/gspro');
+    expect(mapPath(map, 'D:\\gspro_courses\\omberg-opcd\\x_svg_91.blend', 'toWorker')).toBe('/Users/m/gspro_courses/omberg-opcd/x_svg_91.blend');
+    expect(mapPath(map, 'd:/GSPRO_COURSES/omberg_v4/Assets/fbx', 'toWorker')).toBe('/Volumes/gspro_courses/omberg_v4/Assets/fbx');
+    expect(mapPath(map, 'D:\\gspro_courses2\\a', 'toWorker')).toBe('D:\\gspro_courses2\\a');
+    expect(mapPath(map, 'D:\\golf-map\\docs\\gspro', 'toWorker')).toBe('/Volumes/golf-map/docs/gspro');
+    expect(mapPath(map, '/Users/m/gspro_courses/omberg-opcd/x.conformed.blend', 'fromWorker')).toBe('D:\\gspro_courses\\omberg-opcd\\x.conformed.blend');
+    expect(mapPath(map, '/Volumes/gspro_courses/omberg_v4/Assets/fbx/a.fbx', 'fromWorker')).toBe('D:\\gspro_courses\\omberg_v4\\Assets\\fbx\\a.fbx');
+    expect(mapPath(map, '/tmp/elsewhere', 'fromWorker')).toBe('/tmp/elsewhere');
+    expect(parsePathMap('')).toEqual([]);
+    expect(() => parsePathMap('D:\\x')).toThrow(/not <local prefix>=<worker prefix>/);
 });
 
 test("another course's worker on the port is waited for, never taken over mid-run", async () => {

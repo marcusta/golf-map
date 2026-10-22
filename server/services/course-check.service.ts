@@ -198,7 +198,7 @@ export interface CourseCheckDeps {
     courses: Pick<CoursesService, 'get'>;
     exports: Pick<GsproExportService, 'settings'> & Partial<Pick<GsproExportService, 'exportPlayLines'>>;
     /** The shaping worker: its status, and the `/check` job on it. */
-    shaping: Pick<ShapingService, 'workerStatus' | 'workerRun'>;
+    shaping: Pick<ShapingService, 'workerStatus' | 'workerRun' | 'toWorker' | 'fromWorker'>;
     unityBridge?: UnityBridge;
     /** How long the Unity check may take (s; default 600). */
     unitySec?: number;
@@ -446,14 +446,15 @@ export class CourseCheckService {
         const out = path.join(dir, BLENDER_REPORT);
         p.begin('blender', `/check on ${path.basename(held)}`);
         try {
-            const body: Record<string, unknown> = { marginM, bufferM: opts.bufferM ?? PLAY_BUFFER_M, out };
-            if (result.playLines.path) body.playLines = result.playLines.path;
-            if (result.boundary.path) body.boundary = result.boundary.path;
+            // Paths as the worker opens them (another machine: GOLFMAP_SHAPING_PATH_MAP); its report comes back inline too.
+            const body: Record<string, unknown> = { marginM, bufferM: opts.bufferM ?? PLAY_BUFFER_M, out: this.shaping.toWorker(out) };
+            if (result.playLines.path) body.playLines = this.shaping.toWorker(result.playLines.path);
+            if (result.boundary.path) body.boundary = this.shaping.toWorker(result.boundary.path);
             const answer = await this.shaping.workerRun('/check', body, {
                 timeoutMs: this.blenderMs,
                 onPhase: phase => p.note(`/check on ${path.basename(held)}${phase ? `: ${phase}` : ''}`),
             }) as Record<string, unknown> | null;
-            const report = typeof answer?.report === 'string' ? answer.report : out;
+            const report = typeof answer?.report === 'string' ? this.shaping.fromWorker(answer.report) : out;
             result.blender = await readLayer(report, 'blender', answer);
             p.end('blender', 'done', countsLine(result.blender));
         } catch (e) {

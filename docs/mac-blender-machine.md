@@ -69,14 +69,29 @@ else use `nohup` or a launchd agent). macOS asks once to allow incoming connecti
 On Windows, a run against the Mac worker:
 `GOLFMAP_SHAPING_URL=http://<mac>.local:8766 GOLFMAP_SHAPING_TOKEN=<secret> bun run shaping -- <course>`.
 
-### Open item: paths are seen from two machines
+### Paths seen from two machines: `GOLFMAP_SHAPING_PATH_MAP`
 
-`ShapingService` (server/services/shaping.service.ts) sends the worker paths and also checks some itself
-(`GOLFMAP_SHAPING_BLEND` must exist on the server, line ~950; the FBX folder comes from the Unity editor's
-project path, a `D:\` path). A Mac worker cannot open `D:\...`. Needed: a prefix map for paths sent to a
-remote worker (e.g. `GOLFMAP_SHAPING_PATH_MAP="D:\gspro_courses=/Users/marcus/gspro_courses;D:\golf-map\docs\gspro=/Volumes/gspro-docs"`),
-applied only to the request bodies, with the server's own checks on the Windows side of the map. Build it in
-the Windows repo (it is server code, tested there), then try one `/load` + a dry-run `/sync` against the Mac.
+The server picks the `.blend`, layers and FBX folder as Windows paths and checks them there. With
+`GOLFMAP_SHAPING_PATH_MAP` set (`<Windows prefix>=<Mac prefix>;...`), `ShapingService` moves each path it sends
+the worker (`/load`, the course check's `/check`) to the Mac's prefix and each path the worker reports back to
+the Windows one; the longest matching prefix wins, so the Unity project's FBX folder can go over SMB while the
+rest of `D:\gspro_courses` is the Mac's local copy. With a map set the server never starts a worker itself:
+an unreachable worker fails the run with "start it there". For Omberg (on the Windows side, in the shell that runs
+the server or `bun run shaping`):
+
+```
+GOLFMAP_SHAPING_URL=http://<mac>.local:8766
+GOLFMAP_SHAPING_TOKEN=<secret>
+GOLFMAP_SHAPING_PATH_MAP=D:\gspro_courses\omberg_v4_2025_12_02=/Volumes/gspro_courses/omberg_v4_2025_12_02;D:\gspro_courses=/Users/marcust/gspro_courses;D:\golf-map\docs\gspro=/Volumes/golf-map/docs/gspro
+```
+
+- The `.blend` the server chooses is the newest in the Windows export folder; the Mac's copy must hold the same
+  file (same name) and be current. **Which build Unity is on** is the newest succeeded run in
+  `data/shaping-queue/runs/` on Windows (`job.result.blend`), never the highest `svg_<n>` (Omberg: `svg_91`, not
+  `svg_110`, as of 2026-10-22).
+- The course check's `/check` reads the play lines from the export folder, i.e. from the Mac's copy: copy
+  `<prefix>-play-lines.json` over after `course:check` writes it, or its Blender part checks stale lines.
+- First try: one `bun run shaping -- "Ombergs Golfklubb" --dry-run` against the Mac, then a real one.
 
 ### First measurement
 
