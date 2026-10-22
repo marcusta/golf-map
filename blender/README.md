@@ -53,6 +53,9 @@ as OPCD, and the same folder: the OPCD tools' export folder, else `<blend folder
 - FBX whose mesh object no longer exists in the `.blend` are deleted (**Delete FBX of removed meshes**, on by
   default, applies to all three buttons). OPCD renumbers and merges meshes when it regenerates the `.blend`, so
   the folder would otherwise keep old meshes that Unity still treats as current.
+- Every FBX is exported triangulated (`use_triangles`): Unity gets exactly the triangles Blender (and its course check)
+  has, never its importer's own triangulation of an n-gon, which left a 10-20 cm hole between two of Vreta's road 124
+  gravel pieces that Blender showed closed (2026-10-22). The switch changed every fingerprint once (all FBX re-export).
 - Meshes whose name starts with a **Skip** prefix are never exported (default `Gap_Issue`: OPCD's gap-check
   markers), and their FBX already in the folder are deleted like removed meshes. Comma-separated; kept in the
   add-on preferences. Headless: `--exclude`.
@@ -1079,7 +1082,9 @@ in its angle and grass leaning over it; OPCD's road, fringe strip and grass meet
   times (default 3).
 - **Lip line**: the strips' inner edges, chained and offset `roadM` (default 0.12 m) into the road, are cut into the
   road pieces with split_surfaces' cut (`_kerb_cut`: exact edge chains, sliver collapse, T-junction weld, custom
-  normals from before the cut), so the lip starts there.
+  normals from before the cut), so the lip starts there. The cut's n-gons are then triangulated by ear clipping while
+  still flat: triangulated after the drop (by Blender or by Unity's importer) a concave one folded over its own
+  outline - 176 upside-down top faces (0.11 m2) on one of Vreta's road 124 pieces (2026-10-22).
 - **Drop**: every piece and strip vertex closer than W = strip width + `roadM` to the grass edge drops `depthM`
   (default 0.045) x profile(1 - d / W), a quarter ellipse; every vertex of any mesh at the same place (within 1 mm:
   the verge welded to the strip, a gravel piece at a junction) drops the same, so nothing opens and the verge slopes

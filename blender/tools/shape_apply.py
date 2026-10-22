@@ -5801,11 +5801,26 @@ def _kerb_cut(pieces, lines):
     # follows this cut (the slivers SLIVER_M guards against come from smoothcartpaths, long done)
     slivers = collapse_cut_slivers(names, snap, KERB_SLIVER_M, mark_attr=SPLIT_EDGE_ATTR)
     welds = weld_tjunctions(names)
+    # The cut leaves concave n-gons. Triangulated after the lip's drop (Blender's own, or Unity's on import) they
+    # fold over their own outline: Vreta's road 124 got 176 upside-down top faces (0.11 m2) on one piece. Ear
+    # clipping while they are still flat keeps every triangle inside its face.
+    import bmesh
+    triangulated = 0
+    for o in pieces:
+        bm = bmesh.new()
+        bm.from_mesh(o.data)
+        faces = [f for f in bm.faces if len(f.verts) > 3]
+        if faces:
+            bmesh.ops.triangulate(bm, faces=faces, quad_method="BEAUTY", ngon_method="EAR_CLIP")
+            bm.to_mesh(o.data)
+            o.data.update()
+            triangulated += len(faces)
+        bm.free()
     for o in pieces:
         _drop_cut_attrs(o.data)
     return {"objects": {n: {k: v for k, v in s.items() if v} for n, s in stats.items()},
             "slivers": slivers.get("merged") if isinstance(slivers, dict) else slivers,
-            "welds": welds.get("split") if isinstance(welds, dict) else None}
+            "welds": welds.get("split") if isinstance(welds, dict) else None, "triangulated": triangulated}
 
 
 def op_path_edge_fade(ctx, op):

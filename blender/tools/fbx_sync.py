@@ -54,7 +54,9 @@ MANIFEST = ".golfmap-fbx-sync.json"
 DEFAULT_EXCLUDE = "Gap_Issue"
 FORMAT = "golfmap-fbx-sync-v1"
 # Bump when the exporter call below changes: every fingerprint then reads as changed.
-EXPORT_SETTINGS = "export_scene.fbx(use_selection=True, bake_space_transform=True, use_custom_props=True)"
+# use_triangles: Blender triangulates (ear clipping), so Unity gets the triangles the Blender course check saw; left to
+# Unity's importer, a concave n-gon could fold or leave a hole (Vreta's road 124, 2026-10-22).
+EXPORT_SETTINGS = "export_scene.fbx(use_selection=True, bake_space_transform=True, use_custom_props=True, use_triangles=True)"
 
 # (foreach_get key, numpy dtype, values per element) by attribute data type.
 ATTRIBUTE_READ = {
@@ -219,7 +221,8 @@ def export_objects(context, folder, names, objects):
             obj = objects[name]
             obj.select_set(True)
             view_layer.objects.active = obj
-            bpy.ops.export_scene.fbx(filepath=os.path.join(folder, name + ".fbx"), use_selection=True, bake_space_transform=True, use_custom_props=True)
+            bpy.ops.export_scene.fbx(filepath=os.path.join(folder, name + ".fbx"), use_selection=True, bake_space_transform=True, use_custom_props=True,
+                                     use_triangles=True)
             obj.select_set(False)
     finally:
         for o in selected:
