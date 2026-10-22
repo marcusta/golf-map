@@ -17,6 +17,9 @@ e2e/.tests-reordered
 # Python tile pipeline (pipeline/) and Python tools (tools/)
 pipeline/.venv
 tools/sam-server/venv
+# Surface-model pilot: its extra packages and downloaded weights
+tools/surface-lab/pilot/.deps
+tools/surface-lab/pilot/.hf
 pipeline/**/__pycache__
 pipeline/**/*.egg-info
 tools/**/__pycache__
