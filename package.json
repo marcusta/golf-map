@@ -23,6 +23,7 @@
         "gspro:bisect": "bun scripts/gspro-bisect.ts",
         "course:check": "bun scripts/course-check.ts",
         "course:ready": "bun scripts/make-ready.ts",
+    "course:progress": "bun scripts/course-progress.ts",
         "zones": "bun scripts/vegetation-zones.ts",
         "grass:zones": "bun scripts/grass-zones.ts",
         "vegetation:rules": "bun scripts/vegetation-rules.ts",

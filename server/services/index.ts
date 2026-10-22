@@ -44,6 +44,7 @@ import { ShapingService } from './shaping.service';
 import { GsproSyncService } from './gspro-sync.service';
 import { CourseCheckService } from './course-check.service';
 import { MakeReadyService } from './make-ready.service';
+import { CourseProgressService } from './course-progress.service';
 import { PaintService } from './paint.service';
 
 export interface ServicesConfig {
@@ -113,6 +114,11 @@ export function createServices(db: Kysely<Database>, config: ServicesConfig = {}
     const courseCheckService = new CourseCheckService({ db, courses: coursesService, exports: gsproExportService, shaping: shapingService });
     // Make ready: colliders near play in the Unity scene and the Arborist file, plus the course check (the board's Ready row, `bun run course:ready`).
     const makeReadyService = new MakeReadyService({ courses: coursesService, exports: gsproExportService, courseCheck: courseCheckService, dataDir });
+    // How far each course has come on its way to GSPro, read from the board, Check, Ready and files (`bun run course:progress`).
+    const courseProgressService = new CourseProgressService({
+        db, courses: coursesService, exports: gsproExportService, sync: gsproSyncService,
+        check: courseCheckService, ready: makeReadyService, dataDir,
+    });
     // Vertex paint of the course meshes: paint.json rules and strokes, previewed in Unity, painted by Blender (`bun run paint`).
     const paintService = new PaintService({ courses: coursesService, exportSettings: gsproExportService, shaping: shapingService });
     const terrainGeneratorsService = new TerrainGeneratorsService({
@@ -173,6 +179,7 @@ export function createServices(db: Kysely<Database>, config: ServicesConfig = {}
         gsproSyncService,
         courseCheckService,
         makeReadyService,
+        courseProgressService,
         paintService,
         publishService,
         tapscoreBridgeService,

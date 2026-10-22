@@ -1,0 +1,6 @@
+{
+  "name": "golfmap-status",
+  "version": "0.1.0",
+  "description": "A pane beside the chat: sessions waiting for an answer, the machines the course build leans on, and each course's checklist",
+  "types": "./types/index.d.ts"
+}
