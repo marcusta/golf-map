@@ -5,7 +5,7 @@
 // unity/mcp/README.md. Registered in the repo's .mcp.json as "unity".
 import { readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
-import { type BridgeInfo, listBridges, pickBridge, refreshAndCompile, run, status } from "./bridge";
+import { type BridgeInfo, compileReport, listBridges, pickBridge, run, status } from "./bridge";
 import { readBuildStatus } from "./build-status";
 import { loadInstallFolders, summarize, sync, type SyncMode } from "./sync";
 
@@ -21,18 +21,6 @@ interface Tool {
 
 const project = { type: "string", description: "Unity project folder name or path (substring). Optional when one editor is open." };
 const text = (value: unknown) => (typeof value === "string" ? value : JSON.stringify(value, null, 2));
-
-async function compileReport(b: BridgeInfo, since: number): Promise<string> {
-  const c = await refreshAndCompile(b);
-  const lines = [`compile: ${c.outcome} in ${c.seconds}s`];
-  for (const e of c.errors.slice(0, 50)) lines.push(`  ${e.file}(${e.line}): ${e.message}`);
-  const log = await run(pickBridge(b.projectPath), "console", { since, types: ["error", "exception", "assert"], limit: 30 }, 30).catch(() => null);
-  if (log?.entries?.length) {
-    lines.push(`console errors since #${since}:`);
-    for (const e of log.entries) lines.push(`  #${e.seq} ${e.type}: ${e.message.split("\n")[0]}`);
-  }
-  return lines.join("\n");
-}
 
 const tools: Tool[] = [
   {

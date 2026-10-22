@@ -283,3 +283,17 @@ export async function refreshAndCompile(b: BridgeInfo, timeoutSec = 180): Promis
   if (errors.length && outcome !== "timeout") outcome = "failed";
   return { outcome, errors, seconds: Math.round((Date.now() - t0) / 100) / 10 };
 }
+
+/** Refresh + recompile in the editor, then its compile errors and the console errors since `since`, as text (what
+ *  `unity_sync` push and `unity_compile` report, and `unity/mcp/sync-cli.ts` without the MCP server). */
+export async function compileReport(b: BridgeInfo, since: number): Promise<string> {
+  const c = await refreshAndCompile(b);
+  const lines = [`compile: ${c.outcome} in ${c.seconds}s`];
+  for (const e of c.errors.slice(0, 50)) lines.push(`  ${e.file}(${e.line}): ${e.message}`);
+  const log = await run(pickBridge(b.projectPath), "console", { since, types: ["error", "exception", "assert"], limit: 30 }, 30).catch(() => null);
+  if (log?.entries?.length) {
+    lines.push(`console errors since #${since}:`);
+    for (const e of log.entries) lines.push(`  #${e.seq} ${e.type}: ${e.message.split("\n")[0]}`);
+  }
+  return lines.join("\n");
+}
