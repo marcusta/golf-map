@@ -140,6 +140,12 @@ export function startFakeShapingWorker(opts: FakeShapingWorkerOptions = {}): Fak
                 throw new HttpError(422, `1 gap check(s) failed, so nothing was exported and the objects are back as they were before this sync: ${gapLine}. `
                     + 'Fix the layer, or sync with {"allowGaps": true} to export anyway');
             }
+            if (body.dryRun && changed.length) {
+                // The real worker's plan: what it would restore and re-run, no run fields (shape_worker.sync_ops).
+                const run = { changedOps: changedIds, removedOps: [], affectedObjects: changed, dryRun: true, fullReload: false, seconds: 0.1 };
+                lastRun = run;
+                return run;
+            }
             const exported = body.dryRun ? [] : changed.map(n => `${n}.fbx`);
             // An op may name objects it merges away (`removesFbx`, like a permanent-join recipe's blends): their FBX goes.
             const removed = changedIds.flatMap(id => (JSON.parse(now.get(id) ?? '{}').removesFbx ?? []) as string[]).map(n => `${n}.fbx`);

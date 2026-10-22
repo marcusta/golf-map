@@ -1167,12 +1167,12 @@ export class ShapingService {
             const st = await this.workerStatus();
             if (!st.reachable) throw e;
             const done = await this.waitFor(idle, this.timeouts.syncMs, 'the shaping worker to finish the sync', follow);
-            const last = (done.job?.result ?? done.lastRun) as SyncAnswer | null;
+            const last = asRun(done.job?.result ?? done.lastRun);
             if (done.state === 'error' || !last || !Array.isArray(last.changedObjects)) throw e;
             return last;
         }
         const id = jobIdOf(started);
-        if (id === null) return started as SyncAnswer;   // the run itself: an older worker, or `?wait=1`
+        if (id === null) return asRun(started) ?? started as SyncAnswer;   // the run itself: an older worker, or `?wait=1`
         /** Since when `/status` has told us nothing about job `id`; null while it does. */
         let lostAt: number | null = null;
         const done = await this.waitFor(
@@ -1193,7 +1193,7 @@ export class ShapingService {
         const job = done.job?.id === id ? done.job : await this.jobById(id);
         if (!job) throw new ConflictError(`The shaping worker forgot the sync job ${id} (${describeRun(done.lastRun) ?? `state ${done.state}`})`);
         if (job.state === 'failed') throw new ConflictError(`Shaping worker /sync failed: ${job.error ?? 'see its log'}`);
-        const result = job.result as SyncAnswer | null;
+        const result = asRun(job.result);
         if (!result || !Array.isArray(result.changedObjects)) {
             throw new ConflictError(`The shaping worker's sync job ${id} came back without a run (state ${job.state})`);
         }
@@ -1408,6 +1408,19 @@ export function workerJob(value: unknown): ShapingWorkerJob | null {
         result: j.result ?? null,
         error: str(j.error),
     };
+}
+
+/**
+ * A `/sync` answer as a run. A dry run that found changes answers with its plan only (`dryRun`, `changedOps`,
+ * `affectedObjects`: what it would restore and re-run): those objects are its changed objects, nothing is exported.
+ */
+function asRun(answer: unknown): SyncAnswer | null {
+    const a = answer as (SyncAnswer & { dryRun?: unknown; affectedObjects?: unknown }) | null;
+    if (!a || typeof a !== 'object') return null;
+    if (a.dryRun === true && !Array.isArray(a.changedObjects)) {
+        return { ...a, changedObjects: strings(a.affectedObjects), exported: [], removed: [] };
+    }
+    return a;
 }
 
 /** The job id a `POST /load`/`/sync` answered with; null when it answered with the run itself. */
