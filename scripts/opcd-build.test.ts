@@ -24,7 +24,7 @@ import { mkdir, mkdtemp, readFile, readdir, rm, writeFile } from 'node:fs/promis
 import * as os from 'node:os';
 import * as path from 'node:path';
 import {
-    BUILD_FIRST_LOOK_MS, BUILD_POLL_MS, Recording, blendPrefix, buildOutcome, electronCandidates, isDone, isDraft,
+    BUILD_FIRST_LOOK_MS, BUILD_POLL_MS, Recording, blendPrefix, buildOutcome, downloadFileName, electronCandidates, isDone, isDraft,
     jobDescription, jobFromCells, jobTableText, linkJobsToSnapshots, nextBlendName, nodeRuntime, opcdCreatedToUtc,
     parseArgs, pickNewJob, snapshotOfSvg, snapshotStampOf, splitJobName,
     usageText, waitForBuild, type BuildDeps, type SnapshotPage, type SvgJob,
@@ -143,7 +143,7 @@ describe('the SVG Jobs table', () => {
         const job = jobFromCells(0, complete, ['Download', 'Re-submit'])!;
         expect(job).toEqual({
             index: 0, name: 'vreta_svg_1990', status: 'Processing Complete',
-            created: '2026-10-11 11:03', actions: ['Download', 'Re-submit'],
+            created: '2026-10-11 11:03', actions: ['Download', 'Re-submit'], file: null,
         });
         expect(isDone(job)).toBe(true);
         expect(isDraft(job)).toBe(false);
@@ -449,6 +449,15 @@ describe('which export a job built, and how it went (--status)', () => {
         expect(buildOutcome(row('a', 'Processing', created), new Date('2026-10-17T16:00:00+02:00'))).toBe('pending');
         expect(buildOutcome(row('a', 'Processing', created), new Date('2026-10-17T16:04:00+02:00'))).toBe('failed');
         expect(buildOutcome(row('a', 'Waiting to be processed', created), new Date('2026-10-17T16:30:00+02:00'))).toBe('pending');
+    });
+
+    test('a Download of a report (OPCD refused the SVG) is a failed build, not a .blend', () => {
+        const done = (file: string | null) => jobFromCells(0, ['landeryd-masters.svg', 'Processing Complete', '2026-10-20 16:06'], ['Download', 'Re-submit'], file)!;
+        expect(buildOutcome(done('narrow_neck_shapes.txt'), now)).toBe('failed');
+        expect(buildOutcome(done('vreta_svg.zip'), now)).toBe('ok');
+        expect(buildOutcome(done(null), now)).toBe('ok');
+        expect(downloadFileName('https://app.opcdgolf.com/files/915bff?filename=narrow_neck_shapes.txt')).toBe('narrow_neck_shapes.txt');
+        expect(downloadFileName('#')).toBeNull();
     });
 
     test("the day's four exports: matched by time, 12:46 ok, 13:10 failed, 13:17 ok, 15:37 failed", () => {

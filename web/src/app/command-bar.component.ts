@@ -23,6 +23,7 @@ import { GsproSyncService } from '../export/gspro-sync.service';
 import { ZoneTypesService, zoneTypeKeyOf } from '../zones/zone-types.service';
 import { VegetationRulesService } from '../zones/vegetation-rules.service';
 import { PhotoStemsService } from '../zones/photo-stems.service';
+import { SvgCheckService, isSvgCheckError } from '../draw/svg-check.service';
 import { VEGETATION_TOOL_ID } from '../zones/vegetation-tool';
 import { PlantVegetationService, arboristOutcome } from '../zones/plant-vegetation.service';
 import { ShapingService, type ShapingJob } from '../terrain-edit/shaping.service';
@@ -135,6 +136,7 @@ const gsproTpl = template(`
     <button bind="meshesFeatureBtn" type="button" class="cmdbar__gspro-btn" data-testid="gspro-update-meshes-feature-btn"></button>
     <button bind="meshesBtn" type="button" class="cmdbar__gspro-btn" data-testid="gspro-update-meshes-btn"></button>
     <button bind="pathsBtn" type="button" class="cmdbar__gspro-btn" data-testid="update-paths-btn"></button>
+    <button bind="checkShapesBtn" type="button" class="cmdbar__gspro-btn" data-testid="svg-check-cmd-btn"></button>
     <button bind="shapesBtn" type="button" class="cmdbar__gspro-btn" data-testid="gspro-update-shapes-btn"></button>
     <button bind="plantBtn" type="button" class="cmdbar__gspro-btn" data-testid="plant-vegetation-btn"></button>
     <button bind="zonesBtn" type="button" class="cmdbar__gspro-btn" data-testid="update-zones-btn"></button>
@@ -773,6 +775,8 @@ export class CommandBarComponent extends Component<{ mode: CommandBarMode }> {
     private zoneTypesSvc = this.inject(ZoneTypesService);
     private vegetationRulesSvc = this.inject(VegetationRulesService);
     private photoStemsSvc = this.inject(PhotoStemsService);
+    /** "Open errors" when an update failed on the SVG checks. */
+    private svgCheck = this.inject(SvgCheckService);
     private mapBuild = this.inject(MapBuildClientService);
     private tileset = this.inject(TilesetService);
     private mapSvc = this.inject(MapService);
@@ -1161,6 +1165,24 @@ export class CommandBarComponent extends Component<{ mode: CommandBarMode }> {
                 innerHTML: () => this.updateLabel('paths', 'Update paths', () => this.pathsStep()),
                 title: "Update paths: take the paths' surfaces as set now (Path surface) through to the course's open Unity project. Rewrites the surfaces file of the exported SVG, lets Blender cut the roads of mixed surfaces apart (only what changed is re-shaped, with any other shaping not yet applied), re-imports those meshes and gives every path mesh its surface's material. For a changed surface only: a path that was moved or redrawn needs the SVG export and the OPCD build",
                 ...this.updateButton('paths', (courseId) => this.updatePathsInUnity(courseId)),
+            },
+            // Draw mode: the SVG checks (Check shapes overlay), open or closed; the count is of the last check.
+            checkShapesBtn: {
+                'data-off': () => String(this.subMode() !== DRAW_TOOL_ID),
+                'aria-pressed': () => String(!!this.svgCheck.courseId.get()),
+                innerHTML: () => {
+                    const course = this.svc.course.get();
+                    const report = this.svgCheck.report.get();
+                    const errors = course && report?.courseId === course.id ? report.findings.filter((f) => f.severity === 'error' && !f.accepted).length : 0;
+                    return `${icon('triangle-alert', 16)}<span>${errors ? `Check · ${errors}` : 'Check'}</span>`;
+                },
+                title: 'Check shapes: what would stop the SVG export or the OPCD build (slivers, necks, hidden shapes, greens on rough), as the shapes are now. Click again to close.',
+                onclick: () => {
+                    const course = this.svc.course.peek();
+                    if (!course) return;
+                    if (this.svgCheck.courseId.peek() === course.id) this.svgCheck.close();
+                    else this.svgCheck.open(course.id);
+                },
             },
             shapesBtn: {
                 'data-off': () => String(this.subMode() !== DRAW_TOOL_ID
@@ -2080,14 +2102,17 @@ export class CommandBarComponent extends Component<{ mode: CommandBarMode }> {
                 needsSceneSave(report, job?.phases ?? null) ? 'Save the scene in Unity to keep it.' : '',
             ].filter(Boolean).join(' ') || `${target.label} is up to date in GSPro.`
             : this.gsproSync.error.peek() || (mine ? job!.error : null) || 'The update failed.';
-        await this.confirm.confirm({
+        // Stopped by the SVG checks: the dialog offers the Check shapes panel.
+        const svgErrors = !ok && (isSvgCheckError(body) || results.some(r => isSvgCheckError(r.error)));
+        const confirmed = await this.confirm.confirm({
             title: ok ? `${target.label} updated` : `Could not update the ${lower(target.label)}`,
             body,
             detail: report.length > 0 ? report.join('\n') : undefined,
-            confirmLabel: ok ? 'Done' : 'OK', cancelLabel: 'Close',
+            confirmLabel: ok ? 'Done' : svgErrors ? 'Open errors' : 'OK', cancelLabel: 'Close',
             tone: ok ? 'primary' : 'warning',
             layout: report.length > 3 ? 'review' : 'default',
         });
+        if (svgErrors && confirmed) this.svgCheck.open(courseId);
     }
 
     /**

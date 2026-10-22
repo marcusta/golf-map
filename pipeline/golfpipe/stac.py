@@ -214,17 +214,11 @@ def download_asset(
     LANTMATERIET_USER/LANTMATERIET_PASS are unset, per the spec ("fetch
     commands must fail with a clear message").
     """
-    user, password = _credentials()
-    sess = session or requests
-    dest.parent.mkdir(parents=True, exist_ok=True)
-
-    with sess.get(href, auth=(user, password), stream=True, timeout=120) as resp:
-        resp.raise_for_status()
-        with open(dest, "wb") as f:
-            for chunk in resp.iter_content(chunk_size=chunk_size):
-                if chunk:
-                    f.write(chunk)
-    return dest
+    _credentials()
+    # The same resuming download as the lidar's: dl1 drops orthophoto streams too
+    # (Landeryd 2026-10-21: two map builds failed on 700 MB 2023 photos at 230-580 MB).
+    return download_asset_with_progress(href, dest, session=session, chunk_size=chunk_size,
+                                        skip_if_present=False, progress=False)
 
 
 def remote_content_length(

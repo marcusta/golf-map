@@ -47,7 +47,7 @@
 // Zone items on the model library (CONTEXT.md "Model library"; shared/vegetation/zone-models.ts):
 // an item with "model": "<model id>" names no texture, prefab or look itself. It keeps where and how
 // densely it grows and its size (sampleDistance, density, maxDensity, noise*, maxSteepness, lodFactor,
-// copies, renderDistance, width, height, minScale, maxScale, verticalOffset); the rest is its model's,
+// copies, renderDistance, distanceFalloff, width, height, minScale, maxScale, verticalOffset); the rest is its model's,
 // read from the resolved model library beside this file (models.json, generated with this file by the
 // repo's `bun run models -- sync`; never hand-edited here):
 //   model.unity.path    the asset: a texture (.psd/.png, a vsp:texture:<stem> model, form grass) or a
@@ -111,6 +111,11 @@ namespace GolfMap.Editor
             // plant distance); 0 = the full plant distance. A short one ends the grass in a line that
             // pops in (Vreta 2026-10-15, 45 / 90 m): thin with the palette's distanceFalloff instead.
             public float renderDistance = 0f;
+            // The item's own distanceFalloff; below 0 = the palette's. Bright accents thin out far away
+            // (0.7: from 210 of 300 m), where a tuft popping in is a few pixels: VSP culls each instance
+            // whole at its falloff distance, and GSPro's grass shader cannot fade one in (Vreta 2026-10-22).
+            public float distanceFalloff = -1f;
+            public float Falloff(Palette palette) { return distanceFalloff >= 0 ? distanceFalloff : palette.distanceFalloff; }
             // Distance copies (stingreye's trick): the same item again, drawn only to each of these
             // distances, so the grass is denser near the camera; with distanceFalloff each copy thins
             // out from that share of its own distance, so [15, 30] is ~3x at 3 m and 1x at 30 m, no
@@ -197,6 +202,7 @@ namespace GolfMap.Editor
                         alphaCutoff = F(look, "alphaCutoff", d.alphaCutoff), whitePoint = F(look, "whitePoint", d.whitePoint),
                         lodFactor = F(i, "lodFactor", F(p, "lodFactor", d.lodFactor)),
                         renderDistance = F(i, "renderDistance", F(p, "renderDistance", d.renderDistance)),
+                        distanceFalloff = F(i, "distanceFalloff", -1f),
                         copies = (i.Array("copies") ?? new List<object>()).OfType<GolfMapJsonNumber>().Select(n => (float)n.Value).Where(m => m > 0).Distinct().OrderBy(m => m).ToArray(),
                     };
                     var overrides = look.Object("material");
@@ -555,8 +561,8 @@ namespace GolfMap.Editor
             item.DisableShadows = !spec.shadows;
             item.LODFactor = spec.lodFactor;
             item.RenderDistanceFactor = spec.renderDistance > 0 && plantDistanceM > 0 ? Mathf.Clamp(spec.renderDistance / plantDistanceM, 0.01f, 1f) : 1f;
-            item.UseDistanceFalloff = palette.distanceFalloff > 0;
-            item.DistanceFalloffStartDistance = Mathf.Clamp01(palette.distanceFalloff);
+            item.UseDistanceFalloff = spec.Falloff(palette) > 0;
+            item.DistanceFalloffStartDistance = Mathf.Clamp01(spec.Falloff(palette));
             if (spec.prefab == null)
             {
                 SetProperty(item, "TintColor1", p => p.ColorValue = spec.dry);

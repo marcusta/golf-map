@@ -1384,6 +1384,46 @@ export class CourseFeaturesService {
     }
 
     /**
+     * Lift a shape just above the ones painted over it (the SVG check's hidden
+     * shape: OPCD makes no mesh for it): in the app's stack order, if the highest
+     * of `coverIds` above it is in its own group it is raised to just above that
+     * one; if that one is in a higher group (a later hole, the course level), the
+     * shape moves into that group, just above it. Roads stay on top of everything,
+     * so a road never counts. Nothing to do (nothing of `coverIds` above it) is
+     * not an error: `moved` is false.
+     */
+    async raiseAbove(courseId: string, featureId: string, coverIds: readonly string[]): Promise<{ moved: boolean; holeId: string | null; layer: FeatureLayer }> {
+        const scopeRanks = drawScopeRanks(await this.db.selectFrom('holes')
+            .select(['id', 'number', 'drawing_group_name as drawingGroupName', 'drawing_group_after as drawingGroupAfter', 'drawing_group_order as drawingGroupOrder', 'drawing_stack_order as drawingStackOrder'])
+            .where('course_id', '=', courseId).execute());
+        const rows = await this.db.selectFrom('course_features')
+            .select(['id', 'hole_id', 'layer', 'type', 'sort_order', 'version', 'attributes_json'])
+            .where('course_id', '=', courseId).where('id', 'in', [featureId, ...coverIds]).execute();
+        const target = rows.find((r) => r.id === featureId);
+        if (!target) throw new NotFoundError(`Feature ${featureId} not found on course ${courseId}`);
+        const key = (r: typeof target) => stackKey(r.layer, r.hole_id ? scopeRanks.get(r.hole_id) : null, r.sort_order, r.type, parseAttributes(r.attributes_json));
+        const above = rows.filter((r) => r.id !== featureId && r.type !== 'path' && key(r) > key(target)).sort((a, b) => key(b) - key(a));
+        const top = above[0];
+        const where = { holeId: target.hole_id, layer: toLayer(target.layer) };
+        if (!top) return { moved: false, ...where };
+        const holeId = top.hole_id;
+        const layer = toLayer(top.layer);
+        if (holeId !== target.hole_id || layer !== toLayer(target.layer)) {
+            await this.update(target.id, target.version, { holeId, layer });
+        }
+        let group = this.db.selectFrom('course_features').select(['id', 'source', 'generated']).where('course_id', '=', courseId);
+        group = holeId === null ? group.where('hole_id', 'is', null) : group.where('hole_id', '=', holeId);
+        group = layer === null ? group.where('layer', 'is', null) : group.where('layer', '=', layer);
+        // Stored kerb fillets ride along behind their road (reorder).
+        const members = (await group.orderBy('sort_order').orderBy('id').execute())
+            .filter((r) => !(r.source === ROAD_JUNCTIONS_SOURCE && r.generated))
+            .map((r) => r.id).filter((id) => id !== target.id);
+        members.splice(members.indexOf(top.id) + 1, 0, target.id);
+        await this.reorder(courseId, holeId, members, layer);
+        return { moved: true, holeId, layer };
+    }
+
+    /**
      * Rewrites a group's (course_id, hole_id|null, layer|null) stack order in one shot
      * (house pattern — see tees.service.ts reorder / game-plans.service.ts
      * reorderShots). orderedIds must be exactly the group's current

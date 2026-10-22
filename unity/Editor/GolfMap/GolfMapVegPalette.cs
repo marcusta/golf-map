@@ -76,6 +76,7 @@ namespace GolfMap.Editor
         public string note;                  // worth knowing before editing (materials outside the look, ...)
         public List<string> palettes = new List<string>();    // grass: the palettes listing it; palette: its own key
         public List<string> members = new List<string>();     // palette: item keys in file order
+        public float ownFalloff = -1f;       // grass: the item's own distanceFalloff (the palette's does not reach it); below 0 = none
         public List<GolfMapVegValue> values = new List<GolfMapVegValue>();
 
         public GolfMapVegEntry Copy()
@@ -325,7 +326,7 @@ namespace GolfMap.Editor
         static GolfMapVegEntry GrassEntry(GolfMapCourse course, GolfMapGrass.Item spec)
         {
             bool bush = spec.prefab != null;
-            var e = new GolfMapVegEntry { key = "g:" + spec.name, name = spec.name, kind = bush ? GolfMapVegKind.Bush : GolfMapVegKind.Grass, source = bush ? spec.prefab : spec.source, model = spec.model };
+            var e = new GolfMapVegEntry { key = "g:" + spec.name, name = spec.name, kind = bush ? GolfMapVegKind.Bush : GolfMapVegKind.Grass, source = bush ? spec.prefab : spec.source, model = spec.model, ownFalloff = spec.distanceFalloff };
             Color healthy = spec.healthy, dry = spec.dry;
             var materials = bush ? BushMaterials(spec.prefab) : new List<Material>();
             if (bush && !spec.tinted)

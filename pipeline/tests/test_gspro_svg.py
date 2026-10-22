@@ -75,6 +75,9 @@ def _export(tmp_path, features, holes=(1, 2), numbered=True, **kwargs):
     kwargs.setdefault("precision", 3)
     kwargs.setdefault("mapped", {})
     kwargs.setdefault("stack", "app")  # tests pin order explicitly; opt in to opcd
+    # The fixtures' lone greens and test overlaps are check errors; these tests are about the writing
+    # (test_gspro_svg_checks.py drives the refusal).
+    kwargs.setdefault("allow_errors", True)
     gspro.cmd_svg(BBOX, out, db, "Testbana", **kwargs)
     return out
 
@@ -105,7 +108,7 @@ def test_named_drawing_groups_keep_stable_opcd_layers_and_shapes(tmp_path):
         conn.execute('ALTER TABLE holes ADD COLUMN drawing_group_name TEXT')
         conn.execute('UPDATE holes SET drawing_group_name = ? WHERE number = 100', ('Clubhouse & garden',))
     out = tmp_path / 'groups.svg'
-    gspro.cmd_svg(BBOX, out, db, 'Testbana', flatten=None, precision=3, mapped={}, stack='app')
+    gspro.cmd_svg(BBOX, out, db, 'Testbana', flatten=None, precision=3, mapped={}, stack='app', allow_errors=True)
     root = ET.parse(out).getroot()
     group = next(g for g in root.findall(f'{SVG_NS}g') if g.get(f'{INK_NS}label') == 'Hole100')
     assert group.get('data-group-name') == 'Clubhouse & garden'
@@ -125,7 +128,7 @@ def test_drawing_group_order_between_holes_and_among_peers(tmp_path):
     out = tmp_path / 'ordered.svg'
 
     def export():
-        gspro.cmd_svg(BBOX, out, db, 'Testbana', flatten=None, precision=3, mapped={}, stack='app')
+        gspro.cmd_svg(BBOX, out, db, 'Testbana', flatten=None, precision=3, mapped={}, stack='app', allow_errors=True)
         _, rows = gspro._load_course_features(db, 'Testbana', 'app')
         return [r['hole_number'] for r in rows], [label for label, _ in _layers(out)]
 
@@ -146,10 +149,11 @@ def test_drawing_group_order_between_holes_and_among_peers(tmp_path):
 def test_layer_per_hole_and_others_for_the_rest(tmp_path):
     """One layer per hole named HoleN, features with no hole on 'Others' —
     never the reserved Hole99, which would change how Blender cuts. Document
-    order is the app's stack: Others first, then the holes by rank ascending,
-    so the highest-numbered hole lands topmost, as the Draw tool paints it."""
+    order is the app's stack: the holes by rank ascending, so the
+    highest-numbered hole lands topmost, then the course level over them
+    ("Course level (top)" in Draw), as the Draw tool paints it."""
     layers = _layers(_export(tmp_path, BASIC))
-    assert [label for label, _ in layers] == ["Others", "Hole1", "Hole2"]
+    assert [label for label, _ in layers] == ["Hole1", "Hole2", "Others"]
     assert dict(layers)["Others"] == ["others_6"]
 
 
@@ -276,8 +280,9 @@ def test_stack_opcd_lifts_green_tee_bunker_and_leaves_the_rest_alone(tmp_path):
 
 def test_the_roughs_layer_is_written_under_the_course_level_features(tmp_path):
     """The app's Roughs layer (course_features.layer = 'roughs', no hole) sits
-    under everything, so inside Others its shapes come before the course-level
-    ones whatever their sort_order."""
+    under everything: its own 'Roughs' layer first, the course level in 'Others'
+    over the holes, whatever their sort_order. The roughs keep their others_<n>
+    names (OPCD's mesh names)."""
     feats = [
         ("water", None, 0, [_ring((0.20, 0.70), 25)], "bspline"),
         ("rough", None, 7, [_ring((0.20, 0.70), 60)], "bspline"),
@@ -291,8 +296,10 @@ def test_the_roughs_layer_is_written_under_the_course_level_features(tmp_path):
     conn.commit()
     conn.close()
     out = tmp_path / "course.svg"
-    gspro.cmd_svg(BBOX, out, db, "Testbana", flatten=None, precision=3, mapped={}, stack="app")
-    assert _types_in(out, "Others") == ["rough", "water"]
+    gspro.cmd_svg(BBOX, out, db, "Testbana", flatten=None, precision=3, mapped={}, stack="app", allow_errors=True)
+    assert [label for label, _ in _layers(out)] == ["Roughs", "Others"]
+    assert _types_in(out, "Roughs") == ["rough"] and _types_in(out, "Others") == ["water"]
+    assert all(name.startswith("others_") for _, names in _layers(out) for name in names)
 
 
 def test_roads_get_their_own_layer_on_top_of_everything(tmp_path):
@@ -305,7 +312,7 @@ def test_roads_get_their_own_layer_on_top_of_everything(tmp_path):
     ]
     for stack in ("app", "opcd"):
         layers = _layers(_export(tmp_path / stack, feats, stack=stack))
-        assert [label for label, _ in layers] == ["Others", "Hole1", "Hole2", "Roads"]
+        assert [label for label, _ in layers] == ["Hole1", "Hole2", "Others", "Roads"]
         assert dict(layers)["Roads"] == ["roads_7", "roads_8"]  # named after their pieces' numbers
         assert "path" not in _types_in(tmp_path / stack / "course.svg", "Hole1")
 
@@ -682,7 +689,7 @@ def test_excluded_ids_and_types_are_left_out_and_reported(tmp_path, capsys):
 
 def test_excluding_everything_on_a_hole_drops_its_layer(tmp_path):
     out = _export(tmp_path, BASIC, exclude_ids={"feat-3", "feat-4"})
-    assert [label for label, _ in _layers(out)] == ["Others", "Hole1"]
+    assert [label for label, _ in _layers(out)] == ["Hole1", "Others"]
 
 
 def test_an_excluded_road_takes_its_junction_fillets_with_it(tmp_path):
@@ -705,7 +712,7 @@ def test_an_excluded_road_takes_its_junction_fillets_with_it(tmp_path):
     conn.commit()
     conn.close()
     out = tmp_path / "course.svg"
-    gspro.cmd_svg(BBOX, out, db, "Testbana", None, 3, {}, "app", exclude_ids={"feat-0"})
+    gspro.cmd_svg(BBOX, out, db, "Testbana", None, 3, {}, "app", exclude_ids={"feat-0"}, allow_errors=True)
     assert _feature_ids(out) == ["feat-1 feat-3"]
 
 
@@ -729,7 +736,7 @@ def test_bridge_decks_are_props_not_ground_and_stay_out_with_their_fillets(tmp_p
     conn.commit()
     conn.close()
     out = tmp_path / "course.svg"
-    gspro.cmd_svg(BBOX, out, db, "Testbana", None, 3, {}, "app")
+    gspro.cmd_svg(BBOX, out, db, "Testbana", None, 3, {}, "app", allow_errors=True)
     assert _feature_ids(out) == ["feat-0"]
     assert "bridge decks left out (props in Unity, not ground): 2 feature(s)" in capsys.readouterr().out
 
@@ -751,7 +758,7 @@ def test_ram_roads_lie_on_the_ground_and_stay_out_of_the_svg(tmp_path, capsys):
     conn.commit()
     conn.close()
     out = tmp_path / "course.svg"
-    gspro.cmd_svg(BBOX, out, db, "Testbana", None, 3, {}, "app")
+    gspro.cmd_svg(BBOX, out, db, "Testbana", None, 3, {}, "app", allow_errors=True)
     assert _feature_ids(out) == ["feat-0"]
     assert "R.A.M. roads left out (drawn in Unity on the ground, render=ram): 1 feature(s)" in capsys.readouterr().out
 
@@ -851,7 +858,7 @@ def _export_with_surfaces(tmp_path, features, surfaces):
     conn.commit()
     conn.close()
     out = tmp_path / "course.svg"
-    gspro.cmd_svg(BBOX, out, db, "Testbana", None, 3, {}, "app")
+    gspro.cmd_svg(BBOX, out, db, "Testbana", None, 3, {}, "app", allow_errors=True)
     return out
 
 
@@ -993,7 +1000,7 @@ def test_creeks_under_a_metre_wide_stay_out(tmp_path, capsys):
              ("green", 1, 0, [_edge_ring(0.6, 0.5, 10)], "bspline")]
     out = _export(tmp_path, feats)
     ids = [p.get("id") for p in ET.parse(out).getroot().iter(f"{SVG_NS}path")]
-    assert ids == ["others_2", "hole_1_3"]
+    assert ids == ["hole_1_3", "others_2"]
     assert "1 creek(s) under 1 m wide left out" in capsys.readouterr().out
 
 

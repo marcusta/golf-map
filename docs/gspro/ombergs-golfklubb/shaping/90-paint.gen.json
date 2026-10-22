@@ -1,0 +1,96 @@
+{
+  "format": "golfmap-shaping-layer-v1",
+  "id": "paint",
+  "generated": true,
+  "generator": "pipeline/gspro.py shaping-paint",
+  "course": {
+    "folder": "ombergs-golfklubb"
+  },
+  "source": "docs/gspro/ombergs-golfklubb/paint.json",
+  "ops": [
+    {
+      "id": "paint-creek-bed",
+      "op": "golfmap.paint",
+      "rule": {
+        "id": "creek-bed",
+        "kind": "object",
+        "match": "_WaterBrook_-_Mesh",
+        "channel": "black",
+        "strength": 1.0,
+        "fadeM": 0.5,
+        "belowM": 0.1,
+        "softM": 0.08,
+        "reachM": 1.5,
+        "creek": "feature:84b2b23f-06b4-4032-aa63-a550f0dbc621"
+      }
+    },
+    {
+      "id": "paint-pond-shore-17-230",
+      "op": "golfmap.paint",
+      "rule": {
+        "id": "pond-shore-17-230",
+        "kind": "object",
+        "match": "_hole_17_230_Water_Base_Lake_-_Mesh",
+        "channel": "red",
+        "strength": 1.0,
+        "shoreM": 0.6,
+        "softM": 0.3,
+        "reachM": 4.0
+      }
+    },
+    {
+      "id": "paint-pond-shore-17-231",
+      "op": "golfmap.paint",
+      "rule": {
+        "id": "pond-shore-17-231",
+        "kind": "object",
+        "match": "_hole_17_231_Water_Base_Lake_-_Mesh",
+        "channel": "red",
+        "strength": 1.0,
+        "shoreM": 0.6,
+        "softM": 0.3,
+        "reachM": 4.0
+      }
+    },
+    {
+      "id": "paint-pond-shore-13-234",
+      "op": "golfmap.paint",
+      "rule": {
+        "id": "pond-shore-13-234",
+        "kind": "object",
+        "match": "_hole_13_234_Water_Base_Lake_-_Mesh",
+        "channel": "red",
+        "strength": 1.0,
+        "shoreM": 0.6,
+        "softM": 0.3,
+        "reachM": 4.0
+      }
+    },
+    {
+      "id": "paint-ram-roads",
+      "op": "golfmap.paint",
+      "rule": {
+        "id": "ram-roads",
+        "kind": "road",
+        "surfaces": [
+          "Rough",
+          "Deep"
+        ],
+        "channel": "black",
+        "strength": 1,
+        "insetM": 0.4,
+        "fadeM": 1.0
+      }
+    },
+    {
+      "id": "paint-lakebed",
+      "op": "golfmap.paint",
+      "rule": {
+        "id": "lakebed",
+        "kind": "lakebed",
+        "bandM": 25.0,
+        "fadeM": 20.0
+      }
+    }
+  ]
+}

@@ -15,6 +15,14 @@ const SetDirInput = Type.Object({
     dir: Type.Union([Type.String(), Type.Null()]),
 });
 
+/** Accept an SVG check finding (it no longer stops the export) or take that back. */
+const AcceptSvgFindingInput = Type.Object({
+    courseId: Type.String(),
+    key: Type.String({ minLength: 1, maxLength: 4000 }),
+    accepted: Type.Boolean(),
+    note: Type.Optional(Type.String({ maxLength: 500 })),
+});
+
 /** What the course is called in OPCD's cloud course builder; null/empty clears it. */
 const SetOpcdCourseNameInput = Type.Object({
     courseId: Type.String(),
@@ -213,6 +221,22 @@ export function createGsproExportApi(svc: GsproExportService) {
             path: '/gspro-export/current',
             fn: (input: Static<typeof CourseInput>) => svc.current(input.courseId),
             schema: CourseInput,
+            middleware: mw,
+        },
+        /** The SVG export's checks of the course as it is now (errors stop the export); writes nothing. */
+        svgCheck: {
+            method: 'POST' as const,
+            path: '/gspro-export/svg-check',
+            fn: (input: Static<typeof CourseInput>) => svc.checkSvg(input.courseId),
+            schema: CourseInput,
+            middleware: mw,
+        },
+        /** Accept a finding by its key (docs/gspro/<course>/svg-checks.json), or take that back. */
+        acceptSvgFinding: {
+            method: 'POST' as const,
+            path: '/gspro-export/svg-check/accept',
+            fn: (input: Static<typeof AcceptSvgFindingInput>) => svc.acceptSvgFinding(input.courseId, input.key, input.accepted, input.note),
+            schema: AcceptSvgFindingInput,
             middleware: mw,
         },
         /** Which paths could be R.A.M. roads (far from play, a centerline), which already are, and the rejected ones with why. Writes nothing. */

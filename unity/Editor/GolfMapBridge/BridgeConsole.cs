@@ -118,6 +118,52 @@ namespace GolfMap.Bridge
             if (clear != null) clear.Invoke(null, null);
         }
 
+        // ConsoleWindow's Mode bits that make a row an error: Error, Assert, Fatal, AssetImportError, ScriptingError,
+        // ScriptCompileError, ScriptingException, GraphCompileError, ScriptingAssertion
+        const int ErrorModes = 1 | 2 | 16 | 64 | 256 | 2048 | 131072 | 1048576 | 2097152;
+
+        // The error rows Unity's Console window shows now (what the user has not cleared), oldest first: message
+        // (first line), file, line. Null when this Unity's internal LogEntries API is not the one expected.
+        public static List<Dictionary<string, object>> UnityConsoleErrors(int limit)
+        {
+            var entries = Type.GetType("UnityEditor.LogEntries, UnityEditor") ?? Type.GetType("UnityEditorInternal.LogEntries, UnityEditor");
+            var entryType = Type.GetType("UnityEditor.LogEntry, UnityEditor") ?? Type.GetType("UnityEditorInternal.LogEntry, UnityEditor");
+            if (entries == null || entryType == null) return null;
+            const BindingFlags S = BindingFlags.Static | BindingFlags.Public | BindingFlags.NonPublic;
+            const BindingFlags I = BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic;
+            var start = entries.GetMethod("StartGettingEntries", S);
+            var end = entries.GetMethod("EndGettingEntries", S);
+            var get = entries.GetMethod("GetEntryInternal", S);
+            var count = entries.GetMethod("GetCount", S);
+            var text = entryType.GetField("condition", I) ?? entryType.GetField("message", I);
+            var mode = entryType.GetField("mode", I);
+            var file = entryType.GetField("file", I);
+            var line = entryType.GetField("line", I);
+            if (start == null || end == null || get == null || count == null || text == null || mode == null) return null;
+            var rows = new List<Dictionary<string, object>>();
+            var entry = Activator.CreateInstance(entryType);
+            start.Invoke(null, null);
+            try
+            {
+                int n = (int)count.Invoke(null, null);
+                for (int i = 0; i < n && rows.Count < limit; i++)
+                {
+                    get.Invoke(null, new object[] { i, entry });
+                    if ((Convert.ToInt32(mode.GetValue(entry)) & ErrorModes) == 0) continue;
+                    var message = (text.GetValue(entry) as string ?? "").Trim();
+                    int nl = message.IndexOf('\n');
+                    rows.Add(new Dictionary<string, object>
+                    {
+                        { "message", nl > 0 ? message.Substring(0, nl).Trim() : message },
+                        { "file", file != null ? file.GetValue(entry) as string : null },
+                        { "line", line != null ? line.GetValue(entry) : null },
+                    });
+                }
+            }
+            finally { end.Invoke(null, null); }
+            return rows;
+        }
+
         public static void Save()
         {
             lock (gate)

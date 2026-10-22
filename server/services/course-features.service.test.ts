@@ -1976,3 +1976,48 @@ describe('CourseFeaturesService — waterfall styles', () => {
         await expect(svc.update(ok.id, ok.version, { attributes: { style: 'cascade', widthM: 6 } })).rejects.toBeInstanceOf(InvalidFeatureError);
     });
 });
+
+describe('raiseAbove (a hidden shape in the SVG check)', () => {
+    /** The group's order bottom -> top, of `ids` only (the seed course has shapes of its own). */
+    const order = async (svc: CourseFeaturesService, holeId: string | null, ids: string[]) =>
+        (await svc.listByCourse(TEST_COURSE_ID)).filter((f) => f.holeId === holeId && f.layer === null && ids.includes(f.id))
+            .sort((a, b) => a.sortOrder - b.sortOrder).map((f) => f.id);
+    /** Put `id` at the bottom of its group (the drawer lowered it under everything). */
+    const toBottom = async (svc: CourseFeaturesService, holeId: string, id: string) => {
+        const all = (await svc.listByCourse(TEST_COURSE_ID)).filter((f) => f.holeId === holeId && f.layer === null)
+            .sort((a, b) => a.sortOrder - b.sortOrder).map((f) => f.id).filter((x) => x !== id);
+        await svc.reorder(TEST_COURSE_ID, holeId, [id, ...all]);
+    };
+
+    test('in its own group: raised to just above the highest shape covering it', async () => {
+        const { db } = await createTestDb(seedCourse);
+        const svc = new CourseFeaturesService(db);
+        const semi = await svc.create({ courseId: TEST_COURSE_ID, holeId: TEST_HOLE_1_ID, type: 'semi_rough', geometry: squareGeometry(0, 0, 10) });
+        const fairway = await svc.create({ courseId: TEST_COURSE_ID, holeId: TEST_HOLE_1_ID, type: 'fairway', geometry: squareGeometry(50, 0, 10) });
+        const tee = await svc.create({ courseId: TEST_COURSE_ID, holeId: TEST_HOLE_1_ID, type: 'tee', geometry: squareGeometry(0, 0, 3) });
+        await toBottom(svc, TEST_HOLE_1_ID, tee.id);
+        const ids = [tee.id, semi.id, fairway.id];
+        expect((await order(svc, TEST_HOLE_1_ID, ids))[0]).toBe(tee.id);
+
+        expect(await svc.raiseAbove(TEST_COURSE_ID, tee.id, [semi.id])).toEqual({ moved: true, holeId: TEST_HOLE_1_ID, layer: null });
+        const after = await order(svc, TEST_HOLE_1_ID, ids);
+        expect(after.indexOf(tee.id)).toBe(after.indexOf(semi.id) + 1);
+        // Already above it: nothing to do.
+        expect((await svc.raiseAbove(TEST_COURSE_ID, tee.id, [semi.id])).moved).toBe(false);
+    });
+
+    test('covered from a higher group: moved into that group, just above the covering shape; a road never counts', async () => {
+        const { db } = await createTestDb(seedCourse);
+        const svc = new CourseFeaturesService(db);
+        const tee = await svc.create({ courseId: TEST_COURSE_ID, holeId: TEST_HOLE_1_ID, type: 'tee', geometry: squareGeometry(0, 0, 3) });
+        const semi = await svc.create({ courseId: TEST_COURSE_ID, holeId: TEST_HOLE_2_ID, type: 'semi_rough', geometry: squareGeometry(0, 0, 10) });
+        const green = await svc.create({ courseId: TEST_COURSE_ID, holeId: TEST_HOLE_2_ID, type: 'green', geometry: squareGeometry(30, 0, 5) });
+        const road = await svc.create({ courseId: TEST_COURSE_ID, type: 'path', geometry: squareGeometry(0, 0, 2) });
+
+        expect(await svc.raiseAbove(TEST_COURSE_ID, tee.id, [semi.id, road.id])).toEqual({ moved: true, holeId: TEST_HOLE_2_ID, layer: null });
+        const after = await order(svc, TEST_HOLE_2_ID, [tee.id, semi.id, green.id]);
+        expect(after.indexOf(tee.id)).toBe(after.indexOf(semi.id) + 1);
+        expect(await order(svc, TEST_HOLE_1_ID, [tee.id])).toEqual([]);
+        expect((await svc.raiseAbove(TEST_COURSE_ID, tee.id, [road.id])).moved).toBe(false);
+    });
+});

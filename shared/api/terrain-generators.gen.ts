@@ -27,7 +27,7 @@ export interface RoadsFetchResult {
 }
 
 export interface TerrainEditInput {
-    op: 'corridor' | 'plane' | 'smooth' | 'dig' | 'shore' | 'delta' | 'recipe';
+    op: 'corridor' | 'plane' | 'smooth' | 'dig' | 'shore' | 'delta' | 'recipe' | 'wall';
     params: TerrainEditParams;
     rings: { x: number; y: number }[][];
     originRef?: null | string;
@@ -62,6 +62,8 @@ export interface TerrainEditParams {
     variation?: number;
     seed?: number;
     levelM?: number;
+    runM?: number;
+    minShelfM?: number;
     edgeSlope?: number;
     edgeM?: number;
     edgeEaseM?: number;

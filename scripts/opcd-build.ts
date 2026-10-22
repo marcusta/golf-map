@@ -839,10 +839,17 @@ export interface SvgJob {
     created: string;
     /** The row's buttons: `Download`, `Re-submit`. */
     actions: string[];
+    /** The Download link's `?filename=` (`vreta_svg.zip`), when the row has one. */
+    file?: string | null;
 }
 
-/** A finished, succeeded build is the only kind with a Download. */
+/** A finished build has a Download: the built course, or the report of why it was not built. */
 export const isDone = (job: SvgJob) => job.actions.some((a) => /^download$/i.test(a.trim()));
+/**
+ * OPCD's validation refusal is a "Processing Complete" row too, but its Download is a text
+ * report (`narrow_neck_shapes.txt`, Landeryd 2026-10-20), not the zip with the .blend.
+ */
+export const isReport = (file: string | null | undefined) => !!file && !/\.(zip|blend)$/i.test(file);
 /** A row that never got past Draft never completed (OPCD DMs the reason in Discord). */
 export const isDraft = (job: SvgJob) => /^draft$/i.test(job.status.trim());
 /** `Name|Created` — what tells one job from another across a re-navigation. */
@@ -857,7 +864,7 @@ export const CREATED_PATTERN = /^\d{4}-\d{2}-\d{2}[ T]\d{2}:\d{2}(:\d{2})?$/;
  * timestamp is not a job and comes back null, which is what keeps the table's
  * own headings out of the list.
  */
-export function jobFromCells(index: number, cells: string[], buttons: string[]): SvgJob | null {
+export function jobFromCells(index: number, cells: string[], buttons: string[], file: string | null = null): SvgJob | null {
     const clean = cells.map((c) => c.replace(/\s+/g, ' ').trim()).filter(Boolean);
     const createdAt = clean.findIndex((c) => CREATED_PATTERN.test(c));
     if (createdAt < 1) return null;  // no timestamp, or nothing before it: a header, or not a job row
@@ -867,7 +874,14 @@ export function jobFromCells(index: number, cells: string[], buttons: string[]):
         status: clean.slice(1, createdAt).join(' '),
         created: clean[createdAt]!,
         actions: buttons.map((b) => b.replace(/\s+/g, ' ').trim()).filter(Boolean),
+        file,
     };
+}
+
+/** `?filename=` of a Download link (`https://app.opcdgolf.com/files/<hash>?filename=vreta_svg.zip`), or null. */
+export function downloadFileName(href: string | null | undefined): string | null {
+    if (!href || !/\/files\//.test(href)) return null;
+    try { return new URL(href).searchParams.get('filename'); } catch { return null; }
 }
 
 /** The job table as it stands. Newest first, as OPCD lists it. */
@@ -884,7 +898,9 @@ export async function readJobs(page: Page): Promise<SvgJob[]> {
         // ZK's job-table buttons are not <button>s: read the words in the Actions cell instead.
         const byText = await row.getByText(ACTION_WORDS).allTextContents().catch(() => [] as string[]);
         const buttons = [...new Set([...byRole, ...byText].map((b) => b.trim()).filter(Boolean))];
-        const job = jobFromCells(jobs.length, cells, buttons);
+        const hrefs = await row.locator('a', { hasText: /download/i }).evaluateAll((as) => as.map((a) => a.getAttribute('href'))).catch(() => [] as (string | null)[]);
+        const file = hrefs.map(downloadFileName).find(Boolean) ?? null;
+        const job = jobFromCells(jobs.length, cells, buttons, file);
         if (job) jobs.push(job);
     }
     return jobs;
@@ -929,7 +945,8 @@ export function pickNewJob(before: SvgJob[], now: SvgJob[], ours?: OurJob): SvgJ
 /** The job table as the `--dry-run` prints it. */
 export function jobTableText(jobs: SvgJob[]): string[] {
     if (!jobs.length) return ['  (no SVG jobs in the table)'];
-    return jobs.map((j) => `  ${j.created}  ${j.status.padEnd(20)}  ${j.name}  [${j.actions.join(', ') || 'no buttons'}]`);
+    return jobs.map((j) => `  ${j.created}  ${j.status.padEnd(20)}  ${j.name}  [${j.actions.join(', ') || 'no buttons'}]`
+        + (isReport(j.file) ? `  -> ${j.file} (OPCD refused it)` : ''));
 }
 
 /**
@@ -1029,9 +1046,18 @@ export async function downloadBlend(
         await rm(unzipDir, { recursive: true, force: true });
         await rm(zipPath, { force: true });
         deps.log(`${fileName} -> ${inner} -> ${to}`);
-    } else {
+    } else if (/\.blend$/i.test(fileName)) {
         to = path.join(opts.outDir, nextBlendName(existing, opts.prefix, fileName));
         await rename(zipPath, to);
+    } else {
+        // OPCD refused the SVG and the Download is its report: keep it beside the SVG, never as a .blend.
+        const report = path.join(opts.outDir, `${opts.prefix}.opcd-${fileName}`);
+        await rename(zipPath, report);
+        const text = (await readFile(report, 'utf8').catch(() => '')).trim();
+        throw new Error(`OPCD did not build the course: its Download is a report, ${report}`
+            + (text ? `
+
+${text}` : ''));
     }
     const size = await stat(to);
     return {
@@ -1113,9 +1139,9 @@ export function zonedToUtc(local: string, timeZone: string): Date {
 /** OPCD's Created column -> the instant. */
 export const opcdCreatedToUtc = (created: string) => zonedToUtc(created, OPCD_TIME_ZONE);
 
-/** ok = a Download; failed = Draft, or Processing 8 min after Created; else pending (queued, processing). */
+/** ok = a Download of the built course; failed = a Download of a report, Draft, or Processing 8 min after Created; else pending (queued, processing). */
 export function buildOutcome(job: SvgJob, now: Date): BuildOutcome {
-    if (isDone(job)) return 'ok';
+    if (isDone(job)) return isReport(job.file) ? 'failed' : 'ok';
     if (isDraft(job)) return 'failed';
     const age = now.getTime() - opcdCreatedToUtc(job.created).getTime();
     if (/^processing$/i.test(job.status.trim()) && age > BUILD_FAILED_AFTER_MS) return 'failed';

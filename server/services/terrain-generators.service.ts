@@ -369,16 +369,47 @@ export class TerrainGeneratorsService {
                     : style === 'sill' ? DEFAULT_WATERFALL_SILL_M : 0;
                 return { line: flattenCenterline(f.geometry.centerline!.points, 0.25).map(q => ({ x: q.x, y: q.y })), sillM: sill };
             });
-        let stepped = 0;
+        // The ponds a creek may run into, each with how far its bank reaches in (its shelf + bank run to its depth).
+        const ponds = all.filter(f => f.type === 'water').flatMap(f => {
+            const ring = f.geometry.rings[0] ? flattenRing(f.geometry.rings[0], 0.25, f.geometry.curveType).map(([x, y]) => ({ x, y })) : [];
+            if (ring.length < 3) return [];
+            const attrs = (f.attributes ?? {}) as Record<string, unknown>;
+            const num = (key: string) => typeof attrs[key] === 'number' && Number.isFinite(attrs[key]) ? attrs[key] as number : undefined;
+            const preset = WATER_DIG_PRESETS[(typeof attrs.digPreset === 'string' && attrs.digPreset in WATER_DIG_PRESETS ? attrs.digPreset : DEFAULT_WATER_DIG_PRESET) as WaterDigPreset];
+            const depth = num('digDepthM') ?? preset.depthM, slope = num('digBankSlopeDeg') ?? preset.bankSlopeDeg;
+            return [{ ring, runM: preset.shelfM + depth / Math.tan(slope * Math.PI / 180) }];
+        });
+        let stepped = 0, mouths = 0;
         const inputs: TerrainEditInput[] = [];
         let optedOut = 0, lines = 0;
         const presets = new Map<string, number>();
         for (const f of creeks) {
             const attrs = (f.attributes ?? {}) as Record<string, unknown>;
             if (attrs.dig === false) { optedOut++; continue; }
-            const rings = f.geometry.rings.map(ring => flattenRing(ring, 0.1, f.geometry.curveType).map(([x, y]) => ({ x, y })))
+            let rings = f.geometry.rings.map(ring => flattenRing(ring, 0.1, f.geometry.curveType).map(([x, y]) => ({ x, y })))
                 .filter(ring => ring.length >= 3);
             if (rings.length === 0) continue;
+            // On through the bank of every pond it runs into.
+            const strips = creekMouths(rings[0], ponds);
+            if (strips.length) {
+                const closed = (r: XY[]): Pair[] => [...r.map(q => [q.x, q.y] as Pair), [r[0].x, r[0].y] as Pair];
+                const merged = unionRobust([closed(rings[0]), ...strips.map(closed)]);
+                const outer = merged.map(poly => poly[0]).sort((u, v) => Math.abs(ringAreaXY(v)) - Math.abs(ringAreaXY(u)))[0];
+                if (outer) {
+                    rings = [outer.slice(0, -1).map(([x, y]) => ({ x, y })), ...rings.slice(1)];
+                    mouths += strips.length;
+                    if (f.geometry.centerline) {
+                        // A drawn line goes on into the pond too, from its end nearer the mouth.
+                        const line = flattenCenterline(f.geometry.centerline.points, 0.25).map(q => ({ x: q.x, y: q.y }));
+                        for (const st of strips) {
+                            const tip = { x: (st[1].x + st[2].x) / 2, y: (st[1].y + st[2].y) / 2 };
+                            const first = Math.hypot(line[0].x - tip.x, line[0].y - tip.y), last = Math.hypot(line[line.length - 1].x - tip.x, line[line.length - 1].y - tip.y);
+                            if (first < last) line.unshift(tip); else line.push(tip);
+                        }
+                        f.geometry.centerline = { ...f.geometry.centerline, points: line };
+                    }
+                }
+            }
             const num = (key: string) => typeof attrs[key] === 'number' && Number.isFinite(attrs[key]) ? attrs[key] as number : undefined;
             const key = (typeof attrs.digPreset === 'string' && attrs.digPreset in CREEK_DIG_PRESETS ? attrs.digPreset : DEFAULT_CREEK_DIG_PRESET) as CreekDigPreset;
             const p = CREEK_DIG_PRESETS[key];
@@ -403,6 +434,7 @@ export class TerrainGeneratorsService {
             + (presets.size ? ` (${[...presets].map(([l, n]) => `${l} ${n}`).join(', ')})` : '')
             + (count ? `; ${lines} along a drawn centerline, ${count - lines} along the line found down their polygon` : '')];
         if (stepped) report.push(`${stepped} waterfall(s) cut into them: each stretch between falls keeps its own level, the sills stay`);
+        if (mouths) report.push(`${mouths} mouth(s) dug on through the bank of the pond the creek runs into`);
         if (optedOut) report.push(`${optedOut} creek(s) marked dig: false left alone`);
         if (opts.dryRun) return { kind: 'creek-digs', imported: 0, skipped: [], report: ['dry run, nothing written', ...report], planned: inputs };
         return { kind: 'creek-digs', imported: count, skipped: [], report };
@@ -750,6 +782,49 @@ function offWater(line: { x: number; y: number }[], water: { x: number; y: numbe
 /** A waterfall's lip within this of a creek's outline is on that creek (m). */
 const FALL_ON_CREEK_M = 2;
 
+/** A creek outline within this of a pond's outline runs into it (m). */
+const MOUTH_TOUCH_M = 1;
+/** The creek's own outline this far back from its mouth gives the way into the pond (m). */
+const MOUTH_LOOK_M = 8;
+/** The narrowest mouth cut into a pond's bank (m). */
+const MOUTH_MIN_WIDTH_M = 1;
+/** The longest cut into a pond's bank (m): past it the pond's own floor is deeper anyway. */
+const MOUTH_MAX_RUN_M = 12;
+
+type XY = { x: number; y: number };
+
+/**
+ * Where a creek runs into a pond, its bed must go on through the pond's bank: the pond dig leaves a
+ * shallow shelf and a gentle bank inside its outline, and the creek dig stopped at that outline, so
+ * the creek ended at a sill short of the pond's floor (Landeryd hole 16, 2026-10-21). One strip per
+ * pond the creek touches: from a metre inside the creek, as wide as the creek where it meets the pond,
+ * on into the pond `runM` (the pond's shelf + its bank run down to its depth). Digs compose by the
+ * deepest, so the strip only ever opens the bank up.
+ */
+export function creekMouths(creek: XY[], ponds: { ring: XY[]; runM: number }[]): XY[][] {
+    const strips: XY[][] = [];
+    const mean = (ps: XY[]) => ({ x: ps.reduce((a, p) => a + p.x, 0) / ps.length, y: ps.reduce((a, p) => a + p.y, 0) / ps.length });
+    for (const pond of ponds) {
+        const touching = creek.filter(q => pointInRing(q, pond.ring) || distanceToRing(q, pond.ring) <= MOUTH_TOUCH_M);
+        if (touching.length === 0 || touching.length === creek.length) continue;
+        const m = mean(touching);
+        const near = creek.filter(q => !touching.includes(q) && Math.hypot(q.x - m.x, q.y - m.y) <= MOUTH_LOOK_M);
+        const c = mean(near.length ? near : creek.filter(q => !touching.includes(q)));
+        const len = Math.hypot(m.x - c.x, m.y - c.y);
+        if (len < 1e-6) continue;
+        const d = { x: (m.x - c.x) / len, y: (m.y - c.y) / len }, n = { x: -d.y, y: d.x };
+        const across = touching.map(q => (q.x - m.x) * n.x + (q.y - m.y) * n.y);
+        const half = Math.max(MOUTH_MIN_WIDTH_M, Math.max(...across) - Math.min(...across)) / 2;
+        const run = Math.min(MOUTH_MAX_RUN_M, pond.runM);
+        const a = { x: m.x - d.x, y: m.y - d.y }, b = { x: m.x + d.x * run, y: m.y + d.y * run };
+        strips.push([
+            { x: a.x + n.x * half, y: a.y + n.y * half }, { x: b.x + n.x * half, y: b.y + n.y * half },
+            { x: b.x - n.x * half, y: b.y - n.y * half }, { x: a.x - n.x * half, y: a.y - n.y * half },
+        ]);
+    }
+    return strips;
+}
+
 function pointInRing(p: { x: number; y: number }, ring: { x: number; y: number }[]): boolean {
     let inside = false;
     for (let i = 0, j = ring.length - 1; i < ring.length; j = i++) {
@@ -757,6 +832,12 @@ function pointInRing(p: { x: number; y: number }, ring: { x: number; y: number }
         if ((a.y > p.y) !== (b.y > p.y) && p.x < (b.x - a.x) * (p.y - a.y) / (b.y - a.y) + a.x) inside = !inside;
     }
     return inside;
+}
+
+function ringAreaXY(ring: Pair[]): number {
+    let a = 0;
+    for (let i = 0; i < ring.length - 1; i++) a += ring[i][0] * ring[i + 1][1] - ring[i + 1][0] * ring[i][1];
+    return a / 2;
 }
 
 function distanceToRing(p: { x: number; y: number }, ring: { x: number; y: number }[]): number {

@@ -223,7 +223,8 @@ def _jobs(course, out: Path) -> list[dict]:
             "--sidecar", str(sidecar), "--out", str(out / "Batchbana.GKD"), "--no-merge"]},
         {"id": "svg", "command": "svg", "args": [
             "--square-3006", SQUARE, "--db", str(course["db"]), "--course", COURSE,
-            "--out", str(out / "batchbana.svg")]},
+            # The fixture's green straight in rough is a check error; these tests are about the batch.
+            "--out", str(out / "batchbana.svg"), "--allow-errors"]},
         {"id": "shaping", "command": "shaping-global", "args": [
             "--db", str(course["db"]), "--course", COURSE, "--out-dir", str(out / "shaping")]},
     ]

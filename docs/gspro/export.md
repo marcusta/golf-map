@@ -228,9 +228,11 @@ the next 10 m (`SIDE_STEP_M`) so a hand-typed area is never a decimal-metre terr
   fill-only SVG for the Inkscape/Blender leg of OPCD. One layer per hole (`Hole1`…, the
   unpadded spelling the course files use), anything not on a hole on `Others` (not the
   reserved `Hole99` — that changes how Blender cuts).
-  **Layer order = the app's stack** (`shared/render/stack-key.ts`): `Others` at the bottom, the
-  holes and drawing groups by rank ascending (a higher rank on top, as the Draw tool paints them),
-  `Roads` last. OPCD cuts a later layer out of an earlier one, so it builds what the Draw tool
+  **Layer order = the app's stack** (`shared/render/stack-key.ts`): the Roughs group in `Roughs` at
+  the bottom (its shapes keep `others_<n>` names), the holes and drawing groups by rank ascending (a
+  higher rank on top, as the Draw tool paints them), the course level in `Others` over them ("Course
+  level (top)" in Draw; until 2026-10-21 it went to the bottom with the roughs, which hid Landeryd
+  Classic's tees under Masters' semi rough while the app showed them), `Roads` last. OPCD cuts a later layer out of an earlier one, so it builds what the Draw tool
   shows. Until 2026-10-17 the holes went descending (Hole1 topmost, OPCD's own file convention):
   Omberg's hole-10 tees, hole 14/16/17 greens and the practice green then lay under a lower hole's
   fairway and got no mesh while the app showed them on top; with the app's order all 314 shapes
@@ -813,6 +815,39 @@ runs the whole `plantVegetation` — inner, plus the outer's zones file when it 
 saying why the fast path was not taken). The 409s
 that remain are the ones the server cannot do anything about: no DEM at all, no map area, no building
 survey, no tree stems, no GSPro course folder.
+
+### SVG checks: what stops an OPCD build before it is sent
+
+`gspro.py svg` checks the shapes as OPCD will see them (paint order, each later shape cut out of the ones
+below) before it writes anything. **Errors** stop the export: exit 3, no SVG and no sidecars written, the
+findings in `<stem>.checks.json` next to where the SVG would be; the server turns that into
+`SVG check: N error(s), nothing written - open them in Draw › Check shapes. …` (`GsproExportService.runSvg`),
+and the GSPro dialog and the command bar's update result offer **Open errors**. Test variants
+(`variant`, `excludeFeatureIds`, a variant DB) pass `--allow-errors`: they exist to find such shapes.
+
+| code | severity | what | evidence |
+|---|---|---|---|
+| `overlap-sliver` | error | two shapes overlap in a strip under 0.24 m wide (OPCD's blend is inset 0.12 m from each bank) over 0.5 m+ | Landeryd hole 8, 2026-10-20: a bunker reaching 0.07-0.12 m into the green's semi over 1.5 m failed the build silently; the same bunker clear of it built (found by bisecting in 7 rounds) |
+| `narrow-neck` | error | a shape pinches under 0.24 m (erosion by 0.12 m splits it or opens a hole) | OPCD's own validator refused Landeryd's first upload (`narrow_neck_shapes.txt`, tree canopy shapes); its measure is approximate, this finds 4 of its 12 |
+| `hidden-shape` | error | covered by the shapes above it: no mesh | Omberg hole 10's tees (2026-10-17) |
+| `green-border` | error | a green meeting rough or nothing instead of fairway/semi | Omberg hole 13 (failed in combination) |
+| `tiny-shape` | warning | under the minimum area, left out | |
+| `sharp-corner`, `creek-left-out` | note | spikes; creeks left out of the SVG (narrow, or into a pond) | |
+
+A finding is keyed `<code>:<feature ids>` (never path names: a feature moved to another hole gets a new
+one), so **accepting** survives re-exports: `docs/gspro/<course>/svg-checks.json`
+(`golfmap-svg-checks-accepted-v1`, `{key, note, at}`), read through `--accepted`. Accept what is meant,
+e.g. a sibling course's tee under this course's semi (Landeryd Classic under Masters).
+
+- **Draw › Check shapes…** (the stack panel; `web/src/draw/svg-check-panel.component.ts`): the findings
+  as one-line rows, errors and warnings open, notes and accepted folded; a click selects the shape(s)
+  (a hidden shape: only itself), un-hides them and zooms to the problem, drawn red (errors) / amber on
+  the map; ✓ accepts, Undo takes it back; on a hidden shape **↑ lifts it** just above the shapes covering
+  it, into their hole or group when they are higher (`CourseFeaturesService.raiseAbove`,
+  `POST /api/course-features/raise-above`, `bun run svg:check -- <course> lift <key>`); **Run again** re-checks (`POST /api/gspro-export/svg-check`, `gspro.py svg --check-only`,
+  a few seconds, writes nothing).
+- **CLI**: `bun run svg:check -- <course> [--all] [--json]` (exit 1 while there are unaccepted errors),
+  `... accept <key> [--note <why>]`, `... unaccept <key>` (`scripts/svg-check.ts`).
 
 ### OPCD cloud build: `scripts/opcd-build.ts`
 

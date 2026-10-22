@@ -35,6 +35,7 @@ import { TerrainGeneratorsService } from './terrain-generators.service';
 import { PondEdgeService } from './pond-edge.service';
 import { WaterStepsService } from './water-steps.service';
 import { PhotoStemsService } from './photo-stems.service';
+import { HoleAssignmentService } from './hole-assignment.service';
 import { PublishService } from './publish.service';
 import { TapscoreBridgeService } from './tapscore-bridge.service';
 import { HttpTapscoreClient } from './tapscore-client';
@@ -78,6 +79,8 @@ export function createServices(db: Kysely<Database>, config: ServicesConfig = {}
     const pinsService = new PinsService(db);
     const aimPointsService = new AimPointsService(db);
     const courseFeaturesService = new CourseFeaturesService(db);
+    // Shapes in Others onto their holes from the furniture (Draw mode's "Assign to holes", `bun run holes:assign`).
+    const holeAssignmentService = new HoleAssignmentService({ db, courseFeatures: courseFeaturesService });
     const clubsService = new ClubsService(db);
     const gamePlansService = new GamePlansService(db);
     // The bridge is constructed before RoundsService so it can subscribe to the
@@ -163,6 +166,7 @@ export function createServices(db: Kysely<Database>, config: ServicesConfig = {}
         pondEdgeService,
         waterStepsService,
         photoStemsService,
+        holeAssignmentService,
         gsproExportService,
         vegetationRulesService,
         shapingService,

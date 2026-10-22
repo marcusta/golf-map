@@ -4,6 +4,8 @@ import { s, btn, field, input, selectedRow, metric } from '../css';
 import { CourseDetailService } from '../course-detail/course-detail.service';
 import { FeaturesService, fillScopeOptions, scopeFromKey, scopeKey, scopeOf } from './features.service';
 import { DrawToolService } from './draw-tool.service';
+import { HoleAssignmentService } from './hole-assignment.service';
+import { SvgCheckService } from './svg-check.service';
 import { FEATURE_STYLES } from './feature-palette';
 import { icon } from '../ui/icons';
 import { MapService } from '../map/map.service';
@@ -103,6 +105,10 @@ const tpl = template(`
             <input bind="findShape" type="search" class="find-shape" placeholder="Find shape id, e.g. hole_5_15c"
                 aria-label="Find shape by id" title="Shape id from the GSPro SVG or an OPCD mesh name; Enter selects and zooms to it" data-testid="stack-find-shape" />
             <button bind="editLayerOrder" type="button" class="op-btn" data-testid="layer-order-edit">Edit layer order…</button>
+            <button bind="assignHoles" type="button" class="op-btn" data-testid="hole-assign-open"
+                title="Put the shapes in Others on their holes, from each hole's tees, aim points and green">Assign to holes…</button>
+            <button bind="checkShapes" type="button" class="op-btn" data-testid="svg-check-open"
+                title="Run the GSPro SVG export's checks on the shapes and list what would stop it">Check shapes…</button>
             <button bind="roughsToggle" type="button" class="layer-toggle" data-testid="stack-roughs-toggle"></button>
         </div>
         <div bind="rows" class="stack-rows content-view" data-testid="stack-panel-rows"></div>
@@ -353,6 +359,8 @@ export class FeatureStackPanelComponent extends Component {
     private tool = this.inject(DrawToolService);
     private features = this.inject(FeaturesService);
     private courseDetail = this.inject(CourseDetailService);
+    private holeAssign = this.inject(HoleAssignmentService);
+    private svgCheck = this.inject(SvgCheckService);
     private zoneTypes = this.inject(ZoneTypesService);
     private map = this.inject(MapService);
     /** Vegetation mode: the list defaults to every zone, grouped by hole. */
@@ -402,6 +410,19 @@ export class FeatureStackPanelComponent extends Component {
                 },
             },
             closeLayerOrder: { onclick: () => this.layerOrderOpen.set(false) },
+            assignHoles: {
+                style: () => this.tool.scope.get() === 'surfaces' ? '' : 'display:none',
+                onclick: () => {
+                    const course = this.courseDetail.course.peek();
+                    if (course) this.holeAssign.open(course.id);
+                },
+            },
+            checkShapes: {
+                onclick: () => {
+                    const course = this.courseDetail.course.peek();
+                    if (course) this.svgCheck.open(course.id);
+                },
+            },
             layerList: {
                 onchange: (e: Event) => this.layerOrderKey.set((e.target as HTMLSelectElement).value),
             },

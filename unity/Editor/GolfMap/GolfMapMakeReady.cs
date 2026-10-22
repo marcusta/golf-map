@@ -56,10 +56,11 @@ namespace GolfMap.Editor
         const string PhysicsFolder = "Assets/Resources/Physics/";
         internal const float ColliderReachM = 300f;    // GSPro: tree colliders out to 300 m from the camera
         const float BushM = 0.5f;             // a plant this tall and wide stops a ball
+        internal const float BuildingColliderM = 50f;  // a building farther than this from play carries no collider (props.place adds none)
         static readonly string[] PhysicNames = { "GSPconcrete", "GSPdeeprough", "GSPfairway", "GSPgreen", "GSPleaves", "GSPpinestraw", "GSPrough", "GSPsand", "GSPsemirough", "GSPstone", "GSPtee", "GSPtimber", "GSPwater", "GSPwood" };
         static readonly System.Globalization.CultureInfo Inv = System.Globalization.CultureInfo.InvariantCulture;
 
-        [BridgeCommand("golfmap.course.ready", "Make-ready check before a build: every object within marginM of the playing field (course meshes classed Tee/Fairway/Green/Semi/Rough/Bunker, rasterised 1 m and grown by marginM) has its colliders on with the GSPro physic material it should have, and nothing that must not collide does. Categories: VSP trees (From Prefab, trunk GSPwood + crown GSPleaves on the prefab, switched-off prefab colliders, ColliderDistanceFactor x PlantDistance >= 300 m, billboard-only items), bushes (VSP plants and shrub props over 0.5 m: GSPleaves; smaller plants: none), water planes and the Lux lake collider (non-convex MeshCollider, GSPwater; render-only Lux planes: none), R.A.M. creeks and waterfalls (GSPwater; particles: none), R.A.M. roads (surface physics from Paths/path-surfaces.json, else concrete/rough by road type), props buildings/structures/props/vehicles (physic material per asset: props.json `physics`, else keywords; markings: none), walls (spec physicMaterial), power-line poles (GSPwood; wires: none), course meshes (counted; creek bed GSPwater, slabs GSPstone, none = error), wispy rough/horizon/VSP grass (no collider), missing prefabs, paint previews left (fix: paint.clear), terrain colliders the build leaves out, unsaved scene. fix=true adds/enables colliders and sets physic materials (prefab and VSP package assets included, with undo); it never moves an object. Writes <export folder>/make-ready.json (golfmap-make-ready-v1).",
+        [BridgeCommand("golfmap.course.ready", "Make-ready check before a build: every object within marginM of the playing field (course meshes classed Tee/Fairway/Green/Semi/Rough/Bunker, rasterised 1 m and grown by marginM) has its colliders on with the GSPro physic material it should have, and nothing that must not collide does. Categories: VSP trees (From Prefab, trunk GSPwood + crown GSPleaves on the prefab, switched-off prefab colliders, ColliderDistanceFactor x PlantDistance >= 300 m, billboard-only items), bushes (VSP plants and shrub props over 0.5 m: GSPleaves; smaller plants: none), water planes and the Lux lake collider (non-convex MeshCollider, GSPwater; render-only Lux planes: none), R.A.M. creeks and waterfalls (GSPwater; particles: none), R.A.M. roads (surface physics from Paths/path-surfaces.json, else concrete/rough by road type), props buildings/structures/props/vehicles (physic material per asset: props.json `physics`, else keywords; markings: none), walls (spec physicMaterial), power-line poles (GSPwood; wires: none), course meshes (counted; creek bed GSPwater, slabs GSPstone, none = error), wispy rough/horizon/VSP grass (no collider), missing prefabs, paint previews left (fix: paint.clear), terrain colliders the build leaves out, unsaved scene, errors standing in Unity's Console window (handle, then clear it). fix=true adds/enables colliders and sets physic materials (prefab and VSP package assets included, with undo); it never moves an object. Writes <export folder>/make-ready.json (golfmap-make-ready-v1).",
             args = "fix=false (report only; true applies the fixes), marginM=40 (metres round the playing field), limit=60 (findings returned; the file has all), dryRun=false (as fix=false, and no file written), removeMissingPrefabs=false (with fix: delete missing prefab instances, which are otherwise only reported), " + GolfMapSceneSave.Arg)]
         static IEnumerator Command(BridgeArgs a)
         {
@@ -210,7 +211,7 @@ namespace GolfMap.Editor
         sealed class Ctx
         {
             public bool fix;
-            public NearArea area;
+            public NearArea area, buildingArea;   // buildingArea: within BuildingColliderM of play
             public GolfMapCourse course;
             public string courseFolder;
             public Dictionary<string, PhysicMaterial> phys = new Dictionary<string, PhysicMaterial>();
@@ -305,6 +306,7 @@ namespace GolfMap.Editor
             var play = courseMeshes.Where(f => IsPlay(GolfMapSurfaces.Classify(f.name))).ToList();
             if (play.Count == 0) throw new BridgeError("No course meshes of the playing field (tee, fairway, green, semi, rough, bunker) in " + scene.name + ".");
             c.area = new NearArea(play, marginM);
+            c.buildingArea = marginM == BuildingColliderM ? c.area : new NearArea(play, BuildingColliderM);
             lap("area");
             yield return null;
 
@@ -388,6 +390,17 @@ namespace GolfMap.Editor
         {
             float plant = system.VegetationSettings.PlantDistance;
             return plant <= 0f ? 1f : Mathf.Min(1f, ColliderReachM / plant);
+        }
+
+        // golfmap.props.place's half of the BuildingColliderM rule: does this building (placed, colliders not yet added)
+        // stand within BuildingColliderM of the playing field? Every building does in a scene without play meshes.
+        internal static Func<GameObject, bool> BuildingNeedsColliders(GameObject[] roots)
+        {
+            var play = roots.SelectMany(r => r.GetComponentsInChildren<MeshFilter>(true))
+                .Where(f => f.sharedMesh != null && f.gameObject.activeInHierarchy && GolfMapSurfaces.IsCourseMesh(f.name) && IsPlay(GolfMapSurfaces.Classify(f.name))).ToList();
+            if (play.Count == 0) return g => true;
+            var area = new NearArea(play, BuildingColliderM);
+            return g => area.Meets(ObjectBounds(g));
         }
 
         static bool IsPlay(GolfMapSurfaces.Surface s)
@@ -811,8 +824,26 @@ namespace GolfMap.Editor
                 string cat = category == "building" ? "buildings" : category == "structure" ? "structures" : category == "vehicle" ? "vehicles" : "props";
                 var want = AssetPhysics(category, id, asset != null ? asset.physics : null, asset != null ? asset.materials : null, asset != null ? asset.prefab : null, g, out rule);
                 if (category == "prop" && want == "GSPleaves") cat = "bushes";
-                if (!c.Consider(cat, c.area.Meets(b))) continue;
                 var material = LoadPhysic(asset != null && !string.IsNullOrEmpty(asset.physics) ? asset.physics : want);
+                if (category == "building" && !c.buildingArea.Meets(b))
+                {
+                    // no ball reaches a building this far out: it carries no collider (nor anything GSPro's build asks about)
+                    c.Consider(cat, false);
+                    var any = g.GetComponentsInChildren<Collider>(true).Where(x => !x.isTrigger).ToList();
+                    if (any.Count > 0)
+                        c.Issue(cat, "warn", PathOf(g), any.Count + " collider(s) on a building more than " + BuildingColliderM + " m from play: it needs none", b.center,
+                            "colliders removed", () => { foreach (var x in any) Undo.DestroyObjectImmediate(x); c.sceneChanged = true; });
+                    continue;
+                }
+                if (!c.Consider(cat, c.area.Meets(b)))
+                {
+                    // far from play the ball never gets there, but GSPro's build asks about every collider of the scene without one
+                    var unset = g.GetComponentsInChildren<Collider>(true).Where(x => x.enabled && !x.isTrigger && x.gameObject.activeInHierarchy && x.sharedMaterial == null).ToList();
+                    if (unset.Count > 0 && material != null)
+                        c.Issue(cat, "warn", PathOf(g), unset.Count + " collider(s) on no physic material, far from play (GSPro's build asks about them), " + want + " wanted", b.center,
+                            "physic material " + want, () => { foreach (var x in unset) { Undo.RecordObject(x, "Make course ready"); x.sharedMaterial = material; } c.sceneChanged = true; });
+                    continue;
+                }
                 if (cat == "bushes")
                 {
                     float height = b.size.y, width = Mathf.Max(b.size.x, b.size.z);
@@ -1233,7 +1264,43 @@ namespace GolfMap.Editor
                 if (!GolfMapCourseBuild.KeepCollider(t.name, defaults))
                     c.Issue("scene", "info", t.name, "terrain collider on in the editor: golfmap.course.build leaves it out of the bundle (terrainCollider/outerCollider=false), so the ball never meets it in GSPro", t.transform.position);
             }
+            // what GSPro's build counts in its "Colliders missing Physic Materials" dialog: every collider of the scene
+            // without one, wherever it lies (terrain colliders aside: the build leaves them out); after this run's fixes
+            var unset = roots.SelectMany(r => r.GetComponentsInChildren<Collider>(true))
+                .Where(x => x.enabled && !x.isTrigger && x.gameObject.activeInHierarchy && !(x is TerrainCollider) && x.sharedMaterial == null)
+                .ToList();
+            foreach (var group in unset.GroupBy(x => x.transform.root.name))
+            {
+                c.Consider("scene", true);
+                var f = c.Issue("scene", "error", PathOf(group.First().gameObject), group.Count() + " collider(s) under " + group.Key + " on no physic material" + (c.fix ? " after the fixes" : "") + ": GSPro's build stops on them (Collider Errors)", group.First().bounds.center);
+                f.objects.AddRange(group.Skip(1).Select(x => PathOf(x.gameObject)).Distinct());
+            }
+            c.decisions["collidersWithoutPhysics"] = unset.Count;
+            ConsoleErrors(c);
             if (wasDirty) { c.Consider("scene", true); c.Issue("scene", "info", scene.name, "the scene has unsaved changes (save=true saves it after this run)", Vector3.zero); }
+        }
+
+        // ------------------------------------------------------------------ 14: Unity's Console
+
+        // Errors still standing in Unity's Console window, compile errors included (the same message once, with its
+        // count): to be handled, then cleared, before a build. Nothing to fix here, so no fix action.
+        static void ConsoleErrors(Ctx c)
+        {
+            c.Consider("console", true);
+            var rows = BridgeConsole.UnityConsoleErrors(5000);
+            if (rows == null)
+            {
+                c.Issue("console", "info", "Console", "could not read Unity's Console window (internal LogEntries API changed): look at it yourself", Vector3.zero);
+                return;
+            }
+            foreach (var g in rows.GroupBy(r => (string)r["message"]))
+            {
+                var r0 = g.First();
+                var where = r0["file"] as string;
+                c.Issue("console", "error", string.IsNullOrEmpty(where) ? "Console" : where + ":" + r0["line"],
+                    (g.Count() > 1 ? g.Count() + "x " : "") + g.Key + " (Unity's Console: handle it, then clear the Console)", Vector3.zero);
+            }
+            c.decisions["consoleErrors"] = rows.Count;
         }
 
         // ------------------------------------------------------------------ helpers

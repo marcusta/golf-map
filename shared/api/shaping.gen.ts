@@ -166,7 +166,7 @@ export interface ShapingGateFinding {
 
 export interface ShapingApi {
     recipes(input: { surface?: 'bunker' | 'lake' | 'creek' | 'path' }): Promise<ShapingRecipe[]>;
-    apply(input: { dryRun?: boolean; note?: string; skipUnity?: boolean; paths?: boolean; featureIds?: string[]; courseId: string }): Promise<ShapingJob>;
+    apply(input: { note?: string; featureIds?: string[]; dryRun?: boolean; skipUnity?: boolean; paths?: boolean; courseId: string }): Promise<ShapingJob>;
     status(input: { courseId: string }): Promise<ShapingStatus>;
     job(input: { jobId: string }): Promise<ShapingJob>;
 }

@@ -1,0 +1,1002 @@
+{
+  "format": "golfmap-shaping-layer-v1",
+  "id": "features",
+  "generated": true,
+  "generator": "pipeline/gspro.py shaping-global",
+  "course": {
+    "id": "26D37361-D79C-41AA-AA49-92F2C2277222",
+    "name": "Landeryd Masters"
+  },
+  "ops": [
+    {
+      "id": "recipe-59",
+      "op": "afrod.recipe",
+      "select": {
+        "feature": "00449f2a-f555-44fc-be8f-3621501967ea"
+      },
+      "recipe": "golfmap-bunker-paint-only.json",
+      "seed": 89,
+      "note": "golfmap-bunker-paint-only (default for bunker)"
+    },
+    {
+      "id": "recipe-5b",
+      "op": "afrod.recipe",
+      "select": {
+        "feature": "00e4ee6a-9b16-4272-8f37-544ae592af5e"
+      },
+      "recipe": "golfmap-bunker-paint-only.json",
+      "seed": 91,
+      "note": "golfmap-bunker-paint-only (default for bunker)"
+    },
+    {
+      "id": "recipe-6b",
+      "op": "afrod.recipe",
+      "select": {
+        "feature": "06042096-ffd7-41c6-aa60-86754da24246"
+      },
+      "recipe": "golfmap-bunker-paint-only.json",
+      "seed": 107,
+      "note": "golfmap-bunker-paint-only (default for bunker)"
+    },
+    {
+      "id": "recipe-70",
+      "op": "afrod.recipe",
+      "select": {
+        "feature": "076e8133-e795-4a7d-98d1-8e1ec2064b4e"
+      },
+      "recipe": "golfmap-bunker-paint-only.json",
+      "seed": 112,
+      "note": "golfmap-bunker-paint-only (default for bunker)"
+    },
+    {
+      "id": "recipe-72",
+      "op": "afrod.recipe",
+      "select": {
+        "feature": "07bed7de-47d8-4c36-afb0-e4b7f9def017"
+      },
+      "recipe": "golfmap-bunker-paint-only.json",
+      "seed": 114,
+      "note": "golfmap-bunker-paint-only (default for bunker)"
+    },
+    {
+      "id": "recipe-75",
+      "op": "afrod.recipe",
+      "select": {
+        "feature": "085eb1fb-bce0-47e6-b8e6-bfd97b69b3a7"
+      },
+      "recipe": "golfmap-bunker-paint-only.json",
+      "seed": 117,
+      "note": "golfmap-bunker-paint-only (default for bunker)"
+    },
+    {
+      "id": "recipe-78",
+      "op": "afrod.recipe",
+      "select": {
+        "feature": "08dcd26c-9459-4bec-85cd-6fd5eaf8b436"
+      },
+      "recipe": "golfmap-bunker-paint-only.json",
+      "seed": 120,
+      "note": "golfmap-bunker-paint-only (default for bunker)"
+    },
+    {
+      "id": "recipe-7a",
+      "op": "afrod.recipe",
+      "select": {
+        "feature": "09ab68db-9f19-4f36-8548-1a82fd5f7338"
+      },
+      "recipe": "golfmap-bunker-paint-only.json",
+      "seed": 122,
+      "note": "golfmap-bunker-paint-only (default for bunker)"
+    },
+    {
+      "id": "recipe-80",
+      "op": "afrod.recipe",
+      "select": {
+        "feature": "0c0d8fdd-1444-4e82-af26-eebd1fd1a98a"
+      },
+      "recipe": "golfmap-bunker-paint-only.json",
+      "seed": 128,
+      "note": "golfmap-bunker-paint-only (default for bunker)"
+    },
+    {
+      "id": "recipe-89",
+      "op": "afrod.recipe",
+      "select": {
+        "feature": "0e6aefd5-5b62-45e2-9501-4693e167265d"
+      },
+      "recipe": "golfmap-bunker-paint-only.json",
+      "seed": 137,
+      "note": "golfmap-bunker-paint-only (default for bunker)"
+    },
+    {
+      "id": "recipe-91",
+      "op": "afrod.recipe",
+      "select": {
+        "feature": "110c0dd8-0c9f-4758-82f9-de566d1fdd16"
+      },
+      "recipe": "golfmap-bunker-paint-only.json",
+      "seed": 145,
+      "note": "golfmap-bunker-paint-only (default for bunker)"
+    },
+    {
+      "id": "recipe-9b",
+      "op": "afrod.recipe",
+      "select": {
+        "feature": "149c7e8c-5c16-4e85-9e7d-e3179e10cb35"
+      },
+      "recipe": "golfmap-bunker-paint-only.json",
+      "seed": 155,
+      "note": "golfmap-bunker-paint-only (default for bunker)"
+    },
+    {
+      "id": "recipe-9c",
+      "op": "afrod.recipe",
+      "select": {
+        "feature": "14c52813-7f5c-4b54-9113-b6706c0b0027"
+      },
+      "recipe": "golfmap-bunker-paint-only.json",
+      "seed": 156,
+      "note": "golfmap-bunker-paint-only (default for bunker)"
+    },
+    {
+      "id": "recipe-9e",
+      "op": "afrod.recipe",
+      "select": {
+        "feature": "162bd50e-3372-467b-b24f-1af82b6074b6"
+      },
+      "recipe": "golfmap-bunker-paint-only.json",
+      "seed": 158,
+      "note": "golfmap-bunker-paint-only (default for bunker)"
+    },
+    {
+      "id": "recipe-a1",
+      "op": "afrod.recipe",
+      "select": {
+        "feature": "17430c88-2c0a-43e8-81cb-c082ffe853f8"
+      },
+      "recipe": "golfmap-bunker-paint-only.json",
+      "seed": 161,
+      "note": "golfmap-bunker-paint-only (default for bunker)"
+    },
+    {
+      "id": "recipe-a5",
+      "op": "afrod.recipe",
+      "select": {
+        "feature": "18b13031-e241-4eea-bc69-2640016fdfb6"
+      },
+      "recipe": "golfmap-bunker-paint-only.json",
+      "seed": 165,
+      "note": "golfmap-bunker-paint-only (default for bunker)"
+    },
+    {
+      "id": "recipe-a7",
+      "op": "afrod.recipe",
+      "select": {
+        "feature": "197823ae-57a5-41cb-9c26-0b3ff8fb4ec0"
+      },
+      "recipe": "golfmap-bunker-paint-only.json",
+      "seed": 167,
+      "note": "golfmap-bunker-paint-only (default for bunker)"
+    },
+    {
+      "id": "recipe-ae",
+      "op": "afrod.recipe",
+      "select": {
+        "feature": "1c809a28-70dd-4383-b89d-05002cf55001"
+      },
+      "recipe": "golfmap-bunker-paint-only.json",
+      "seed": 174,
+      "note": "golfmap-bunker-paint-only (default for bunker)"
+    },
+    {
+      "id": "recipe-bb",
+      "op": "afrod.recipe",
+      "select": {
+        "feature": "211cfa79-3f87-4847-b969-163c649fda87"
+      },
+      "recipe": "golfmap-bunker-paint-only.json",
+      "seed": 187,
+      "note": "golfmap-bunker-paint-only (default for bunker)"
+    },
+    {
+      "id": "recipe-c4",
+      "op": "afrod.recipe",
+      "select": {
+        "feature": "261cfc2c-4faa-42d3-98eb-997f4c7e68a0"
+      },
+      "recipe": "golfmap-bunker-paint-only.json",
+      "seed": 196,
+      "note": "golfmap-bunker-paint-only (default for bunker)"
+    },
+    {
+      "id": "recipe-c6",
+      "op": "afrod.recipe",
+      "select": {
+        "feature": "26ef9032-225b-4e4b-8f38-6e430ee83c7d"
+      },
+      "recipe": "golfmap-bunker-paint-only.json",
+      "seed": 198,
+      "note": "golfmap-bunker-paint-only (default for bunker)"
+    },
+    {
+      "id": "recipe-c7",
+      "op": "afrod.recipe",
+      "select": {
+        "feature": "2828137d-b4ba-4f3a-9e97-b9e201c0c566"
+      },
+      "recipe": "golfmap-bunker-paint-only.json",
+      "seed": 199,
+      "note": "golfmap-bunker-paint-only (default for bunker)"
+    },
+    {
+      "id": "recipe-c9",
+      "op": "afrod.recipe",
+      "select": {
+        "feature": "29688ea9-424a-46d5-b0f1-0ec35fed6031"
+      },
+      "recipe": "golfmap-bunker-paint-only.json",
+      "seed": 201,
+      "note": "golfmap-bunker-paint-only (default for bunker)"
+    },
+    {
+      "id": "recipe-cf",
+      "op": "afrod.recipe",
+      "select": {
+        "feature": "2b645eb2-124a-47c8-a608-5b468df51429"
+      },
+      "recipe": "golfmap-bunker-paint-only.json",
+      "seed": 207,
+      "note": "golfmap-bunker-paint-only (default for bunker)"
+    },
+    {
+      "id": "recipe-d0",
+      "op": "afrod.recipe",
+      "select": {
+        "feature": "2b7518ba-bdaf-4af5-b7be-5987b5205021"
+      },
+      "recipe": "golfmap-bunker-paint-only.json",
+      "seed": 208,
+      "note": "golfmap-bunker-paint-only (default for bunker)"
+    },
+    {
+      "id": "recipe-db",
+      "op": "afrod.recipe",
+      "select": {
+        "feature": "30882888-e255-4db6-8621-aecd94a58c4e"
+      },
+      "recipe": "golfmap-bunker-paint-only.json",
+      "seed": 219,
+      "note": "golfmap-bunker-paint-only (default for bunker)"
+    },
+    {
+      "id": "recipe-dc",
+      "op": "afrod.recipe",
+      "select": {
+        "feature": "3158f1c1-0887-4d16-ab3c-bb75dacb1fa4"
+      },
+      "recipe": "golfmap-bunker-paint-only.json",
+      "seed": 220,
+      "note": "golfmap-bunker-paint-only (default for bunker)"
+    },
+    {
+      "id": "recipe-df",
+      "op": "afrod.recipe",
+      "select": {
+        "feature": "3344fc2d-1659-41d1-b8f5-ca4262542f0c"
+      },
+      "recipe": "golfmap-bunker-paint-only.json",
+      "seed": 223,
+      "note": "golfmap-bunker-paint-only (default for bunker)"
+    },
+    {
+      "id": "recipe-e0",
+      "op": "afrod.recipe",
+      "select": {
+        "feature": "33534a6a-ce97-4021-8013-1bd86ee38ece"
+      },
+      "recipe": "golfmap-bunker-paint-only.json",
+      "seed": 224,
+      "note": "golfmap-bunker-paint-only (default for bunker)"
+    },
+    {
+      "id": "recipe-ea",
+      "op": "afrod.recipe",
+      "select": {
+        "feature": "36fe89ef-aa85-45dd-9fcb-3255a6cab9ab"
+      },
+      "recipe": "golfmap-bunker-paint-only.json",
+      "seed": 234,
+      "note": "golfmap-bunker-paint-only (default for bunker)"
+    },
+    {
+      "id": "recipe-ed",
+      "op": "afrod.recipe",
+      "select": {
+        "feature": "37e432d7-778a-4ff5-8736-6a5448ceaeab"
+      },
+      "recipe": "golfmap-bunker-paint-only.json",
+      "seed": 237,
+      "note": "golfmap-bunker-paint-only (default for bunker)"
+    },
+    {
+      "id": "recipe-ef",
+      "op": "afrod.recipe",
+      "select": {
+        "feature": "38386652-9e33-4fc5-843f-e9b2b5ad381b"
+      },
+      "recipe": "golfmap-bunker-paint-only.json",
+      "seed": 239,
+      "note": "golfmap-bunker-paint-only (default for bunker)"
+    },
+    {
+      "id": "recipe-f5",
+      "op": "afrod.recipe",
+      "select": {
+        "feature": "3aa8fdf0-f748-4da3-9ece-47977e265c64"
+      },
+      "recipe": "golfmap-bunker-paint-only.json",
+      "seed": 245,
+      "note": "golfmap-bunker-paint-only (default for bunker)"
+    },
+    {
+      "id": "recipe-f7",
+      "op": "afrod.recipe",
+      "select": {
+        "feature": "3ac13d0a-eb3f-4813-bb51-3a633a4bd2bf"
+      },
+      "recipe": "golfmap-bunker-paint-only.json",
+      "seed": 247,
+      "note": "golfmap-bunker-paint-only (default for bunker)"
+    },
+    {
+      "id": "recipe-f8",
+      "op": "afrod.recipe",
+      "select": {
+        "feature": "3b623ef1-fde9-4ae1-9c8b-6b84fc2b99ec"
+      },
+      "recipe": "golfmap-bunker-paint-only.json",
+      "seed": 248,
+      "note": "golfmap-bunker-paint-only (default for bunker)"
+    },
+    {
+      "id": "recipe-fd",
+      "op": "afrod.recipe",
+      "select": {
+        "feature": "3cf2928f-3782-4dd6-94d0-9c80be03c227"
+      },
+      "recipe": "golfmap-bunker-paint-only.json",
+      "seed": 253,
+      "note": "golfmap-bunker-paint-only (default for bunker)"
+    },
+    {
+      "id": "recipe-101",
+      "op": "afrod.recipe",
+      "select": {
+        "feature": "3ecf482c-dd3d-4151-842c-ff6b9385b9cb"
+      },
+      "recipe": "golfmap-bunker-paint-only.json",
+      "seed": 257,
+      "note": "golfmap-bunker-paint-only (default for bunker)"
+    },
+    {
+      "id": "recipe-102",
+      "op": "afrod.recipe",
+      "select": {
+        "feature": "3f7aecdc-1c0d-45ad-a190-e0811e02909f"
+      },
+      "recipe": "golfmap-bunker-paint-only.json",
+      "seed": 258,
+      "note": "golfmap-bunker-paint-only (default for bunker)"
+    },
+    {
+      "id": "recipe-10e",
+      "op": "afrod.recipe",
+      "select": {
+        "feature": "464adda6-265b-47cf-993c-c3f84822b241"
+      },
+      "recipe": "golfmap-bunker-paint-only.json",
+      "seed": 270,
+      "note": "golfmap-bunker-paint-only (default for bunker)"
+    },
+    {
+      "id": "recipe-111",
+      "op": "afrod.recipe",
+      "select": {
+        "feature": "46e01fde-06d7-4e85-bca3-b214a8fe3e9c"
+      },
+      "recipe": "golfmap-bunker-paint-only.json",
+      "seed": 273,
+      "note": "golfmap-bunker-paint-only (default for bunker)"
+    },
+    {
+      "id": "recipe-120",
+      "op": "afrod.recipe",
+      "select": {
+        "feature": "4f88b0a1-a227-4902-af81-45d3c2ffc96b"
+      },
+      "recipe": "golfmap-bunker-paint-only.json",
+      "seed": 288,
+      "note": "golfmap-bunker-paint-only (default for bunker)"
+    },
+    {
+      "id": "recipe-123",
+      "op": "afrod.recipe",
+      "select": {
+        "feature": "50ccd4af-ab9f-45cc-a912-fd451a96a193"
+      },
+      "recipe": "golfmap-bunker-paint-only.json",
+      "seed": 291,
+      "note": "golfmap-bunker-paint-only (default for bunker)"
+    },
+    {
+      "id": "recipe-124",
+      "op": "afrod.recipe",
+      "select": {
+        "feature": "5156eb41-f639-4679-9dec-3ca7ac61c793"
+      },
+      "recipe": "golfmap-bunker-paint-only.json",
+      "seed": 292,
+      "note": "golfmap-bunker-paint-only (default for bunker)"
+    },
+    {
+      "id": "recipe-126",
+      "op": "afrod.recipe",
+      "select": {
+        "feature": "52136fc1-5ebc-44bb-8d07-cd0a82c4e55b"
+      },
+      "recipe": "golfmap-bunker-paint-only.json",
+      "seed": 294,
+      "note": "golfmap-bunker-paint-only (default for bunker)"
+    },
+    {
+      "id": "recipe-12f",
+      "op": "afrod.recipe",
+      "select": {
+        "feature": "57e067ea-e08c-478a-8db8-23a0be32d5b8"
+      },
+      "recipe": "golfmap-bunker-paint-only.json",
+      "seed": 303,
+      "note": "golfmap-bunker-paint-only (default for bunker)"
+    },
+    {
+      "id": "recipe-131",
+      "op": "afrod.recipe",
+      "select": {
+        "feature": "5843b00c-a6a9-4b44-bde6-bb280778dc2b"
+      },
+      "recipe": "golfmap-bunker-paint-only.json",
+      "seed": 305,
+      "note": "golfmap-bunker-paint-only (default for bunker)"
+    },
+    {
+      "id": "recipe-140",
+      "op": "afrod.recipe",
+      "select": {
+        "feature": "5cbd56eb-2cb6-4788-ae29-965356ac41e4"
+      },
+      "recipe": "golfmap-bunker-paint-only.json",
+      "seed": 320,
+      "note": "golfmap-bunker-paint-only (default for bunker)"
+    },
+    {
+      "id": "recipe-143",
+      "op": "afrod.recipe",
+      "select": {
+        "feature": "5e6af6bc-a509-4806-9196-8efbfc94b2ee"
+      },
+      "recipe": "golfmap-bunker-paint-only.json",
+      "seed": 323,
+      "note": "golfmap-bunker-paint-only (default for bunker)"
+    },
+    {
+      "id": "recipe-148",
+      "op": "afrod.recipe",
+      "select": {
+        "feature": "60074e43-c986-4ca8-abff-9c0eef0979db"
+      },
+      "recipe": "golfmap-bunker-paint-only.json",
+      "seed": 328,
+      "note": "golfmap-bunker-paint-only (default for bunker)"
+    },
+    {
+      "id": "recipe-14c",
+      "op": "afrod.recipe",
+      "select": {
+        "feature": "61468408-a02d-4d77-a029-90249f68abea"
+      },
+      "recipe": "golfmap-bunker-paint-only.json",
+      "seed": 332,
+      "note": "golfmap-bunker-paint-only (default for bunker)"
+    },
+    {
+      "id": "recipe-150",
+      "op": "afrod.recipe",
+      "select": {
+        "feature": "62c64c42-3fe7-45c5-ad03-8c1b403bcc01"
+      },
+      "recipe": "golfmap-bunker-paint-only.json",
+      "seed": 336,
+      "note": "golfmap-bunker-paint-only (default for bunker)"
+    },
+    {
+      "id": "recipe-151",
+      "op": "afrod.recipe",
+      "select": {
+        "feature": "6368c8c1-66f8-4911-afb9-0a740524586a"
+      },
+      "recipe": "golfmap-bunker-paint-only.json",
+      "seed": 337,
+      "note": "golfmap-bunker-paint-only (default for bunker)"
+    },
+    {
+      "id": "recipe-159",
+      "op": "afrod.recipe",
+      "select": {
+        "feature": "6591803b-f96d-4471-b984-19503fbdc8ef"
+      },
+      "recipe": "golfmap-bunker-paint-only.json",
+      "seed": 345,
+      "note": "golfmap-bunker-paint-only (default for bunker)"
+    },
+    {
+      "id": "recipe-15c",
+      "op": "afrod.recipe",
+      "select": {
+        "feature": "673eeb4c-f702-4f7f-ad1c-c0c903eb76b5"
+      },
+      "recipe": "golfmap-bunker-paint-only.json",
+      "seed": 348,
+      "note": "golfmap-bunker-paint-only (default for bunker)"
+    },
+    {
+      "id": "recipe-15f",
+      "op": "afrod.recipe",
+      "select": {
+        "feature": "69778ff3-37a2-4c8c-a84e-227a57806274"
+      },
+      "recipe": "golfmap-bunker-paint-only.json",
+      "seed": 351,
+      "note": "golfmap-bunker-paint-only (default for bunker)"
+    },
+    {
+      "id": "recipe-165",
+      "op": "afrod.recipe",
+      "select": {
+        "feature": "6c3cbb12-37e6-4a21-98e1-dbc5d98c8f29"
+      },
+      "recipe": "golfmap-bunker-paint-only.json",
+      "seed": 357,
+      "note": "golfmap-bunker-paint-only (default for bunker)"
+    },
+    {
+      "id": "recipe-16b",
+      "op": "afrod.recipe",
+      "select": {
+        "feature": "6dbdb53f-95aa-4674-a29b-71f4f2b15684"
+      },
+      "recipe": "golfmap-bunker-paint-only.json",
+      "seed": 363,
+      "note": "golfmap-bunker-paint-only (default for bunker)"
+    },
+    {
+      "id": "recipe-175",
+      "op": "afrod.recipe",
+      "select": {
+        "feature": "7472379e-28c9-4535-a898-ef1bda6980da"
+      },
+      "recipe": "golfmap-bunker-paint-only.json",
+      "seed": 373,
+      "note": "golfmap-bunker-paint-only (default for bunker)"
+    },
+    {
+      "id": "recipe-177",
+      "op": "afrod.recipe",
+      "select": {
+        "feature": "765c3408-e65e-4f23-8e99-fc6d02adc869"
+      },
+      "recipe": "golfmap-bunker-paint-only.json",
+      "seed": 375,
+      "note": "golfmap-bunker-paint-only (default for bunker)"
+    },
+    {
+      "id": "recipe-183",
+      "op": "afrod.recipe",
+      "select": {
+        "feature": "7b3ccd52-2e40-40a7-8b5d-0082beab1f05"
+      },
+      "recipe": "golfmap-bunker-paint-only.json",
+      "seed": 387,
+      "note": "golfmap-bunker-paint-only (default for bunker)"
+    },
+    {
+      "id": "recipe-18c",
+      "op": "afrod.recipe",
+      "select": {
+        "feature": "7cb979a2-9b91-4c0b-a006-2bd83d97fbcf"
+      },
+      "recipe": "golfmap-bunker-paint-only.json",
+      "seed": 396,
+      "note": "golfmap-bunker-paint-only (default for bunker)"
+    },
+    {
+      "id": "recipe-196",
+      "op": "afrod.recipe",
+      "select": {
+        "feature": "80375a77-6297-4dae-a4d2-d25f36b87fb2"
+      },
+      "recipe": "golfmap-bunker-paint-only.json",
+      "seed": 406,
+      "note": "golfmap-bunker-paint-only (default for bunker)"
+    },
+    {
+      "id": "recipe-198",
+      "op": "afrod.recipe",
+      "select": {
+        "feature": "8128a27e-a0dc-4179-a9c5-e7b72ca6eb67"
+      },
+      "recipe": "golfmap-bunker-paint-only.json",
+      "seed": 408,
+      "note": "golfmap-bunker-paint-only (default for bunker)"
+    },
+    {
+      "id": "recipe-19d",
+      "op": "afrod.recipe",
+      "select": {
+        "feature": "82f3f420-1564-4ea2-b465-f93873c7bc86"
+      },
+      "recipe": "golfmap-bunker-paint-only.json",
+      "seed": 413,
+      "note": "golfmap-bunker-paint-only (default for bunker)"
+    },
+    {
+      "id": "recipe-1aa",
+      "op": "afrod.recipe",
+      "select": {
+        "feature": "86b95067-4787-4cba-a571-65ddecd4d631"
+      },
+      "recipe": "golfmap-bunker-paint-only.json",
+      "seed": 426,
+      "note": "golfmap-bunker-paint-only (default for bunker)"
+    },
+    {
+      "id": "recipe-1bb",
+      "op": "afrod.recipe",
+      "select": {
+        "feature": "8eaf8f92-c4fb-4976-bd8e-931bb0d7bfb3"
+      },
+      "recipe": "golfmap-bunker-paint-only.json",
+      "seed": 443,
+      "note": "golfmap-bunker-paint-only (default for bunker)"
+    },
+    {
+      "id": "recipe-1ce",
+      "op": "afrod.recipe",
+      "select": {
+        "feature": "9878c3eb-6c85-4ada-b3c1-e570b7a1ce05"
+      },
+      "recipe": "golfmap-bunker-paint-only.json",
+      "seed": 462,
+      "note": "golfmap-bunker-paint-only (default for bunker)"
+    },
+    {
+      "id": "recipe-1cf",
+      "op": "afrod.recipe",
+      "select": {
+        "feature": "98f3f5a5-2772-4e24-a44d-3d0d805c8d68"
+      },
+      "recipe": "golfmap-bunker-paint-only.json",
+      "seed": 463,
+      "note": "golfmap-bunker-paint-only (default for bunker)"
+    },
+    {
+      "id": "recipe-1d1",
+      "op": "afrod.recipe",
+      "select": {
+        "feature": "99ccf166-892b-4d21-847f-c2c1e1dd1d3e"
+      },
+      "recipe": "golfmap-bunker-paint-only.json",
+      "seed": 465,
+      "note": "golfmap-bunker-paint-only (default for bunker)"
+    },
+    {
+      "id": "recipe-1de",
+      "op": "afrod.recipe",
+      "select": {
+        "feature": "a22ca5f1-6fcd-4ff1-b4ac-bfcd53bb44d3"
+      },
+      "recipe": "golfmap-bunker-paint-only.json",
+      "seed": 478,
+      "note": "golfmap-bunker-paint-only (default for bunker)"
+    },
+    {
+      "id": "recipe-1e1",
+      "op": "afrod.recipe",
+      "select": {
+        "feature": "a37db05e-7942-45d8-b7e4-2b464f7b9518"
+      },
+      "recipe": "golfmap-bunker-paint-only.json",
+      "seed": 481,
+      "note": "golfmap-bunker-paint-only (default for bunker)"
+    },
+    {
+      "id": "recipe-1e9",
+      "op": "afrod.recipe",
+      "select": {
+        "feature": "a96126c2-325d-461e-ac90-f59d36134551"
+      },
+      "recipe": "golfmap-bunker-paint-only.json",
+      "seed": 489,
+      "note": "golfmap-bunker-paint-only (default for bunker)"
+    },
+    {
+      "id": "recipe-1ed",
+      "op": "afrod.recipe",
+      "select": {
+        "feature": "ab8d9f5e-3cb2-44e1-ba5f-daf6f3c60844"
+      },
+      "recipe": "golfmap-bunker-paint-only.json",
+      "seed": 493,
+      "note": "golfmap-bunker-paint-only (default for bunker)"
+    },
+    {
+      "id": "recipe-1f4",
+      "op": "afrod.recipe",
+      "select": {
+        "feature": "ae316018-1b4b-4978-b890-03c9f0990393"
+      },
+      "recipe": "golfmap-bunker-paint-only.json",
+      "seed": 500,
+      "note": "golfmap-bunker-paint-only (default for bunker)"
+    },
+    {
+      "id": "recipe-1fd",
+      "op": "afrod.recipe",
+      "select": {
+        "feature": "b1da0379-91e6-47a9-908e-5afa61e8f70a"
+      },
+      "recipe": "golfmap-bunker-paint-only.json",
+      "seed": 509,
+      "note": "golfmap-bunker-paint-only (default for bunker)"
+    },
+    {
+      "id": "recipe-203",
+      "op": "afrod.recipe",
+      "select": {
+        "feature": "b623529e-d371-4020-a4b8-a9d0b49cdc3d"
+      },
+      "recipe": "golfmap-bunker-paint-only.json",
+      "seed": 515,
+      "note": "golfmap-bunker-paint-only (default for bunker)"
+    },
+    {
+      "id": "recipe-209",
+      "op": "afrod.recipe",
+      "select": {
+        "feature": "b96c5fd9-ed92-4663-9a42-c71f01c07c4f"
+      },
+      "recipe": "golfmap-bunker-paint-only.json",
+      "seed": 521,
+      "note": "golfmap-bunker-paint-only (default for bunker)"
+    },
+    {
+      "id": "recipe-20d",
+      "op": "afrod.recipe",
+      "select": {
+        "feature": "bb661ce6-1756-4bef-9557-2e4976029914"
+      },
+      "recipe": "golfmap-bunker-paint-only.json",
+      "seed": 525,
+      "note": "golfmap-bunker-paint-only (default for bunker)"
+    },
+    {
+      "id": "recipe-226",
+      "op": "afrod.recipe",
+      "select": {
+        "feature": "c5657dc7-4ce2-4b10-86fd-711fabd9ace0"
+      },
+      "recipe": "golfmap-bunker-paint-only.json",
+      "seed": 550,
+      "note": "golfmap-bunker-paint-only (default for bunker)"
+    },
+    {
+      "id": "recipe-22f",
+      "op": "afrod.recipe",
+      "select": {
+        "feature": "ca499c3e-aae5-4321-8f1f-394b5abe6504"
+      },
+      "recipe": "golfmap-bunker-paint-only.json",
+      "seed": 559,
+      "note": "golfmap-bunker-paint-only (default for bunker)"
+    },
+    {
+      "id": "recipe-235",
+      "op": "afrod.recipe",
+      "select": {
+        "feature": "ceca3c5c-f47c-4d5d-b264-d67813f53864"
+      },
+      "recipe": "golfmap-bunker-paint-only.json",
+      "seed": 565,
+      "note": "golfmap-bunker-paint-only (default for bunker)"
+    },
+    {
+      "id": "recipe-23d",
+      "op": "afrod.recipe",
+      "select": {
+        "feature": "d3fed6cf-03ca-42d8-846f-2cac91e50d2c"
+      },
+      "recipe": "golfmap-bunker-paint-only.json",
+      "seed": 573,
+      "note": "golfmap-bunker-paint-only (default for bunker)"
+    },
+    {
+      "id": "recipe-242",
+      "op": "afrod.recipe",
+      "select": {
+        "feature": "d660cbbc-5064-4e1a-9f0f-45becccfab9b"
+      },
+      "recipe": "golfmap-bunker-paint-only.json",
+      "seed": 578,
+      "note": "golfmap-bunker-paint-only (default for bunker)"
+    },
+    {
+      "id": "recipe-246",
+      "op": "afrod.recipe",
+      "select": {
+        "feature": "d90dea6d-a943-4930-884f-bb5ebe126524"
+      },
+      "recipe": "golfmap-bunker-paint-only.json",
+      "seed": 582,
+      "note": "golfmap-bunker-paint-only (default for bunker)"
+    },
+    {
+      "id": "recipe-247",
+      "op": "afrod.recipe",
+      "select": {
+        "feature": "d9a96ee5-cc0b-49ec-9131-5a9295100cb7"
+      },
+      "recipe": "golfmap-bunker-paint-only.json",
+      "seed": 583,
+      "note": "golfmap-bunker-paint-only (default for bunker)"
+    },
+    {
+      "id": "recipe-24e",
+      "op": "afrod.recipe",
+      "select": {
+        "feature": "de7e4041-edd7-4c8e-abe5-669899ae6a57"
+      },
+      "recipe": "golfmap-bunker-paint-only.json",
+      "seed": 590,
+      "note": "golfmap-bunker-paint-only (default for bunker)"
+    },
+    {
+      "id": "recipe-251",
+      "op": "afrod.recipe",
+      "select": {
+        "feature": "dff8af78-59f6-46cb-bbd5-8e8006584984"
+      },
+      "recipe": "golfmap-bunker-paint-only.json",
+      "seed": 593,
+      "note": "golfmap-bunker-paint-only (default for bunker)"
+    },
+    {
+      "id": "recipe-253",
+      "op": "afrod.recipe",
+      "select": {
+        "feature": "e164ee80-b886-46ec-b609-016dae7d8da5"
+      },
+      "recipe": "golfmap-bunker-paint-only.json",
+      "seed": 595,
+      "note": "golfmap-bunker-paint-only (default for bunker)"
+    },
+    {
+      "id": "recipe-25f",
+      "op": "afrod.recipe",
+      "select": {
+        "feature": "e62e634f-dc55-43e0-972b-d631f565a183"
+      },
+      "recipe": "golfmap-bunker-paint-only.json",
+      "seed": 607,
+      "note": "golfmap-bunker-paint-only (default for bunker)"
+    },
+    {
+      "id": "recipe-26a",
+      "op": "afrod.recipe",
+      "select": {
+        "feature": "e895e563-d3b2-4554-a252-9a3598feb78f"
+      },
+      "recipe": "golfmap-bunker-paint-only.json",
+      "seed": 618,
+      "note": "golfmap-bunker-paint-only (default for bunker)"
+    },
+    {
+      "id": "recipe-273",
+      "op": "afrod.recipe",
+      "select": {
+        "feature": "ec72b500-f84b-4c9e-a932-15f9bcde1171"
+      },
+      "recipe": "golfmap-bunker-paint-only.json",
+      "seed": 627,
+      "note": "golfmap-bunker-paint-only (default for bunker)"
+    },
+    {
+      "id": "recipe-27e",
+      "op": "afrod.recipe",
+      "select": {
+        "feature": "ef2374f3-0681-4cd9-a1dc-5473394d0c8e"
+      },
+      "recipe": "golfmap-bunker-paint-only.json",
+      "seed": 638,
+      "note": "golfmap-bunker-paint-only (default for bunker)"
+    },
+    {
+      "id": "recipe-27f",
+      "op": "afrod.recipe",
+      "select": {
+        "feature": "ef44721e-3b19-41cf-8233-8c792a5b7026"
+      },
+      "recipe": "golfmap-bunker-paint-only.json",
+      "seed": 639,
+      "note": "golfmap-bunker-paint-only (default for bunker)"
+    },
+    {
+      "id": "recipe-286",
+      "op": "afrod.recipe",
+      "select": {
+        "feature": "f2e9f677-1936-459e-8e3a-bbe2810e0e10"
+      },
+      "recipe": "golfmap-bunker-paint-only.json",
+      "seed": 646,
+      "note": "golfmap-bunker-paint-only (default for bunker)"
+    },
+    {
+      "id": "recipe-290",
+      "op": "afrod.recipe",
+      "select": {
+        "feature": "f970afa7-ba27-4c34-af0d-186b7e0ee04a"
+      },
+      "recipe": "golfmap-bunker-paint-only.json",
+      "seed": 656,
+      "note": "golfmap-bunker-paint-only (default for bunker)"
+    },
+    {
+      "id": "recipe-294",
+      "op": "afrod.recipe",
+      "select": {
+        "feature": "fbd8d913-016b-4968-8dd3-d0db8f3e8d48"
+      },
+      "recipe": "golfmap-bunker-paint-only.json",
+      "seed": 660,
+      "note": "golfmap-bunker-paint-only (default for bunker)"
+    },
+    {
+      "id": "recipe-299",
+      "op": "afrod.recipe",
+      "select": {
+        "feature": "fd87a131-5646-4c56-9165-7b134330a25f"
+      },
+      "recipe": "golfmap-bunker-paint-only.json",
+      "seed": 665,
+      "note": "golfmap-bunker-paint-only (default for bunker)"
+    },
+    {
+      "id": "recipe-2bd",
+      "op": "afrod.recipe",
+      "select": {
+        "feature": "64d6eb0d-0536-41a4-811d-5bfe87ef24d3"
+      },
+      "recipe": "golfmap-bunker-paint-only.json",
+      "seed": 701,
+      "note": "golfmap-bunker-paint-only (default for bunker)"
+    },
+    {
+      "id": "recipe-2be",
+      "op": "afrod.recipe",
+      "select": {
+        "feature": "b318276e-2053-4a55-9597-b710869b4e96"
+      },
+      "recipe": "golfmap-bunker-paint-only.json",
+      "seed": 702,
+      "note": "golfmap-bunker-paint-only (default for bunker)"
+    }
+  ]
+}

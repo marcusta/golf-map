@@ -37,6 +37,16 @@ export interface GsproExportJob {
     error: null | string;
 }
 
+export interface SvgCheckReport {
+    courseId: string;
+    checkedAt: string;
+    errors: number;
+    warnings: number;
+    notes: number;
+    accepted: number;
+    findings: SvgCheckFinding[];
+}
+
 export interface RamRoadsProposal {
     format: string;
     course: { id: string; name: string };
@@ -67,6 +77,17 @@ export interface GsproExportResult {
     reason?: string;
 }
 
+export interface SvgCheckFinding {
+    key: string;
+    code: string;
+    severity: 'note' | 'error' | 'warning';
+    accepted: boolean;
+    message: string;
+    shapes: SvgCheckShape[];
+    at: null | [number, number];
+    geometry: null | { type: string; coordinates: unknown };
+}
+
 export interface RamRoadCandidate {
     featureId: string;
     featureNo: null | number;
@@ -92,6 +113,12 @@ export interface BboxWgs84 {
     north: number;
 }
 
+export interface SvgCheckShape {
+    name: string;
+    type: string;
+    featureIds: string[];
+}
+
 export interface GsproExportApi {
     settings(input: { courseId: string }): Promise<GsproExportSettings>;
     setDir(input: { courseId: string; dir: null | string }): Promise<GsproExportSettings>;
@@ -105,6 +132,8 @@ export interface GsproExportApi {
     start(input: { force?: boolean; source?: string; collection?: string; terrain?: 'inner' | 'outer'; darken?: number; tint?: boolean; tintOpacity?: number; forestFloor?: boolean; floorColor?: string; floorMix?: number; removeBuildings?: boolean; excludeFeatureIds?: string[]; variant?: string; zoneIds?: string[]; plantIfNeeded?: boolean; courseId: string; kind: 'svg' | 'ortho' | 'outer-ortho' | 'dem' | 'unity-terrain' | 'unity-sculpt' | 'unity-ortho' | 'hillshade' | 'trees' | 'buildings' | 'zones' | 'vegetation' | 'vegetation-update' | 'arborist' | 'creeks' | 'ramroads' | 'waterfalls' | 'gkd' }): Promise<GsproExportJob>;
     job(input: { jobId: string }): Promise<GsproExportJob>;
     current(input: { courseId: string }): Promise<null | GsproExportJob>;
+    svgCheck(input: { courseId: string }): Promise<SvgCheckReport>;
+    acceptSvgFinding(input: { note?: string; courseId: string; key: string; accepted: boolean }): Promise<{ file: string; keys: string[] }>;
     ramRoadsProposal(input: { minDistanceM?: number; courseId: string }): Promise<RamRoadsProposal>;
     setRoadRender(input: { dryRun?: boolean; courseId: string; featureIds: string[]; render: 'ram' | 'opcd' }): Promise<RoadRenderResult>;
 }
@@ -166,6 +195,12 @@ export function createGsproExportClient(baseUrl: string): GsproExportApi {
                 if (v !== undefined) params.set(k, String(v));
             const qs = params.toString();
             return apiFetch({ method: 'GET', url: `${baseUrl}/gspro-export/current${qs ? '?' + qs : ''}` });
+        },
+        async svgCheck(input) {
+            return apiFetch({ method: 'POST', url: `${baseUrl}/gspro-export/svg-check`, body: input });
+        },
+        async acceptSvgFinding(input) {
+            return apiFetch({ method: 'POST', url: `${baseUrl}/gspro-export/svg-check/accept`, body: input });
         },
         async ramRoadsProposal(input) {
             const pathParams = new Set(['courseId']);

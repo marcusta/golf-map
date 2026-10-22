@@ -273,7 +273,7 @@ def test_a_road_network_of_two_surfaces_is_split_per_surface_after_the_cut_and_s
     spec.loader.exec_module(sl)
     assert sl.validate_layer(doc) == []
     out = tmp_path / "course.svg"
-    gspro.cmd_svg((15.50, 58.52, 15.53, 58.54), out, tmp_path / "app.sqlite", "Testbana", None, 3, {}, stack="app")
+    gspro.cmd_svg((15.50, 58.52, 15.53, 58.54), out, tmp_path / "app.sqlite", "Testbana", None, 3, {}, stack="app", allow_errors=True)
     sidecar = json.loads(gspro.path_surfaces_file(out).read_text(encoding="utf-8"))
     assert sorted(n for n, r in sidecar["regions"].items() if r["mixed"]) == split["select"]["shape"]
 

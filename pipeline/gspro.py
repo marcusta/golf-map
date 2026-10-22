@@ -872,6 +872,66 @@ def _outer_position(extent: Extent, lo: float, inner_sidecar: Path) -> dict:
     }
 
 
+# The outer terrain under the inner square is never seen (the inner covers it, and
+# the outer's trees and zones stay out of it), but where it lies higher than the
+# inner ground - a pond dug in the inner at 0.5 m that the outer's 1 m cells do not
+# follow down - it shows through (Landeryd 2026-10-21: 584 m2, up to 1.5 m). So an
+# outer export sinks every cell inside the inner square, OUTER_UNDER_INNER_INSET_M
+# in from its edge so the seam and the outer beyond it are untouched.
+OUTER_UNDER_INNER_SINK_M = 3.0
+OUTER_UNDER_INNER_INSET_M = 2.0
+
+
+def _sink_under_inner(grid, extent: Extent, inner_square) -> int:
+    """Lower the cells of `grid` (north-up rows over `extent`) whose centres lie
+    inside `inner_square` (EPSG:3006 e0, n0, e1, n1) shrunk by
+    OUTER_UNDER_INNER_INSET_M, by OUTER_UNDER_INNER_SINK_M, in place. Returns the
+    number of cells sunk."""
+    e0, n0, e1, n1 = extent
+    rows, cols = grid.shape
+    ie0, in0, ie1, in1 = (float(v) for v in inner_square)
+    inset = OUTER_UNDER_INNER_INSET_M
+    xs = e0 + (np.arange(cols) + 0.5) * (e1 - e0) / cols
+    ys = n1 - (np.arange(rows) + 0.5) * (n1 - n0) / rows
+    col_in = (xs > ie0 + inset) & (xs < ie1 - inset)
+    row_in = (ys > in0 + inset) & (ys < in1 - inset)
+    mask = np.outer(row_in, col_in)
+    grid[mask] -= OUTER_UNDER_INNER_SINK_M
+    return int(mask.sum())
+
+
+# Headroom a new terrain's height range gets below and above its heights, so a
+# pond dig or a raised green does not move it (_pinned_height_range).
+DEM_RANGE_HEADROOM_M = 10.0
+
+
+def _pinned_height_range(sidecar: Path, lo: float, hi: float) -> tuple[float, float, str | None]:
+    """The height range a DEM export scales over: the one its last export used
+    (the sidecar's minM/maxM) while the heights still fit in it, so a terrain
+    edit does not re-quantise every height. minM is in every Blender shaping
+    op-cache key (shape_coords ctx.frame), and a moved range made Omberg's whole
+    course replay cold (50-75 min, 2026-10-18). A first export pins the heights
+    with DEM_RANGE_HEADROOM_M either side; an earlier sidecar without a pin
+    (Vreta, Omberg) is kept as it was. Heights outside it widen it, with a
+    warning. Returns (lo, hi, note or None)."""
+    try:
+        old = json.loads(sidecar.read_text(encoding="utf-8")) if sidecar.is_file() else None
+    except (OSError, ValueError):
+        old = None
+    if not old or not isinstance(old.get("minM"), (int, float)) or not isinstance(old.get("maxM"), (int, float)):
+        p_lo = math.floor(lo - DEM_RANGE_HEADROOM_M)
+        p_hi = math.ceil(hi + DEM_RANGE_HEADROOM_M)
+        return float(p_lo), float(p_hi), (f"  height range pinned at {p_lo}..{p_hi} m (heights {lo:.2f}..{hi:.2f} m, "
+                                          f"{DEM_RANGE_HEADROOM_M:g} m headroom): later exports keep it while the heights fit")
+    p_lo, p_hi = float(old["minM"]), float(old["maxM"])
+    if lo >= p_lo and hi <= p_hi:
+        return p_lo, p_hi, None
+    n_lo = min(p_lo, math.floor(lo - DEM_RANGE_HEADROOM_M)) if lo < p_lo else p_lo
+    n_hi = max(p_hi, math.ceil(hi + DEM_RANGE_HEADROOM_M)) if hi > p_hi else p_hi
+    return float(n_lo), float(n_hi), (f"  warning: the heights ({lo:.2f}..{hi:.2f} m) left the pinned range {p_lo:g}..{p_hi:g} m; "
+                                      f"widened to {n_lo:g}..{n_hi:g} m: every Blender shaping op re-runs once (cold cache)")
+
+
 def cmd_dem(bbox, dem_path: Path, out: Path, resolution: float = DEFAULT_DEM_RESOLUTION,
             extent: Extent | None = None, raw_size: int = UNITY_HEIGHTMAP_RESOLUTION,
             terrain: str | None = None, inner_sidecar: Path | None = None,
@@ -910,15 +970,26 @@ def cmd_dem(bbox, dem_path: Path, out: Path, resolution: float = DEFAULT_DEM_RES
     dem = _reproject_square(dem_path, extent, size, bands=[1], dtype="float32",
                             resampling=Resampling.bilinear)[0]
     dem = _fill_voids(dem)
+    inner_square = _read_sidecar_json(inner_sidecar)["square3006"] if inner_sidecar is not None else None
+    if inner_square is not None:
+        sunk = _sink_under_inner(dem, extent, inner_square)
+        print(f"  {sunk:,} cell(s) under the inner square sunk {OUTER_UNDER_INNER_SINK_M:g} m "
+              f"(the inner terrain covers them; {OUTER_UNDER_INNER_INSET_M:g} m in from its edge)")
     lo, hi = float(dem.min()), float(dem.max())
 
     raw_dem = None
     if raw_size:
         raw_dem = _fill_voids(_reproject_square(dem_path, extent, raw_size, bands=[1], dtype="float32",
                                                 resampling=Resampling.bilinear)[0])
+        if inner_square is not None:
+            _sink_under_inner(raw_dem, extent, inner_square)
         # One height range for both files, so the TIF's statistics and the
         # RAW's scale agree with the sidecar whichever one is inspected.
         lo, hi = min(lo, float(raw_dem.min())), max(hi, float(raw_dem.max()))
+    data_lo, data_hi = lo, hi
+    lo, hi, pin_note = _pinned_height_range(out.with_name(out.name + ".json"), lo, hi)
+    if pin_note:
+        print(pin_note)
 
     out.parent.mkdir(parents=True, exist_ok=True)
     transform = from_bounds(e0, n0, e1, n1, size, size)
@@ -944,6 +1015,10 @@ def cmd_dem(bbox, dem_path: Path, out: Path, resolution: float = DEFAULT_DEM_RES
         "minM": lo,
         "maxM": hi,
         "heightRangeM": hi - lo,
+        # The heights themselves; minM/maxM are the pinned range they are scaled over (_pinned_height_range).
+        "dataMinM": data_lo,
+        "dataMaxM": data_hi,
+        "pinned": True,
         "source": dem_path.name,
         "unity": {
             "terrainWidthM": side,
@@ -1590,6 +1665,10 @@ GSPRO_FILLS = {kind: OPCD_PALETTE[surface] for kind, surface in TYPE_SURFACE.ite
 # every hole), which is a decision to make in Inkscape, not one to inherit
 # from a feature having no hole_id in the app.
 COURSE_WIDE_LAYER = "Others"
+# The app's Roughs group (course-level roughs, `layer = 'roughs'`): its own layer
+# at the bottom, under the holes, as the Draw tool paints it. Its shapes keep the
+# `others_<n>` names (OPCD carries the name into the mesh; Unity keys edits to it).
+ROUGHS_SVG_LAYER = "Roughs"
 
 # The roads (ROADS_TYPES) get a layer of their own, topmost in Inkscape, so
 # nothing is ever cut into them or painted over them — the opposite end of
@@ -3356,6 +3435,15 @@ GREEN_BORDER_NOTHING = "nothing (OPCD outer deep rough)"
 # A shape whose visible part is under this share of it is covered by the
 # shapes painted above it: OPCD makes no mesh for it.
 HIDDEN_VISIBLE_SHARE = 0.01
+# OPCD rings every shape with a blend inset this far from each bank. Where
+# two shapes overlap in a strip narrower than twice that, the upper one cuts a
+# notch out of the lower one's edge whose blend fronts overlap, and the build
+# dies in the cutter without a report (Landeryd hole 8, 2026-10-20: a bunker
+# reaching 0.12 m into the semi rough round the green over 1.4 m - found by
+# bisecting; the same bunker clear of the semi built). Overlaps shorter than
+# OVERLAP_SLIVER_MIN_M (a corner grazing a corner) are not reported.
+OPCD_BLEND_INSET_M = 0.12
+OVERLAP_SLIVER_MIN_M = 0.5
 
 
 # A corner sharper than this is a spike, not a drawn bend: a lumpy union, a
@@ -3414,10 +3502,11 @@ def _sharp_corners(shape) -> list[tuple[float, float, float]]:
     return out
 
 
-def _paint_tops(paint: list, i: int, area) -> dict[str, float]:
+def _paint_tops(paint: list, i: int, area, parts: dict | None = None) -> dict[str, float]:
     """What is seen on top within `area`, painting `paint` (bottom first) but
     leaving out shape `i`: {kind: m2}, plus GREEN_BORDER_NOTHING for the part
-    no shape covers."""
+    no shape covers. `parts`, when given, gets the pieces of `area` each kind
+    is seen in ({kind: [geometry]})."""
     seen: dict[str, float] = {}
     left = area
     for j in range(len(paint) - 1, -1, -1):
@@ -3426,39 +3515,54 @@ def _paint_tops(paint: list, i: int, area) -> dict[str, float]:
         _, _, kind, shape = paint[j]
         if shape is None or not shape.intersects(left):
             continue
-        part = left.intersection(shape).area
-        if part > 0:
-            seen[kind] = seen.get(kind, 0.0) + part
+        piece = left.intersection(shape)
+        if piece.area > 0:
+            seen[kind] = seen.get(kind, 0.0) + piece.area
+            if parts is not None:
+                parts.setdefault(kind, []).append(piece)
             left = left.difference(shape)
     if not left.is_empty and left.area > 0:
         seen[GREEN_BORDER_NOTHING] = left.area
+        if parts is not None:
+            parts.setdefault(GREEN_BORDER_NOTHING, []).append(left)
     return seen
+
+
+def _green_border_hits(paint: list) -> list[tuple[int, dict[str, float], object]]:
+    """_green_border_problems by paint index, with the offending part of the
+    band round each green: [(index, {what it meets: m2}, geometry)]."""
+    from shapely import unary_union
+
+    hits = []
+    for i, (_, name, kind, shape) in enumerate(paint):
+        if kind != "green" or shape is None or shape.is_empty:
+            continue
+        band = shape.buffer(GREEN_BORDER_BAND_M).difference(shape)
+        parts: dict[str, list] = {}
+        bad = {k: a for k, a in _paint_tops(paint, i, band, parts).items()
+               if k not in GREEN_BORDER_OK and a >= GREEN_BORDER_MIN_M2}
+        if bad:
+            hits.append((i, bad, unary_union([g for k in bad for g in parts.get(k, [])])))
+    return hits
 
 
 def _green_border_problems(paint: list) -> list[tuple[str, dict[str, float]]]:
     """Greens whose edge meets anything but fairway or semi rough, as painted:
     [(shape name, {what it meets: m2})]. `paint` is [(layer, name, kind,
     shapely shape)] in paint order, bottom first."""
-    problems = []
-    for i, (_, name, kind, shape) in enumerate(paint):
-        if kind != "green" or shape is None or shape.is_empty:
-            continue
-        band = shape.buffer(GREEN_BORDER_BAND_M).difference(shape)
-        bad = {k: a for k, a in _paint_tops(paint, i, band).items()
-               if k not in GREEN_BORDER_OK and a >= GREEN_BORDER_MIN_M2}
-        if bad:
-            problems.append((name, bad))
-    return problems
+    return [(paint[i][1], bad) for i, bad, _ in _green_border_hits(paint)]
 
 
-def _hidden_shapes(paint: list) -> list[tuple[str, list[str]]]:
-    """Shapes the ones painted above them cover (all but HIDDEN_VISIBLE_SHARE):
-    [(shape name, [names of the shapes above that overlap it])]."""
+def _hidden_shape_hits(paint: list) -> list[tuple[int, list[int]]]:
+    """_hidden_shapes by paint index: [(index, [indices of the shapes above
+    that overlap it])]."""
     from shapely import STRtree, unary_union
 
     shapes = [s for *_, s in paint]
-    tree = STRtree([s for s in shapes if s is not None])
     index = [i for i, s in enumerate(shapes) if s is not None]
+    if not index:
+        return []
+    tree = STRtree([shapes[i] for i in index])
     hidden = []
     for i, (_, name, _, shape) in enumerate(paint):
         if shape is None or shape.is_empty or shape.area <= 0:
@@ -3466,21 +3570,364 @@ def _hidden_shapes(paint: list) -> list[tuple[str, list[str]]]:
         above = [index[k] for k in tree.query(shape) if index[k] > i]
         if not above:
             continue
-        over = [j for j in above if paint[j][3].intersection(shape).area > 0]
+        over = sorted(j for j in above if paint[j][3].intersection(shape).area > 0)
         if over and shape.difference(unary_union([paint[j][3] for j in over])).area < HIDDEN_VISIBLE_SHARE * shape.area:
-            hidden.append((name, [paint[j][1] for j in over]))
+            hidden.append((i, over))
     return hidden
+
+
+def _hidden_shapes(paint: list) -> list[tuple[str, list[str]]]:
+    """Shapes the ones painted above them cover (all but HIDDEN_VISIBLE_SHARE):
+    [(shape name, [names of the shapes above that overlap it])]."""
+    return [(paint[i][1], [paint[j][1] for j in over]) for i, over in _hidden_shape_hits(paint)]
+
+
+def _overlap_sliver_hits(paint: list) -> list[tuple[int, int, float, float, object]]:
+    """_overlap_slivers by paint index, with the strip itself: [(lower index,
+    upper index, width m, length m, strip polygon)]."""
+    from shapely import STRtree
+
+    items = [(i, shape) for i, (_, _, kind, shape) in enumerate(paint)
+             if shape is not None and not shape.is_empty and kind not in ROADS_TYPES]
+    if not items:
+        return []
+    tree = STRtree([shape for _, shape in items])
+    found = []
+    for a_at, (lower, a) in enumerate(items):
+        for b_at in sorted(int(k) for k in tree.query(a)):
+            if b_at <= a_at:
+                continue
+            upper, b = items[b_at]
+            for part in _polygons(a.intersection(b)):
+                if part.area <= 0 or not part.buffer(-OPCD_BLEND_INSET_M).is_empty:
+                    continue
+                length = part.length / 2
+                if length < OVERLAP_SLIVER_MIN_M:
+                    continue
+                found.append((lower, upper, part.area / length, length, part))
+    return found
+
+
+def _overlap_slivers(paint: list) -> list[tuple[str, str, float, float, float, float]]:
+    """Pairs of shapes that overlap in a strip OPCD's blend cannot take (under
+    2 x OPCD_BLEND_INSET_M wide everywhere, over OVERLAP_SLIVER_MIN_M long):
+    [(lower name, upper name, width m, length m, x, y)] with the strip's
+    centre in the shapes' own coordinates. Roads are left out: the road merge
+    closes its own slits, and a road over a surface built with such strips."""
+    out = []
+    for lower, upper, width, length, part in _overlap_sliver_hits(paint):
+        c = part.centroid
+        out.append((paint[lower][1], paint[upper][1], width, length, c.x, c.y))
+    return out
+
+
+# OPCD's own validator (opcd_cut_mesh) refuses a shape that pinches to a neck
+# narrower than its blend (2 x OPCD_BLEND_INSET_M): the blend fronts from the
+# two banks overlap there (Landeryd's first upload, 2026-10-20: 12 such tree
+# shapes). Its measure is approximate (two necks it reported measured 0.96 m
+# and 0.68 m); this is its documented rule, per polygon: eroded by the inset
+# it falls apart into several pieces, or one of its holes opens (into the
+# outside or another hole: the strip between the two banks was too narrow).
+# On that SVG the rule finds 4 of OPCD's 12 plus 2 more; 6 of the other 8 lie
+# ~11.2 m inside the square's edge, outside the shapes, which it does not model.
+# OPCD's advice: widen the neck to NECK_WIDEN_M, or split the shape there.
+# Eroded crumbs under NECK_CRUMB_M2 and gaps under NECK_NOISE_M wide are
+# floating-point noise along the banks.
+NECK_WIDEN_M = 0.3
+NECK_CRUMB_M2 = 1e-4
+NECK_NOISE_M = 0.005
+NECK_TOUCH_M = 0.02
+
+
+def _neck_regions(shape) -> list:
+    """Where `shape` pinches to under OPCD's blend: the parts of it outside the
+    eroded-and-regrown shape that touch two or more eroded pieces or two of
+    its rings (the neck), or, when the regrowth closes it, the shortest line
+    between the two nearest pieces / an opened hole and the ring nearest it.
+    [] when it does not pinch."""
+    from shapely import STRtree, shortest_line, unary_union
+    from shapely.geometry import LineString, Polygon
+
+    out = []
+    for poly in _polygons(shape):
+        eroded = poly.buffer(-OPCD_BLEND_INSET_M, quad_segs=4)
+        pieces = [p for p in _polygons(eroded) if p.area > NECK_CRUMB_M2]
+        if not pieces:
+            continue   # too thin all over: no neck, nothing left of it
+        kept = [Polygon(h).representative_point() for p in pieces for h in p.interiors]
+        opened = [h for h in poly.interiors
+                  if not any(Polygon(h).contains(pt) for pt in kept)] if poly.interiors else []
+        if len(pieces) < 2 and not opened:
+            continue
+        grown = [p.buffer(OPCD_BLEND_INSET_M, quad_segs=4) for p in pieces]
+        rings = [LineString(poly.exterior.coords), *(LineString(h.coords) for h in poly.interiors)]
+        rest = poly.difference(unary_union(grown)).buffer(-NECK_NOISE_M, quad_segs=2).buffer(NECK_NOISE_M, quad_segs=2)
+        parts = _polygons(rest)
+
+        def touching_two(banks) -> set[int]:
+            """The parts within NECK_TOUCH_M of two or more of `banks`."""
+            if len(banks) < 2 or not parts:
+                return set()
+            at, bank = STRtree(banks).query(parts, predicate="dwithin", distance=NECK_TOUCH_M)
+            return {int(k) for k in np.unique(at) if len(np.unique(bank[at == k])) >= 2}
+
+        hit = touching_two(grown) | (touching_two(rings) if opened else set())
+        found = [parts[k] for k in sorted(hit)]
+        if not found:
+            if len(pieces) > 1:
+                a, b = min(((a, b) for k, a in enumerate(pieces) for b in pieces[k + 1:]),
+                           key=lambda ab: ab[0].distance(ab[1]))
+                found = [shortest_line(a, b)]
+            else:
+                hole = LineString(opened[0].coords)
+                found = [shortest_line(hole, min((r for r in rings if not r.equals(hole)), key=hole.distance))]
+        out.extend(found)
+    return out
+
+
+def _narrow_neck_hits(paint: list) -> list[tuple[int, list]]:
+    """Written shapes (roads left out: the road merge closes its own slits)
+    that pinch to under OPCD's blend: [(paint index, [neck regions])]. The
+    erosion runs over all shapes at once; only a shape it splits, or one with
+    holes or several parts, is looked at closely."""
+    candidates = [(i, shape) for i, (_, _, kind, shape) in enumerate(paint)
+                  if shape is not None and not shape.is_empty and kind not in ROADS_TYPES]
+    if not candidates:
+        return []
+    shapes = np.array([s for _, s in candidates], dtype=object)
+    eroded = shapely.buffer(shapes, -OPCD_BLEND_INSET_M, quad_segs=4)
+
+    def holes(arr):
+        parts, at = shapely.get_parts(arr, return_index=True)
+        return np.bincount(at, weights=shapely.get_num_interior_rings(parts), minlength=len(arr))
+
+    # A split changes the number of parts (or one vanishing part hides it: looked at too), an opened hole the holes.
+    look = (shapely.get_num_geometries(eroded) != shapely.get_num_geometries(shapes)) | (holes(eroded) < holes(shapes))
+    hits = []
+    for (i, shape), closer in zip(candidates, look):
+        if not closer:
+            continue
+        regions = _neck_regions(shape)
+        if regions:
+            hits.append((i, regions))
+    return hits
+
+
+def _narrow_necks(paint: list) -> list[tuple[str, list]]:
+    """[(shape name, [neck regions])] - see _narrow_neck_hits."""
+    return [(paint[i][1], regions) for i, regions in _narrow_neck_hits(paint)]
+
+
+# --- The SVG checks as findings ------------------------------------------------
+# `svg --checks-out` writes them (golfmap-svg-checks-v1) for the web's overlay and
+# the CLI; an unaccepted error refuses the export (exit SVG_CHECKS_FAILED_EXIT,
+# nothing written) unless --allow-errors. A finding's key names its check and
+# the feature ids of the shapes involved (never path names: a feature moved to
+# another hole gets a new name), so an accepted one (--accepted,
+# golfmap-svg-checks-accepted-v1) stays accepted export after export.
+SVG_CHECKS_FORMAT = "golfmap-svg-checks-v1"
+SVG_CHECKS_ACCEPTED_FORMAT = "golfmap-svg-checks-accepted-v1"
+SVG_CHECKS_FAILED_EXIT = 3
+SVG_CHECK_SEVERITY = {
+    "overlap-sliver": "error",
+    "narrow-neck": "error",
+    "hidden-shape": "error",
+    "green-border": "error",
+    "sharp-corner": "note",
+    "creek-left-out": "note",
+    "tiny-shape": "warning",
+}
+# The codes printed one line per finding (the others keep their summary lines).
+SVG_CHECK_LINE_CODES = ("green-border", "sharp-corner", "hidden-shape", "overlap-sliver", "narrow-neck")
+FINDING_MAX_VERTICES = 200
+
+
+def _round_coords(c):
+    if isinstance(c, (list, tuple)):
+        if c and isinstance(c[0], (int, float)):
+            return [round(float(v), 2) for v in c]
+        return [_round_coords(v) for v in c]
+    return c
+
+
+def _finding_geojson(geom) -> dict | None:
+    """A finding's geometry as GeoJSON in EPSG:3006 metres: simplified to about
+    FINDING_MAX_VERTICES vertices (the largest pieces kept when that is not
+    enough), coordinates to 0.01 m. Collections keep their polygons."""
+    from shapely.geometry import MultiPolygon, mapping
+
+    if geom is None or geom.is_empty:
+        return None
+    if geom.geom_type == "GeometryCollection":
+        polys = _polygons(geom)
+        if not polys:
+            return None
+        geom = polys[0] if len(polys) == 1 else MultiPolygon(polys)
+    simple, tol = geom, 0.01
+    while shapely.get_num_coordinates(simple) > FINDING_MAX_VERTICES and tol < 50:
+        simple = geom.simplify(tol, preserve_topology=True)
+        tol *= 2
+    if shapely.get_num_coordinates(simple) > FINDING_MAX_VERTICES and simple.geom_type == "MultiPolygon":
+        kept, budget = [], 0
+        for p in sorted(simple.geoms, key=lambda p: -p.area):
+            n = shapely.get_num_coordinates(p)
+            if kept and budget + n > FINDING_MAX_VERTICES:
+                break
+            kept.append(p)
+            budget += n
+        simple = kept[0] if len(kept) == 1 else MultiPolygon(kept)
+    gj = mapping(simple)
+    return {"type": gj["type"], "coordinates": _round_coords(gj["coordinates"])}
+
+
+def _finding(code: str, shapes: list[dict], message: str, at, geometry,
+             key_shapes: list[dict] | None = None) -> dict:
+    """One finding of the SVG checks (golfmap-svg-checks-v1). `shapes`:
+    [{name, type, featureIds}]; the key is made of `key_shapes` (default all
+    of them), each shape's ids sorted and joined by ',', shapes by '+'."""
+    key = code + ":" + "+".join(",".join(sorted(s["featureIds"])) for s in (key_shapes or shapes))
+    return {"key": key, "code": code, "severity": SVG_CHECK_SEVERITY[code], "accepted": False,
+            "message": message, "shapes": shapes,
+            "at": [round(float(at[0]), 2), round(float(at[1]), 2)] if at is not None else None,
+            "geometry": _finding_geojson(geometry)}
+
+
+def _read_accepted(path: Path | None) -> set[str]:
+    """The keys of an accepted-findings file (golfmap-svg-checks-accepted-v1);
+    no file = none accepted."""
+    if path is None or not path.exists():
+        return set()
+    try:
+        doc = json.loads(path.read_text(encoding="utf-8"))
+    except ValueError as exc:
+        raise SystemExit(f"error: {path} is not JSON: {exc}")
+    if not isinstance(doc, dict) or not isinstance(doc.get("accepted"), list):
+        raise SystemExit(f'error: {path} is no {SVG_CHECKS_ACCEPTED_FORMAT} file ({{"accepted": [{{"key": ...}}]}})')
+    if doc.get("format") not in (None, SVG_CHECKS_ACCEPTED_FORMAT):
+        raise SystemExit(f"error: {path} has format {doc.get('format')!r}, expected {SVG_CHECKS_ACCEPTED_FORMAT}")
+    return {a["key"] for a in doc["accepted"] if isinstance(a, dict) and isinstance(a.get("key"), str)}
+
+
+def _svg_check_findings(paint: list, ids_of: dict[str, list[str]], to_svg) -> list[dict]:
+    """The checks of the shapes as written (`paint`, bottom first) as findings,
+    in the order their lines print: green borders, spikes, hidden shapes,
+    overlap slivers, narrow necks. `ids_of`: shape name -> its feature ids."""
+    def ref(i: int) -> dict:
+        _, name, kind, _ = paint[i]
+        return {"name": name, "type": kind, "featureIds": list(ids_of.get(name, []))}
+
+    findings = []
+    for i, meets, band in _green_border_hits(paint):
+        name = paint[i][1]
+        detail = ", ".join(f"{k} {a:.1f} m2" for k, a in sorted(meets.items(), key=lambda kv: -kv[1]))
+        at = band.representative_point() if band is not None and not band.is_empty else paint[i][3].centroid
+        findings.append(_finding("green-border", [ref(i)],
+                                 f"green {name} meets more than fairway/semi rough at its edge ({detail}): "
+                                 f"OPCD blends it straight into that - ring it with semi rough or fairway",
+                                 (at.x, at.y), band))
+    from shapely.geometry import Point
+    for i, (_, name, kind, shape) in enumerate(paint):
+        spikes = _sharp_corners(shape) if shape is not None else []
+        if spikes:
+            x, y, angle = min(spikes, key=lambda s: s[2])
+            sx, sy = to_svg((x, y))
+            findings.append(_finding("sharp-corner", [ref(i)],
+                                     f"{kind} {name} has {len(spikes)} spike(s) under {SHARP_CORNER_DEG:g}° "
+                                     f"(sharpest {angle:.0f}° at SVG {sx:.0f},{sy:.0f}): a lumpy union or a fill artefact?",
+                                     (x, y), Point(x, y)))
+    for i, over in _hidden_shape_hits(paint):
+        name, shape = paint[i][1], paint[i][3]
+        above = [paint[j][1] for j in over]
+        listed = ", ".join(above[:3]) + (" …" if len(above) > 3 else "")
+        c = shape.representative_point()
+        # Keyed on the hidden shape alone: it stays the same finding whatever is drawn over it.
+        findings.append(_finding("hidden-shape", [ref(i)] + [ref(j) for j in over],
+                                 f"{name} is covered by the shapes above it ({listed}): OPCD makes no mesh for it",
+                                 (c.x, c.y), shape, key_shapes=[ref(i)]))
+    pairs: dict[tuple[int, int], list] = {}
+    for lower, upper, width, length, part in _overlap_sliver_hits(paint):
+        pairs.setdefault((lower, upper), []).append((width, length, part))
+    from shapely import unary_union
+    for (lower, upper), strips in pairs.items():
+        width, length, part = max(strips, key=lambda s: s[1])
+        more = (f" (and in {len(strips) - 1} more place{'s' if len(strips) > 2 else ''})" if len(strips) > 1 else "")
+        c = part.centroid
+        findings.append(_finding("overlap-sliver", [ref(lower), ref(upper)],
+                                 f"{paint[upper][1]} reaches {width:.2f} m into {paint[lower][1]} over {length:.1f} m{more}: "
+                                 f"under OPCD's {2 * OPCD_BLEND_INSET_M:.2f} m blend, the build fails - "
+                                 f"clear the edge or overlap it more",
+                                 (c.x, c.y), unary_union([s[2] for s in strips])))
+    for i, regions in _narrow_neck_hits(paint):
+        name = paint[i][1]
+        where = f" in {len(regions)} places" if len(regions) > 1 else ""
+        c = max(regions, key=lambda g: (g.area, g.length)).centroid
+        findings.append(_finding("narrow-neck", [ref(i)],
+                                 f"{name} pinches to under {2 * OPCD_BLEND_INSET_M:.2f} m{where} (OPCD's blend): "
+                                 f"widen it to {NECK_WIDEN_M:g} m or split it there",
+                                 (c.x, c.y), unary_union(regions)))
+    return findings
+
+
+def _left_out_findings(rows_by_reason: list[tuple[str, str, list]], shape_ids: dict[str, str], tol: float) -> list[dict]:
+    """Findings for the features the export leaves out on purpose:
+    [(code, why, rows)] -> one finding per row, its drawn shape as geometry."""
+    findings = []
+    for code, why, rows in rows_by_reason:
+        for r in rows:
+            name = ("others" if r["hole_number"] is None else f"hole_{r['hole_number']}") + f"_{shape_ids.get(r['id'], '?')}"
+            shape = _row_shape(r, tol)
+            at = shape.representative_point() if shape is not None and not shape.is_empty else None
+            findings.append(_finding(code, [{"name": name, "type": r["type"], "featureIds": [r["id"]]}],
+                                     f"{r['type']} {name} {why}", (at.x, at.y) if at is not None else None, shape))
+    return findings
+
+
+def _write_svg_checks(path: Path, course, findings: list[dict]) -> dict:
+    """Write the golfmap-svg-checks-v1 file: the counts (errors, warnings and
+    notes not accepted; accepted of any severity) and the findings."""
+    from datetime import datetime, timezone
+
+    open_ = [f for f in findings if not f["accepted"]]
+    doc = {
+        "format": SVG_CHECKS_FORMAT,
+        "course": course["id"],
+        "courseName": course["name"],
+        "checkedAt": datetime.now(timezone.utc).isoformat(timespec="seconds").replace("+00:00", "Z"),
+        "errors": sum(1 for f in open_ if f["severity"] == "error"),
+        "warnings": sum(1 for f in open_ if f["severity"] == "warning"),
+        "notes": sum(1 for f in open_ if f["severity"] == "note"),
+        "accepted": sum(1 for f in findings if f["accepted"]),
+        "findings": findings,
+    }
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(doc, indent=1, ensure_ascii=False) + "\n", encoding="utf-8")
+    return doc
+
+
+def _finding_line(f: dict) -> str:
+    return f"  {f['severity']}: {f['message']}" + (" (accepted)" if f["accepted"] else "")
 
 
 def cmd_svg(bbox, out: Path, db_path: Path, course_ident: str,
             flatten: float | None, precision: int, mapped: dict[str, str],
             stack: str = "opcd", extent: Extent | None = None,
             exclude_ids: set[str] | None = None, exclude_types: set[str] | None = None,
-            paths_only: bool = False) -> None:
+            paths_only: bool = False, checks_out: Path | None = None, check_only: bool = False,
+            accepted_path: Path | None = None, allow_errors: bool = False) -> None:
     """`paths_only`: rewrite only the road-surface sidecar of the SVG at `out`
     (which must exist), from the course as it is now - a path's surface
     changed, its outline did not, so the SVG and the meshes built from it
-    stand. Reports what changed against the sidecar it replaces."""
+    stand. Reports what changed against the sidecar it replaces.
+
+    The checks of what OPCD will see run before anything is written, as
+    findings (_svg_check_findings, golfmap-svg-checks-v1), written to
+    `checks_out` whenever it is given. An error not accepted (its key in
+    `accepted_path`) refuses the export: nothing but the checks is written and
+    it exits SVG_CHECKS_FAILED_EXIT - unless `allow_errors`. `check_only`
+    writes no SVG and no sidecars, only the checks, whatever they find."""
+    if check_only and checks_out is None:
+        raise SystemExit("error: --check-only needs --checks-out (where the findings go)")
+    accepted_keys = set() if paths_only else _read_accepted(accepted_path)
     extent = extent or _square_3006_extent(bbox)
     e0, n0, e1, n1 = extent
     side = e1 - e0
@@ -3533,6 +3980,7 @@ def cmd_svg(bbox, out: Path, db_path: Path, course_ident: str,
     # feature.
     layers: dict[str, list[str]] = {}
     painted: dict[str, list] = {}
+    ids_of: dict[str, list[str]] = {}   # shape name -> the feature ids its data-feature-id lists
     written: dict[str, int] = {}
     skipped: dict[str, int] = {}
     slabs = 0
@@ -3616,6 +4064,8 @@ def cmd_svg(bbox, out: Path, db_path: Path, course_ident: str,
 
         if row["hole_number"] is not None:
             layer, stem = f"Hole{row['hole_number']}", f"hole_{row['hole_number']}"
+        elif row["group_rank"] == 0:
+            layer, stem = ROUGHS_SVG_LAYER, "others"
         else:
             layer, stem = COURSE_WIDE_LAYER, "others"
         name = f"{stem}_{shape_ids[row['id']]}"
@@ -3625,6 +4075,7 @@ def cmd_svg(bbox, out: Path, db_path: Path, course_ident: str,
         rule = ' fill-rule="evenodd"' if len(subpaths) > 1 else ""
         # The shape as written, for the checks of what OPCD will see (paint order).
         painted.setdefault(layer, []).append((name, kind, shape if shape is not None else _row_shape(row, tol)))
+        ids_of[name] = [row["id"]]
         layers.setdefault(layer, []).append(
             f'    <path id="{name}" inkscape:label="{name}" data-type="{kind}"'
             f' data-feature-id="{row["id"]}"'
@@ -3635,6 +4086,7 @@ def cmd_svg(bbox, out: Path, db_path: Path, course_ident: str,
     road_names = [f"roads_{part}" for part in _road_names(roads, shapes, shape_ids)]
     for road, name in zip(roads, road_names):
         painted.setdefault(ROADS_LAYER, []).append((name, road.kind, road.shape))
+        ids_of[name] = list(road.ids)
         subpaths = _shape_subpaths(road.shape, to_svg, precision)
         rule = ' fill-rule="evenodd"' if len(subpaths) > 1 else ""
         surface = f' data-surface="{road.surface}"' if road.surface else ""
@@ -3645,17 +4097,21 @@ def cmd_svg(bbox, out: Path, db_path: Path, course_ident: str,
         )
 
     # Document order is the app's stack (shared/render/stack-key.ts): the
-    # off-hole layer at the bottom, then the holes and drawing groups by rank
-    # ascending - a higher rank on top, as the Draw tool paints them - and the
-    # roads over everything. OPCD cuts a later layer out of an earlier one, so
-    # this is what it builds. (OPCD's own course files put Hole1 topmost; that
-    # order hid Omberg's hole-10 tees under hole 1's fairway while the app
-    # showed them on top, 2026-10-17.)
+    # Roughs group at the bottom, then the holes and drawing groups by rank
+    # ascending - a higher rank on top, as the Draw tool paints them - then the
+    # course level ("Course level (top)" in Draw) and the roads over everything.
+    # OPCD cuts a later layer out of an earlier one, so this is what it builds.
+    # (OPCD's own course files put Hole1 topmost; that order hid Omberg's
+    # hole-10 tees under hole 1's fairway while the app showed them on top,
+    # 2026-10-17. Until 2026-10-21 the course level went to the bottom with the
+    # roughs, which hid Landeryd Classic's tees under Masters' semi rough.)
     layer_ranks = {f"Hole{r['hole_number']}": r['group_rank'] for r in rows
                    if r['hole_number'] is not None and r['type'] not in ROADS_TYPES}
     order = sorted((k for k in layers if k.startswith("Hole")), key=lambda k: layer_ranks[k])
+    if ROUGHS_SVG_LAYER in layers:
+        order.insert(0, ROUGHS_SVG_LAYER)
     if COURSE_WIDE_LAYER in layers:
-        order.insert(0, COURSE_WIDE_LAYER)
+        order.append(COURSE_WIDE_LAYER)
     if ROADS_LAYER in layers:
         order.append(ROADS_LAYER)
 
@@ -3683,23 +4139,48 @@ def cmd_svg(bbox, out: Path, db_path: Path, course_ident: str,
         lines.append("  </g>")
     lines.append("</svg>")
 
-    out.parent.mkdir(parents=True, exist_ok=True)
-    out.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    # The checks of what OPCD will see, on the shapes as written (paint order),
+    # before anything is written: an unaccepted error writes nothing but them.
+    paint = [(layer, name, kind, shape) for layer in order for name, kind, shape in painted.get(layer, [])]
+    findings = _svg_check_findings(paint, ids_of, to_svg) + _left_out_findings([
+        ("creek-left-out", "runs into a lake or pond: left out (OPCD fails on the overlap; "
+                           "dug in the DEM by creek-digs, R.A.M. water in Unity)", pond_creeks),
+        ("creek-left-out", f"is under {CREEK_MIN_WIDTH_M:g} m wide: left out (OPCD fails on it; "
+                           f"dug in the DEM by creek-digs, R.A.M. water in Unity)", narrow_creeks),
+        ("tiny-shape", f"is under {MIN_SHAPE_AREA_M2:g} m2: left out (drawn by mistake? delete it)", tiny),
+    ], shape_ids, tol)
+    for f in findings:
+        f["accepted"] = f["key"] in accepted_keys
+    blocking = [f for f in findings if f["severity"] == "error" and not f["accepted"]]
+    checks_doc = _write_svg_checks(checks_out, course, findings) if checks_out is not None else None
+    if blocking and not allow_errors and not check_only:
+        print(f"  {course['name']} ({course['id']}): {len(blocking)} SVG check error(s)")
+        for f in blocking:
+            print(_finding_line(f))
+        if checks_out is not None:
+            print(f"  wrote {checks_out}")
+        print(f"error: {len(blocking)} SVG check error(s); nothing written (accept known ones, or fix the shapes)")
+        raise SystemExit(SVG_CHECKS_FAILED_EXIT)
+
     regions = _road_regions(roads, road_names, rows, tol, to_svg)
-    surfaces_out = _write_path_surfaces(out, regions)
-    shapes_out = write_shape_fingerprints(out)
+    if not check_only:
+        out.parent.mkdir(parents=True, exist_ok=True)
+        out.write_text("\n".join(lines) + "\n", encoding="utf-8")
+        surfaces_out = _write_path_surfaces(out, regions)
+        shapes_out = write_shape_fingerprints(out)
 
     total = sum(len(v) for v in layers.values())
     kinds = ", ".join(f"{k} {v}" for k, v in sorted(written.items(), key=lambda kv: -kv[1]))
     curves = f"flattened to polylines at {flatten:g} m" if flatten is not None else "cubic beziers"
     order_note = ("app order with " + "/".join(TOP_TYPES) + " lifted to the top"
                   if stack == "opcd" else "the app's own z-order")
-    print(f"Wrote {out}")
+    print(f"Checked {course['name']} (nothing written but the checks)" if check_only else f"Wrote {out}")
     print(f"  {course['name']} ({course['id']}): {total} features in {len(order)} layer(s) - {kinds}")
     mixed = sorted(n for n, r in regions["regions"].items() if r["mixed"])
-    print(f"  wrote {surfaces_out.name} ({len(regions['shapes'])} road shape(s) with a surface"
-          + (f"; {len(mixed)} of mixed surfaces, for Blender to cut: {', '.join(mixed)}" if mixed else "") + ")")
-    print(f"  wrote {shapes_out.name} (a fingerprint per shape, for Blender to carry unchanged meshes over)")
+    if not check_only:
+        print(f"  wrote {surfaces_out.name} ({len(regions['shapes'])} road shape(s) with a surface"
+              + (f"; {len(mixed)} of mixed surfaces, for Blender to cut: {', '.join(mixed)}" if mixed else "") + ")")
+        print(f"  wrote {shapes_out.name} (a fingerprint per shape, for Blender to carry unchanged meshes over)")
     print(f"  {side:.1f} m square = {side:.1f} mm at 1 unit/m, {curves}, stacked {order_note}")
     if road_notes:
         print(f"  roads: {road_notes}")
@@ -3743,21 +4224,15 @@ def cmd_svg(bbox, out: Path, db_path: Path, course_ident: str,
         detail = ", ".join(f"{k} {v}" for k, v in sorted(dropped_outside.items(), key=lambda kv: -kv[1]))
         print(f"  {sum(dropped_outside.values())} shape(s) lie wholly outside the terrain square and were "
               f"left out: {detail}")
-    paint = [(layer, name, kind, shape) for layer in order for name, kind, shape in painted.get(layer, [])]
-    for name, meets in _green_border_problems(paint):
-        detail = ", ".join(f"{k} {a:.1f} m2" for k, a in sorted(meets.items(), key=lambda kv: -kv[1]))
-        print(f"  note: green {name} meets more than fairway/semi rough at its edge ({detail}): "
-              f"OPCD blends it straight into that")
-    for _, name, kind, shape in paint:
-        spikes = _sharp_corners(shape) if shape is not None else []
-        if spikes:
-            x, y, angle = min(spikes, key=lambda s: s[2])
-            sx, sy = to_svg((x, y))
-            print(f"  note: {kind} {name} has {len(spikes)} spike(s) under {SHARP_CORNER_DEG:g}° "
-                  f"(sharpest {angle:.0f}° at SVG {sx:.0f},{sy:.0f}): a lumpy union or a fill artefact?")
-    for name, above in _hidden_shapes(paint):
-        listed = ", ".join(above[:3]) + (" …" if len(above) > 3 else "")
-        print(f"  warning: {name} is covered by the shapes above it ({listed}): OPCD makes no mesh for it")
+    for f in findings:
+        if f["code"] in SVG_CHECK_LINE_CODES:
+            print(_finding_line(f))
+    if checks_doc is not None:
+        print(f"  checks: {checks_doc['errors']} error(s), {checks_doc['warnings']} warning(s), "
+              f"{checks_doc['notes']} note(s), {checks_doc['accepted']} accepted - wrote {checks_out}")
+    if blocking:
+        print(f"  {len(blocking)} SVG check error(s) not accepted"
+              + (" (written anyway: --allow-errors)" if not check_only else ""))
 
 
 # --- Command: shaping-global --------------------------------------------------
@@ -8172,7 +8647,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     p = sub.add_parser("svg", help="export a course's drawn features as a layered GSPro/OPCD SVG")
     _add_area(p)
-    p.add_argument("--out", required=True, help="output SVG path")
+    p.add_argument("--out", help="output SVG path (required unless --check-only)")
     p.add_argument("--course", required=True, help="course id, or a name substring (e.g. Vreta)")
     p.add_argument("--db", default=str(DEFAULT_DB), help=f"app database (default {DEFAULT_DB})")
     p.add_argument("--flatten", type=float, metavar="TOL_M",
@@ -8192,6 +8667,18 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--paths-only", dest="paths_only", action="store_true",
                    help="rewrite only <stem>-paths.json (the road surfaces) of the existing SVG at --out, "
                         "after a path changed surface; the SVG is left as it is")
+    p.add_argument("--checks-out", dest="checks_out", metavar="FILE",
+                   help=f"write the checks' findings ({SVG_CHECKS_FORMAT} JSON) here, also when the export "
+                        f"is refused for them")
+    p.add_argument("--check-only", dest="check_only", action="store_true",
+                   help="run the checks only: no SVG, no sidecars, just --checks-out (required) and the "
+                        "printed lines; exits 0 whatever they find")
+    p.add_argument("--accepted", metavar="FILE",
+                   help=f"accepted findings ({SVG_CHECKS_ACCEPTED_FORMAT}: {{\"accepted\": [{{\"key\", \"note\", "
+                        f"\"at\"}}]}}); a listed key is no error any more (missing file = none accepted)")
+    p.add_argument("--allow-errors", dest="allow_errors", action="store_true",
+                   help=f"write the SVG even with check errors not accepted (test and bisect variants); without "
+                        f"it such errors write nothing and exit {SVG_CHECKS_FAILED_EXIT}")
 
     p = sub.add_parser("svg-shapes", help="write <stem>-shapes.json (a fingerprint per shape) for existing SVGs, "
                                           "e.g. export snapshots from before `svg` wrote it")
@@ -8307,10 +8794,16 @@ def main(argv: list[str] | None = None) -> int:
                 water_margin_m=args.water_margin, bank_max_m=args.bank_max, bank_slope_deg=args.bank_slope,
                 node_spacing_m=args.node_spacing)
     elif args.command == "svg":
-        cmd_svg(bbox, Path(args.out), Path(args.db), args.course,
+        if args.check_only and not args.checks_out:
+            parser.error("svg --check-only needs --checks-out")
+        if not args.out and not args.check_only:
+            parser.error("svg needs --out (or --check-only)")
+        cmd_svg(bbox, Path(args.out) if args.out else None, Path(args.db), args.course,
                 args.flatten, args.precision, _parse_map(args.map), args.stack, extent=extent,
                 exclude_ids=_read_exclude_ids(Path(args.exclude_ids) if args.exclude_ids else None),
-                exclude_types=set(args.exclude_type or []), paths_only=args.paths_only)
+                exclude_types=set(args.exclude_type or []), paths_only=args.paths_only,
+                checks_out=Path(args.checks_out) if args.checks_out else None, check_only=args.check_only,
+                accepted_path=Path(args.accepted) if args.accepted else None, allow_errors=args.allow_errors)
     else:
         parser.print_help()
         return 2

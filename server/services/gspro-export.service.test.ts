@@ -2648,3 +2648,71 @@ test("exportWaterLevels: a water-edge pond's dig level + 5 cm in the heightmap's
     await t.svc.exportWaterLevels(TEST_COURSE_ID);
     expect(existsSync(file)).toBe(false);
 });
+
+// --- SVG checks (the pipeline side: pipeline/tests/test_gspro_svg_checks.py) ---
+
+const SLIVER = {
+    key: 'overlap-sliver:semi-1+bunker-1', code: 'overlap-sliver', severity: 'error', accepted: false,
+    message: 'hole_8_253 reaches 0.07 m into hole_8_233 over 1.5 m',
+    shapes: [{ name: 'hole_8_233', type: 'semi_rough', featureIds: ['semi-1'] }, { name: 'hole_8_253', type: 'bunker', featureIds: ['bunker-1'] }],
+    at: [541000, 6468000], geometry: null,
+};
+
+/** A runner that writes `findings` to --checks-out and exits 3 when an unaccepted error is among them (as gspro.py does). */
+function checkingRunner(findings: object[]) {
+    const calls: string[][] = [];
+    const runner: ExportRunner = async (args) => {
+        calls.push(args);
+        const errors = findings.filter((f: any) => f.severity === 'error' && !f.accepted).length;
+        await writeFile(flag(args, '--checks-out')!, JSON.stringify({
+            format: 'golfmap-svg-checks-v1', checkedAt: '2026-10-21T00:00:00Z', errors, warnings: 0, notes: 0, accepted: 0, findings,
+        }));
+        if (errors && !args.includes('--allow-errors') && !args.includes('--check-only')) return { code: 3, stdout: '', stderr: 'error: 1 SVG check error(s)' };
+        if (!args.includes('--check-only')) await writeFile(flag(args, '--out')!, '<svg/>');
+        return { code: 0, stdout: 'Wrote out.svg\n', stderr: '' };
+    };
+    return { calls, runner };
+}
+
+test('an SVG export with check errors fails naming them, writes nothing and keeps no snapshot; a variant is written anyway', async () => {
+    const { calls, runner } = checkingRunner([SLIVER]);
+    const docs = await mkdtemp(path.join(os.tmpdir(), 'gspro-docs-'));
+    const { svc } = await setup(runner, { courseDocsRoot: docs });
+    const dir = await mkdtemp(path.join(os.tmpdir(), 'gspro-out-'));
+    await svc.setDir(TEST_COURSE_ID, dir);
+
+    const failed = await svc.export(TEST_COURSE_ID).catch((e) => e);
+    expect(failed).toBeInstanceOf(ConflictError);
+    expect(failed.message).toBe('SVG check: 1 error(s), nothing written - open them in Draw › Check shapes. hole_8_253 reaches 0.07 m into hole_8_233 over 1.5 m');
+    expect(flag(calls[0], '--accepted')).toBe(path.join(docs, 'linkan', 'svg-checks.json'));
+    expect(flag(calls[0], '--checks-out')).toBe(path.join(dir, 'linkan.checks.json'));
+    expect(calls[0]).not.toContain('--allow-errors');
+    expect(existsSync(path.join(dir, 'export-history'))).toBe(false);
+
+    const variant = await svc.export(TEST_COURSE_ID, { variant: 'bisect a' });
+    expect(calls[1]).toContain('--allow-errors');
+    expect(existsSync(variant.path)).toBe(true);
+});
+
+test('checkSvg runs the checks writing nothing; an accepted finding is passed on by key', async () => {
+    const { calls, runner } = checkingRunner([SLIVER]);
+    const docs = await mkdtemp(path.join(os.tmpdir(), 'gspro-docs-'));
+    const { svc } = await setup(runner, { courseDocsRoot: docs });
+    const dir = await mkdtemp(path.join(os.tmpdir(), 'gspro-out-'));
+    await svc.setDir(TEST_COURSE_ID, dir);
+
+    const report = await svc.checkSvg(TEST_COURSE_ID);
+    expect(calls[0]).toContain('--check-only');
+    expect(report).toMatchObject({ courseId: TEST_COURSE_ID, errors: 1, findings: [{ key: SLIVER.key, code: 'overlap-sliver' }] });
+    expect(await readdir(dir)).toEqual([]);
+
+    const file = path.join(docs, 'linkan', 'svg-checks.json');
+    expect(await svc.acceptSvgFinding(TEST_COURSE_ID, SLIVER.key, true, 'Classic tee, on purpose')).toEqual({ file, keys: [SLIVER.key] });
+    const doc = JSON.parse(await readFile(file, 'utf-8'));
+    expect(doc.format).toBe('golfmap-svg-checks-accepted-v1');
+    expect(doc.accepted).toMatchObject([{ key: SLIVER.key, note: 'Classic tee, on purpose' }]);
+    // Accepting twice keeps one entry; taking it back empties the list.
+    await svc.acceptSvgFinding(TEST_COURSE_ID, SLIVER.key, true);
+    expect((await svc.acceptSvgFinding(TEST_COURSE_ID, 'other:x', true)).keys).toEqual([SLIVER.key, 'other:x']);
+    expect((await svc.acceptSvgFinding(TEST_COURSE_ID, SLIVER.key, false)).keys).toEqual(['other:x']);
+});

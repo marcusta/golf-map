@@ -15,6 +15,7 @@ class _StubResponse:
     def __init__(self, content: bytes):
         self._content = content
         self.status_code = 200
+        self.headers = {"Content-Length": str(len(content))}
 
     def raise_for_status(self):
         pass
@@ -33,8 +34,8 @@ class _StubSession:
     def __init__(self):
         self.calls = []
 
-    def get(self, url, auth=None, stream=None, timeout=None, params=None):
-        self.calls.append({"url": url, "auth": auth, "params": params})
+    def get(self, url, auth=None, stream=None, timeout=None, params=None, headers=None):
+        self.calls.append({"url": url, "auth": auth, "params": params, "headers": headers})
         return _StubResponse(b"fake-tiff-bytes")
 
 

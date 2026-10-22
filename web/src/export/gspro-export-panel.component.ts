@@ -44,6 +44,7 @@ import {
 } from './svg-exclusions';
 import { bisectTesting, bisectBuildsLeft, spatialOrder } from './svg-bisect';
 import { FeaturesService, geometryToWgs84Rings } from '../draw/features.service';
+import { SvgCheckService, isSvgCheckError } from '../draw/svg-check.service';
 import { FEATURE_STYLES, type FeatureType } from '../draw/feature-palette';
 import { CourseDetailService } from '../course-detail/course-detail.service';
 import { MapService } from '../map/map.service';
@@ -506,6 +507,8 @@ const tpl = template(`
                     <div bind="errorSection" class="gspro-export__section">
                         <div bind="error" class="error"></div>
                     </div>
+                    <button bind="openSvgErrors" type="button" class="gspro-export__small gspro-export__fit" data-testid="gspro-open-svg-errors"
+                        title="Close this and list the SVG check's findings in the Draw mode">Open errors</button>
                 </div>
             </div>
         </div>
@@ -523,6 +526,8 @@ const tpl = template(`
                 <div bind="svgFileHintSide" class="hint"></div>
                 <button bind="runSide" type="button" class="gspro-export__run gspro-export__primary"></button>
                 <div bind="sideStatus" class="gspro-export__job" data-testid="gspro-svg-status"></div>
+                <button bind="openSvgErrorsSide" type="button" class="gspro-export__small gspro-export__fit" data-testid="gspro-open-svg-errors-side"
+                    title="List the SVG check's findings in the Draw mode">Open errors</button>
             </div>
             <div class="gspro-export__section gspro-export__exclude">
                 <div class="gspro-export__row">
@@ -1101,6 +1106,8 @@ export class GsproExportPanelComponent extends Component {
     private ready = this.inject(MakeReadyService);
     private ramRoads = this.inject(RamRoadsService);
     private features = this.inject(FeaturesService);
+    /** "Open errors" after an export the SVG checks stopped. */
+    private svgCheck = this.inject(SvgCheckService);
     private courseDetail = this.inject(CourseDetailService);
     private mapSvc = this.inject(MapService);
     /** The course's tee sets live with the furniture; this panel only says what GSPro makes of them. */
@@ -1193,6 +1200,21 @@ export class GsproExportPanelComponent extends Component {
     private closeDialog(): void {
         this.svc.close();
         this.sync.close();
+    }
+
+    /** The last SVG export or Update shapes failed on the SVG checks (`SVG check: …`). */
+    private svgCheckFailed(): boolean {
+        const job = this.sync.job.get();
+        return isSvgCheckError(this.svc.error.get()) || isSvgCheckError(this.sync.error.get())
+            || isSvgCheckError(job?.error) || !!job?.results.some(r => isSvgCheckError(r.error));
+    }
+
+    /** "Open errors": the Check shapes panel in the Draw mode, the dialog closed when it covers the map. */
+    private openSvgErrors(closeDialog: boolean): void {
+        const courseId = this.openCourseId();
+        if (!courseId) return;
+        if (closeDialog) this.closeDialog();
+        this.svgCheck.open(courseId);
     }
 
     /** The course the dialog is open for, whichever half was opened first. */
@@ -1628,6 +1650,14 @@ export class GsproExportPanelComponent extends Component {
                     ? 'gspro-export__section' : 'gspro-export__section hidden'),
             },
             error: () => this.svc.error.get(),
+            openSvgErrors: {
+                style: () => this.svgCheckFailed() ? '' : 'display:none',
+                onclick: () => this.openSvgErrors(true),
+            },
+            openSvgErrorsSide: {
+                style: () => isSvgCheckError(this.svc.error.get()) ? '' : 'display:none',
+                onclick: () => this.openSvgErrors(false),
+            },
             run: {
                 textContent: () => svgRunLabel(),
                 disabled: busy,

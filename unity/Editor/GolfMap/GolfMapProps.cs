@@ -33,7 +33,7 @@ namespace GolfMap.Editor
         [MenuItem("GolfMap/Props/Place props from manifest")]
         static void Menu() { Debug.Log("[GolfMap Props] " + GolfMapJson.Serialize(Place(null, false, null, true, true), false)); }
 
-        [BridgeCommand("golfmap.props.place", "Place the course's Blender-built props (<course>/Props/props.json, golfmap-props-v1 from blender/tools/build_props.py): Standard materials from the manifest (textures set up as albedo/normal maps), FBX materials remapped onto them, then every instance under 'GolfMap Props' at its EPSG:3006 position on the highest collider below (course meshes, else terrain), rotated to its yawDeg, with MeshColliders on buildings/structures. Replaces what the last place made, except the instances the user moved or rotated in Unity: those keep their transform (kept=true in the report, with both transforms), until the spec moves that instance itself. An instance no record made (duplicated by hand in Unity, '<asset>#3 (1)') is left standing and listed under `handAdded`; it is kept out of placed.json on purpose, so every later place finds it the same way. A hand-placed instance the spec or the manifest no longer has does go, with its transform listed under `droppedHand` so nothing vanishes in silence. Marks the scene dirty unless save.",
+        [BridgeCommand("golfmap.props.place", "Place the course's Blender-built props (<course>/Props/props.json, golfmap-props-v1 from blender/tools/build_props.py): Standard materials from the manifest (textures set up as albedo/normal maps), FBX materials remapped onto them, then every instance under 'GolfMap Props' at its EPSG:3006 position on the highest collider below (course meshes, else terrain), rotated to its yawDeg, with MeshColliders on buildings/structures (none on a building more than 50 m from play). Replaces what the last place made, except the instances the user moved or rotated in Unity: those keep their transform (kept=true in the report, with both transforms), until the spec moves that instance itself. An instance no record made (duplicated by hand in Unity, '<asset>#3 (1)') is left standing and listed under `handAdded`; it is kept out of placed.json on purpose, so every later place finds it the same way. A hand-placed instance the spec or the manifest no longer has does go, with its transform listed under `droppedHand` so nothing vanishes in silence. Marks the scene dirty unless save.",
             args = "folder (default <course>/Props/), dryRun=false (ground heights and the plan, kept instances included, nothing written), only (asset ids, comma-separated: place just these, keep the rest), materials=true (rebuild materials and FBX import settings), keepHandEdits=true (false: every instance from the spec, hand moves dropped - the old behaviour), " + GolfMapSceneSave.Arg)]
         static object Command(BridgeArgs a)
         {
@@ -759,7 +759,8 @@ namespace GolfMap.Editor
             var counts = new SortedDictionary<string, int>();
             var handPlaced = new List<object>();   // instances placed at the transform the user gave them
             var specWon = new List<object>();      // hand-placed instances the spec moved since: back to the spec
-            int placed = 0, keptCount = 0;
+            int placed = 0, keptCount = 0, farBuildings = 0;
+            Func<GameObject, bool> buildingNeedsColliders = null;   // the playing field, once a building asks
             // The records this run writes: assets it does not place keep theirs.
             var written = new Dictionary<string, List<Placed.Record>>();
             foreach (var kv in records)
@@ -888,7 +889,15 @@ namespace GolfMap.Editor
                     }
                 }
                 if (a.lodCount > 1) Lods(go, a);
-                if (a.colliderMesh != null) BakedCollider(go, a);
+                // no ball reaches a building more than BuildingColliderM from play: no collider (golfmap.course.ready removes them too)
+                if (a.category == "building" && buildingNeedsColliders == null)
+                    buildingNeedsColliders = GolfMapMakeReady.BuildingNeedsColliders(EditorSceneManager.GetActiveScene().GetRootGameObjects());
+                if (a.category == "building" && !buildingNeedsColliders(go))
+                {
+                    foreach (var col in go.GetComponentsInChildren<Collider>(true)) UnityEngine.Object.DestroyImmediate(col);
+                    farBuildings++;
+                }
+                else if (a.colliderMesh != null) BakedCollider(go, a);
                 else if (a.collider == "mesh")
                     foreach (var mf in go.GetComponentsInChildren<MeshFilter>()) { var mc = mf.gameObject.AddComponent<MeshCollider>(); mc.sharedMesh = mf.sharedMesh; }
                 else if (a.collider == "box" && native)
@@ -985,6 +994,7 @@ namespace GolfMap.Editor
                 { "placedRecord", sidecar }, { "keepHandEdits", keepHandEdits }, { "kept", keptCount },
                 { "handPlaced", handPlaced }, { "specWon", specWon },
                 { "handAdded", handAddedRows }, { "droppedHand", droppedHand }, { "physics", physicsRows },
+                { "buildingsWithoutColliders", farBuildings },   // more than GolfMapMakeReady.BuildingColliderM from play
             };
             if (sidecarNote != null) result["placedRecordNote"] = sidecarNote;
             if (dryRun) result["rows"] = rows;

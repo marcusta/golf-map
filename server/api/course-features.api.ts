@@ -133,6 +133,13 @@ const CreateManyFeaturesInput = Type.Object({
     items: Type.Array(Type.Omit(CreateFeatureInput, ['courseId'])),
 });
 
+const RaiseAboveInput = Type.Object({
+    courseId: Type.String(),
+    featureId: Type.String(),
+    /** The shapes painted over it (the SVG check's hidden-shape finding names them). */
+    coverIds: Type.Array(Type.String(), { maxItems: 500 }),
+});
+
 const UpdateManyFeaturesInput = Type.Object({
     items: Type.Array(UpdateFeatureInput),
 });
@@ -250,6 +257,14 @@ export function createCourseFeaturesApi(svc: CourseFeaturesService) {
             path: '/features/remove-many',
             fn: (input: Static<typeof RemoveManyFeaturesInput>) => svc.removeMany(input.items),
             schema: RemoveManyFeaturesInput,
+            middleware: mw,
+        },
+        /** Lift a shape just above the ones covering it (Draw › Check shapes' hidden shape); moves it into their group when they are higher. */
+        raiseAbove: {
+            method: 'POST' as const,
+            path: '/course-features/raise-above',
+            fn: (input: Static<typeof RaiseAboveInput>) => svc.raiseAbove(input.courseId, input.featureId, input.coverIds),
+            schema: RaiseAboveInput,
             middleware: mw,
         },
         reorder: {

@@ -33,6 +33,8 @@
         "water:steps": "bun scripts/water-steps.ts",
         "ramroads": "bun scripts/ram-roads.ts",
         "trees:photo": "bun scripts/trees-photo.ts",
+        "holes:assign": "bun scripts/holes-assign.ts",
+        "svg:check": "bun scripts/svg-check.ts",
         "water:import": "bun scripts/water-import.ts",
         "shaping": "bun scripts/shaping-apply.ts",
         "paint": "bun scripts/paint.ts",

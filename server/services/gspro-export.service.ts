@@ -208,6 +208,52 @@ export interface GsproExportRequest {
 /** Feature types the SVG draws as another OPCD surface than the pipeline's default (`gspro.py svg --map`): canopy as pine straw. */
 export const SVG_TYPE_MAP: Record<string, string> = { trees: 'pinestraw' };
 
+// --- SVG checks -------------------------------------------------------------
+// `gspro.py svg` checks what OPCD will see before it writes the SVG (docs/gspro/export.md
+// "SVG checks"): an unaccepted error stops the export (exit 3, nothing written, the
+// findings in `<stem>.checks.json`), `checkSvg` runs the same checks writing nothing
+// (the Draw mode's Check shapes overlay), and a known finding is accepted per course
+// in docs/gspro/<course>/svg-checks.json, keyed so it survives re-exports.
+
+/** `gspro.py svg` exit code: unaccepted check errors, nothing written. */
+export const SVG_CHECK_ERRORS_EXIT = 3;
+/** Per-course accepted findings (docs/gspro/<course>/). */
+export const SVG_CHECKS_ACCEPTED_FILE = 'svg-checks.json';
+
+/** One SVG shape a finding is about. */
+export interface SvgCheckShape {
+    /** SVG path id, `hole_8_253`. */
+    name: string;
+    type: string;
+    /** The features behind it (a merged road has several). */
+    featureIds: string[];
+}
+
+/** One check finding (gspro.py `golfmap-svg-checks-v1`). */
+export interface SvgCheckFinding {
+    /** `<code>:<ids>`: stable while the same features are involved; what accepting stores. */
+    key: string;
+    code: string;
+    severity: 'error' | 'warning' | 'note';
+    accepted: boolean;
+    message: string;
+    shapes: SvgCheckShape[];
+    /** EPSG:3006 metres. */
+    at: [number, number] | null;
+    /** The problem itself (the strip, the neck, the hidden shape) as GeoJSON in EPSG:3006 metres. */
+    geometry: { type: string; coordinates: unknown } | null;
+}
+
+export interface SvgCheckReport {
+    courseId: string;
+    checkedAt: string;
+    errors: number;
+    warnings: number;
+    notes: number;
+    accepted: number;
+    findings: SvgCheckFinding[];
+}
+
 /** What `export` (the SVG) takes besides the course. */
 export interface SvgExportOptions {
     excludeFeatureIds?: string[];
@@ -924,7 +970,9 @@ export class GsproExportService {
             '--out', out,
             ...Object.entries(SVG_TYPE_MAP).flatMap(([type, surface]) => ['--map', `${type}=${surface}`]),
         ];
-        if (opts.dbPath) args.push('--db', opts.dbPath);
+        // The server's own database (DB_PATH: the e2e server's isolated one), else gspro.py's default.
+        const db = opts.dbPath ?? process.env.DB_PATH;
+        if (db) args.push('--db', db);
         return { args, out };
     }
 
@@ -936,13 +984,18 @@ export class GsproExportService {
      * to find the shape it chokes on without touching the course.
      */
     async export(courseId: string, opts: SvgExportOptions = {}): Promise<GsproExportResult> {
-        const { args, out } = await this.svgCommand(courseId, opts);
+        const command = await this.svgCommand(courseId, opts);
+        const { out } = command;
         const ids = [...new Set(opts.excludeFeatureIds ?? [])];
+        const full = ids.length === 0 && !opts.variant && !opts.dbPath;
+        // The course's own export stops on check errors; a test variant is written anyway (it is for finding them).
+        const checksOut = out.replace(/\.svg$/i, '.checks.json');
+        const args = [...command.args, '--accepted', await this.svgChecksAcceptedFile(courseId), '--checks-out', checksOut,
+            ...(full ? [] : ['--allow-errors'])];
         if (ids.length === 0) {
-            const full = !opts.variant && !opts.dbPath;
             // The code that runs, read as it starts (an edit during a long export must not count).
             const reading = full ? pipelineCodeVersion(this.pipelineDir) : null;
-            const result = await this.run('GSPro SVG', args, out);
+            const result = await this.runSvg(args, out, checksOut);
             const code = await reading;
             // A full export of the course as it is: keep it, so a later broken build can be bisected against it.
             if (full) {
@@ -956,10 +1009,68 @@ export class GsproExportService {
         try {
             const list = path.join(work, 'exclude-ids.json');
             await writeFile(list, JSON.stringify(ids));
-            return await this.run('GSPro SVG', [...args, '--exclude-ids', list], out);
+            return await this.runSvg([...args, '--exclude-ids', list], out, checksOut);
         } finally {
             await rm(work, { recursive: true, force: true });
         }
+    }
+
+    /** `run` for the SVG: check errors (exit 3) become one ConflictError naming them, from the checks file. */
+    private async runSvg(args: string[], out: string, checksOut: string): Promise<GsproExportResult> {
+        const { code, stdout, stderr } = await this.runner(args, this.pipelineDir);
+        if (code === SVG_CHECK_ERRORS_EXIT) {
+            const report = await readSvgChecks(checksOut).catch(() => null);
+            const errors = report?.findings.filter((f) => f.severity === 'error' && !f.accepted) ?? [];
+            const first = errors.slice(0, 3).map((f) => f.message).join('; ');
+            throw new ConflictError(`SVG check: ${errors.length || 'some'} error(s), nothing written - open them in Draw › Check shapes`
+                + (first ? `. ${first}${errors.length > 3 ? ' …' : ''}` : ''));
+        }
+        if (code !== 0) throw failure('GSPro SVG export', code, stdout, stderr);
+        return { path: out, report: reportLines(stdout) };
+    }
+
+    /** docs/gspro/<course>/svg-checks.json: the findings accepted on this course. */
+    async svgChecksAcceptedFile(courseId: string): Promise<string> {
+        const course = await this.courses.get(courseId);
+        return path.join(this.courseDocsRoot, courseSlug(course.name), SVG_CHECKS_ACCEPTED_FILE);
+    }
+
+    /**
+     * The SVG export's checks of the course as it is now, writing nothing (`gspro.py svg
+     * --check-only`): what Draw's Check shapes overlay lists, and its Run again.
+     */
+    async checkSvg(courseId: string): Promise<SvgCheckReport> {
+        const { args } = await this.svgCommand(courseId);
+        const work = await mkdtemp(path.join(os.tmpdir(), 'gspro-svg-check-'));
+        try {
+            const checksOut = path.join(work, 'checks.json');
+            const { code, stdout, stderr } = await this.runner(
+                [...args, '--check-only', '--accepted', await this.svgChecksAcceptedFile(courseId), '--checks-out', checksOut],
+                this.pipelineDir);
+            if (code !== 0) throw failure('SVG check', code, stdout, stderr);
+            return { ...(await readSvgChecks(checksOut)), courseId };
+        } finally {
+            await rm(work, { recursive: true, force: true });
+        }
+    }
+
+    /**
+     * Accept a finding (it no longer stops the export) or take that back, by its key;
+     * `note` says why. The course's svg-checks.json is rewritten (2-space JSON).
+     */
+    async acceptSvgFinding(courseId: string, key: string, accepted: boolean, note?: string): Promise<{ file: string; keys: string[] }> {
+        if (!key.trim()) throw new ConflictError('A finding key is needed');
+        const file = await this.svgChecksAcceptedFile(courseId);
+        const doc = await readAccepted(file);
+        const rest = doc.accepted.filter((a) => a.key !== key);
+        const next = accepted ? [...rest, { key, ...(note?.trim() ? { note: note.trim() } : {}), at: new Date().toISOString() }] : rest;
+        await mkdir(path.dirname(file), { recursive: true });
+        const tmp = `${file}.tmp-${process.pid}`;
+        await writeFile(tmp, JSON.stringify({ format: 'golfmap-svg-checks-accepted-v1', accepted: next }, null, 2) + '\n');
+        await rm(file, { force: true });
+        await link(tmp, file).catch(async () => copyFile(tmp, file));
+        await rm(tmp, { force: true });
+        return { file, keys: next.map((a) => a.key) };
     }
 
     /**
@@ -2973,6 +3084,27 @@ export function reportLines(stdout: string): string[] {
 }
 
 /** A 409 carrying the pipeline's last words. */
+/** A `--checks-out` file as the service hands it on. */
+export async function readSvgChecks(file: string): Promise<Omit<SvgCheckReport, 'courseId'>> {
+    const doc = JSON.parse(await readFile(file, 'utf8')) as Partial<SvgCheckReport> & { format?: string };
+    if (doc.format !== 'golfmap-svg-checks-v1') throw new ConflictError(`${file} is not an SVG checks file (${doc.format ?? 'no format'})`);
+    return {
+        checkedAt: doc.checkedAt ?? new Date().toISOString(),
+        errors: doc.errors ?? 0, warnings: doc.warnings ?? 0, notes: doc.notes ?? 0, accepted: doc.accepted ?? 0,
+        findings: doc.findings ?? [],
+    };
+}
+
+async function readAccepted(file: string): Promise<{ accepted: { key: string; note?: string; at?: string }[] }> {
+    try {
+        const doc = JSON.parse(await readFile(file, 'utf8'));
+        return { accepted: Array.isArray(doc?.accepted) ? doc.accepted.filter((a: { key?: unknown }) => typeof a?.key === 'string') : [] };
+    } catch (e) {
+        if ((e as NodeJS.ErrnoException).code === 'ENOENT') return { accepted: [] };
+        throw new ConflictError(`${file}: ${(e as Error).message}`);
+    }
+}
+
 export function failure(what: string, code: number, stdout: string, stderr: string): ConflictError {
     const detail = (stderr.trim() || stdout.trim() || `exit ${code}`).split('\n').slice(-4).join(' ');
     return new ConflictError(`${what} failed: ${detail}`);

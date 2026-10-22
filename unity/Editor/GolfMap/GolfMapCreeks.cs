@@ -21,7 +21,9 @@
 // heightmap or the Blender meshes changed puts the water back in its bed:
 // - height: aboveBedM over the lowest ground across the creek, the highest
 //   such bed along the stretch each control point stands for. Not forced to
-//   fall: held up behind a bump, the water would stand above its banks.
+//   fall: held up behind a bump, the water would stand above its banks. A
+//   steep stretch first gets more points, one per DensifyDropM of fall, so
+//   the water steps down with its bed (see Densify);
 //   A creek cut at its waterfalls (gspro.py creeks: one spline per stretch
 //   between falls, `stretches`) is a chain of dug ponds: each keeps the
 //   export's water and only rises where the bed stands above it;
@@ -559,9 +561,64 @@ namespace GolfMap.Editor
             public float[] ground;
         }
 
+        // Steep stretches: the water stands aboveBedM over the highest bed each control point stands for, so a point whose
+        // stretch falls fast holds its water up over the lower bed below it (Vreta's 1b619669: 2.4 m down in 13 m with three
+        // points, the water 0.3-0.8 m over the bed and hanging out over the slope). Before the fit a point is added where the
+        // bed (the lowest ground across, taken down the line as the lowest so far, so a culvert's hump adds none) has fallen
+        // DensifyDropM since the last point, at least DensifyGapM from every point. Not on a creek with falls (its neck is
+        // indices into the points) or on a lake.
+        const float DensifyDropM = 0.1f, DensifyGapM = 1f;
+
+        static int Densify(Creek c)
+        {
+            if (c.onLake || c.held || c.fallPoints.Count > 0 || c.fallsAt.Count > 0 || c.points.Count < 2) return 0;
+            var pts = new List<Vector4>(c.points);
+            int n = pts.Count;
+            bool down = pts[0].y >= pts[n - 1].y;
+            if (!down) pts.Reverse();
+            var cum = new float[n];
+            for (int i = 1; i < n; i++) cum[i] = cum[i - 1] + Vector2.Distance(XZ(pts[i - 1]), XZ(pts[i]));
+            float total = cum[n - 1];
+            var added = new List<KeyValuePair<float, Vector4>>();
+            float low = float.NaN, mark = float.NaN, lastAt = 0;
+            for (int j = 0, passed = -1, k = 0; total > 0 && k * StationM <= total + 1e-3f; k++)
+            {
+                float s = Mathf.Min(k * StationM, total);
+                while (j < n - 2 && cum[j + 1] < s) j++;
+                float seg = Mathf.Max(cum[j + 1] - cum[j], 1e-4f), t = Mathf.Clamp01((s - cum[j]) / seg);
+                Vector2 a = XZ(pts[j]), b = XZ(pts[j + 1]), dir = (b - a).normalized, pos = Vector2.Lerp(a, b, t);
+                float half = Mathf.Lerp(pts[j].w, pts[j + 1].w, t) / 2f, bed = float.NaN;
+                int inner = Mathf.Max(2, Mathf.CeilToInt(half / StepM));
+                for (int q = -inner; q <= inner; q++)
+                {
+                    float g = GroundAt(pos + new Vector2(dir.y, -dir.x) * (q * StepM));
+                    if (!float.IsNaN(g) && (float.IsNaN(bed) || g < bed)) bed = g;
+                }
+                if (!float.IsNaN(bed)) low = float.IsNaN(low) ? bed : Mathf.Min(low, bed);
+                while (passed + 1 < n && cum[passed + 1] <= s + 1e-3f) { passed++; lastAt = cum[passed]; mark = low; }
+                if (float.IsNaN(mark)) mark = low;
+                if (float.IsNaN(low) || mark - low < DensifyDropM || s - lastAt < DensifyGapM
+                    || (passed + 1 < n && cum[passed + 1] - s < DensifyGapM)) continue;
+                added.Add(new KeyValuePair<float, Vector4>(s, new Vector4(pos.x, Mathf.Lerp(pts[j].y, pts[j + 1].y, t), pos.y, half * 2f)));
+                mark = low;
+                lastAt = s;
+            }
+            if (added.Count == 0) return 0;
+            var merged = new List<Vector4>();
+            for (int i = 0, a = 0; i < n; i++)
+            {
+                while (a < added.Count && added[a].Key < cum[i]) merged.Add(added[a++].Value);
+                merged.Add(pts[i]);
+            }
+            if (!down) merged.Reverse();
+            c.points = merged;
+            return added.Count;
+        }
+
         // Fits c.points to the course meshes in place (see the header).
         static Dictionary<string, object> Fit(Creek c, FitOptions o)
         {
+            int densified = Densify(c);
             var pts = c.points;
             int n = pts.Count;
             var cum = new float[n];
@@ -840,7 +897,7 @@ namespace GolfMap.Editor
             widths.Sort();
             var result = new Dictionary<string, object>
             {
-                { "points", fitted.Count },
+                { "points", fitted.Count }, { "densified", densified },
                 { "widthM", new Dictionary<string, object> { { "export", Math.Round(c.widthM, 2) }, { "min", Math.Round(widths[0], 2) }, { "median", Math.Round(widths[widths.Count / 2], 2) }, { "max", Math.Round(widths[widths.Count - 1], 2) } } },
                 { "surfaceMinusExportM", Math.Round(diff[diff.Count / 2], 2) },
                 { "fallM", Math.Round(fitted[0].y - fitted[fitted.Count - 1].y, 2) },

@@ -684,3 +684,18 @@ test('building pads are the site\'s: a run on either course replaces the whole g
     expect(second).toHaveLength(3);
     expect(second.some(e => first.includes(e.id))).toBe(false);
 });
+
+test('a creek running into a pond is dug on through the pond bank: one strip from its mouth, as wide as the creek there', async () => {
+    const { creekMouths } = await import('./terrain-generators.service');
+    // A creek 2 m wide running east, its end on the west shore of a pond (x 20..60).
+    const creek = [{ x: 0, y: -1 }, { x: 20.5, y: -1 }, { x: 20.5, y: 1 }, { x: 0, y: 1 }];
+    const pond = [{ x: 20, y: -20 }, { x: 60, y: -20 }, { x: 60, y: 20 }, { x: 20, y: 20 }];
+    const [strip, ...more] = creekMouths(creek, [{ ring: pond, runM: 6.6 }]);
+    expect(more).toEqual([]);
+    const xs = strip.map(p => p.x), ys = strip.map(p => p.y);
+    expect(Math.max(...xs)).toBeCloseTo(20.5 + 6.6, 1);         // from the mouth on into the pond by the bank's run
+    expect(Math.min(...xs)).toBeLessThan(20.5);                    // from inside the creek
+    expect(Math.max(...ys) - Math.min(...ys)).toBeCloseTo(2, 1);   // the creek's width at the mouth
+    // A creek nowhere near a pond gets none.
+    expect(creekMouths(creek.map(p => ({ x: p.x - 100, y: p.y })), [{ ring: pond, runM: 6.6 }])).toEqual([]);
+});

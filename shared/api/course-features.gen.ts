@@ -63,6 +63,7 @@ export interface CourseFeaturesApi {
     createMany(input: { courseId: string; items: ({ holeId?: null | string; sortOrder?: number; layer?: null | 'roughs'; source?: string; sourceRef?: string; license?: string; attributes?: null | { [x: string]: string | number | boolean | { id: string; pattern: 'soft-fade' | 'overgrown-gravel' | 'wheel-tracks'; placement: 'start' | 'end' | 'section'; startM: number; direction: 1 | -1; transitionLengthM: number; holdLengthM: number; fadeLengthM: number; ending: 'grass' | 'continue'; edgeIrregularity: number; dirtAmount: number; centerGrassReachM: number; trackWidthM: number; trackSpacingM: number; variation: number; seed: number; }[]; }; geometry: { curveType?: 'bezier' | 'bspline'; centerline?: { startCap?: { rounding?: number; diameterM?: number; lengthM?: number; endWidthM?: number; shape: 'rounded' | 'turning' | 'taper' }; endCap?: { rounding?: number; diameterM?: number; lengthM?: number; endWidthM?: number; shape: 'rounded' | 'turning' | 'taper' }; points: { corner?: boolean; x: number; y: number }[]; widthM: number }; crs: string; rings: { points: { hIn?: { x: number; y: number }; hOut?: { x: number; y: number }; corner?: boolean; x: number; y: number }[] }[] }; type: string })[] }): Promise<CourseFeature[]>;
     updateMany(input: { items: ({ holeId?: null | string; geometry?: { curveType?: 'bezier' | 'bspline'; centerline?: { startCap?: { rounding?: number; diameterM?: number; lengthM?: number; endWidthM?: number; shape: 'rounded' | 'turning' | 'taper' }; endCap?: { rounding?: number; diameterM?: number; lengthM?: number; endWidthM?: number; shape: 'rounded' | 'turning' | 'taper' }; points: { corner?: boolean; x: number; y: number }[]; widthM: number }; crs: string; rings: { points: { hIn?: { x: number; y: number }; hOut?: { x: number; y: number }; corner?: boolean; x: number; y: number }[] }[] }; layer?: null | 'roughs'; type?: string; attributes?: null | { [x: string]: string | number | boolean | { id: string; pattern: 'soft-fade' | 'overgrown-gravel' | 'wheel-tracks'; placement: 'start' | 'end' | 'section'; startM: number; direction: 1 | -1; transitionLengthM: number; holdLengthM: number; fadeLengthM: number; ending: 'grass' | 'continue'; edgeIrregularity: number; dirtAmount: number; centerGrassReachM: number; trackWidthM: number; trackSpacingM: number; variation: number; seed: number; }[]; }; id: string; version: number })[] }): Promise<CourseFeature[]>;
     removeMany(input: { items: { id: string; version: number }[] }): Promise<{ ok: boolean }>;
+    raiseAbove(input: { courseId: string; featureId: string; coverIds: string[] }): Promise<{ moved: boolean; holeId: null | string; layer: null | 'roughs' }>;
     reorder(input: { holeId?: null | string; layer?: null | 'roughs'; orderedIds: string[]; courseId: string }): Promise<{ ok: boolean }>;
 }
 
@@ -116,6 +117,9 @@ export function createCourseFeaturesClient(baseUrl: string): CourseFeaturesApi {
         },
         async removeMany(input) {
             return apiFetch({ method: 'POST', url: `${baseUrl}/features/remove-many`, body: input });
+        },
+        async raiseAbove(input) {
+            return apiFetch({ method: 'POST', url: `${baseUrl}/course-features/raise-above`, body: input });
         },
         async reorder(input) {
             return apiFetch({ method: 'POST', url: `${baseUrl}/course-features/reorder`, body: input });

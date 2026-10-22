@@ -24,7 +24,7 @@ export const GRASS_PALETTE_FILE = 'grass-palette.json';
 /** What a zone item holds besides its name and model: where and how densely it grows, and its size. */
 export const ZONE_ITEM_KEYS = [
     'sampleDistance', 'density', 'maxDensity', 'noiseDensityScale', 'noiseCutoff', 'noiseCutoffScale', 'noiseScaleMin', 'noiseScaleMax',
-    'noiseScaleScale', 'maxSteepness', 'lodFactor', 'copies', 'renderDistance', 'width', 'height', 'minScale', 'maxScale', 'verticalOffset',
+    'noiseScaleScale', 'maxSteepness', 'lodFactor', 'copies', 'renderDistance', 'distanceFalloff', 'width', 'height', 'minScale', 'maxScale', 'verticalOffset',
 ] as const;
 
 /**

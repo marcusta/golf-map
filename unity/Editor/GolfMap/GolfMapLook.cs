@@ -200,6 +200,18 @@ namespace GolfMap.Editor
                 {
                     string dir = LookDir(folder);
                     var profile = volume.sharedProfile;
+                    // The course's own profile, when its Look folder has one (unity:new-project --look-from puts a
+                    // tuned course's there): the scene's template profile has other effects and settings than look.json sets.
+                    var own = AssetDatabase.FindAssets("t:PostProcessProfile", new[] { dir })
+                        .Select(guid => AssetDatabase.LoadAssetAtPath<PostProcessProfile>(AssetDatabase.GUIDToAssetPath(guid)))
+                        .FirstOrDefault(p => p != null);
+                    if (own != null && own != profile)
+                    {
+                        Undo.RecordObject(volume, "GolfMap look");
+                        volume.sharedProfile = own;
+                        profile = own;
+                        log.Add("volume now uses the course's profile " + AssetDatabase.GetAssetPath(own));
+                    }
                     if (!Under(AssetDatabase.GetAssetPath(profile), dir))
                     {
                         string copy = dir + "/" + profile.name + ".asset";

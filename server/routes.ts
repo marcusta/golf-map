@@ -12,6 +12,7 @@ import { createGreensApi } from './api/greens.api';
 import { createPinsApi } from './api/pins.api';
 import { createAimPointsApi } from './api/aim-points.api';
 import { createCourseFeaturesApi } from './api/course-features.api';
+import { createHoleAssignmentApi } from './api/hole-assignment.api';
 import { createZoneTypesApi } from './api/zone-types.api';
 import { createClubsApi } from './api/clubs.api';
 import { createGamePlansApi } from './api/game-plans.api';
@@ -104,6 +105,7 @@ export function mountApiRoutes(app: Hono, services: Services, opts: { mode: Serv
     mount(app, '/api', createPinsApi(pinsService));
     mount(app, '/api', createAimPointsApi(aimPointsService));
     mount(app, '/api', createCourseFeaturesApi(courseFeaturesService));
+    mount(app, '/api', createHoleAssignmentApi(services.holeAssignmentService));
     // Pipeline bulk-replace of generated features (hand-mounted Hono route:
     // it needs the `?source=` query on a PUT and 400s for bad bodies, which
     // `mount()` does not offer). Same cookie-session auth as feature create.

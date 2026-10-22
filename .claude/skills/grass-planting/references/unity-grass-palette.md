@@ -14,7 +14,10 @@ own materials, shader checked against GSPro's VSP): the `shrub` palette's willow
 zone mask includes them: an include rule on a group that exists in the package). Tune colours against the ground, not by eye: compare a 30 m top-down shot with
 the palette hidden (`golfmap.grass.apply spawn=false`) and shown, and scale the tints by the ground/grass
 ratio; the green items carry the match, straw/seed-head items stay sparse, muted accents. A palette's
-`distanceFalloff` thins the grass towards the draw distance instead of a pop line. **Where** tall grass
+`distanceFalloff` thins the grass towards the draw distance instead of a pop line. VSP culls each tuft
+whole at its own random distance in that range (GSPro's grass shader cannot fade one in), so a bright
+accent popping in at 50 m shows: give accents their own item-level `distanceFalloff` (0.7 = thinning from
+210 of 300 m, where a tuft is a few pixels); the green bulk keeps the palette's. **Where** tall grass
 grows is generated for the whole course by rule - see the `grass-planting` skill
 (`.claude/skills/grass-planting/SKILL.md`): `golfmap.surfaces.export` (surface map from the built
 meshes: OPCD's `Outer_Deep_Sat` fill is not a DB feature) -> `bun run grass:zones -- <course>` ->

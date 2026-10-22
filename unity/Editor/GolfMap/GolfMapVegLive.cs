@@ -124,7 +124,7 @@ namespace GolfMap.Editor
                     var p = item.ShaderControllerSettings == null ? null : item.ShaderControllerSettings.ControlerPropertyList.FirstOrDefault(x => x.PropertyName == name);
                     return p == null ? (Color?)null : p.ColorValue;
                 };
-                var healthy = controller(bush ? "HealtyColor" : "TintColor2");
+                var healthy = controller(TintProperty(item, bush, true));
                 var h = e.Role("healthy").FirstOrDefault();
                 if (healthy.HasValue && h != null && GolfMapVegPalette.Hex(healthy.Value) != GolfMapVegPalette.Hex(h.c)) differs.Add("healthy " + GolfMapVegPalette.Hex(h.c) + " -> " + GolfMapVegPalette.Hex(healthy.Value));
                 f("width", e.Get("width", 1), item.ScaleMultiplier.x);
@@ -222,6 +222,21 @@ namespace GolfMap.Editor
         }
         public static bool RespawnPending { get { return pendingRespawn.Count > 0; } }
 
+        static bool HasController(VegetationItemInfoPro item, string name)
+        {
+            return item.ShaderControllerSettings != null && item.ShaderControllerSettings.ControlerPropertyList.Any(x => x.PropertyName == name);
+        }
+
+        // The controller property a grass/bush tint goes to: VSP's grass shader (TintColor2/1), its NM tree
+        // controller (HealtyColor, sic) or its NM Advanced Grass one (ferns, bilberry, heather) - the twin of
+        // GolfMapGrass.Configure. Writing HealtyColor on an Advanced Grass item did nothing (Vreta ferns 2026-10-22).
+        public static string TintProperty(VegetationItemInfoPro item, bool bush, bool healthy)
+        {
+            if (!bush) return healthy ? "TintColor2" : "TintColor1";
+            if (!HasController(item, "HealtyColor") && HasController(item, "HealthyColorTint")) return healthy ? "HealthyColorTint" : "DryColorTint";
+            return healthy ? "HealtyColor" : "DryColor";
+        }
+
         static void SetController(VegetationItemInfoPro item, string name, Color? colour, float? value)
         {
             var settings = item.ShaderControllerSettings;
@@ -267,6 +282,10 @@ namespace GolfMap.Editor
                         case "_EdgeFlutterInfluence": return "EdgeFlutterInfluence";
                     }
                     return null;
+                case "Nature Manufacture Advanced Grass":
+                    if (prop == "_HealthyColor") return "HealthyColorTint";
+                    if (prop == "_DryColor") return "DryColorTint";
+                    return null;
                 case "SpeedTree settings":
                     if (prop == "_Color") return bark ? "BarkTintColor" : "FoliageTintColor";
                     if (prop == "_HueVariation") return bark ? "BarkHue" : "FoliageHue";
@@ -306,8 +325,8 @@ namespace GolfMap.Editor
                 {
                     switch (v.role)
                     {
-                        case "healthy": SetController(item, bush ? "HealtyColor" : "TintColor2", v.c, null); materials = true; break;   // sic, VSP's NM controller
-                        case "dry": SetController(item, bush ? "DryColor" : "TintColor1", v.c, null); materials = true; break;
+                        case "healthy": SetController(item, TintProperty(item, bush, true), v.c, null); materials = true; break;
+                        case "dry": SetController(item, TintProperty(item, bush, false), v.c, null); materials = true; break;
                         case "randomDarkening": SetController(item, "RandomDarkening", null, v.f); materials = true; break;
                         case "rootAmbient": SetController(item, "RootAmbient", null, v.f); materials = true; break;
                         case "alphaCutoff": SetController(item, "AlphaCutoff", null, v.f); materials = true; break;
@@ -365,7 +384,7 @@ namespace GolfMap.Editor
                     foreach (var v in changed)
                     {
                         if (v.role == "tintAreaScale") { SetController(s.item, "TintAreaScale", null, v.f); refresh.Add(s.system); }
-                        else if (v.role == "distanceFalloff") { s.item.UseDistanceFalloff = v.f > 0; s.item.DistanceFalloffStartDistance = Mathf.Clamp01(v.f); pendingRespawn.Add(s); }
+                        else if (v.role == "distanceFalloff" && e.ownFalloff < 0) { s.item.UseDistanceFalloff = v.f > 0; s.item.DistanceFalloffStartDistance = Mathf.Clamp01(v.f); pendingRespawn.Add(s); }
                     }
                     dirty.Add(s.package);
                 }

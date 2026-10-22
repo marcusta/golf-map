@@ -222,6 +222,19 @@ def test_near_area_grows_the_mapped_playing_features_only():
     assert roads.near_area_3006({"features": doc["features"][1:]}, to3006) is None
 
 
+def test_near_area_repairs_a_self_intersecting_feature():
+    (lon,), (lat,) = to4326([E0], [N0])
+    d = 0.0002
+    bowtie = [[lon - d, lat - d], [lon + d, lat + d], [lon + d, lat - d], [lon - d, lat + d], [lon - d, lat - d]]
+    square = [[lon - d, lat - d], [lon + d, lat - d], [lon + d, lat + d], [lon - d, lat + d], [lon - d, lat - d]]
+    doc = {"type": "FeatureCollection", "features": [
+        {"type": "Feature", "properties": {"type": "semi_rough"}, "geometry": {"type": "Polygon", "coordinates": [bowtie]}},
+        {"type": "Feature", "properties": {"type": "green"}, "geometry": {"type": "Polygon", "coordinates": [square]}},
+    ]}
+    area = roads.near_area_3006(doc, to3006, 200.0)
+    assert area.contains(Point(E0 + 200, N0))
+
+
 # ─── the command ─────────────────────────────────────────────────────────────
 
 def test_cmd_fetch_roads_fuses_nvdb_and_keeps_only_roads_near_the_course(tmp_path: Path, capsys):

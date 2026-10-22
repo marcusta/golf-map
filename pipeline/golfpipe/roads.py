@@ -844,7 +844,10 @@ def near_area_3006(doc: dict, reproject: Reproject, distance_m: float = DEFAULT_
     its `crs` says so, else WGS84 — the app's course features), grown by
     `distance_m`: roads farther than that from anything on the course are
     scenery. Only NEAR_TYPES count when a feature says its `type`; untyped
-    features all count, generated ones never. None when nothing qualifies."""
+    features all count, generated ones never. None when nothing qualifies.
+    A self-intersecting drawn outline is repaired first, so one bad feature
+    does not fail the union of them all."""
+    from shapely import make_valid
     from shapely.geometry import shape
     from shapely.ops import transform as shapely_transform
 
@@ -867,7 +870,7 @@ def near_area_3006(doc: dict, reproject: Reproject, distance_m: float = DEFAULT_
             continue
         if geom.is_empty:
             continue
-        parts.append(geom if in_3006 else shapely_transform(to_3006, geom))
+        parts.append(make_valid(geom if in_3006 else shapely_transform(to_3006, geom)))
     if not parts:
         return None
     return unary_union(parts).buffer(distance_m, quad_segs=8)

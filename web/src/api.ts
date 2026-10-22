@@ -23,6 +23,7 @@ import { createTerrainGeneratorsClient } from '../../shared/api/terrain-generato
 import { createPondEdgeClient } from '../../shared/api/pond-edge.gen';
 import { createWaterStepsClient } from '../../shared/api/water-steps.gen';
 import { createPhotoStemsClient } from '../../shared/api/photo-stems.gen';
+import { createHoleAssignmentClient } from '../../shared/api/hole-assignment.gen';
 import { createPublishClient } from '../../shared/api/publish.gen';
 import { createGsproExportClient } from '../../shared/api/gspro-export.gen';
 import { createGsproSyncClient } from '../../shared/api/gspro-sync.gen';
@@ -72,6 +73,7 @@ export const api = {
     pondEdge: createPondEdgeClient(API_BASE),
     waterSteps: createWaterStepsClient(API_BASE),
     photoStems: createPhotoStemsClient(API_BASE),
+    holeAssignment: createHoleAssignmentClient(API_BASE),
     publish: createPublishClient(API_BASE),
     gsproExport: createGsproExportClient(API_BASE),
     gsproSync: createGsproSyncClient(API_BASE),

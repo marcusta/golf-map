@@ -4,11 +4,18 @@
 // (OPCD material tuning, stale-keyword fixes) and the course's presets.
 //
 //   bun run unity:new-project -- --from <project> --to <project> --course <Name>
-//                                [--from-course <Name>] [--prefix <slug>] [--dry-run]
+//                                [--from-course <Name>] [--prefix <slug>] [--look-from <project>] [--dry-run]
 //
 // --prefix is the file prefix the app's exports carry: the app course name as a
 // slug ("Ombergs Golfklubb" -> ombergs-golfklubb; gspro:status lists the files).
 // Without it the lowercased --course name is used.
+//
+// --look-from names the project whose course post-processing profile the new course
+// starts from (its Assets/GolfMap/<course>/Look/*.asset, default --from's). look.json
+// sets only some of a profile's values (grading, AO, bloom); the rest - which effects
+// are on, the tonemapper, vignette, the AO mode - is the profile's own. Omberg's setup
+// (2026-10-15) started from OPCD's template profile (v4_Sunny_Pop) and so missed
+// Vreta's tuned one (v4_Neutral_pop 1); Landeryd took Vreta's with --look-from.
 //
 // <project> is a Unity project folder or a name under D:/gspro_courses
 // ("vreta_v4_2025_12_02"). The new project is a fresh GSPro base project
@@ -191,10 +198,25 @@ function addDefines(settingsFile: string, defines: string[], dryRun: boolean): s
     return added;
 }
 
+/**
+ * A preset as the new course starts from it: paint.json's rules that name one of the source course's own shapes
+ * (`_hole_17_230_Water_Base_Lake_-_Mesh`, Omberg's pond shores) are left out; the generic ones (creek beds, roads,
+ * bunker edges) stay. Landeryd got Omberg's pond-shore rules on 2026-10-21 and they were removed by hand.
+ */
+function courseNeutral(file: string, text: string): string {
+    if (!/(^|\/)paint\.json$/i.test(file)) return text;
+    const doc = JSON.parse(text) as { rules?: { id?: string; match?: string }[] };
+    if (!Array.isArray(doc.rules)) return text;
+    const kept = doc.rules.filter(r => !/_hole_\d+_[0-9a-f]+_/.test(r.match ?? ''));
+    if (kept.length === doc.rules.length) return text;
+    console.log(`   paint.json: left out ${doc.rules.length - kept.length} rule(s) naming the source course's shapes: ${doc.rules.filter(r => !kept.includes(r)).map(r => r.id).join(', ')}`);
+    return JSON.stringify({ ...doc, rules: kept }, null, 2) + '\n';
+}
+
 function main() {
     const args = parseArgs(process.argv.slice(2));
     if (!args.from || !args.to || !args.course) {
-        console.error('Usage: bun run unity:new-project -- --from <project> --to <project> --course <Name> [--from-course <Name>] [--prefix <slug>] [--dry-run]');
+        console.error('Usage: bun run unity:new-project -- --from <project> --to <project> --course <Name> [--from-course <Name>] [--prefix <slug>] [--look-from <project>] [--dry-run]');
         process.exit(2);
     }
     const dryRun = args['dry-run'] === true;
@@ -327,11 +349,52 @@ function main() {
         }
         for (const p of courseUsed) {
             const to = `${dstAssets}/${rewrite(p)}`;
-            if (/\.json$/i.test(p)) { if (!dryRun) { mkdirSync(dirname(to), { recursive: true }); writeFileSync(to, rewrite(readFileSync(`${srcAssets}/${p}`, 'utf8'))); } }
+            if (/\.json$/i.test(p)) { if (!dryRun) { mkdirSync(dirname(to), { recursive: true }); writeFileSync(to, courseNeutral(p, rewrite(readFileSync(`${srcAssets}/${p}`, 'utf8')))); } }
             else copy(`${srcAssets}/${p}`, to, dryRun);
             if (existsSync(`${srcAssets}/${p}.meta`)) copy(`${srcAssets}/${p}.meta`, `${to}.meta`, dryRun);
         }
         console.log(`   Course.asset (scene: any, export ../../${lower}-opcd), ${courseUsed.length} preset files and the assets they use`);
+    }
+
+    // 5b. The post-processing profile the course starts from (golfmap.look.apply uses a profile in the
+    // course's Look folder when there is one, and only otherwise copies the scene's template profile).
+    const lookSrcProject = typeof args['look-from'] === 'string' ? projectPath(String(args['look-from'])) : src;
+    const lookSrcCourses = readdirSync(`${lookSrcProject}/Assets/GolfMap`, { withFileTypes: true })
+        .filter(e => e.isDirectory() && existsSync(`${lookSrcProject}/Assets/GolfMap/${e.name}/Course.asset`)).map(e => e.name);
+    const lookSrcCourse = lookSrcProject === src ? srcCourse : lookSrcCourses.length === 1 ? lookSrcCourses[0] : '';
+    const lookDirOf = (assets: string, c: string) => {
+        const dir = `${assets}/GolfMap/${c}`;
+        const sub = existsSync(dir) ? readdirSync(dir).find(d => d.toLowerCase() === 'look') : undefined;
+        return sub ? `${dir}/${sub}` : null;
+    };
+    console.log(`\n5b. post-processing profile`);
+    const lookFrom = lookSrcCourse ? lookDirOf(`${lookSrcProject}/Assets`, lookSrcCourse) : null;
+    const profiles = lookFrom ? readdirSync(lookFrom).filter(f => f.endsWith('.asset')) : [];
+    const lookTo = `${dstAssets}/GolfMap/${course}/Look`;
+    const already = existsSync(lookTo) && readdirSync(lookTo).some(f => f.endsWith('.asset'));
+    if (already) console.log('   the course already has one, left alone');
+    else if (profiles.length !== 1) console.log(`   ${lookFrom ? `${profiles.length} profiles in ${lookFrom}` : `no Look folder in ${lookSrcProject} (${lookSrcCourses.join(', ') || 'no course'})`}: none copied, golfmap.look.apply copies the scene's`);
+    else {
+        if (!dryRun) mkdirSync(lookTo, { recursive: true });
+        copy(`${lookFrom}/${profiles[0]}`, `${lookTo}/${profiles[0]}`, dryRun);
+        if (existsSync(`${lookFrom}/${profiles[0]}.meta`)) copy(`${lookFrom}/${profiles[0]}.meta`, `${lookTo}/${profiles[0]}.meta`, dryRun);
+        console.log(`   ${profiles[0]} from ${lookFrom}`);
+    }
+
+    // 5c. The rough's Stix grass material: golfmap.roughgrass.plant looks it up by name (NewRough), and it lives in the
+    // source course's Terrain Backup folder, which the template skips. Omberg's was copied by hand (2026-10-15).
+    const srcPrefixDir = /exportPrefix: (.*)/.exec(courseAsset)?.[1].trim() || srcCourse.toLowerCase();
+    const dstPrefixDir = typeof args.prefix === 'string' ? args.prefix : course.toLowerCase();
+    console.log('\n5c. rough grass material');
+    const roughFrom = `${srcAssets}/Terrain Backup/${srcPrefixDir}/NewRough.mat`;
+    const roughTo = `${dstAssets}/Terrain Backup/${dstPrefixDir}/NewRough.mat`;
+    if (existsSync(roughTo)) console.log('   already there, left alone');
+    else if (!existsSync(roughFrom)) console.log(`   no ${roughFrom}: golfmap.roughgrass.plant will ask for a NewRough material`);
+    else {
+        if (!dryRun) mkdirSync(dirname(roughTo), { recursive: true });
+        copy(roughFrom, roughTo, dryRun);
+        if (existsSync(roughFrom + '.meta')) copy(roughFrom + '.meta', roughTo + '.meta', dryRun);
+        console.log(`   NewRough.mat from ${roughFrom}`);
     }
 
     // 6. The repo's course docs: the look (sun, sky, post-processing) that golfmap.course.scene puts on the

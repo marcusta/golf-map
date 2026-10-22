@@ -1,6 +1,7 @@
 """gspro rendering helpers — square extent + hillshade, no network."""
 
 import json
+import math
 
 import numpy as np
 import pytest
@@ -224,7 +225,11 @@ def test_dem_writes_a_square_float32_geotiff_with_a_height_range_sidecar(tmp_pat
     assert sidecar["square3006"] == list(extent)
     assert sidecar["centre3006"] == [529130.0, 6486769.0]
     assert sidecar["sideM"] == 200.0 and sidecar["resolution"] == 5.0 and sidecar["size"] == 40
-    assert sidecar["minM"] == float(data.min()) and sidecar["maxM"] == float(data.max())
+    assert sidecar["dataMinM"] == float(data.min()) and sidecar["dataMaxM"] == float(data.max())
+    # A first export pins the range with headroom (gspro._pinned_height_range).
+    assert sidecar["minM"] == math.floor(float(data.min()) - gspro.DEM_RANGE_HEADROOM_M)
+    assert sidecar["maxM"] == math.ceil(float(data.max()) + gspro.DEM_RANGE_HEADROOM_M)
+    assert sidecar["pinned"] is True
     assert sidecar["heightRangeM"] == sidecar["maxM"] - sidecar["minM"]
     assert sidecar["crs"] == "EPSG:3006" and sidecar["source"] == "dem.tif"
     assert sidecar["terrain"] is None and "raw" not in sidecar
@@ -266,9 +271,11 @@ def test_dem_writes_the_unity_raw_heightmap_opcds_bat_would(tmp_path):
     assert sidecar["unity"]["heightmapResolution"] == 33
     assert sidecar["unity"]["position"] == {"x": 0.0, "y": 0.0, "z": 0.0}
     # The range covers the whole square: z from 0 (SW) to ~600 (NE).
-    assert sidecar["minM"] == pytest.approx(0, abs=20) and sidecar["maxM"] == pytest.approx(600, abs=20)
-    # Scaled over [min, max] — the extremes hit the ends of the uint16 range.
-    assert raw.min() == 0 and raw.max() == 65535
+    assert sidecar["dataMinM"] == pytest.approx(0, abs=20) and sidecar["dataMaxM"] == pytest.approx(600, abs=20)
+    # Scaled over the pinned range [minM, maxM]: the heights sit inside it by the headroom.
+    scale = 65535 / sidecar["heightRangeM"]
+    assert raw.min() == pytest.approx((sidecar["dataMinM"] - sidecar["minM"]) * scale, abs=2)
+    assert raw.max() == pytest.approx((sidecar["dataMaxM"] - sidecar["minM"]) * scale, abs=2)
     # North-up: the top row is the high (north) edge, and heights rise eastward along a row.
     assert raw[0].mean() > raw[-1].mean()
     assert raw[16, -1] > raw[16, 0]
@@ -300,8 +307,8 @@ def test_dem_fills_where_the_source_stops_instead_of_leaking_its_nodata(tmp_path
     assert tif.min() == pytest.approx(50.0, abs=0.01) and tif.max() == pytest.approx(50.0, abs=0.01)
     raw = _read_raw(tmp_path / "x-outer-dem-200m.raw", 41)
     sidecar = json.loads(out.with_name(out.name + ".json").read_text())
-    assert sidecar["minM"] == pytest.approx(50.0, abs=0.01) and sidecar["maxM"] == pytest.approx(50.0, abs=0.01)
-    assert raw.min() == raw.max() == 0  # a flat source scales to a flat heightmap, not a cliff
+    assert sidecar["dataMinM"] == pytest.approx(50.0, abs=0.01) and sidecar["dataMaxM"] == pytest.approx(50.0, abs=0.01)
+    assert raw.min() == raw.max()  # a flat source scales to a flat heightmap, not a cliff
 
 
 def test_outer_dem_positions_itself_against_the_inner_sidecar(tmp_path):
@@ -566,3 +573,31 @@ def test_cli_accepts_square_3006_for_ortho_and_dem(tmp_path):
     with rasterio.open(out_dem) as ds:
         assert ds.width == 20
     assert (tmp_path / "d.raw").stat().st_size == 65 * 65 * 2
+
+
+def test_dem_keeps_its_pinned_height_range_while_the_heights_fit(tmp_path, capsys):
+    """minM is in every Blender shaping op-cache key: a terrain edit that moved the
+    range made Omberg's whole course replay cold (2026-10-18). The range a first
+    export pins is kept by the next while the heights fit, and widened (with a
+    warning) only when they leave it; an old sidecar without a pin is kept as it was."""
+    side = tmp_path / "x-inner-dem-200m.tif.json"
+    assert gspro._pinned_height_range(side, 53.3, 99.4)[:2] == (43.0, 110.0)
+    side.write_text(json.dumps({"minM": 43.0, "maxM": 110.0}))
+    assert gspro._pinned_height_range(side, 48.0, 101.0) == (43.0, 110.0, None)   # a dig, a raised green
+    lo, hi, note = gspro._pinned_height_range(side, 40.5, 101.0)                     # a deep lake bed
+    assert (lo, hi) == (30.0, 110.0) and "widened" in note
+    side.write_text(json.dumps({"minM": 80.76, "maxM": 122.14}))                    # Omberg's, from before the pin
+    assert gspro._pinned_height_range(side, 80.76, 122.14) == (80.76, 122.14, None)
+
+
+def test_the_outer_under_the_inner_square_is_sunk_and_its_edge_left_alone():
+    """Landeryd 2026-10-21: a pond dug into the inner (0.5 m cells) left the outer (1 m)
+    above the inner ground there, and it showed through. The outer is never seen
+    under the inner square, so its cells there go down; the seam is left as it was."""
+    grid = np.full((10, 10), 50.0, dtype="float32")             # 10 m cells over 100 m
+    extent = (0.0, 0.0, 100.0, 100.0)
+    sunk = gspro._sink_under_inner(grid, extent, (30.0, 30.0, 70.0, 70.0))
+    assert sunk == 16                                             # centres 35..65 m, 2 m in from 30/70
+    assert grid[5, 5] == 50.0 - gspro.OUTER_UNDER_INNER_SINK_M    # x 55, y 45: inside
+    assert grid[2, 2] == 50.0                                     # x 25, y 75: outside the square
+    assert grid[3, 3] == 50.0 - gspro.OUTER_UNDER_INNER_SINK_M    # x 35, y 65: inside
