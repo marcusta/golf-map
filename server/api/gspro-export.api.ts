@@ -1,7 +1,15 @@
 import { Type, type Static } from '@sinclair/typebox';
+import type { MiddlewareHandler } from 'hono';
 import { requireAuth } from '@basics/core/server/auth';
 import type { GsproExportService } from '../services/gspro-export.service';
 import { GKD_KEYWORDS } from '../../shared/gspro-course-meta';
+import { liftIdleTimeout } from './cleaned-photo.routes';
+
+/** A request that waits on a `gspro.py` run (8-17 s for `gkd-lines` on Vreta) outlasts Bun's 10 s idle timeout. */
+const noIdleTimeout: MiddlewareHandler = async (c, next) => {
+    liftIdleTimeout(c);
+    await next();
+};
 
 // --- Input schemas ---
 
@@ -246,6 +254,18 @@ export function createGsproExportApi(svc: GsproExportService) {
             fn: (input: Static<typeof RamRoadsProposalInput>) => svc.proposeRamRoads(input.courseId, { minDistanceM: input.minDistanceM }),
             schema: RamRoadsProposalInput,
             middleware: mw,
+        },
+        /**
+         * The course file's hazard lines, one per GKD hazard (EPSG:3006 rings): the automatic water lines, the drawn
+         * penalty areas, the inner OOB, each with its noAIL. Runs `gspro.py gkd-lines` when its inputs changed (409
+         * until the inner heightmap is exported); no GSPro course folder needed.
+         */
+        gkdLines: {
+            method: 'GET' as const,
+            path: '/courses/:courseId/gspro/gkd-lines',
+            fn: (input: Static<typeof CourseInput>) => svc.gkdLines(input.courseId),
+            schema: CourseInput,
+            middleware: [...mw, noIdleTimeout],
         },
         /** Set (`ram`) or clear (`opcd`) the paths' `render` attribute; one path that cannot take it fails the call (409) and nothing is written. */
         setRoadRender: {

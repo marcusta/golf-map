@@ -34,6 +34,7 @@
         "ramroads": "bun scripts/ram-roads.ts",
         "trees:photo": "bun scripts/trees-photo.ts",
         "holes:assign": "bun scripts/holes-assign.ts",
+        "gkd:lines": "bun scripts/gkd-lines.ts",
         "svg:check": "bun scripts/svg-check.ts",
         "water:import": "bun scripts/water-import.ts",
         "shaping": "bun scripts/shaping-apply.ts",

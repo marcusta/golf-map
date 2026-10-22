@@ -56,6 +56,13 @@ export interface RamRoadsProposal {
     rejected: ({ featureNo: null | number; featureId: string; reason: string })[];
 }
 
+export interface GkdLines {
+    courseId: string;
+    crs: string;
+    rule: GkdLinesRule;
+    lines: GkdHazardLine[];
+}
+
 export interface RoadRenderResult {
     render: 'ram' | 'opcd';
     changed: string[];
@@ -99,6 +106,23 @@ export interface RamRoadCandidate {
     reason: string;
 }
 
+export interface GkdLinesRule {
+    marginM: number;
+    bankMaxM: number;
+    bankStartM: number;
+    deepPct: number;
+    roughPct: number;
+}
+
+export interface GkdHazardLine {
+    kind: 'water' | 'penalty' | 'inner_oob';
+    waterIds?: string[];
+    featureId?: string;
+    type?: string;
+    noAsItLies: boolean;
+    points: [number, number][];
+}
+
 export interface SquareBox {
     minX: number;
     minY: number;
@@ -135,6 +159,7 @@ export interface GsproExportApi {
     svgCheck(input: { courseId: string }): Promise<SvgCheckReport>;
     acceptSvgFinding(input: { note?: string; courseId: string; key: string; accepted: boolean }): Promise<{ file: string; keys: string[] }>;
     ramRoadsProposal(input: { minDistanceM?: number; courseId: string }): Promise<RamRoadsProposal>;
+    gkdLines(input: { courseId: string }): Promise<GkdLines>;
     setRoadRender(input: { dryRun?: boolean; courseId: string; featureIds: string[]; render: 'ram' | 'opcd' }): Promise<RoadRenderResult>;
 }
 
@@ -209,6 +234,14 @@ export function createGsproExportClient(baseUrl: string): GsproExportApi {
                 if (!pathParams.has(k) && v !== undefined) params.set(k, String(v));
             const qs = params.toString();
             return apiFetch({ method: 'GET', url: `${baseUrl}/courses/${input.courseId}/gspro/ram-roads/proposal${qs ? '?' + qs : ''}` });
+        },
+        async gkdLines(input) {
+            const pathParams = new Set(['courseId']);
+            const params = new URLSearchParams();
+            for (const [k, v] of Object.entries(input as any))
+                if (!pathParams.has(k) && v !== undefined) params.set(k, String(v));
+            const qs = params.toString();
+            return apiFetch({ method: 'GET', url: `${baseUrl}/courses/${input.courseId}/gspro/gkd-lines${qs ? '?' + qs : ''}` });
         },
         async setRoadRender(input) {
             const pathParams = new Set(['courseId']);

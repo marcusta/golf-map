@@ -13,9 +13,10 @@ import {
     terrainTextureFileName, TERRAIN_TEXTURE_DARKEN, meshTextureFileName, TERRAIN_TINT_OPACITY, MESH_TEXTURE_SOFTEN_M, MESH_TEXTURE_SIZE, OUTER_TERRAIN_GRADE, treesExportFileName, OUTER_TREES_DIR, OUTER_TREES_RESOLUTION_M,
     ORTHO_EXPORT_SIZE, ORTHO_EXPORT_QUALITY, DEM_EXPORT_RESOLUTION_M, OUTER_DEM_SOURCE, OUTER_LIDAR_DIR, type ExportRunner,
     buildingsExportFileName, BUILDINGS_SURVEY_SOURCE, OUTER_DEM_EDITED_SOURCE, describeRequest, zonesExportFileName, creeksExportFileName, waterfallsExportFileName,
-    ramRoadsExportFileName, RAM_ROADS_REACH_M,
-    ZONES_LAYOUT_CHANGED_EXIT, OUTER_VEGETATION_IS_ARBORIST, diffZoneContents,
+    ramRoadsExportFileName, RAM_ROADS_REACH_M, gkdLinesFileName,
+    ZONES_LAYOUT_CHANGED_EXIT, OUTER_VEGETATION_IS_ARBORIST, diffZoneContents, defaultRunner, venvPython,
 } from './gspro-export.service';
+import { sql } from 'kysely';
 import { TerrainEditsService } from './terrain-edits.service';
 import { digest } from './export-fingerprint';
 import { innerSquareFrom3006, outerSquareFor, squareArg, terrainManifestField, toSquareBox, OUTER_TERRAIN_SIDE_M } from './terrain-square';
@@ -1384,6 +1385,156 @@ test('the waterfalls export reads the raw DEM and the inner sidecar, and is skip
     await t.svc.exportWaterfalls(TEST_COURSE_ID);
     expect(w.commands()).toEqual(['waterfalls']);
 });
+
+test('the GKD hazard lines need no GSPro course folder, wait for the inner heightmap rather than export it, and are read again only when a feature changes', async () => {
+    const doc = {
+        courseId: TEST_COURSE_ID, crs: 'EPSG:3006',
+        rule: { marginM: 1, bankMaxM: 3, bankStartM: 2, deepPct: 15, roughPct: 20 },
+        lines: [
+            { kind: 'water', waterIds: ['w1', 'w2'], noAsItLies: false, points: [[529400, 6487400], [529403, 6487400], [529403, 6487403]] },
+            { kind: 'penalty', featureId: 'p1', type: 'penalty_yellow', noAsItLies: true, points: [[529500, 6487500], [529503, 6487500], [529503, 6487503]] },
+        ],
+    };
+    const w = writingRunner();
+    let running = 0, overlapped = false;
+    const runner: ExportRunner = async (args, cwd, opts) => {
+        overlapped ||= running > 0;
+        running++;
+        try {
+            const done = await w.runner(args, cwd, opts);
+            await Bun.sleep(5);
+            if (args[1] === 'gkd-lines') await writeFile(flag(args, '--out')!, JSON.stringify(doc));
+            return done;
+        } finally {
+            running--;
+        }
+    };
+    const t = await setup(runner);
+    await expect(t.svc.gkdLines(TEST_COURSE_ID)).rejects.toThrow(/no built map/);
+    await buildSite(t, ['dem.tif']);
+    const dir = await mkdtemp(path.join(os.tmpdir(), 'gspro-out-'));
+    await t.svc.setDir(TEST_COURSE_ID, dir);
+
+    // No inner heightmap yet: opening Furniture must not start that export, so the lines wait for it.
+    await expect(t.svc.gkdLines(TEST_COURSE_ID)).rejects.toThrow(/No inner heightmap/);
+    expect(w.commands()).toEqual([]);
+    // No GSPro course folder set, the heightmap exported: the lines.
+    await t.svc.exportDem(TEST_COURSE_ID, 'inner');
+    expect(await t.svc.gkdLines(TEST_COURSE_ID)).toEqual(doc as never);
+    expect(w.commands()).toEqual(['dem', 'gkd-lines']);
+    const args = w.calls[1]!;
+    expect(args[0]).toBe(path.join('/pipeline', 'gspro.py'));
+    expect(flag(args, '--square-3006')).toBe(squareArg(GEOREF_INNER));
+    expect(flag(args, '--course')).toBe(TEST_COURSE_ID);
+    expect(flag(args, '--sidecar')).toBe(path.join(dir, 'linkan-inner-dem-2050m.tif.json'));
+    expect(flag(args, '--out')).toBe(path.join(dir, 'linkan-inner-gkd-lines.json'));
+    expect(gkdLinesFileName('Vreta Kloster')).toBe('vreta-kloster-inner-gkd-lines.json');
+
+    // Nothing it reads has changed: the file is read as it is. A changed attribute runs the pipeline again.
+    w.calls.length = 0;
+    expect((await t.svc.gkdLines(TEST_COURSE_ID)).lines).toHaveLength(2);
+    expect(w.commands()).toEqual([]);
+    const features = new CourseFeaturesService(t.db);
+    const pond = await features.create({
+        courseId: TEST_COURSE_ID, holeId: null, type: 'water',
+        geometry: { crs: 'EPSG:3006', rings: [{ points: [{ x: 529400, y: 6487400 }, { x: 529420, y: 6487400 }, { x: 529420, y: 6487420 }] }] },
+    });
+    await t.svc.gkdLines(TEST_COURSE_ID);
+    expect(w.commands()).toEqual(['gkd-lines']);
+    // Two callers at once (Furniture opened twice): one run, the second finds its file current.
+    await features.update(pond.id, pond.version, { attributes: { noAsItLies: true } });
+    await Promise.all([t.svc.gkdLines(TEST_COURSE_ID), t.svc.gkdLines(TEST_COURSE_ID)]);
+    expect(w.commands()).toEqual(['gkd-lines', 'gkd-lines']);
+    expect(overlapped).toBe(false);
+    expect(w.calls[1]).not.toContain('--gkd');
+
+    // With a GSPro course folder holding a .GKD, its boundary is passed along (for a course with no drawn OOB ring).
+    const scene = path.join(await mkdtemp(path.join(os.tmpdir(), 'gspro-courses-')), 'Linkan_scene');
+    await mkdir(scene);
+    await writeFile(path.join(scene, 'Linkan_scene.GKD'), '{}');
+    await t.svc.setCourseDir(TEST_COURSE_ID, scene);
+    await t.svc.gkdLines(TEST_COURSE_ID);
+    expect(flag(w.calls[2]!, '--gkd')).toBe(path.join(scene, 'Linkan_scene.GKD'));
+});
+
+const PIPELINE = path.resolve(import.meta.dir, '..', '..', 'pipeline');
+const PIPELINE_PYTHON = venvPython(PIPELINE);
+const NO_VENV = !existsSync(PIPELINE_PYTHON);
+if (NO_VENV) console.warn(`gspro-export.service.test: the gkd-lines run on real ground is skipped, it needs the pipeline venv (${PIPELINE_PYTHON})`);
+
+/** A 200 m inner square: flat ground at 10 m, two ponds dug 1 m into it. */
+const LINES_E0 = 500000, LINES_N0 = 6500000;
+const LINES_DEM = `
+import sys, numpy as np, rasterio
+from rasterio.transform import from_origin
+E0, N0, RES, SIDE = ${LINES_E0}.0, ${LINES_N0}.0, 0.5, 200.0
+n = int(SIDE / RES)
+X, Y = np.meshgrid(E0 + (np.arange(n) + 0.5) * RES, N0 + SIDE - (np.arange(n) + 0.5) * RES)
+z = np.full((n, n), 10.0)
+z[(X > E0 + 40) & (X < E0 + 60) & (Y > N0 + 40) & (Y < N0 + 60)] = 9.0
+z[(X > E0 + 130) & (X < E0 + 150) & (Y > N0 + 130) & (Y < N0 + 150)] = 9.0
+with rasterio.open(sys.argv[1], "w", driver="GTiff", width=n, height=n, count=1, dtype="float32", crs="EPSG:3006",
+                   transform=from_origin(E0, N0 + SIDE, RES, RES), nodata=-9999) as dst:
+    dst.write(z.astype(np.float32), 1)
+`;
+
+const rect = (x0: number, y0: number, x1: number, y1: number) => ({ crs: 'EPSG:3006', rings: [{ points: [
+    { x: LINES_E0 + x0, y: LINES_N0 + y0 }, { x: LINES_E0 + x1, y: LINES_N0 + y0 }, { x: LINES_E0 + x1, y: LINES_N0 + y1 }, { x: LINES_E0 + x0, y: LINES_N0 + y1 },
+] }] });
+
+test.skipIf(NO_VENV)('the GKD hazard lines for real: a line staked round the pond no drawn line holds, the drawn one as drawn, noAIL off unless set', async () => {
+    const ctx = await createTestDb(seedCourse);
+    const square = [LINES_E0, LINES_N0, LINES_E0 + 200, LINES_N0 + 200];
+    await ctx.db.updateTable('courses').set({ georeference_json: JSON.stringify({ bbox: square }) }).where('id', '=', TEST_COURSE_ID).execute();
+    const dataDir = await mkdtemp(path.join(os.tmpdir(), 'gkd-lines-data-'));
+    const dir = await mkdtemp(path.join(os.tmpdir(), 'gkd-lines-out-'));
+    // The inner heightmap as the DEM export leaves it: the GeoTIFF and its sidecar (the terrain's zero).
+    const script = path.join(dataDir, 'write_dem.py');
+    await writeFile(script, LINES_DEM);
+    const tif = path.join(dir, 'linkan-inner-dem-200m.tif');
+    const made = Bun.spawnSync([PIPELINE_PYTHON, script, tif], { stderr: 'pipe' });
+    if (made.exitCode !== 0) throw new Error(`writing the DEM failed: ${made.stderr.toString()}`);
+    await writeFile(`${tif}.json`, JSON.stringify({ crs: 'EPSG:3006', terrain: 'inner', square3006: square, sideM: 200, resolution: 0.5, minM: 9, maxM: 10 }));
+
+    const features = new CourseFeaturesService(ctx.db);
+    const pond = await features.create({ courseId: TEST_COURSE_ID, holeId: null, type: 'water', geometry: rect(40, 40, 60, 60) });
+    const held = await features.create({ courseId: TEST_COURSE_ID, holeId: null, type: 'water', geometry: rect(130, 130, 150, 150) });
+    const drawn = await features.create({
+        courseId: TEST_COURSE_ID, holeId: null, type: 'penalty_yellow', geometry: rect(125, 125, 155, 155), attributes: { noAsItLies: true },
+    });
+
+    // gspro.py reads the app database: hand it a snapshot of the in-memory one, as it reads data/app.sqlite in the app.
+    const real = defaultRunner(PIPELINE_PYTHON);
+    const snapshot = path.join(dataDir, 'app-snapshot.sqlite');
+    const svc = new GsproExportService({
+        db: ctx.db, courses: new CoursesService(ctx.db), assets: new AssetsService(ctx.db, dataDir), dataDir, pipelineDir: PIPELINE,
+        runner: async (args, cwd, opts) => {
+            await rm(snapshot, { force: true });
+            await sql`VACUUM INTO ${snapshot}`.execute(ctx.db);
+            return real([...args, '--db', snapshot], cwd, opts);
+        },
+    });
+    await svc.setDir(TEST_COURSE_ID, dir);
+
+    const doc = await svc.gkdLines(TEST_COURSE_ID);
+    expect(doc.courseId).toBe(TEST_COURSE_ID);
+    expect(doc.rule).toMatchObject({ marginM: 1, bankMaxM: 3 });
+    const water = doc.lines.filter(l => l.kind === 'water');
+    expect(water.map(l => [l.waterIds, l.noAsItLies])).toEqual([[[pond.id], false]]);
+    // Staked outside the pond: at least the margin out, no further than the bank's limit.
+    const outside = (x: number, y: number) => Math.hypot(Math.max(LINES_E0 + 40 - x, 0, x - LINES_E0 - 60), Math.max(LINES_N0 + 40 - y, 0, y - LINES_N0 - 60));
+    for (const [x, y] of water[0]!.points) {
+        expect(outside(x, y)).toBeGreaterThanOrEqual(0.99);
+        expect(outside(x, y)).toBeLessThanOrEqual(3.01);
+    }
+    const penalty = doc.lines.filter(l => l.kind === 'penalty');
+    expect(penalty.map(l => [l.featureId, l.type, l.noAsItLies])).toEqual([[drawn.id, 'penalty_yellow', true]]);
+    expect(doc.lines.some(l => l.waterIds?.includes(held.id))).toBe(false);
+
+    // "No as it lies" on the pond turns its automatic line's on.
+    await features.update(pond.id, pond.version, { attributes: { noAsItLies: true } });
+    expect((await svc.gkdLines(TEST_COURSE_ID)).lines.find(l => l.kind === 'water')!.noAsItLies).toBe(true);
+}, 60_000);
 
 /** A drawn road: a centerline `path` of the test course. */
 function centerlineRoad(features: CourseFeaturesService, attributes: Record<string, string> = { surface: 'gravel' }) {

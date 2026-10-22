@@ -21,6 +21,13 @@ import { DrawToolService } from '../draw/draw-tool.service';
 import { isRulesType, type FeatureType } from '../draw/feature-palette';
 import type { AnalysisRenderer } from '../analysis/analysis-tool.service';
 import { PinTerrain, holeGreenFeature, pinRingsGeojson } from './pin-terrain';
+import { HazardLinesService, HAZARD_LINES_OVERLAY_ID, hazardLineLayers, type WaterLine } from './hazard-lines';
+import { hazardLineGeometry } from '../geo/hazard-line-fit';
+import { holeOfWaters, noAsItLiesOf, withNoAsItLies } from '../../../shared/features/no-as-it-lies';
+import type { CourseFeature } from '../../../shared/api/course-features.gen';
+
+/** The drawn lines that carry their own "no as it lies" (the OOB rings never do). */
+const PENALTY_TYPES: ReadonlySet<string> = new Set(['penalty_red', 'penalty_yellow']);
 
 /** Screen-px radius for click-to-select and mousedown-to-drag hit testing. */
 const MARKER_HIT_PX = 14;
@@ -88,6 +95,15 @@ export class FurnitureToolService {
      * drawn and edited here, with Draw's own vertex editing and undo.
      */
     readonly rules = di.get(DrawToolService);
+    /** The course file's hazard lines: the automatic water lines drawn dashed, one selectable at a time. */
+    readonly lines = di.get(HazardLinesService);
+    /**
+     * The automatic line under this click, found before the rules engine had
+     * the click (undefined: this click is not one for an automatic line); the
+     * handler after it selects the line when neither a marker nor a drawn
+     * line took the click.
+     */
+    private pendingLineHit: WaterLine | null | undefined = undefined;
     private ctx: ToolContext | null = null;
     private drag: DragTarget | null = null;
     /** Raw mousedown/up binding (editor/drag-binding.ts); null while inactive. */
@@ -246,13 +262,33 @@ export class FurnitureToolService {
             toolId: FURNITURE_TOOL_ID,
             yieldTo: screen => this.svc.placing.peek() !== null || this.hitMarker(screen) !== null,
         });
-        // One selection at a time — a marker or rules lines — so Delete and
-        // Esc always mean the thing highlighted.
+        // After the rules engine: an automatic water line is picked only by
+        // a click nothing else took.
+        ctx.track(ctx.map.onClick(() => this.pickLineAfterRules()));
+
+        // The automatic water lines (dashed); the drawn penalty lines are
+        // the rules engine's features. Loaded on every activation: the
+        // water, the terrain or the drawn lines may have changed since.
+        ctx.track(ownedOverlay(ctx.map, HAZARD_LINES_OVERLAY_ID, () => this.lines.geojson.get(), hazardLineLayers));
+        void this.lines.load(ctx.courseId);
+        // A drawn penalty line made or removed here (drawn, Edit line, an
+        // undo, Delete) changes which water keeps an automatic line.
+        let penaltyIds: string | null = null;
         ctx.track(effect(() => {
-            if (ctx.features.selectedIds.get().size > 0) untrack(() => this.svc.select(null));
+            const ids = ctx.features.store.items.get().filter(f => PENALTY_TYPES.has(f.type)).map(f => f.id).sort().join(',');
+            const before = penaltyIds;
+            penaltyIds = ids;
+            // Once the change has landed: a removal leaves the store before the server.
+            if (before !== null && before !== ids) untrack(() => { void ctx.features.flush().then(() => this.lines.load(ctx.courseId)); });
+        }));
+
+        // One selection at a time — a marker, rules lines or an automatic
+        // line — so Delete and Esc always mean the thing highlighted.
+        ctx.track(effect(() => {
+            if (ctx.features.selectedIds.get().size > 0) untrack(() => { this.svc.select(null); this.lines.select(null); });
         }));
         ctx.track(effect(() => {
-            if (this.svc.selection.get()) untrack(() => ctx.features.select(null));
+            if (this.svc.selection.get()) untrack(() => { ctx.features.select(null); this.lines.select(null); });
         }));
         // Arming a placement ends a rules line in progress, and vice versa.
         ctx.track(effect(() => {
@@ -267,6 +303,8 @@ export class FurnitureToolService {
         this.endDrag();
         this.svc.disarm();
         this.svc.select(null);
+        this.lines.reset();
+        this.pendingLineHit = undefined;
         this.dragBinding = null;
         this.rules.deactivate();
     }
@@ -284,10 +322,11 @@ export class FurnitureToolService {
         }
         this.svc.disarm();
         this.svc.select(null);
+        this.lines.select(null);
         this.rules.armRules(type);
     }
 
-    /** ESC: cancel placement → the rules engine's own chain (line in progress, vertices, selection) → drop selection → (unconsumed) deactivate. */
+    /** ESC: cancel placement → the rules engine's own chain (line in progress, vertices, selection) → drop the automatic line or marker selection → (unconsumed) deactivate. */
     onEscape(): boolean {
         if (this.svc.placing.peek() !== null) {
             this.svc.disarm();
@@ -295,6 +334,10 @@ export class FurnitureToolService {
             return true;
         }
         if (this.rules.onEscape()) return true;
+        if (this.lines.selectedKey.peek() !== null) {
+            this.lines.select(null);
+            return true;
+        }
         if (this.svc.selection.peek()) {
             this.svc.select(null);
             return true;
@@ -356,6 +399,7 @@ export class FurnitureToolService {
     }
 
     private onClick(e: MapPointerEvent): void {
+        this.pendingLineHit = undefined;
         if (!this.isMyClaim()) return;
         if (this.dragBinding?.clickSuppressed || this.rules.isEngaged()) return;
 
@@ -376,10 +420,92 @@ export class FurnitureToolService {
             return;
         }
 
-        // Select mode: pick the nearest marker within tolerance.
+        // Select mode: pick the nearest marker within tolerance; else the
+        // automatic line there, unless the rules engine takes the click.
         const hit = this.hitMarker(e.point);
         if (hit) this.pick(hit);
-        else this.svc.select(null);
+        else {
+            this.svc.select(null);
+            const map = this.ctx?.map.map.peek();
+            this.pendingLineHit = map ? this.lines.hit(e.point, flatProjector(map)) : null;
+        }
+    }
+
+    /**
+     * The second half of a select-mode click, after the rules engine had it:
+     * the automatic line found under it is selected when no marker and no
+     * drawn line took the click; a click on nothing clears it.
+     */
+    private pickLineAfterRules(): void {
+        const hit = this.pendingLineHit;
+        this.pendingLineHit = undefined;
+        if (hit === undefined || !this.ctx) return;
+        if (this.svc.selection.peek() || this.ctx.features.selectedIds.peek().size > 0 || this.rules.state.isDrawing.peek()) return;
+        this.lines.select(hit?.key ?? null);
+    }
+
+    // ── Hazard lines ─────────────────────────────────────────────────────────
+
+    /**
+     * Play as it lies (true = GSPro's noAIL off) for the selected line: an
+     * automatic line's waters, every one of them (the pipeline sets noAIL on
+     * a line when any of its waters asks), or the selected drawn penalty
+     * lines' own attributes. Through the rules engine, so it is undoable and
+     * saved like any edit; the lines are read again once it has landed.
+     */
+    async setPlayAsItLies(playAsItLies: boolean): Promise<void> {
+        const ctx = this.ctx;
+        if (!ctx) return;
+        const auto = this.lines.selected.peek();
+        const targets: CourseFeature[] = auto
+            ? ctx.features.store.items.peek().filter(f => auto.line.waterIds!.includes(f.id))
+            : ctx.features.selectedFeatures.peek().filter(f => PENALTY_TYPES.has(f.type));
+        const changes = targets
+            .filter(f => noAsItLiesOf(f.attributes) === playAsItLies)
+            .map(f => ({ id: f.id, attributes: withNoAsItLies(f.attributes, !playAsItLies) }));
+        if (changes.length === 0) return;
+        this.lines.working.set(true);
+        try {
+            this.rules.commitAttributesMany(changes);
+            await ctx.features.flush();
+            await this.lines.load(ctx.courseId);
+        } finally {
+            this.lines.working.set(false);
+        }
+    }
+
+    /**
+     * Edit line: the selected automatic line becomes a drawn red penalty
+     * line — fitted as a smooth spline (geo/hazard-line-fit.ts), on the
+     * waters' hole when they share one, keeping its noAIL — created through
+     * the rules engine (so it is in the rules undo history) and selected for
+     * vertex editing. The water it holds then gets no automatic line: the
+     * lines are read again (the new penalty line's id does that).
+     */
+    async editAutoLine(): Promise<CourseFeature | undefined> {
+        const ctx = this.ctx;
+        const auto = this.lines.selected.peek();
+        if (!ctx || !auto || this.lines.working.peek()) return undefined;
+        let geometry: ReturnType<typeof hazardLineGeometry>;
+        try {
+            geometry = hazardLineGeometry(auto.line.points);
+        } catch (e) {
+            this.svc.notice.set(`Edit line: ${(e as Error).message}`);
+            return undefined;
+        }
+        const waters = ctx.features.store.items.peek().filter(f => auto.line.waterIds!.includes(f.id));
+        this.lines.working.set(true);
+        try {
+            this.lines.select(null);
+            return await this.rules.commitCreate({
+                type: 'penalty_red',
+                holeId: holeOfWaters(waters),
+                geometry,
+                attributes: auto.line.noAsItLies ? withNoAsItLies(null, true) : null,
+            });
+        } finally {
+            this.lines.working.set(false);
+        }
     }
 
     /**

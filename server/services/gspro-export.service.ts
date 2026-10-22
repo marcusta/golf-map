@@ -680,6 +680,59 @@ export interface RoadRenderResult {
     dryRun: boolean;
 }
 
+/**
+ * One hazard of the GreenKeeper course file, as `gspro.py gkd-lines` reports it: the closed ring (first point
+ * not repeated, EPSG:3006 metres, nodes every 3 m at most) exactly as it goes into the .GKD.
+ */
+export interface GkdHazardLine {
+    /** `water`: staked round water bodies no drawn penalty area holds; `penalty`: a drawn penalty area; `inner_oob`: a drawn inner OOB. */
+    kind: 'water' | 'penalty' | 'inner_oob';
+    /** `water`: the water/creek features the line holds (merged bodies share one line). */
+    waterIds?: string[];
+    /** `penalty`, `inner_oob`: the drawn feature (one feature can give several lines where the course boundary cuts it). */
+    featureId?: string;
+    /** `penalty`: `penalty_red` or `penalty_yellow`. */
+    type?: string;
+    /** GSPro's noAIL: a ball inside must be dropped. False unless the feature's (a water line: any of its waters') `noAsItLies` attribute says true. */
+    noAsItLies: boolean;
+    points: [number, number][];
+}
+
+/** How the automatic water lines are staked (`gspro.py gkd-lines`' `rule`). */
+export interface GkdLinesRule {
+    /** Distance outside the water's shape, metres. */
+    marginM: number;
+    /** Furthest out the bank can take the line, metres. */
+    bankMaxM: number;
+    bankStartM: number;
+    /** The bank has ended where the ground is flatter than this (percent slope) in deep rough or undrawn ground… */
+    deepPct: number;
+    /** …and than this elsewhere. */
+    roughPct: number;
+}
+
+/** `gspro.py gkd-lines`' answer: every hazard the course file gets, one entry each. */
+export interface GkdLines {
+    courseId: string;
+    crs: string;
+    rule: GkdLinesRule;
+    lines: GkdHazardLine[];
+}
+
+/**
+ * `--db <the server's own database>` (DB_PATH, absolute: the pipeline runs in pipeline/), so what gspro.py reads is
+ * what the app just saved — the e2e and preview servers run on their own copies; empty = gspro.py's default.
+ */
+function serverDbArgs(): string[] {
+    const db = process.env.DB_PATH;
+    return db ? ['--db', path.resolve(db)] : [];
+}
+
+/** `Vreta` -> `vreta-inner-gkd-lines.json` (`gspro.py gkd-lines`: the course file's hazard lines in EPSG:3006). */
+export function gkdLinesFileName(courseName: string): string {
+    return `${courseSlug(courseName)}-inner-gkd-lines.json`;
+}
+
 /** `Vreta` -> `vreta-inner-waterfalls.json` (unity-waterfalls-v1, the falls' lips and levels; inner terrain only). */
 export function waterfallsExportFileName(courseName: string): string {
     return `${courseSlug(courseName)}-inner-waterfalls.json`;
@@ -766,6 +819,8 @@ export class GsproExportService {
     private readonly jobs = new Map<string, GsproExportJob>();
     /** The running job's completion, per course — what `start` refuses on and `whenIdle` awaits. */
     private readonly inflight = new Map<string, Promise<void>>();
+    /** `gkdLines` runs per course, chained so they never overlap. */
+    private readonly gkdLinesRuns = new Map<string, Promise<unknown>>();
 
     constructor(deps: GsproExportDeps) {
         this.db = deps.db;
@@ -2483,6 +2538,7 @@ export class GsproExportService {
             '--course', courseId,
             '--sidecar', sidecar,
             '--out', out,
+            ...serverDbArgs(),
         ];
         const rendered = await this.run('GreenKeeper course file', args, out);
         const holes = await this.run('Hole navigator', [
@@ -2491,6 +2547,62 @@ export class GsproExportService {
             '--out', path.join(dir, holesExportFileName(course.name)),
         ], out);
         return { path: rendered.path, report: [...prepared, ...rendered.report, ...holes.report] };
+    }
+
+    /**
+     * The hazard lines the GreenKeeper course file gets, one entry per GKD
+     * hazard, in EPSG:3006 (`gspro.py gkd-lines`, the same rings `exportGkd`
+     * writes): an automatic line round each water body no drawn penalty area
+     * holds (1 m outside the water, out to where its bank ends, at most 3 m),
+     * each drawn penalty area as drawn, and the inner OOB, with each one's
+     * noAIL. What Furniture › Rules lines shows and `bun run gkd:lines` lists.
+     * Reads the inner heightmap sidecar like `exportGkd`, but never exports
+     * it (409 until it is there); needs no GSPro course folder. The file
+     * (`<export folder>/<slug>-inner-gkd-lines.json`) is rendered again only
+     * when the heightmap, the features or the pipeline changed.
+     */
+    async gkdLines(courseId: string): Promise<GkdLines> {
+        // One run per course at a time: a second caller waits for the first and then finds the file current
+        // (or runs again for what changed meanwhile), instead of two runs writing the same file.
+        const before = this.gkdLinesRuns.get(courseId) ?? Promise.resolve();
+        const run = before.catch(() => undefined).then(() => this.readGkdLines(courseId));
+        const tail = run.catch(() => undefined);
+        this.gkdLinesRuns.set(courseId, tail);
+        void tail.then(() => { if (this.gkdLinesRuns.get(courseId) === tail) this.gkdLinesRuns.delete(courseId); });
+        return run;
+    }
+
+    private async readGkdLines(courseId: string): Promise<GkdLines> {
+        const course = await this.courses.get(courseId);
+        const terrain = await this.resolveTerrain(courseId, 'find the course file\'s hazard lines for');
+        const { dir, courseDir, gkdFile } = await this.settings(courseId);
+        await ensureDir(dir);
+        const sidecar = path.join(dir, demSidecarName(demExportFileName(course.name, 'inner', terrain.inner.sideM)));
+        // Opening Furniture must not start a heightmap export (minutes, and a folder the operator may not
+        // have chosen yet): without one the lines wait for it.
+        if (!await statOrNull(sidecar)) {
+            this.builtSiteId(course); // 404 "no built map" first: then there is no heightmap to export either
+            throw new ConflictError(`No inner heightmap in ${dir} yet — export it (GSPro › Terrain) to see the water lines`);
+        }
+        // A course with no drawn OOB ring keeps its lines inside the boundary of the .GKD already in its GSPro folder, as the export does.
+        const gkd = courseDir && gkdFile ? path.join(courseDir, gkdFile) : null;
+        const out = path.join(dir, gkdLinesFileName(course.name));
+        await this.runIfChanged('GKD hazard lines', [
+            path.join(this.pipelineDir, 'gspro.py'), 'gkd-lines',
+            '--square-3006', terrainArg(terrain.inner),
+            '--course', courseId,
+            '--sidecar', sidecar,
+            ...(gkd ? ['--gkd', gkd] : []),
+            '--out', out,
+            ...serverDbArgs(),
+        ], out, {
+            // The sidecar and the heightmap beside it (the banks), the .GKD (its boundary), and every feature (waters, penalty areas, surfaces, attributes).
+            files: [sidecar, sidecar.replace(/\.json$/i, ''), gkd],
+            values: { features: await this.history.latestStamp(courseId) },
+        });
+        const doc = JSON.parse(await readFile(out, 'utf8')) as GkdLines;
+        if (!Array.isArray(doc.lines)) throw new ConflictError(`${path.basename(out)} has no hazard lines — export it again`);
+        return doc;
     }
 
     // --- Jobs ---

@@ -149,8 +149,10 @@ const TIP = {
         + 'down its polygon) with control points at its water surface, which only falls downstream — the surface "Dig creeks" '
         + 'digs the bed below. Inner terrain. Export the inner heightmap first — the heights are measured from its zero.',
     gkd: 'GreenKeeper\'s course file, which GSPro reads for tee boxes (by tee colour), pins, green centres, aim points, water '
-        + 'hazards and the out-of-bounds line, as positions on the inner terrain. Water is staked at least 0.5 m outside the '
-        + 'water and out to where its bank ends (up to 3 m); drawn penalty areas go in as drawn. It is merged into the .GKD '
+        + 'hazards and the out-of-bounds line, as positions on the inner terrain. Water is staked 1 m outside the water, out '
+        + 'to where its bank flattens (under 15 % slope in deep rough or undrawn ground, 20 % elsewhere), at most 3 m; drawn '
+        + 'penalty areas go in as drawn, and water one holds gets no line of its own. Every line is played as it lies (noAIL '
+        + 'off) unless it says otherwise (Furniture › Rules lines). It is merged into the .GKD '
         + 'already in the folder, so the range, wind and green speed you set in GreenKeeper stay; the first '
         + 'run keeps the original as .GKD.bak. Export the inner heightmap first, and close the course in GreenKeeper while '
         + 'exporting or it will save its own copy over this one.',

@@ -333,12 +333,48 @@ function maxStrokeDeviation(pts: Point[], controls: Point[], toleranceM: number)
         Math.max(0.02, toleranceM / 8),
         'bspline',
     );
+    // The samples run along the curve in order, so each one's nearest
+    // segment lies near the previous one's: a window there gives an upper
+    // bound on its distance, and only a sample whose bound beats the worst
+    // so far needs the whole curve scanned. Exact, and a long shoreline's
+    // check stops being samples × segments.
     let worst = 0;
+    let hint = 0;
     for (const p of pts) {
+        const near = distNearSegment(p, flat, hint);
+        hint = near.index;
+        if (near.d <= worst) continue;
         const d = distToClosedPolyline(p, flat);
         if (d > worst) worst = d;
     }
     return worst;
+}
+
+/** Segments either side of the hint that `distNearSegment` looks at. */
+const NEAR_WINDOW = 48;
+
+/** Distance from `p` to the closed polyline's segments within NEAR_WINDOW of `hint` (an upper bound on the true one), and the nearest one's index. */
+function distNearSegment(p: Point, poly: Array<[number, number]>, hint: number): { d: number; index: number } {
+    const n = poly.length;
+    let best = Infinity;
+    let index = hint;
+    const span = Math.min(NEAR_WINDOW, Math.floor(n / 2));
+    for (let k = -span; k <= span; k++) {
+        const i = (((hint + k) % n) + n) % n;
+        const d = distToSegment(p, poly[i], poly[(i + 1) % n]);
+        if (d < best) { best = d; index = i; }
+    }
+    return { d: best, index };
+}
+
+function distToSegment(p: Point, [ax, ay]: [number, number], [bx, by]: [number, number]): number {
+    const dx = bx - ax;
+    const dy = by - ay;
+    const len2 = dx * dx + dy * dy;
+    let t = len2 === 0 ? 0 : ((p.x - ax) * dx + (p.y - ay) * dy) / len2;
+    if (t < 0) t = 0;
+    else if (t > 1) t = 1;
+    return Math.hypot(p.x - (ax + t * dx), p.y - (ay + t * dy));
 }
 
 /** Min distance from `p` to an implicitly closed polyline (per segment). */

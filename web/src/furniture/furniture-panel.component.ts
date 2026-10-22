@@ -13,6 +13,11 @@ import { teeFill } from './furniture-overlay';
 import { icon } from '../ui/icons';
 import { FeaturesService } from '../draw/features.service';
 import { FEATURE_STYLES, RULES_TYPES, isRulesType, type FeatureType } from '../draw/feature-palette';
+import { noAsItLiesOf } from '../../../shared/features/no-as-it-lies';
+import type { CourseFeature } from '../../../shared/api/course-features.gen';
+
+const PLAY_AS_IT_LIES_TIP = 'Off = GSPro\'s \'no as it lies\': a ball inside the line must be dropped. '
+    + 'A ball in the water is water either way (GSPwater collider).';
 
 const tpl = template(`
     <div class="furn-panel" bind="root">
@@ -70,15 +75,20 @@ const tpl = template(`
         </div>
 
         <div class="furn-panel__section">
-            <h4 class="section-title">Rules lines</h4>
+            <h4 class="section-title rules-title">Rules lines <span bind="linesStatus" class="lines-status" data-testid="furniture-gkd-lines-status"></span></h4>
             <div bind="ruleButtons" class="place-grid rules-grid"></div>
             <div bind="ruleHint" class="place-hint"></div>
         </div>
 
         <div bind="ruleSelection" class="furn-panel__section selection">
             <h4 class="section-title">Selected line</h4>
-            <div bind="ruleCard" class="sel-card"></div>
+            <div bind="ruleCard" class="sel-card" data-testid="furniture-rule-card"></div>
+            <label bind="ailRow" class="ail-row" title="${PLAY_AS_IT_LIES_TIP}">
+                <input bind="ailToggle" type="checkbox" data-testid="furniture-play-as-it-lies" /> Play as it lies
+            </label>
             <div bind="ruleRetype" class="rules-grid"></div>
+            <button bind="editLine" type="button" class="mini-btn edit-line" data-testid="furniture-edit-line"
+                title="Turns it into a drawn red penalty line you can reshape. It then no longer follows the water or the terrain.">${icon('pencil')} Edit line</button>
             <button bind="ruleDelete" type="button" class="delete-btn">Delete</button>
         </div>
 
@@ -184,12 +194,33 @@ export class FurniturePanelComponent extends Component {
                 grid-template-columns: 1fr 1fr 1fr;
                 gap: 2px;
             }
+            & .rules-grid.hide { display: none; }
             & .rule-dot {
                 width: 8px;
                 height: 8px;
                 border-radius: 50%;
                 flex: none;
             }
+            /* The automatic water lines' state, one icon by the title: reading (spins), failed (why in its tooltip), or how many. */
+            & .rules-title { display: flex; align-items: center; gap: ${s('xs')}; }
+            & .lines-status {
+                display: inline-flex;
+                color: ${t('color-text-tertiary')};
+                cursor: help;
+                &:empty { display: none; }
+                &.busy svg { animation: furn-lines-spin 1.2s linear infinite; }
+                &.error { color: ${t('color-status-negative')}; }
+                & svg { width: 12px; height: 12px; }
+            }
+            & .ail-row {
+                display: none;
+                align-items: center;
+                gap: ${s('xs')};
+                font-size: 0.75rem;
+                cursor: pointer;
+                &.show { display: flex; }
+            }
+            & .mini-btn.edit-line { display: none; flex: none; &.show { display: inline-flex; } }
 
             & .place-hint {
                 display: none;
@@ -342,6 +373,8 @@ export class FurniturePanelComponent extends Component {
                 &.error { color: ${t('color-status-negative')}; }
             }
         }
+
+        @keyframes furn-lines-spin { to { transform: rotate(360deg); } }
     `;
 
     private svc = this.inject(FurnitureService);
@@ -456,10 +489,39 @@ export class FurniturePanelComponent extends Component {
                 className: () => (this.tool.drawingRule.get() ? 'place-hint show' : 'place-hint'),
             },
             ruleSelection: {
-                className: () => (this.selectedRules().length > 0 ? 'furn-panel__section selection show' : 'furn-panel__section selection'),
+                className: () => (this.selectedRules().length > 0 || this.tool.lines.selected.get()
+                    ? 'furn-panel__section selection show' : 'furn-panel__section selection'),
             },
             ruleCard: { textContent: () => '' }, // filled via effect (multiline)
-            ruleDelete: { onclick: () => void this.tool.rules.deleteSelected() },
+            ruleRetype: { className: () => (this.tool.lines.selected.get() ? 'rules-grid hide' : 'rules-grid') },
+            ruleDelete: {
+                onclick: () => void this.tool.rules.deleteSelected(),
+                className: () => (this.tool.lines.selected.get() ? 'delete-btn hide' : 'delete-btn'),
+            },
+            linesStatus: {
+                innerHTML: () => {
+                    const lines = this.tool.lines;
+                    if (lines.loading.get()) return icon('loader-circle');
+                    if (lines.error.get()) return icon('triangle-alert');
+                    return lines.lines.get().length > 0 ? icon('info') : '';
+                },
+                className: () => {
+                    const lines = this.tool.lines;
+                    return lines.loading.get() ? 'lines-status busy' : lines.error.get() ? 'lines-status error' : 'lines-status';
+                },
+                title: () => this.linesStatusTitle(),
+            },
+            ailRow: { className: () => (this.ailTargets() ? 'ail-row show' : 'ail-row') },
+            ailToggle: {
+                checked: () => !(this.ailTargets() ?? []).some(f => noAsItLiesOf(f.attributes)),
+                disabled: () => this.tool.lines.working.get(),
+                onchange: (e: Event) => void this.tool.setPlayAsItLies((e.target as HTMLInputElement).checked),
+            },
+            editLine: {
+                className: () => (this.tool.lines.selected.get() ? 'mini-btn edit-line show' : 'mini-btn edit-line'),
+                disabled: () => this.tool.lines.working.get(),
+                onclick: () => void this.tool.editAutoLine(),
+            },
             summary: { className: () => this.tool.selectedHole.get() ? 'furn-panel__section summary show' : 'furn-panel__section summary' },
             summaryBody: { textContent: () => '' }, // filled via effect
             status: {
@@ -630,7 +692,38 @@ export class FurniturePanelComponent extends Component {
             + 'click the first point or Enter to close, press-drag to trace, Esc to cancel.';
     }
 
+    /**
+     * The features Play as it lies reads and sets: the selected automatic
+     * line's waters, or the selected drawn penalty lines (all of them
+     * penalty lines: an OOB has no such flag); null when it does not apply.
+     */
+    private ailTargets(): CourseFeature[] | null {
+        const auto = this.tool.lines.selected.get();
+        if (auto) {
+            const ids = new Set(auto.line.waterIds ?? []);
+            return this.features.store.items.get().filter(f => ids.has(f.id));
+        }
+        const selected = this.selectedRules();
+        return selected.length > 0 && selected.every(f => f.type === 'penalty_red' || f.type === 'penalty_yellow') ? selected : null;
+    }
+
+    /** The status icon's tooltip: reading, why it failed, or what the dashed lines are. */
+    private linesStatusTitle(): string {
+        const lines = this.tool.lines;
+        if (lines.loading.get()) return 'Reading the water lines the course file gets…';
+        const error = lines.error.get();
+        if (error) return `No water lines: ${error}`;
+        const auto = lines.waterLines.get().length;
+        return `${auto} automatic water line${plural(auto)} (dashed): staked 1 m outside the water, out to where its bank `
+            + 'flattens, at most 3 m. Water a drawn penalty line holds gets none. Click one to select it.';
+    }
+
     private ruleCardHtml(): string {
+        const auto = this.tool.lines.selected.get();
+        if (auto) {
+            const shapes = auto.line.waterIds?.length ?? 0;
+            return `<b>Water line (auto)</b> · ${metricSpan(shapes)} shape${plural(shapes)}`;
+        }
         const selected = this.selectedRules();
         if (selected.length === 0) return '';
         if (selected.length > 1) return `<b>${selected.length} lines</b>`;

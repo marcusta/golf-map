@@ -1586,6 +1586,32 @@ export class DrawToolService {
         return created;
     }
 
+    /**
+     * Create one shape whose geometry was made elsewhere (Furniture's Edit
+     * line: an automatic GKD water line fitted as a spline) as ONE create
+     * entry in the active scope's history, its attributes included so a redo
+     * brings them back, and select it for vertex editing. Undefined when the
+     * save failed.
+     */
+    async commitCreate(input: {
+        type: FeatureType;
+        holeId: string | null;
+        layer?: FeatureLayer;
+        geometry: FeatureGeometry;
+        attributes?: FeatureAttributesPatch | null;
+    }): Promise<CourseFeature | undefined> {
+        const features = this.features;
+        if (!features) return undefined;
+        const created = await features.create({ ...input, layer: input.layer ?? null });
+        if (created) {
+            this.record([{
+                featureId: created.id, before: null,
+                after: { ...snapshotOf(created), attributes: attributesPatchOf(created.attributes) }, beforeVersion: null,
+            }]);
+        }
+        return created;
+    }
+
     // ── Module host ───────────────────────────────────────────────────────
 
     /** Preview overlay content. e2e spec 28 reads it through `window.__drawTool`. */

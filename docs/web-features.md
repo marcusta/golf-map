@@ -110,6 +110,30 @@ selects it for vertex editing instead of starting another line. Clicking
 empty ground starts a new boundary; once a draft has points, clicks keep
 adding to that draft, including where it crosses an existing boundary.
 
+The course file's automatic water lines show here too, dashed (a light
+stroke on a dark casing, not red or yellow): `HazardLinesService`
+(`furniture/hazard-lines.ts`) loads `GET /api/courses/:courseId/gspro/gkd-lines`
+(`GsproExportService.gkdLines` → `gspro.py gkd-lines`, 6-8 s when its inputs
+changed, cached otherwise) on every Furniture activation and whenever a
+penalty line is made or removed; an icon by the "Rules lines" title spins
+while it loads and carries the reason in its tooltip when it fails (no map,
+no heightmap). Each line is staked 1 m outside the water, out to where the
+bank flattens, at most 3 m; water a drawn penalty line holds gets none. A
+click within a few px of one, when no rule is armed and no marker or drawn
+line takes the click, selects it (Esc or a click elsewhere clears it); the
+"Selected line" card then reads `Water line (auto)` with **Play as it lies**
+and **Edit line**. Play as it lies (off = GSPro's noAIL) sets
+`attributes.noAsItLies` on every water the line holds, or on a selected
+drawn penalty line itself, through the rules engine's
+`commitAttributesMany`, so undo and the normal save path apply
+(`shared/features/no-as-it-lies.ts`). Edit line fits the line as a smooth
+closed B-spline (`geo/hazard-line-fit.ts`: 0.5 m samples, 0.25 m tolerance,
+controls in proportion to its length) and creates a `penalty_red` on the
+waters' hole when they share one through `DrawToolService.commitCreate` (one
+rules-history entry), selected for vertex editing; the water is then held by
+it and its automatic line goes. `bun run gkd:lines` does the same from the
+command line.
+
 Rules-only edits in nice rendering reuse the already resolved surfaces and
 send a per-feature diff when safe, rather than sending the whole course to
 the surface worker and map source twice per commit. During OOB drags, only
