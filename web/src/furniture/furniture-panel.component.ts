@@ -9,6 +9,7 @@ import { PIN_RING_RADIUS_M, type PinTerrainMode } from './pin-terrain';
 import { slopeColor } from '../analysis/analysis-math';
 import { HEIGHT_GRADIENT, SLOPE_GRADIENT } from '../analysis/analysis-panel.component';
 import { CourseDetailService } from '../course-detail/course-detail.service';
+import { TeeLengthsService } from './tee-lengths.service';
 import { teeFill } from './furniture-overlay';
 import { icon } from '../ui/icons';
 import { FeaturesService } from '../draw/features.service';
@@ -105,6 +106,12 @@ const tpl = template(`
 
         <div class="furn-panel__section">
             <h4 class="section-title">Tee sets</h4>
+            <div class="tee-sets__tools">
+                <button bind="scorecard" type="button" class="mini-btn" data-testid="furniture-scorecard"
+                    title="Read the club's scorecard: par, stroke index, each set's length per hole, ratings and slopes">${icon('upload')} Scorecard</button>
+                <button bind="placeTees" type="button" class="mini-btn" data-testid="furniture-place-tees"
+                    title="Place each set's tee where its scorecard length crosses a drawn tee shape, along tee -> aim points -> green centre">${icon('flag')} Place tees</button>
+            </div>
             <div bind="teeSetRows" class="tee-sets" data-testid="furniture-tee-sets"></div>
             <div class="tee-set__head tee-set__new">
                 <span bind="newSetSwatch" class="tee-set__dot"></span>
@@ -326,11 +333,12 @@ export class FurniturePanelComponent extends Component {
             & .sel-card b { color: ${t('color-text-secondary')}; font-weight: 600; }
             & .sel-card .metric { ${metric()} font-size: 0.75rem; }
 
-            & .hole-tools__actions {
+            & .hole-tools__actions, & .tee-sets__tools {
                 display: grid;
                 grid-template-columns: 1fr 1fr;
                 gap: ${s('xs')};
             }
+            & .tee-sets__tools { margin-bottom: ${s('xs')}; }
 
             & .reorder-row { display: none; gap: ${s('xs')}; &.show { display: flex; } }
             & .mini-btn {
@@ -381,9 +389,18 @@ export class FurniturePanelComponent extends Component {
     private tool = this.inject(FurnitureToolService);
     private features = this.inject(FeaturesService);
     private courseDetail = this.inject(CourseDetailService);
+    private teeLengths = this.inject(TeeLengthsService);
 
     render(): DocumentFragment {
         const frag = this.wire(tpl, {
+            scorecard: {
+                onclick: () => { const course = this.courseDetail.course.peek(); if (course) this.teeLengths.open(course.id, 'scorecard'); },
+                disabled: () => !this.courseDetail.course.get(),
+            },
+            placeTees: {
+                onclick: () => { const course = this.courseDetail.course.peek(); if (course) this.teeLengths.open(course.id, 'tees'); },
+                disabled: () => !this.courseDetail.course.get(),
+            },
             addHole: {
                 onclick: () => void this.tool.addHole(),
                 disabled: () => this.courseDetail.loading.get() || this.svc.saving.get(),

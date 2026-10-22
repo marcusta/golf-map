@@ -140,6 +140,61 @@ the surface worker and map source twice per commit. During OOB drags, only
 the preview source changes: its ghost is a closed `MultiLineString`, so the
 map worker processes the boundary instead of a course-sized polygon interior.
 
+## Scorecard and Place tees in Furniture
+
+Furniture › Tee sets has **Scorecard** and **Place tees**, two tabs of one panel over the map
+(`furniture/tee-lengths-panel.component.ts`, state in `TeeLengthsService`). `bun run scorecard`
+and `bun run tees:place` are the same server services.
+
+**Scorecard** (`ScorecardService`, card reader `shared/scorecard.ts`). Paste the club's card as
+it comes out of a PDF, a web page or a spreadsheet: holes across (`Hål 1 2 … Ut 10 … In Tot`,
+`Par …`, `Hcp …`, one row per tee set, `Gul 57 463 294 …`) or holes down (a `Hål Par Hcp Vit Gul`
+header, then a row per hole), or JSON. Total columns are left out, by the hole header or, without
+one, by the par row (a par over 6 is a total). Ratings go on lines of their own:
+`Gul herr 71,5/135 dam 77,5/139`. Lengths are metres, or yards when the text or the unit select
+says so; they are stored in metres. **Read** matches each card set to one of the course's sets:
+by name, then by colour (`Gul 57` → Yellow), then, for a set named only by its number (`57`), by
+length (the set whose placed tees stand within 5 m or 3 % of the card on at least 80 % of the
+holes; never the v1 import's `default` set). Anything else becomes a new set, named by its colour
+in English so GSPro's tee type follows. A select per card set overrides the match. **Accept**
+writes par, stroke index, the lengths (`tee_set_lengths`, migration 038: one row per set and
+hole) and the ratings. Anything the card does not mention is left as it is. Then the panel goes
+on to Tees.
+
+**Tees** (`TeePlacementService`, geometry in `shared/features/tee-placement.ts`). A card length
+runs along the line of play, tee → aim points → green centre, measured flat. So the tee lies on
+a circle round the first aim point (the green centre on a hole without aim points), and the spot
+is the middle of that circle's arc across a drawn tee shape. When the circle crosses several tee
+shapes, they rank in this order:
+
+1. the hole's own shapes;
+2. shapes in Others, within 45° of the hole's line back to its back tee;
+3. another hole's shape on that line. This catches a shared tee box, and the spot is flagged.
+
+Within a rank, the shape most in line with the line back wins. Two shapes of the same rank within
+15° of each other are ambiguous.
+
+Every hole and set with a length gets one outcome:
+
+| Outcome | When | Accept |
+|---|---|---|
+| `place` | the set has no tee on the hole yet | taken by default |
+| `ok` | the tee is within 2 m of its length | nothing to write |
+| `off` | the tee is further from its length | moves it, only when clicked |
+| `ambiguous` | ambiguous, or on another hole's shape | places or moves it, only when clicked |
+| `missed` | no tee shape on the circle; the spot is on the line back, to draw one at | places it, only when clicked |
+| `too-short` / `no-green` | no spot | nothing to write |
+
+On the map each spot is drawn in its set's colour: filled when taken, hollow with an amber ring
+when it needs a look. A line runs from an `off` tee to its spot, and a dashed arc shows the length
+near a spot to check. A click toggles a spot. Accept writes the taken spots in one transaction,
+with heights from the DEM, and sorts each touched hole's tees in set order.
+
+Tried on Vreta with GolfPass's card: the four club sets matched by number, 69 of 72 tees were
+`ok` and 3 were `off` by 2.7 to 4.5 m. With the yellow, blue and red tees removed, the proposed
+spots landed a median of 0.56 m from the hand-placed tees, 52 of 54 within 3 m. Hole 5 red was
+flagged because its tee box is drawn on hole 4.
+
 ## Editor-only visibility for holes and Roughs
 
 In Draw, select a hole (or drawing group) under **Scope** in Feature stack,

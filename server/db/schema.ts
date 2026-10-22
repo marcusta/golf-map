@@ -8,6 +8,7 @@ export interface Database {
     holes: HolesTable;
     tees: TeesTable;
     course_tee_sets: CourseTeeSetsTable;
+    tee_set_lengths: TeeSetLengthsTable;
     greens: GreensTable;
     pins: PinsTable;
     aim_points: AimPointsTable;
@@ -110,6 +111,14 @@ export interface TeesTable {
 }
 
 /** A course's tee set: what "Yellow" is for the whole course (migration 029). */
+/** A tee set's length on a hole, from the scorecard (migration 038): metres, tee -> aim points -> green centre. */
+export interface TeeSetLengthsTable {
+    tee_set_id: string;
+    hole_id: string;
+    length_m: number;
+    updated_at: Generated<string>;
+}
+
 export interface CourseTeeSetsTable {
     id: string;
     course_id: string;

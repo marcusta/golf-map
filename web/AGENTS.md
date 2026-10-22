@@ -7,7 +7,7 @@ Vite + TS SPA on the `@basics/core` client framework, MapLibre for maps. Course 
 - Layout of `src/` (one folder per feature): `ls src`; per-folder notes: [docs/web-features.md](../docs/web-features.md).
 - Vegetation zones (zone-type panel, selection-panel sections, tree species areas, Vegetation mode, Update vegetation): [docs/feature-vegetation-zones.md](../docs/feature-vegetation-zones.md) section 13.
 - Roads and paths (centerline editing, kerb fillets): [docs/feature-roads-centerline.md](../docs/feature-roads-centerline.md).
-- Reference photos, Clean tool (undo, image editor round trip), Rules lines in Furniture, Roughs-layer eye, map performance control, `/dev/vegetation` test scene: [docs/web-features.md](../docs/web-features.md).
+- Reference photos, Clean tool (undo, image editor round trip), Rules lines and Scorecard / Place tees in Furniture, Roughs-layer eye, map performance control, `/dev/vegetation` test scene: [docs/web-features.md](../docs/web-features.md).
 - Verify UI changes with the `preview_*` tools. Tests (`bun test`, happy-dom, mirrors in `tests/`): integration-first, no mocks, units for hard algorithms; see root [TESTING.md](../TESTING.md).
 - `fw:update` / `bun link`: root [AGENTS.md](../AGENTS.md); restart the dev server after either (`rm -rf node_modules/.vite` on `does not provide an export named ...`).
 

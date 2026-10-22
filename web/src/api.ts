@@ -24,6 +24,8 @@ import { createPondEdgeClient } from '../../shared/api/pond-edge.gen';
 import { createWaterStepsClient } from '../../shared/api/water-steps.gen';
 import { createPhotoStemsClient } from '../../shared/api/photo-stems.gen';
 import { createHoleAssignmentClient } from '../../shared/api/hole-assignment.gen';
+import { createScorecardClient } from '../../shared/api/scorecard.gen';
+import { createTeePlacementClient } from '../../shared/api/tee-placement.gen';
 import { createPublishClient } from '../../shared/api/publish.gen';
 import { createGsproExportClient } from '../../shared/api/gspro-export.gen';
 import { createGsproSyncClient } from '../../shared/api/gspro-sync.gen';
@@ -74,6 +76,8 @@ export const api = {
     waterSteps: createWaterStepsClient(API_BASE),
     photoStems: createPhotoStemsClient(API_BASE),
     holeAssignment: createHoleAssignmentClient(API_BASE),
+    scorecard: createScorecardClient(API_BASE),
+    teePlacement: createTeePlacementClient(API_BASE),
     publish: createPublishClient(API_BASE),
     gsproExport: createGsproExportClient(API_BASE),
     gsproSync: createGsproSyncClient(API_BASE),

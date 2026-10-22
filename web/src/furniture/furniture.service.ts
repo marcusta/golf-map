@@ -685,6 +685,10 @@ export class FurnitureService {
     private async reloadHoleIds(): Promise<void> {
         await this.reload(this.cachedHoleIds);
     }
+    /** Re-read the loaded course's furniture after the server wrote it (Place tees, a scorecard). */
+    async refresh(): Promise<void> {
+        await this.reloadHoleIds();
+    }
     private cachedHoleIds: string[] = [];
     /** Called by load() consumers so conflict re-syncs know the hole set. */
     setHoleIds(holeIds: string[]): void {

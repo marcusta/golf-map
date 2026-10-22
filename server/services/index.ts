@@ -36,6 +36,8 @@ import { PondEdgeService } from './pond-edge.service';
 import { WaterStepsService } from './water-steps.service';
 import { PhotoStemsService } from './photo-stems.service';
 import { HoleAssignmentService } from './hole-assignment.service';
+import { TeePlacementService } from './tee-placement.service';
+import { ScorecardService } from './scorecard.service';
 import { PublishService } from './publish.service';
 import { TapscoreBridgeService } from './tapscore-bridge.service';
 import { HttpTapscoreClient } from './tapscore-client';
@@ -92,6 +94,9 @@ export function createServices(db: Kysely<Database>, config: ServicesConfig = {}
     );
     const assetsService = new AssetsService(db, dataDir);
     const analysisService = new AnalysisService(db, dataDir);
+    // The tees from the scorecard's lengths, and the scorecard itself (Furniture's "Scorecard" / "Place tees", `bun run scorecard`, `bun run tees:place`).
+    const teePlacementService = new TeePlacementService({ db, analysis: analysisService });
+    const scorecardService = new ScorecardService({ db, teeSets: teeSetsService, teePlacement: teePlacementService });
     const greenCalibrationService = new GreenCalibrationService(db, analysisService);
     const puttEstimateService = new PuttEstimateService(db);
     const mapBuildService = new MapBuildService({ db, assets: assetsService, dataDir });
@@ -173,6 +178,8 @@ export function createServices(db: Kysely<Database>, config: ServicesConfig = {}
         waterStepsService,
         photoStemsService,
         holeAssignmentService,
+        teePlacementService,
+        scorecardService,
         gsproExportService,
         vegetationRulesService,
         shapingService,
