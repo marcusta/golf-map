@@ -38,8 +38,9 @@ takes an hour needs no held connection.
 - Both POSTs answer {job, kind, state: "running"} with 202, or 409 when a job is already going.
   `?wait=1` instead holds the connection until the job is done and answers its result, as before
   (what `curl` users want).
-- POST /check {boundary?, marginM?, tjunctions?, out?} -> course_check.check() on the shaped course as it is now
-  (seam steps, T-junctions, upside-down top faces, NaN; inside the boundary ring + marginM): the report, also
+- POST /check {playLines?, bufferM?, boundary?, marginM?, tjunctions?, out?} -> course_check.check() on the shaped
+  course as it is now (seam steps, T-junctions, upside-down top faces, NaN; in the play area: the play-surface meshes
+  the play lines cross + bufferM, else the boundary ring + marginM): the report, also
   written to `out` (default course-check-blender.json beside the conformed .blend). A job like /sync.
 - POST /shutdown -> stops the worker (Blender exits); always waits.
 
@@ -486,7 +487,8 @@ class Worker:
         importlib.reload(course_check)  # an edit to the check applies without reloading the course
         self.set_status(phase="check")
         report = course_check.check(body.get("boundary"), float(body.get("marginM", 50)), body.get("sidecar"),
-                                    bool(body.get("tjunctions", False)))
+                                    bool(body.get("tjunctions", False)), play_lines=body.get("playLines"),
+                                    buffer=float(body.get("bufferM", 100)))
         out = body.get("out") or os.path.join(os.path.dirname(self.status["conformed"] or bpy.data.filepath), "course-check-blender.json")
         with open(out, "w", encoding="utf-8") as f:
             json.dump(report, f, indent=1)

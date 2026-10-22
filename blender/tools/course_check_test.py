@@ -15,10 +15,10 @@ if HERE not in sys.path:
 import course_check  # noqa: E402
 
 
-def grid(name, x0, x1, z_at_seam=0.0, flip=False):
-    """A 2 x 2 m strip of quads from x0 to x1 (y 0..2), its x=1 column at z_at_seam (the seam)."""
+def grid(name, x0, x1, z_at_seam=0.0, flip=False, seam_x=1.0):
+    """A 2 x 2 m strip of quads from x0 to x1 (y 0..2), its x=seam_x column at z_at_seam (the seam)."""
     xs = [x0, (x0 + x1) / 2, x1]
-    verts = [(x, y, z_at_seam if abs(x - 1.0) < 1e-9 else 0.0) for y in (0.0, 1.0, 2.0) for x in xs]
+    verts = [(x, y, z_at_seam if abs(x - seam_x) < 1e-9 else 0.0) for y in (0.0, 1.0, 2.0) for x in xs]
     faces = []
     for j in range(2):
         for i in range(2):
@@ -71,6 +71,28 @@ def main():
     grid("Spline_hole_1_2_Rough_-_Mesh", 1.0, 3.0)
     report, got = run("flipped")
     assert got == [("flipped", "error")], got
+
+    # the play area: a play line over hole 1's fairway; a step 300 m away is outside fairway + 100 m, one 50 m away inside
+    import json
+    import tempfile
+    tmp = tempfile.mkdtemp()
+    sidecar = os.path.join(tmp, "x-inner-dem-100m.tif.json")
+    with open(sidecar, "w", encoding="utf-8") as f:
+        json.dump({"square3006": [0, 0, 1000, 1000], "minM": 0}, f)
+    lines = os.path.join(tmp, "x-play-lines.json")
+    with open(lines, "w", encoding="utf-8") as f:   # blend x = -e, y = -n with this frame
+        json.dump({"format": "golfmap-play-lines-v1", "courses": [{"name": "x", "holes": [{"number": 1, "lines": [[[0.5, -1.0], [-0.5, -1.0]]]}]}]}, f)
+    for far, expect in ((300.0, []), (50.0, [("step", "error")])):
+        reset()
+        grid("Spline_hole_1_1_Fairway_-_Mesh", -1.0, 1.0)
+        grid("Spline_hole_1_2_Rough_-_Mesh", 1.0, 3.0)
+        grid("Spline_others_9_Rough_-_Mesh", far - 1.0, far + 1.0)
+        grid("Spline_others_8_Rough_-_Mesh", far + 1.0, far + 3.0, z_at_seam=0.06, seam_x=far + 1.0)
+        report = course_check.check(sidecar=sidecar, play_lines=lines, buffer=100.0)
+        got = sorted((f["type"], f["severity"]) for f in report["findings"])
+        print("play area, step", far, "m away", got, report["area"])
+        assert got == expect, got
+        assert report["area"].startswith("x-play-lines.json: 1 play-surface meshes"), report["area"]
     print("course_check_test: ok")
 
 

@@ -48,6 +48,7 @@ export interface JobPhase {
 
 export interface CourseCheckResult {
     boundary: CourseCheckBoundary;
+    playLines: CourseCheckPlayLines;
     unity: null | CourseCheckLayerResult;
     unitySkipped: null | string;
     blender: null | CourseCheckLayerResult;
@@ -66,6 +67,11 @@ export interface CourseCheckBoundary {
     path: null | string;
     rings: number;
     points: number;
+}
+
+export interface CourseCheckPlayLines {
+    path: null | string;
+    note: string;
 }
 
 export interface CourseCheckLayerResult {
@@ -95,7 +101,7 @@ export interface CourseCheckFinding {
 
 export interface CourseCheckApi {
     status(input: { courseId: string }): Promise<CourseCheckStatus>;
-    run(input: { hole?: string | number; cellM?: number; marginM?: number; blender?: boolean; courseId: string }): Promise<CourseCheckJob>;
+    run(input: { bufferM?: number; hole?: string | number; cellM?: number; marginM?: number; blender?: boolean; courseId: string }): Promise<CourseCheckJob>;
     job(input: { jobId: string }): Promise<CourseCheckJob>;
 }
 

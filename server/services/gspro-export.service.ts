@@ -2645,6 +2645,21 @@ export class GsproExportService {
     }
 
     /**
+     * Every hole's play lines - each tee, then its aim points, then the green centre (EPSG:3006) - for every course
+     * on the course's site (`gspro.py play-lines`, golfmap-play-lines-v1) into `out`: the course check's area (the
+     * play-surface meshes these lines cross and a buffer round them).
+     */
+    async exportPlayLines(courseId: string, out: string): Promise<GsproExportResult> {
+        await this.courses.get(courseId);
+        return this.run('Play lines', [
+            path.join(this.pipelineDir, 'gspro.py'), 'play-lines',
+            '--course', courseId,
+            '--out', out,
+            ...serverDbArgs(),
+        ], out);
+    }
+
+    /**
      * The hazard lines the GreenKeeper course file gets, one entry per GKD
      * hazard, in EPSG:3006 (`gspro.py gkd-lines`, the same rings `exportGkd`
      * writes): an automatic line round each water body no drawn penalty area

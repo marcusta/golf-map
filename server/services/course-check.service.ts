@@ -12,9 +12,12 @@
 //     on the shaped course as the worker holds it, written to
 //     `<export dir>/course-check-blender.json` (`layer: "blender"`).
 //
-// This service writes the course boundary those checks take
-// (`<export dir>/<prefix>-oob.json`, golfmap-oob-v1, from the course's drawn
-// `oob` features), runs both layers as one JOB with phases (polled, like the
+// This service writes the area those checks take - the play lines
+// (`<export dir>/<prefix>-play-lines.json`, golfmap-play-lines-v1: every hole's
+// tee -> aim points -> green of every course on the site; the checks look at the
+// play-surface meshes those lines cross and `bufferM` (100 m) round them), and the
+// course boundary for a course without holes (`<export dir>/<prefix>-oob.json`,
+// golfmap-oob-v1, from the drawn `oob` features, + `marginM`) - runs both layers as one JOB with phases (polled, like the
 // GSPro board's update jobs — `job-phases.ts`), and reads the last reports
 // back for the board's status line.
 //
@@ -45,6 +48,8 @@ import { flattenRing, type CurveType, type PathRing } from './geo';
 import { JobPhases, secs, type JobPhase } from './job-phases';
 import { defaultUnityBridge, editorForExportDir, type UnityBridge } from './unity-bridge';
 
+/** How far round the play-surface meshes the play lines cross is checked (m). */
+export const PLAY_BUFFER_M = 100;
 /** The boundary file's format (what `golfmap.course.check` and course_check.py read). */
 export const OOB_FORMAT = 'golfmap-oob-v1';
 /** The report both layers write. */
@@ -118,8 +123,17 @@ export interface CourseCheckBoundary {
     points: number;
 }
 
+export interface CourseCheckPlayLines {
+    /** The written file; null when it could not be written (the check then falls back to the boundary). */
+    path: string | null;
+    /** The pipeline's report (courses, holes, lines) or why it failed. */
+    note: string;
+}
+
 export interface CourseCheckResult {
     boundary: CourseCheckBoundary;
+    /** The area the checks took first. */
+    playLines: CourseCheckPlayLines;
     unity: CourseCheckLayerResult | null;
     /** Why the Unity layer did not run (no editor has the course active); null when it ran. */
     unitySkipped: string | null;
@@ -154,8 +168,10 @@ export interface CourseCheckRunOptions {
     hole?: number | string;
     /** The ray grid's cell (m; Unity's default 0.5). */
     cellM?: number;
-    /** How far beyond the boundary is checked (m; default 50). */
+    /** How far beyond the boundary is checked (m; default 50) - only without play lines. */
     marginM?: number;
+    /** How far round the play-surface meshes the play lines cross is checked (m; default 100). */
+    bufferM?: number;
     /** False: never the Blender layer. Default: when the worker holds this course. */
     blender?: boolean;
 }
@@ -180,7 +196,7 @@ export interface CourseCheckStatus {
 export interface CourseCheckDeps {
     db: Kysely<Database>;
     courses: Pick<CoursesService, 'get'>;
-    exports: Pick<GsproExportService, 'settings'>;
+    exports: Pick<GsproExportService, 'settings'> & Partial<Pick<GsproExportService, 'exportPlayLines'>>;
     /** The shaping worker: its status, and the `/check` job on it. */
     shaping: Pick<ShapingService, 'workerStatus' | 'workerRun'>;
     unityBridge?: UnityBridge;
@@ -199,7 +215,7 @@ interface JobRecord {
 }
 
 const PHASES: ReadonlyArray<readonly [string, string]> = [
-    ['boundary', 'Course boundary'],
+    ['boundary', 'Play lines and boundary'],
     ['unity', 'Unity check'],
     ['review', 'Review window'],
     ['blender', 'Blender check'],
@@ -208,7 +224,7 @@ const PHASES: ReadonlyArray<readonly [string, string]> = [
 export class CourseCheckService {
     private readonly db: Kysely<Database>;
     private readonly courses: Pick<CoursesService, 'get'>;
-    private readonly exports: Pick<GsproExportService, 'settings'>;
+    private readonly exports: CourseCheckDeps['exports'];
     private readonly shaping: CourseCheckDeps['shaping'];
     private readonly unityBridge: UnityBridge;
     private readonly unitySec: number;
@@ -225,11 +241,25 @@ export class CourseCheckService {
         this.blenderMs = deps.blenderMs ?? 10 * 60_000;
     }
 
-    /** The course's export folder and the boundary file's path in it (`<prefix>-oob.json`). */
-    private async where(courseId: string): Promise<{ dir: string; boundary: string }> {
+    /** The course's export folder and the area files' paths in it (`<prefix>-oob.json`, `<prefix>-play-lines.json`). */
+    private async where(courseId: string): Promise<{ dir: string; boundary: string; playLines: string }> {
         const course = await this.courses.get(courseId);
         const { dir } = await this.exports.settings(courseId);
-        return { dir, boundary: path.join(dir, `${courseSlug(course.name)}-oob.json`) };
+        const prefix = courseSlug(course.name);
+        return { dir, boundary: path.join(dir, `${prefix}-oob.json`), playLines: path.join(dir, `${prefix}-play-lines.json`) };
+    }
+
+    /** `<export dir>/<prefix>-play-lines.json` for every course on the course's site (`gspro.py play-lines`). */
+    async writePlayLines(courseId: string): Promise<CourseCheckPlayLines> {
+        const { dir, playLines } = await this.where(courseId);
+        if (!this.exports.exportPlayLines) return { path: null, note: 'no pipeline to write the play lines' };
+        await ensureDir(dir);
+        try {
+            const res = await this.exports.exportPlayLines(courseId, playLines);
+            return { path: res.path, note: res.report.filter(l => l.trim() && !l.startsWith('Wrote ')).map(l => l.trim()).join('; ') || 'written' };
+        } catch (e) {
+            return { path: null, note: `not written: ${firstLine(e)}` };
+        }
     }
 
     /**
@@ -324,18 +354,24 @@ export class CourseCheckService {
     private async perform(rec: JobRecord, opts: CourseCheckRunOptions): Promise<void> {
         const p = rec.phases;
         const result: CourseCheckResult = {
-            boundary: { path: null, rings: 0, points: 0 }, unity: null, unitySkipped: null, blender: null, blenderSkipped: null, warnings: [],
+            boundary: { path: null, rings: 0, points: 0 }, playLines: { path: null, note: '' }, unity: null, unitySkipped: null, blender: null, blenderSkipped: null, warnings: [],
         };
         const marginM = opts.marginM ?? 50;
-        const area = (file: string | null) => (file ? `${path.basename(file)} + ${marginM} m` : 'every course mesh (no oob drawn)');
+        const bufferM = opts.bufferM ?? PLAY_BUFFER_M;
+        const area = (file: string | null) => (result.playLines.path ? `play-surface meshes under the play lines + ${bufferM} m`
+            : file ? `${path.basename(file)} + ${marginM} m` : 'every course mesh (no play lines, no oob drawn)');
         try {
             const { dir } = await this.where(rec.job.courseId);
 
-            p.begin('boundary', 'the course\'s oob features');
+            p.begin('boundary', 'the holes\' play lines and the course\'s oob features');
+            result.playLines = await this.writePlayLines(rec.job.courseId);
             result.boundary = await this.writeBoundary(rec.job.courseId);
-            p.end('boundary', 'done', result.boundary.path
-                ? `${path.basename(result.boundary.path)} (${result.boundary.rings} ring${result.boundary.rings === 1 ? '' : 's'}, ${result.boundary.points} points)`
-                : 'no oob drawn: every course mesh is checked');
+            p.end('boundary', 'done', [
+                result.playLines.path ? `${path.basename(result.playLines.path)} (${result.playLines.note})` : `no play lines (${result.playLines.note})`,
+                result.boundary.path
+                    ? `${path.basename(result.boundary.path)} (${result.boundary.rings} ring${result.boundary.rings === 1 ? '' : 's'}, ${result.boundary.points} points)`
+                    : 'no oob drawn',
+            ].join(' · '));
 
             p.begin('unity', 'finding the course\'s Unity editor');
             const { editor, seen } = await editorForExportDir(this.unityBridge, dir);
@@ -346,9 +382,10 @@ export class CourseCheckService {
                 p.skip('review', 'no Unity check to show');
                 p.current = null;
             } else {
-                const args: Record<string, unknown> = { marginM };
+                const args: Record<string, unknown> = { marginM, bufferM };
+                if (result.playLines.path) args.playLines = result.playLines.path;
                 if (result.boundary.path) args.boundary = result.boundary.path;
-                else args.all = true;
+                if (!result.playLines.path && !result.boundary.path) args.all = true;
                 if (opts.cellM !== undefined) args.cell = opts.cellM;
                 if (opts.hole !== undefined && String(opts.hole).trim()) args.hole = String(opts.hole).trim();
                 p.note(`golfmap.course.check in ${editor.projectName} (${area(result.boundary.path)})`);
@@ -409,7 +446,8 @@ export class CourseCheckService {
         const out = path.join(dir, BLENDER_REPORT);
         p.begin('blender', `/check on ${path.basename(held)}`);
         try {
-            const body: Record<string, unknown> = { marginM, out };
+            const body: Record<string, unknown> = { marginM, bufferM: opts.bufferM ?? PLAY_BUFFER_M, out };
+            if (result.playLines.path) body.playLines = result.playLines.path;
             if (result.boundary.path) body.boundary = result.boundary.path;
             const answer = await this.shaping.workerRun('/check', body, {
                 timeoutMs: this.blenderMs,

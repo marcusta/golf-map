@@ -1249,11 +1249,16 @@ A course check's report (`course-check.json`, next section) loads the same way: 
 `golfmap.course.check` / `GolfMap > Check course (gaps, seams, colliders)` (`GolfMapCourseCheck.cs`): read-only, the
 built course as the ball meets it - the course meshes (`Spline_*`, `Gap_Issue_*`, not water planes) through their
 **colliders**. Run it after any refresh, before a course build; `bun run course:check -- <course>` (server
-`CourseCheckService`, the board's Check row) writes the boundary file, runs it and opens the findings in Review.
+`CourseCheckService`, the board's Check row) writes the area files, runs it and opens the findings in Review.
 
-- **Where**: inside the course boundary (the largest ring of `<export folder>/<prefix>-oob.json`, golfmap-oob-v1,
-  EPSG:3006 rings written from the drawn `oob` features) and `marginM` (50) round it; `all=true` checks every mesh,
-  `hole=N` that hole's meshes and 40 m round them.
+- **Where (the play area)**: the play-surface meshes the holes' play lines cross, and `bufferM` (100 m) round them
+  (Marcus, 2026-10-22: what matters is the play field and some margin). The lines are every tee -> its aim points ->
+  the green centre of every course on the site (`<export folder>/<prefix>-play-lines.json`, golfmap-play-lines-v1,
+  `gspro.py play-lines`); a ray every 0.5 m along them picks the meshes, which count when they are a hole's own surfaces
+  (rough and deep too), rock slabs or water, never `Outer_Deep`, the big `others_*` roughs (hundreds of metres; touching
+  one would take all of it) or roads. Their triangles are rasterised at 1 m and grown by the buffer. A course without
+  holes falls back to the course boundary (the largest ring of `<prefix>-oob.json`, golfmap-oob-v1, from the drawn
+  `oob` features) + `marginM` (50); `all=true` checks every mesh, `hole=N` that hole's meshes and 40 m round them.
 - **Objects**: an enabled, non-convex MeshCollider whose bounds are what is drawn (5 cm), no NaN, a surface name
   (`GolfMapSurfaces.Classify`, `Concrete` for roads), no mesh twice in one place, no OPCD `Gap_Issue` marker, no
   upside-down face that is the top surface (Unity's rays skip back faces, so does the ball).
@@ -1282,6 +1287,10 @@ hole 9's creek wall and hole 14's pond wall (under or beside the stones; a thin 
 the stones); hall_58's ledges and two small upside-down faces at the Vättern shore (rock, out of play). Adding
 terrain-above then found the hidden inner terrain's collider over the meshes on ~64 000 m2 (up to 1.46 m, mostly round
 rock slabs, digs and Outer_Deep): not conformed since the shaping.
+
+With the play area (2026-10-22): Vreta 260 play-surface meshes under 108 play lines, 1.32 km2, 38 s; Omberg 270
+meshes, 40 s, 13 errors where OOB + 50 m gave 1 - the area now reaches the rock slabs on the Vättern shore west of the
+holes (5-12 cm steps between slabs and Outer_Deep, a 20 cm crack at a shore slab by the lake).
 
 Omberg 2026-10-19 (943 meshes, OOB + 50 m = 0.88 km2, 3.5 M rays, 0.86 M seam probes, 20-27 s): no gaps; 11 errors (open
 steps up to 26 cm along the rough by hole 9's creek and in hole 14's lake mesh, upside-down faces on a rock slab, a 5 cm

@@ -1449,7 +1449,10 @@ exact, naming Blender objects: seam steps (border vertices of two meshes coincid
 apart, `shape_apply.seam_check`; error from 5 cm; a bunker's sand up to 6 cm under its own ring is its lip, info),
 T-junctions off their edge (`--tjunctions`, `shape_apply.tjunction_check`), upside-down faces that are on top (a
 `scene.ray_cast` from above meets them first), NaN vertices; totals of non-manifold edges and degenerate faces. Only
-inside the course boundary (`--boundary <prefix>-oob.json`, the largest ring) and `--margin` (50 m) round it. Same
+in the play area, the same rule as Unity's: the play-surface meshes the holes' play lines cross (`--play-lines
+<prefix>-play-lines.json`; the first face a ray from above meets every 0.5 m along them) and `--buffer` (100 m) round
+them (nearest vertex in plan); without play lines inside the course boundary (`--boundary <prefix>-oob.json`, the
+largest ring) and `--margin` (50 m) round it. Same
 report format as Unity's (`golfmap-course-check-v1`, `layer: blender`, Unity and EPSG:3006 positions, `changedPlaces`
 for Review), default `course-check-blender.json` beside the .blend.
 

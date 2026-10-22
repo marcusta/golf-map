@@ -90,7 +90,7 @@ namespace GolfMap.Editor
         [MenuItem("GolfMap/Check course (gaps, seams, colliders)")]
         static void Menu()
         {
-            var steps = Run(0.5f, null, true, true, true, 50f, DefaultBoundary());
+            var steps = Run(0.5f, null, true, true, true, 50f, DefaultBoundary(), 60, null, DefaultPlayLines(), PlayBufferM);
             object last = null;
             while (steps.MoveNext()) if (steps.Current != null) last = steps.Current;
             Debug.Log("[GolfMap Check] " + GolfMapJson.Serialize(last));
@@ -98,13 +98,16 @@ namespace GolfMap.Editor
         }
 
         [BridgeCommand("golfmap.course.check", "Read-only: is the built course whole as the ball meets it? Course meshes through their colliders: missing/convex colliders, collider not what is drawn, NaN, unknown surface names, duplicates, OPCD Gap_Issue markers, upside-down top faces (rays and the ball see through them); every open mesh edge probed 2 cm outside for steps and cracks (crack width measured, wider than the ball = error); a ray grid over the course for gaps (no course mesh, what is under) and overlaps (two meshes within 2 cm). Clustered findings ranked error/warn/info, written to <export folder>/course-check.json (GolfMap > Review opens it: golfmap.review.load).",
-            args = "cell=0.5 (grid metres), boundary (golfmap-oob-v1 file: EPSG:3006 rings, the largest is the course boundary; default <export folder>/<prefix>-oob.json, written by bun run course:check), marginM=50 (checked beyond the boundary), all=false (ignore the boundary), hole (only that hole's meshes and 40 m round them), without (comma-separated mesh names checked as if gone: proves the check finds a hole), seams=true, grid=true, write=true, limit=60 (findings returned), terrainCollider=false, outerCollider=false (as golfmap.course.build: a terrain over the course mesh is an error only when its collider goes into the bundle, else info)")]
+            args = "playLines (golfmap-play-lines-v1 file: every hole's tee -> aim points -> green of every course on the site, EPSG:3006; default <export folder>/<prefix>-play-lines.json, written by bun run course:check) - the area is the play-surface meshes those lines cross (not Outer_Deep, others_*, roads) and bufferM round them, bufferM=100, cell=0.5 (grid metres), boundary (without play lines: a golfmap-oob-v1 file: EPSG:3006 rings, the largest is the course boundary; default <export folder>/<prefix>-oob.json, written by bun run course:check), marginM=50 (checked beyond the boundary), all=false (ignore the boundary), hole (only that hole's meshes and 40 m round them), without (comma-separated mesh names checked as if gone: proves the check finds a hole), seams=true, grid=true, write=true, limit=60 (findings returned), terrainCollider=false, outerCollider=false (as golfmap.course.build: a terrain over the course mesh is an error only when its collider goes into the bundle, else info)")]
         static IEnumerator Command(BridgeArgs a)
         {
             terrainCollidersKept = UnityEngine.Object.FindObjectsOfType<Terrain>().Where(t => GolfMapCourseBuild.KeepCollider(t.name, a)).Select(t => t.name).ToList();
-            var boundary = a.Bool("all", false) ? null : a.String("boundary") ?? DefaultBoundary();
+            bool everything = a.Bool("all", false);
+            var boundary = everything ? null : a.String("boundary") ?? DefaultBoundary();
+            var playLines = everything ? null : a.String("playLines") ?? DefaultPlayLines();
             var steps = Run(Mathf.Clamp((float)a.Number("cell", 0.5), 0.1f, 5f), a.String("hole"), a.Bool("seams", true), a.Bool("grid", true), a.Bool("write", true),
-                (float)a.Number("marginM", 50), boundary, (int)a.Number("limit", 60), a.Strings("without").SelectMany(x => x.Split(',')).Select(x => x.Trim()).Where(x => x.Length > 0).ToList());
+                (float)a.Number("marginM", 50), boundary, (int)a.Number("limit", 60), a.Strings("without").SelectMany(x => x.Split(',')).Select(x => x.Trim()).Where(x => x.Length > 0).ToList(),
+                playLines, (float)a.Number("bufferM", PlayBufferM));
             while (steps.MoveNext()) yield return steps.Current;
         }
 
@@ -135,6 +138,80 @@ namespace GolfMap.Editor
             }
             finally { Physics.queriesHitBackfaces = backfaces; }
             return new Dictionary<string, object> { { "points", rows } };
+        }
+
+        const float PlayBufferM = 100f;   // checked round the play-surface meshes the play lines cross
+        const float PlayLineStepM = 0.5f;
+
+        // <export folder>/<prefix>-play-lines.json when it exists
+        static string DefaultPlayLines()
+        {
+            var course = GolfMapCourses.Require();
+            if (string.IsNullOrEmpty(course.exportFolder) || string.IsNullOrEmpty(course.exportPrefix)) return null;
+            var folder = Path.IsPathRooted(course.exportFolder) ? course.exportFolder : Path.Combine(Application.dataPath, course.exportFolder);
+            var p = Path.Combine(folder, course.exportPrefix + "-play-lines.json");
+            return File.Exists(p) ? p : null;
+        }
+
+        // A mesh the play lines can make the play area: a hole's own surfaces (its rough and deep too), rock slabs and
+        // water - not OPCD's Outer_Deep fill, the big others_* roughs (hundreds of metres; touching one would take all
+        // of it) or roads.
+        static bool IsPlaySurface(string name)
+        {
+            if (name.StartsWith("Spline_others_", StringComparison.Ordinal) || name.StartsWith("Spline_Outer", StringComparison.Ordinal)
+                || name.StartsWith("Gap_Issue", StringComparison.Ordinal) || GolfMapWaterplanes.IsWaterPlane(name)) return false;
+            var s = GolfMapSurfaces.Classify(name);
+            if (s == GolfMapSurfaces.Surface.Other || s == GolfMapSurfaces.Surface.None) return false;
+            return s != GolfMapSurfaces.Surface.Deep || name.StartsWith("Spline_hole_", StringComparison.Ordinal);
+        }
+
+        // golfmap-play-lines-v1 -> the play-surface meshes a ray every PlayLineStepM along the lines meets, grown by `buffer`;
+        // null when the lines cross none. `note` says what it took.
+        static AreaMask PlayMask(string file, double e0, double n0, Vector3 origin, List<Mesh3> meshes, Dictionary<int, int> colliderIndex, float buffer, out string note)
+        {
+            note = null;
+            if (!File.Exists(file)) throw new BridgeError("No play lines at " + file + ".");
+            var root = GolfMapJsonDoc.ParseObject(File.ReadAllText(file));
+            var lines = new List<List<Vector2>>();
+            int courses = 0, holes = 0;
+            foreach (var c in (root.Array("courses") ?? new List<object>()).OfType<GolfMapJsonObject>())
+            {
+                courses++;
+                foreach (var h in (c.Array("holes") ?? new List<object>()).OfType<GolfMapJsonObject>())
+                {
+                    holes++;
+                    foreach (var l in (h.Array("lines") ?? new List<object>()).OfType<List<object>>())
+                        lines.Add(l.OfType<List<object>>().Where(pt => pt.Count >= 2)
+                            .Select(pt => new Vector2((float)(((GolfMapJsonNumber)pt[0]).Value - e0) + origin.x, (float)(((GolfMapJsonNumber)pt[1]).Value - n0) + origin.z)).ToList());
+                }
+            }
+            var picked = new HashSet<int>();
+            var buf = new RaycastHit[64];
+            foreach (var line in lines)
+                for (int i = 0; i + 1 < line.Count; i++)
+                {
+                    var a = line[i]; var b = line[i + 1];
+                    int n = Mathf.Max(1, Mathf.CeilToInt(Vector2.Distance(a, b) / PlayLineStepM));
+                    for (int k = 0; k <= n; k++)
+                    {
+                        var q = Vector2.Lerp(a, b, k / (float)n);
+                        int hn = Physics.RaycastNonAlloc(new Vector3(q.x, 10000f, q.y), Vector3.down, buf, 20000f, ~0, QueryTriggerInteraction.Ignore);
+                        for (int j = 0; j < hn; j++)
+                        {
+                            int o;
+                            if (colliderIndex.TryGetValue(buf[j].collider.GetInstanceID(), out o) && IsPlaySurface(meshes[o].name)) picked.Add(o);
+                        }
+                    }
+                }
+            if (picked.Count == 0) return null;
+            float minX = float.MaxValue, minZ = float.MaxValue, maxX = float.MinValue, maxZ = float.MinValue;
+            foreach (int o in picked) foreach (var v in meshes[o].v) { minX = Mathf.Min(minX, v.x); maxX = Mathf.Max(maxX, v.x); minZ = Mathf.Min(minZ, v.z); maxZ = Mathf.Max(maxZ, v.z); }
+            var mask = new AreaMask(minX - buffer - 2, minZ - buffer - 2, maxX + buffer + 2, maxZ + buffer + 2);
+            foreach (int o in picked) mask.Fill(meshes[o].v, meshes[o].t);
+            mask.Grow(buffer);
+            note = Path.GetFileName(file) + ": " + picked.Count + " play-surface meshes under " + lines.Count + " play lines (" + holes + " holes, "
+                + courses + " course" + (courses == 1 ? "" : "s") + ") + " + buffer + " m";
+            return mask;
         }
 
         // <export folder>/<prefix>-oob.json when it exists
@@ -174,6 +251,76 @@ namespace GolfMap.Editor
             readonly bool[] inside;
             public Rect Bounds { get { return new Rect(x0, z0, w * Cell, h * Cell); } }
             public double AreaM2 { get { return inside.Count(b => b) * Cell * Cell; } }
+
+            float[] dist;
+
+            // an empty mask over [minX, maxX] x [minZ, maxZ]: Fill the seed, then Grow it
+            public AreaMask(float minX, float minZ, float maxX, float maxZ)
+            {
+                x0 = minX; z0 = minZ;
+                w = Mathf.CeilToInt((maxX - minX) / Cell); h = Mathf.CeilToInt((maxZ - minZ) / Cell);
+                dist = new float[w * h];
+                for (int i = 0; i < dist.Length; i++) dist[i] = float.MaxValue;
+                inside = new bool[w * h];
+            }
+
+            // the cells whose centre a triangle covers (in plan) are the seed
+            public void Fill(Vector3[] v, int[] t)
+            {
+                for (int i = 0; i + 2 < t.Length; i += 3)
+                {
+                    Vector3 a = v[t[i]], b = v[t[i + 1]], c = v[t[i + 2]];
+                    int ix0 = Mathf.Max(0, Mathf.FloorToInt((Mathf.Min(a.x, Mathf.Min(b.x, c.x)) - x0) / Cell)), ix1 = Mathf.Min(w - 1, Mathf.FloorToInt((Mathf.Max(a.x, Mathf.Max(b.x, c.x)) - x0) / Cell));
+                    int iz0 = Mathf.Max(0, Mathf.FloorToInt((Mathf.Min(a.z, Mathf.Min(b.z, c.z)) - z0) / Cell)), iz1 = Mathf.Min(h - 1, Mathf.FloorToInt((Mathf.Max(a.z, Mathf.Max(b.z, c.z)) - z0) / Cell));
+                    float area = (b.x - a.x) * (c.z - a.z) - (c.x - a.x) * (b.z - a.z);
+                    for (int iz = iz0; iz <= iz1; iz++)
+                        for (int ix = ix0; ix <= ix1; ix++)
+                        {
+                            int k = iz * w + ix;
+                            if (dist[k] == 0f) continue;
+                            float px = x0 + (ix + 0.5f) * Cell, pz = z0 + (iz + 0.5f) * Cell;
+                            // a triangle inside one cell still marks that cell
+                            bool hit = ix0 == ix1 && iz0 == iz1;
+                            if (!hit && Mathf.Abs(area) > 1e-9f)
+                            {
+                                float w0 = ((b.x - px) * (c.z - pz) - (c.x - px) * (b.z - pz)) / area;
+                                float w1 = ((c.x - px) * (a.z - pz) - (a.x - px) * (c.z - pz)) / area;
+                                hit = w0 >= 0f && w1 >= 0f && w0 + w1 <= 1f;
+                            }
+                            if (hit) dist[k] = 0f;
+                        }
+                }
+            }
+
+            // every cell within `margin` of the seed
+            public void Grow(float margin)
+            {
+                Chamfer(dist, w, h, Cell);
+                for (int i = 0; i < dist.Length; i++) inside[i] = dist[i] <= margin;
+                dist = null;
+            }
+
+            // distance to the zero cells, chamfer (8 neighbours, within ~4%)
+            static void Chamfer(float[] dist, int w, int h, float cell)
+            {
+                float d1 = cell, d2 = cell * 1.41421356f;
+                for (int iz = 0; iz < h; iz++)
+                    for (int ix = 0; ix < w; ix++)
+                    {
+                        int i = iz * w + ix; float d = dist[i];
+                        if (ix > 0) d = Mathf.Min(d, dist[i - 1] + d1);
+                        if (iz > 0) { d = Mathf.Min(d, dist[i - w] + d1); if (ix > 0) d = Mathf.Min(d, dist[i - w - 1] + d2); if (ix < w - 1) d = Mathf.Min(d, dist[i - w + 1] + d2); }
+                        dist[i] = d;
+                    }
+                for (int iz = h - 1; iz >= 0; iz--)
+                    for (int ix = w - 1; ix >= 0; ix--)
+                    {
+                        int i = iz * w + ix; float d = dist[i];
+                        if (ix < w - 1) d = Mathf.Min(d, dist[i + 1] + d1);
+                        if (iz < h - 1) { d = Mathf.Min(d, dist[i + w] + d1); if (ix < w - 1) d = Mathf.Min(d, dist[i + w + 1] + d2); if (ix > 0) d = Mathf.Min(d, dist[i + w - 1] + d2); }
+                        dist[i] = d;
+                    }
+            }
 
             public AreaMask(List<Vector2> ring, float margin)
             {
@@ -228,7 +375,8 @@ namespace GolfMap.Editor
             }
         }
 
-        static IEnumerator Run(float cell, string onlyHole, bool doSeams, bool doGrid, bool write, float marginM, string boundaryFile, int limit = 60, List<string> without = null)
+        static IEnumerator Run(float cell, string onlyHole, bool doSeams, bool doGrid, bool write, float marginM, string boundaryFile, int limit = 60, List<string> without = null,
+            string playLinesFile = null, float bufferM = PlayBufferM)
         {
             var clock = System.Diagnostics.Stopwatch.StartNew();
             var times = new Dictionary<string, object>();
@@ -315,6 +463,21 @@ namespace GolfMap.Editor
             // only what can be played: inside the course boundary (the largest oob ring) and marginM round it
             AreaMask mask = null;
             string boundaryNote = "no boundary: the whole mesh area";
+            // the play area: the play-surface meshes the holes' play lines cross and bufferM round them; else the oob ring
+            if (playLinesFile != null && epsg)
+            {
+                string note;
+                mask = PlayMask(playLinesFile, e0, n0, origin, meshes, colliderIndex, bufferM, out note);
+                if (mask != null)
+                {
+                    var mb = mask.Bounds;
+                    float x0 = Mathf.Max(area.min.x, mb.xMin), x1 = Mathf.Min(area.max.x, mb.xMax);
+                    float z0 = Mathf.Max(area.min.z, mb.yMin), z1 = Mathf.Min(area.max.z, mb.yMax);
+                    area.SetMinMax(new Vector3(x0, area.min.y, z0), new Vector3(x1, area.max.y, z1));
+                    boundaryNote = note;
+                    boundaryFile = null;
+                }
+            }
             if (boundaryFile != null && epsg)
             {
                 var ring = LargestRing(boundaryFile, e0, n0, origin);

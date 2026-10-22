@@ -10,14 +10,17 @@ it. Here the geometry is exact, so the findings name the Blender objects and the
   rays and the ball pass through them;
 - vertices without a position (NaN), non-manifold edges (3+ faces), degenerate faces (no area).
 
-Only what lies inside the course boundary (the largest ring of a golfmap-oob-v1 file, EPSG:3006) and --margin
-metres round it is checked, when one is given. Findings: type, severity (error / warn / info), note, objects,
+Only the play area is checked: the play-surface meshes the holes' play lines cross (--play-lines, a
+golfmap-play-lines-v1 file: every tee -> aim points -> green of every course on the site; not Outer_Deep, the big
+others_* roughs or roads) and --buffer metres (100) round them, the same rule as Unity's check. Without play lines:
+inside the course boundary (the largest ring of a golfmap-oob-v1 file, EPSG:3006) and --margin metres round it. Findings: type, severity (error / warn / info), note, objects,
 EPSG:3006, Unity (x, y, z) = Blender (-x, z, -y); `changedPlaces` for Unity's GolfMap > Review.
 
 Headless on any course .blend (OPCD's build, the conformed cache); never saves it:
 
-    blender -b <course>.blend --python blender/tools/course_check.py -- [--boundary <prefix>-oob.json]
-        [--margin 50] [--sidecar <inner dem .tif.json>] [--tjunctions] [--out course-check-blender.json]
+    blender -b <course>.blend --python blender/tools/course_check.py -- [--play-lines <prefix>-play-lines.json]
+        [--buffer 100] [--boundary <prefix>-oob.json] [--margin 50] [--sidecar <inner dem .tif.json>] [--tjunctions]
+        [--out course-check-blender.json]
 
 The shaping worker runs the same `check()` on the shaped course it holds (POST /check): the shaped meshes exist
 only there and in the FBX, never in a saved .blend.
@@ -108,6 +111,76 @@ class Area:
     def touches(self, obj):
         if self.ring is None:
             return True
+        box = sa.bbox_xy(obj)
+        if not box:
+            return False
+        x0, y0, x1, y1 = box
+        return x1 >= self.lo[0] and x0 <= self.hi[0] and y1 >= self.lo[1] and y0 <= self.hi[1]
+
+
+PLAY_LINE_STEP_M = 0.5
+
+
+def is_play_surface(name):
+    """A mesh the play lines can make the play area: a hole's own surfaces (its rough and deep too), rock slabs and
+    water - not OPCD's Outer_Deep fill, the big others_* roughs (touching one would take all of it) or roads."""
+    if name.startswith(("Spline_others_", "Spline_Outer", "Gap_Issue")) or "Concrete" in name or "Cart" in name:
+        return False
+    if "Deep" in name and not name.startswith("Spline_hole_"):
+        return False
+    return any(k in name for k in ("Green", "Fairway", "Tee", "Semi", "Bunker", "Rough", "Deep", "Water", "Creek",
+                                   "Lake", "_Rock_", "Blend"))
+
+
+def load_play_lines(path, frame):
+    """A golfmap-play-lines-v1 file's lines in .blend x, y, and its course / hole counts."""
+    with open(path, encoding="utf-8") as f:
+        doc = json.load(f)
+    lines, holes = [], 0
+    for c in doc.get("courses") or []:
+        for h in c.get("holes") or []:
+            holes += 1
+            for line in h.get("lines") or []:
+                pts = [shape_coords.to_blend(float(e), float(n), frame) for e, n, *_ in line]
+                if len(pts) >= 2:
+                    lines.append(pts)
+    return lines, len(doc.get("courses") or []), holes
+
+
+class PlayArea:
+    """The play-surface meshes a ray from above every PLAY_LINE_STEP_M along the play lines meets first, and `buffer`
+    metres round them (nearest vertex in plan: OPCD meshes are dense enough for a buffer of tens of metres)."""
+
+    def __init__(self, lines, objs, buffer=100.0):
+        from mathutils.kdtree import KDTree
+        depsgraph = bpy.context.evaluated_depsgraph_get()
+        scene = bpy.context.scene
+        names = {o.name for o in objs}
+        picked = set()
+        for line in lines:
+            for (ax, ay), (bx, by) in zip(line, line[1:]):
+                n = max(1, int(math.ceil(math.hypot(bx - ax, by - ay) / PLAY_LINE_STEP_M)))
+                for k in range(n + 1):
+                    x, y = ax + (bx - ax) * k / n, ay + (by - ay) * k / n
+                    hit, _loc, _n, _i, hobj, _m = scene.ray_cast(depsgraph, (x, y, 10000.0), (0.0, 0.0, -1.0), distance=20000.0)
+                    if hit and hobj is not None and hobj.name in names and is_play_surface(hobj.name):
+                        picked.add(hobj.name)
+        self.buffer, self.picked = buffer, sorted(picked)
+        pts = np.concatenate([world(bpy.data.objects[n])[:, :2] for n in self.picked]) if self.picked else np.zeros((0, 2))
+        self.kd = KDTree(len(pts))
+        for i, (x, y) in enumerate(pts):
+            self.kd.insert((float(x), float(y), 0.0), i)
+        self.kd.balance()
+        self.lo = pts.min(axis=0) - buffer if len(pts) else np.zeros(2)
+        self.hi = pts.max(axis=0) + buffer if len(pts) else np.zeros(2)
+
+    def inside(self, x, y):
+        if x < self.lo[0] or y < self.lo[1] or x > self.hi[0] or y > self.hi[1]:
+            return False
+        _co, _i, d = self.kd.find((float(x), float(y), 0.0))
+        return d is not None and d <= self.buffer
+
+    def touches(self, obj):
         box = sa.bbox_xy(obj)
         if not box:
             return False
@@ -220,7 +293,7 @@ def height_at(name, x, y):
 
 # ---------------------------------------------------------------- the report
 
-def check(boundary=None, margin=50.0, sidecar=None, tjunctions=False, names=None):
+def check(boundary=None, margin=50.0, sidecar=None, tjunctions=False, names=None, play_lines=None, buffer=100.0):
     """Run the checks on the open scene -> report dict (format golfmap-course-check-v1, layer blender)."""
     t0 = time.time()
     frame = None
@@ -231,8 +304,19 @@ def check(boundary=None, margin=50.0, sidecar=None, tjunctions=False, names=None
             frame = shape_coords.load_frame(shape_coords.find_sidecar(os.path.dirname(bpy.data.filepath) or "."))
         except (FileNotFoundError, OSError):
             frame = None
-    ring = load_ring(boundary, frame) if boundary and frame else None
-    area = Area(ring, margin)
+    area, area_note = None, None
+    if play_lines and frame:
+        lines, n_courses, n_holes = load_play_lines(play_lines, frame)
+        play = PlayArea(lines, [o for o in course_meshes() if names is None or o.name in names], buffer)
+        if play.picked:
+            area = play
+            area_note = (f"{os.path.basename(play_lines)}: {len(play.picked)} play-surface meshes under {len(lines)} play lines "
+                         f"({n_holes} holes, {n_courses} course{'' if n_courses == 1 else 's'}) + {buffer:g} m")
+    ring = None
+    if area is None:
+        ring = load_ring(boundary, frame) if boundary and frame else None
+        area = Area(ring, margin)
+        area_note = (os.path.basename(boundary) + f" + {margin:g} m") if ring is not None else "no boundary: every course mesh"
     objs = [o for o in course_meshes() if (names is None or o.name in names) and area.touches(o)]
     findings = []
 
@@ -265,7 +349,7 @@ def check(boundary=None, margin=50.0, sidecar=None, tjunctions=False, names=None
         "format": FORMAT, "layer": "blender", "blend": bpy.data.filepath,
         "generated": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
         "ok": errors == 0, "errors": errors, "warnings": sum(1 for f in findings if f["severity"] == "warn"),
-        "area": (os.path.basename(boundary) + f" + {margin:g} m") if ring is not None else "no boundary: every course mesh",
+        "area": area_note,
         "meshes": len(objs), "totals": totals, "counts": counts, "seconds": times, "findings": findings,
         # GolfMap > Review reads these (format golfmap-shaping-report-v1's changedPlaces)
         "changedPlaces": [{"type": f["severity"] + " " + f["type"], "hole": f["hole"], "note": f["note"], "objects": f["objects"],
@@ -276,13 +360,15 @@ def check(boundary=None, margin=50.0, sidecar=None, tjunctions=False, names=None
 
 def main(argv):
     ap = argparse.ArgumentParser(prog="course_check.py")
-    ap.add_argument("--boundary", help="golfmap-oob-v1 file (EPSG:3006 rings; the largest is the course boundary)")
+    ap.add_argument("--play-lines", help="golfmap-play-lines-v1 file: the area is the play-surface meshes these lines cross + --buffer")
+    ap.add_argument("--buffer", type=float, default=100.0, help="metres checked round the play-surface meshes (default 100)")
+    ap.add_argument("--boundary", help="without play lines: golfmap-oob-v1 file (EPSG:3006 rings; the largest is the course boundary)")
     ap.add_argument("--margin", type=float, default=50.0, help="metres checked beyond the boundary (default 50)")
     ap.add_argument("--sidecar", help="the inner DEM .tif.json (default: the one beside the .blend)")
     ap.add_argument("--tjunctions", action="store_true", help="also T-junctions (slower)")
     ap.add_argument("--out", help="write the report here (default: course-check-blender.json beside the .blend)")
     args = ap.parse_args(argv)
-    report = check(args.boundary, args.margin, args.sidecar, args.tjunctions)
+    report = check(args.boundary, args.margin, args.sidecar, args.tjunctions, play_lines=args.play_lines, buffer=args.buffer)
     out = args.out or os.path.join(os.path.dirname(bpy.data.filepath) or ".", "course-check-blender.json")
     with open(out, "w", encoding="utf-8") as f:
         json.dump(report, f, indent=1)

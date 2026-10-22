@@ -2,10 +2,13 @@
 // CourseCheckService as the GSPro board's Check row (web/src/export/), so an
 // agent or a script gets the same check without the server or a login.
 //
-//   bun run course:check -- <course> [--hole N] [--cell 0.5] [--margin 50] [--no-blender] [--json]
+//   bun run course:check -- <course> [--hole N] [--cell 0.5] [--buffer 100] [--margin 50] [--no-blender] [--json]
 //
-// Writes the course boundary (`<export dir>/<prefix>-oob.json`, from the drawn
-// oob features), runs `golfmap.course.check` in the open Unity editor that has
+// Writes the play lines (`<export dir>/<prefix>-play-lines.json`: every hole's
+// tee -> aim points -> green of every course on the site; the area is the
+// play-surface meshes they cross + --buffer m) and the course boundary
+// (`<export dir>/<prefix>-oob.json`, from the drawn oob features; the area + --margin m
+// for a course without holes), runs `golfmap.course.check` in the open Unity editor that has
 // the course active (read-only; ~30 s for a whole course), opens GolfMap >
 // Review on the findings, then the shaping worker's `/check` when the worker
 // is up and holds this course's .blend (`--no-blender` leaves it out). Prints
@@ -35,7 +38,7 @@ const ROOT = path.resolve(import.meta.dir, '..');
 
 function usage(message?: string): never {
     if (message) console.error(`error: ${message}\n`);
-    console.error('usage: bun run course:check -- <course> [--hole N] [--cell 0.5] [--margin 50] [--no-blender] [--json]');
+    console.error('usage: bun run course:check -- <course> [--hole N] [--cell 0.5] [--buffer 100] [--margin 50] [--no-blender] [--json]');
     process.exit(2);
 }
 
@@ -47,7 +50,7 @@ function parseArgs(argv: string[]) {
         if (!a.startsWith('--')) { positional.push(a); continue; }
         const name = a.slice(2);
         if (name === 'no-blender' || name === 'json') { flags[name] = true; continue; }
-        if (!['hole', 'cell', 'margin'].includes(name)) usage(`unknown option --${name}`);
+        if (!['hole', 'cell', 'margin', 'buffer'].includes(name)) usage(`unknown option --${name}`);
         const value = argv[++i];
         if (value === undefined) usage(`--${name} needs a value`);
         flags[name] = value;
@@ -70,6 +73,7 @@ const opts: CourseCheckRunOptions = {
     hole: typeof flags['hole'] === 'string' ? flags['hole'] : undefined,
     cellM: num(flags, 'cell'),
     marginM: num(flags, 'margin'),
+    bufferM: num(flags, 'buffer'),
     blender: flags['no-blender'] === true ? false : undefined,
 };
 
@@ -165,6 +169,7 @@ try {
         if (r?.blender) printFindings('Blender', r.blender);
         for (const w of r?.warnings ?? []) console.log(`\nwarning: ${w}`);
         console.log('');
+        if (r?.playLines.path) console.log(`play lines: ${r.playLines.path}`);
         if (r?.boundary.path) console.log(`boundary: ${r.boundary.path}`);
         if (r?.unity) console.log(`Unity report: ${r.unity.report} (open in GolfMap > Review)`);
         if (r?.blender) console.log(`Blender report: ${r.blender.report}`);

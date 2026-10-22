@@ -1,0 +1,22 @@
+{
+  "format": "golfmap-shaping-layer-v1",
+  "id": "paint",
+  "generated": true,
+  "generator": "pipeline/gspro.py shaping-paint",
+  "course": {
+    "folder": "vreta"
+  },
+  "source": "docs/gspro/vreta/paint.json",
+  "ops": [
+    {
+      "id": "paint-lakebed",
+      "op": "golfmap.paint",
+      "rule": {
+        "id": "lakebed",
+        "kind": "lakebed",
+        "bandM": 25.0,
+        "fadeM": 20.0
+      }
+    }
+  ]
+}

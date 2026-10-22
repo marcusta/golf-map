@@ -7459,6 +7459,55 @@ def cmd_holes(course_ident: str, out: Path, db_path: Path | None = None) -> None
     print(f"  {len(rows)} hole(s), {sum(len(r['tees']) for r in rows)} tee(s), {sum(len(r['aims']) for r in rows)} aim point(s)")
 
 
+PLAY_LINES_FORMAT = "golfmap-play-lines-v1"
+
+
+def play_lines(db_path: Path, course_ident: str) -> dict:
+    """Every hole's play lines - each tee, then its aim points, then the green centre (EPSG:3006) - for every course
+    on the course's site (one course when it has no site). Where golfmap.course.check and course_check.py look: the
+    play-surface meshes these lines cross, and a buffer round them."""
+    conn = _open_course_db(db_path)
+    course = _resolve_course(conn, course_ident)
+    ids = [course["id"]]
+    if _has_column(conn, "courses", "site_id"):
+        site = conn.execute("SELECT site_id FROM courses WHERE id = ?", (course["id"],)).fetchone()["site_id"]
+        if site:
+            ids = [r["id"] for r in conn.execute("SELECT id FROM courses WHERE site_id = ? ORDER BY name", (site,))]
+
+    def point(lat, lon):
+        if lat is None or lon is None:
+            return None
+        xs, ys = transform_points(WGS84, SWEREF99, [float(lon)], [float(lat)])
+        return [round(xs[0], 2), round(ys[0], 2)]
+
+    courses = []
+    for cid in ids:
+        c, holes = _load_gkd_course(db_path, cid)
+        rows = []
+        for hole in holes:
+            aims = [p for p in (point(a["lat"], a["lon"]) for a in hole["aims"]) if p]
+            green = point(hole["green"]["center_lat"], hole["green"]["center_lon"]) if hole["green"] else None
+            lines = []
+            for t in hole["tees"]:
+                line = [p for p in [point(t["lat"], t["lon"]), *aims, green] if p]
+                if len(line) >= 2:
+                    lines.append(line)
+            if lines:
+                rows.append({"number": int(hole["number"]), "lines": lines})
+        courses.append({"id": c["id"], "name": c["name"], "holes": rows})
+    return {"format": PLAY_LINES_FORMAT, "crs": "EPSG:3006", "courses": courses}
+
+
+def cmd_play_lines(course_ident: str, out: Path, db_path: Path | None = None) -> None:
+    doc = play_lines(db_path or DEFAULT_DB, course_ident)
+    out.parent.mkdir(parents=True, exist_ok=True)
+    out.write_text(json.dumps(doc) + "\n", encoding="utf-8")
+    lines = sum(len(h["lines"]) for c in doc["courses"] for h in c["holes"])
+    print(f"Wrote {out}")
+    print(f"  {len(doc['courses'])} course(s) on the site ({', '.join(c['name'] for c in doc['courses'])}), "
+          f"{sum(len(c['holes']) for c in doc['courses'])} hole(s), {lines} play line(s)")
+
+
 # --- creeks: R.A.M. splines at the water surface ------------------------------
 
 UNITY_CREEKS_FORMAT = "unity-creeks-v1"
@@ -9312,6 +9361,11 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--out", required=True, help="output golfmap-holes-v1 JSON path (<export folder>/<prefix>-holes.json)")
     p.add_argument("--db", default=str(DEFAULT_DB), help=f"app database (default {DEFAULT_DB})")
 
+    p = sub.add_parser("play-lines", help="write every hole's play lines (tee -> aim points -> green) of every course on the course's site, for the course check")
+    p.add_argument("--course", required=True, help="course id or name substring")
+    p.add_argument("--out", required=True, help="output golfmap-play-lines-v1 JSON path (<export folder>/<prefix>-play-lines.json)")
+    p.add_argument("--db", default=str(DEFAULT_DB), help=f"app database (default {DEFAULT_DB})")
+
     p = sub.add_parser("buildings", help="write the unity-buildings-v1 file for one terrain from a fetch-buildings survey")
     _add_area(p)
     p.add_argument("--survey", required=True, help="buildings.geojson (golfpipe fetch-buildings output)")
@@ -9542,6 +9596,9 @@ def main(argv: list[str] | None = None) -> int:
         return 0
     if args.command == "holes":
         cmd_holes(args.course, Path(args.out), Path(args.db))
+        return 0
+    if args.command == "play-lines":
+        cmd_play_lines(args.course, Path(args.out), Path(args.db))
         return 0
     if args.command == "ramroads-propose":
         cmd_ramroads_propose(Path(args.db), args.course, Path(args.out) if args.out else None, args.min_distance_m)

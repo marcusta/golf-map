@@ -165,7 +165,8 @@ test('run checks in Unity inside the boundary, opens the Review window, then che
     ]);
 
     const check = t.editor!.calls.find(c => c.command === 'golfmap.course.check')!;
-    expect(check.args).toMatchObject({ boundary: path.join(t.exportDir, BOUNDARY), marginM: 50, cell: 0.25, hole: '3' });
+    expect(check.args).toMatchObject({ boundary: path.join(t.exportDir, BOUNDARY), marginM: 50, bufferM: 100, cell: 0.25, hole: '3' });
+    expect(check.args.playLines).toBeUndefined();
     expect(check.args.all).toBeUndefined();
     const review = t.editor!.calls.find(c => c.command === 'golfmap.review.load')!;
     expect(review.args.path).toBe(path.join(t.exportDir, UNITY_REPORT));
@@ -188,7 +189,10 @@ test('run checks in Unity inside the boundary, opens the Review window, then che
     expect(done.status).toBe('succeeded');
     expect(done.phases.find(p => p.id === 'blender')!.status).toBe('done');
     const body = t.worker!.calls.find(c => c.route === '/check')!.body;
-    expect(body).toEqual({ marginM: 20, out: path.join(t.exportDir, BLENDER_REPORT), boundary: path.join(t.exportDir, BOUNDARY) });
+    // The play lines come from the pipeline's database, which this in-memory course is not in: no play lines, so the
+    // drawn boundary decides (and both layers get the play buffer for when there are some).
+    expect(done.result!.playLines.path).toBeNull();
+    expect(body).toEqual({ marginM: 20, bufferM: 100, out: path.join(t.exportDir, BLENDER_REPORT), boundary: path.join(t.exportDir, BOUNDARY) });
     expect(done.result!.blender).toMatchObject({ layer: 'blender', errors: 1, warnings: 0, area: `${BOUNDARY} + 20 m`, seconds: 0.2 });
     expect(done.result!.blender!.findings[0]).toMatchObject({ type: 'seam-step', objects: ['Spline_tee-1a'] });
 
