@@ -396,11 +396,19 @@ namespace GolfMap.Editor
         // stand within BuildingColliderM of the playing field? Every building does in a scene without play meshes.
         internal static Func<GameObject, bool> BuildingNeedsColliders(GameObject[] roots)
         {
+            var near = NearPlay(roots, BuildingColliderM);
+            return g => near(ObjectBounds(g));
+        }
+
+        // Do these bounds come within marginM of the playing field (tee, fairway, green, semi, rough, bunker meshes)? Also
+        // golfmap.creeks.import's far-from-play rule. Everything is near in a scene without play meshes.
+        internal static Func<Bounds, bool> NearPlay(GameObject[] roots, float marginM)
+        {
             var play = roots.SelectMany(r => r.GetComponentsInChildren<MeshFilter>(true))
                 .Where(f => f.sharedMesh != null && f.gameObject.activeInHierarchy && GolfMapSurfaces.IsCourseMesh(f.name) && IsPlay(GolfMapSurfaces.Classify(f.name))).ToList();
-            if (play.Count == 0) return g => true;
-            var area = new NearArea(play, BuildingColliderM);
-            return g => area.Meets(ObjectBounds(g));
+            if (play.Count == 0) return b => true;
+            var area = new NearArea(play, marginM);
+            return b => area.Meets(b);
         }
 
         static bool IsPlay(GolfMapSurfaces.Surface s)

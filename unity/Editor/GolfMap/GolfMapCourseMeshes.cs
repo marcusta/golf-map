@@ -394,6 +394,8 @@ namespace GolfMap.Editor
             }
             Selection.objects = selection;
             result["passes"] = passes;
+            int dressed = BrookLook(left);
+            if (dressed > 0) { result["brookLook"] = dressed; left = undressed(); }
             int brooks = BrookPhysics(objects);
             if (brooks > 0) result["brookWater"] = brooks;
             result["left"] = left.Select(g => (object)g.name).ToList();
@@ -423,6 +425,31 @@ namespace GolfMap.Editor
                 changed++;
             }
             return changed;
+        }
+
+        // OPCD knows no WaterBrook surface, so a creek bed cut out by Blender keeps the material its FBX carries: it wears
+        // what most of the course's own OPCD creek beds (*_Water_Base_Creek_-_Mesh) wear instead (Vreta's OPCD MAHS Water
+        // Base Creek_Sat; 2026-10-22 its first cut-out beds came in as 'Deep' and 'Water_Base_Creek' FBX materials). A
+        // paint.json object rule with `material` (golfmap.paint.materials, after this) still dresses it its own way
+        // (Omberg's pebble bed). Nothing when the course has no OPCD creek bed. Returns how many it dressed.
+        const string CreekBedMarker = "_Water_Base_Creek_-_Mesh";
+
+        static int BrookLook(IEnumerable<GameObject> objects)
+        {
+            var brooks = objects.Where(g => g != null && g.name.EndsWith(BrookMarker, StringComparison.Ordinal) && WearsFbxMaterial(g)).ToList();
+            if (brooks.Count == 0) return 0;
+            var look = EditorSceneManager.GetActiveScene().GetRootGameObjects()
+                .SelectMany(root => root.GetComponentsInChildren<MeshRenderer>(true))
+                .Where(r => r.name.EndsWith(CreekBedMarker, StringComparison.Ordinal) && r.sharedMaterial != null && !WearsFbxMaterial(r.gameObject))
+                .GroupBy(r => r.sharedMaterial).OrderByDescending(g => g.Count()).Select(g => g.Key).FirstOrDefault();
+            if (look == null) return 0;
+            foreach (var g in brooks)
+            {
+                var r = g.GetComponent<MeshRenderer>();
+                Undo.RecordObject(r, "Creek bed look");
+                r.sharedMaterials = Enumerable.Repeat(look, Math.Max(1, r.sharedMaterials.Length)).ToArray();
+            }
+            return brooks.Count;
         }
 
         // A material that is a sub-asset of a model file: what a freshly instantiated FBX wears.

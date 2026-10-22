@@ -1,0 +1,1007 @@
+{
+  "format": "golfmap-shaping-layer-v1",
+  "id": "creek-beds",
+  "note": "Hand layer (data/tmp/vreta-creek-beds.py, 2026-10-22): the creek beds dug where the R.A.M. water's edges hung over the ground (golfmap.creeks.import needsBed). A cut-out WaterBrook bed set onto the 0.5 m DEM where creek-digs dug it (the 1 m conform had left it 0.1-0.3 m shallow), plus a 0.35 m channel where the creek was never dug. Then golfmap.creeks.import refits the water.",
+  "ops": [
+    {
+      "id": "brook_17501cbb_1",
+      "op": "golfmap.cut_out",
+      "name": "brook_17501cbb_1",
+      "surface": "WaterBrook",
+      "protect": [
+        "green",
+        "bunker",
+        "tee",
+        "water",
+        "water_lake",
+        "lake"
+      ],
+      "outline3006": [
+        [
+          529643.55,
+          6488548.38
+        ],
+        [
+          529643.8,
+          6488548.45
+        ],
+        [
+          529644.07,
+          6488548.3
+        ],
+        [
+          529644.2,
+          6488548.08
+        ],
+        [
+          529644.22,
+          6488547.85
+        ],
+        [
+          529642.34,
+          6488542.17
+        ],
+        [
+          529641.31,
+          6488539.4
+        ],
+        [
+          529640.19,
+          6488539.46
+        ]
+      ],
+      "uvM": 2,
+      "rise": {
+        "mode": "dem",
+        "apronM": 1.5,
+        "noiseM": 0,
+        "maxEdgeM": 0.25
+      },
+      "note": "Creek 17501cbb (feature:17501cbb-ed5b-4294-a0d2-3dcd05ed2ea1): dug in the DEM (median 0.76 m), the OPCD bed set onto it; 2 needsBed spot(s) within 15 m, 9 m2."
+    },
+    {
+      "id": "brook_0bfe60f0_1",
+      "op": "golfmap.cut_out",
+      "name": "brook_0bfe60f0_1",
+      "surface": "WaterBrook",
+      "protect": [
+        "green",
+        "bunker",
+        "tee",
+        "water",
+        "water_lake",
+        "lake"
+      ],
+      "outline3006": [
+        [
+          529644.06,
+          6488551.18
+        ],
+        [
+          529644.15,
+          6488550.54
+        ],
+        [
+          529643.97,
+          6488550.3
+        ],
+        [
+          529643.6,
+          6488550.24
+        ],
+        [
+          529643.17,
+          6488550.55
+        ],
+        [
+          529639.89,
+          6488556.26
+        ],
+        [
+          529641.62,
+          6488556.39
+        ],
+        [
+          529642.59,
+          6488554.6
+        ]
+      ],
+      "uvM": 2,
+      "rise": {
+        "mode": "dem",
+        "apronM": 1.5,
+        "noiseM": 0,
+        "maxEdgeM": 0.25
+      },
+      "note": "Creek 0bfe60f0 (feature:0bfe60f0-9989-4e98-a8a6-e1572f1cb8af): dug in the DEM (median 0.36 m), the OPCD bed set onto it; 1 needsBed spot(s) within 15 m, 9 m2."
+    },
+    {
+      "id": "brook_1b619669_1",
+      "op": "golfmap.cut_out",
+      "name": "brook_1b619669_1",
+      "surface": "WaterBrook",
+      "protect": [
+        "green",
+        "bunker",
+        "tee",
+        "water",
+        "water_lake",
+        "lake"
+      ],
+      "outline3006": [
+        [
+          529196.95,
+          6488574.51
+        ],
+        [
+          529193.79,
+          6488574.4
+        ],
+        [
+          529191.61,
+          6488574.67
+        ],
+        [
+          529189.57,
+          6488575.3
+        ],
+        [
+          529187.55,
+          6488576.38
+        ],
+        [
+          529186.14,
+          6488577.37
+        ],
+        [
+          529184.62,
+          6488578.6
+        ],
+        [
+          529183.2,
+          6488579.88
+        ],
+        [
+          529180.31,
+          6488582.74
+        ],
+        [
+          529177.77,
+          6488585.52
+        ],
+        [
+          529176.8,
+          6488586.7
+        ],
+        [
+          529176.12,
+          6488587.64
+        ],
+        [
+          529175.78,
+          6488588.39
+        ],
+        [
+          529176.13,
+          6488588.35
+        ],
+        [
+          529176.94,
+          6488587.93
+        ],
+        [
+          529179.4,
+          6488586.19
+        ],
+        [
+          529182.34,
+          6488583.72
+        ],
+        [
+          529186.45,
+          6488579.8
+        ],
+        [
+          529187.91,
+          6488578.51
+        ],
+        [
+          529189.41,
+          6488577.39
+        ],
+        [
+          529190.96,
+          6488576.52
+        ],
+        [
+          529192.63,
+          6488575.95
+        ],
+        [
+          529193.59,
+          6488575.79
+        ],
+        [
+          529194.57,
+          6488575.73
+        ],
+        [
+          529195.58,
+          6488575.75
+        ],
+        [
+          529197.66,
+          6488576.0
+        ],
+        [
+          529200.89,
+          6488576.72
+        ],
+        [
+          529201.0,
+          6488575.07
+        ]
+      ],
+      "uvM": 2,
+      "rise": {
+        "mode": "dem",
+        "apronM": 1.5,
+        "noiseM": 0,
+        "maxEdgeM": 0.25
+      },
+      "note": "Creek 1b619669 (feature:1b619669-a4d0-4bcd-8e11-2ff4a6520896): dug in the DEM (median 0.47 m), the OPCD bed set onto it; 12 needsBed spot(s) within 15 m, 50 m2."
+    },
+    {
+      "id": "brook_b37cf073_1",
+      "op": "golfmap.cut_out",
+      "name": "brook_b37cf073_1",
+      "surface": "WaterBrook",
+      "protect": [
+        "green",
+        "bunker",
+        "tee",
+        "water",
+        "water_lake",
+        "lake"
+      ],
+      "outline3006": [
+        [
+          530329.05,
+          6487054.19
+        ],
+        [
+          530342.12,
+          6487067.13
+        ],
+        [
+          530343.51,
+          6487065.69
+        ],
+        [
+          530330.65,
+          6487052.97
+        ],
+        [
+          530327.72,
+          6487046.54
+        ],
+        [
+          530327.54,
+          6487046.32
+        ],
+        [
+          530327.2,
+          6487046.11
+        ],
+        [
+          530326.82,
+          6487046.05
+        ],
+        [
+          530326.53,
+          6487046.1
+        ],
+        [
+          530326.19,
+          6487046.3
+        ],
+        [
+          530325.96,
+          6487046.61
+        ],
+        [
+          530325.86,
+          6487046.98
+        ],
+        [
+          530325.91,
+          6487047.37
+        ]
+      ],
+      "uvM": 2,
+      "rise": {
+        "mode": "dem",
+        "apronM": 1.5,
+        "noiseM": 0,
+        "maxEdgeM": 0.25
+      },
+      "note": "Creek b37cf073 (feature:b37cf073-7ad6-4843-b786-0b7b7d8967b0): not dug in the DEM: the bed cut out for the channel below; 12 needsBed spot(s) within 15 m, 52 m2."
+    },
+    {
+      "id": "brook_b37cf073_1_channel1",
+      "op": "golfmap.creek_channel",
+      "object": "Spline_brook_b37cf073_1_WaterBrook_-_Mesh",
+      "centerline3006": [
+        [
+          530326.85,
+          6487047.05
+        ],
+        [
+          530329.82,
+          6487053.55
+        ],
+        [
+          530342.6,
+          6487066.2
+        ]
+      ],
+      "widthM": 0.7,
+      "depthM": 0.35,
+      "wallM": 0.15,
+      "rampM": 1.5,
+      "refBandM": [
+        0.7,
+        0.9
+      ],
+      "note": "The channel along creek b37cf073's line: 0.35 m under the ground beside it (the maintained-drain dig), 0.7 m wide."
+    },
+    {
+      "id": "brook_b37cf073_2",
+      "op": "golfmap.cut_out",
+      "name": "brook_b37cf073_2",
+      "surface": "WaterBrook",
+      "protect": [
+        "green",
+        "bunker",
+        "tee",
+        "water",
+        "water_lake",
+        "lake"
+      ],
+      "outline3006": [
+        [
+          530343.75,
+          6487073.12
+        ],
+        [
+          530343.84,
+          6487073.5
+        ],
+        [
+          530344.0,
+          6487073.75
+        ],
+        [
+          530344.22,
+          6487073.94
+        ],
+        [
+          530344.59,
+          6487074.08
+        ],
+        [
+          530344.88,
+          6487074.08
+        ],
+        [
+          530345.25,
+          6487073.95
+        ],
+        [
+          530345.48,
+          6487073.77
+        ],
+        [
+          530345.69,
+          6487073.44
+        ],
+        [
+          530345.75,
+          6487073.06
+        ],
+        [
+          530345.59,
+          6487068.14
+        ],
+        [
+          530343.65,
+          6487070.15
+        ]
+      ],
+      "uvM": 2,
+      "rise": {
+        "mode": "dem",
+        "apronM": 1.5,
+        "noiseM": 0,
+        "maxEdgeM": 0.25
+      },
+      "note": "Creek b37cf073 (feature:b37cf073-7ad6-4843-b786-0b7b7d8967b0): not dug in the DEM: the bed cut out for the channel below; 12 needsBed spot(s) within 15 m, 9 m2."
+    },
+    {
+      "id": "brook_b37cf073_2_channel1",
+      "op": "golfmap.creek_channel",
+      "object": "Spline_brook_b37cf073_2_WaterBrook_-_Mesh",
+      "centerline3006": [
+        [
+          530344.63,
+          6487069.56
+        ],
+        [
+          530344.75,
+          6487073.09
+        ]
+      ],
+      "widthM": 0.7,
+      "depthM": 0.35,
+      "wallM": 0.15,
+      "rampM": 1.5,
+      "refBandM": [
+        0.7,
+        0.9
+      ],
+      "note": "The channel along creek b37cf073's line: 0.35 m under the ground beside it (the maintained-drain dig), 0.7 m wide."
+    },
+    {
+      "id": "brook_4a8c6c7a_1",
+      "op": "golfmap.cut_out",
+      "name": "brook_4a8c6c7a_1",
+      "surface": "WaterBrook",
+      "protect": [
+        "green",
+        "bunker",
+        "tee",
+        "water",
+        "water_lake",
+        "lake"
+      ],
+      "outline3006": [
+        [
+          530460.6,
+          6487159.18
+        ],
+        [
+          530472.74,
+          6487165.5
+        ],
+        [
+          530476.42,
+          6487166.65
+        ],
+        [
+          530476.72,
+          6487166.64
+        ],
+        [
+          530477.08,
+          6487166.49
+        ],
+        [
+          530477.36,
+          6487166.22
+        ],
+        [
+          530477.49,
+          6487165.96
+        ],
+        [
+          530477.53,
+          6487165.67
+        ],
+        [
+          530477.46,
+          6487165.29
+        ],
+        [
+          530477.25,
+          6487164.96
+        ],
+        [
+          530477.02,
+          6487164.78
+        ],
+        [
+          530473.43,
+          6487163.62
+        ],
+        [
+          530464.63,
+          6487159.01
+        ],
+        [
+          530461.88,
+          6487157.31
+        ],
+        [
+          530461.03,
+          6487158.47
+        ]
+      ],
+      "uvM": 2,
+      "rise": {
+        "mode": "dem",
+        "apronM": 1.5,
+        "noiseM": 0,
+        "maxEdgeM": 0.25
+      },
+      "note": "Creek 4a8c6c7a (feature:4a8c6c7a-cab1-4af5-9b53-2a9e8ce081ef): not dug in the DEM: the bed cut out for the channel below; 9 needsBed spot(s) within 15 m, 36 m2."
+    },
+    {
+      "id": "brook_4a8c6c7a_1_channel1",
+      "op": "golfmap.creek_channel",
+      "object": "Spline_brook_4a8c6c7a_1_WaterBrook_-_Mesh",
+      "centerline3006": [
+        [
+          530461.41,
+          6487158.45
+        ],
+        [
+          530473.05,
+          6487164.55
+        ],
+        [
+          530476.53,
+          6487165.66
+        ]
+      ],
+      "widthM": 0.7,
+      "depthM": 0.35,
+      "wallM": 0.15,
+      "rampM": 1.5,
+      "refBandM": [
+        0.7,
+        0.9
+      ],
+      "note": "The channel along creek 4a8c6c7a's line: 0.35 m under the ground beside it (the maintained-drain dig), 0.7 m wide."
+    },
+    {
+      "id": "brook_e0ff005c_1",
+      "op": "golfmap.cut_out",
+      "name": "brook_e0ff005c_1",
+      "surface": "WaterBrook",
+      "protect": [
+        "green",
+        "bunker",
+        "tee",
+        "water",
+        "water_lake",
+        "lake"
+      ],
+      "outline3006": [
+        [
+          529055.41,
+          6488001.02
+        ],
+        [
+          529051.71,
+          6488000.71
+        ],
+        [
+          529048.39,
+          6488000.54
+        ],
+        [
+          529046.17,
+          6488000.59
+        ],
+        [
+          529045.71,
+          6488000.71
+        ],
+        [
+          529046.14,
+          6488000.99
+        ],
+        [
+          529047.52,
+          6488001.48
+        ],
+        [
+          529049.55,
+          6488002.03
+        ],
+        [
+          529051.94,
+          6488002.57
+        ],
+        [
+          529054.42,
+          6488003.03
+        ],
+        [
+          529059.08,
+          6488003.48
+        ],
+        [
+          529058.91,
+          6488002.37
+        ],
+        [
+          529058.67,
+          6488001.42
+        ]
+      ],
+      "uvM": 2,
+      "rise": {
+        "mode": "dem",
+        "apronM": 1.5,
+        "noiseM": 0,
+        "maxEdgeM": 0.25
+      },
+      "note": "Creek e0ff005c (feature:e0ff005c-18b8-4c42-96cd-f6b25bf5a4e5): dug in the DEM (median 0.52 m), the OPCD bed set onto it; 1 needsBed spot(s) within 15 m, 21 m2."
+    },
+    {
+      "id": "brook_4292cf70_1",
+      "op": "golfmap.cut_out",
+      "name": "brook_4292cf70_1",
+      "surface": "WaterBrook",
+      "protect": [
+        "green",
+        "bunker",
+        "tee",
+        "water",
+        "water_lake",
+        "lake"
+      ],
+      "outline3006": [
+        [
+          530599.11,
+          6487040.46
+        ],
+        [
+          530596.75,
+          6487040.33
+        ],
+        [
+          530594.96,
+          6487040.09
+        ],
+        [
+          530593.18,
+          6487039.72
+        ],
+        [
+          530591.17,
+          6487039.11
+        ],
+        [
+          530589.2,
+          6487038.35
+        ],
+        [
+          530583.28,
+          6487035.77
+        ],
+        [
+          530581.24,
+          6487035.02
+        ],
+        [
+          530579.15,
+          6487034.4
+        ],
+        [
+          530577.01,
+          6487033.91
+        ],
+        [
+          530574.84,
+          6487033.52
+        ],
+        [
+          530572.2,
+          6487033.18
+        ],
+        [
+          530572.54,
+          6487035.05
+        ],
+        [
+          530575.66,
+          6487035.54
+        ],
+        [
+          530578.24,
+          6487036.1
+        ],
+        [
+          530580.81,
+          6487036.8
+        ],
+        [
+          530583.32,
+          6487037.65
+        ],
+        [
+          530585.07,
+          6487038.34
+        ],
+        [
+          530590.15,
+          6487040.49
+        ],
+        [
+          530593.53,
+          6487041.66
+        ],
+        [
+          530595.26,
+          6487042.06
+        ],
+        [
+          530597.46,
+          6487042.33
+        ],
+        [
+          530598.7,
+          6487041.02
+        ]
+      ],
+      "uvM": 2,
+      "rise": {
+        "mode": "dem",
+        "apronM": 1.5,
+        "noiseM": 0,
+        "maxEdgeM": 0.25
+      },
+      "note": "Creek 4292cf70 (feature:4292cf70-ae78-4895-8dd7-42082a89194c): dug in the DEM (median 0.57 m), the OPCD bed set onto it; 5 needsBed spot(s) within 15 m, 48 m2."
+    },
+    {
+      "id": "brook_4292cf70_2",
+      "op": "golfmap.cut_out",
+      "name": "brook_4292cf70_2",
+      "surface": "WaterBrook",
+      "protect": [
+        "green",
+        "bunker",
+        "tee",
+        "water",
+        "water_lake",
+        "lake"
+      ],
+      "outline3006": [
+        [
+          531011.18,
+          6487055.06
+        ],
+        [
+          531008.01,
+          6487055.08
+        ],
+        [
+          530999.97,
+          6487055.43
+        ],
+        [
+          530990.62,
+          6487056.27
+        ],
+        [
+          530991.23,
+          6487057.83
+        ],
+        [
+          530994.71,
+          6487057.67
+        ],
+        [
+          530999.78,
+          6487057.57
+        ],
+        [
+          531003.25,
+          6487057.3
+        ],
+        [
+          531007.46,
+          6487056.67
+        ],
+        [
+          531010.96,
+          6487055.9
+        ],
+        [
+          531012.1,
+          6487055.54
+        ],
+        [
+          531012.64,
+          6487055.25
+        ],
+        [
+          531012.19,
+          6487055.13
+        ]
+      ],
+      "uvM": 2,
+      "rise": {
+        "mode": "dem",
+        "apronM": 1.5,
+        "noiseM": 0,
+        "maxEdgeM": 0.25
+      },
+      "note": "Creek 4292cf70 (feature:4292cf70-ae78-4895-8dd7-42082a89194c): dug in the DEM (median 0.57 m), the OPCD bed set onto it; 5 needsBed spot(s) within 15 m, 36 m2."
+    },
+    {
+      "id": "brook_06dfa7ed_1",
+      "op": "golfmap.cut_out",
+      "name": "brook_06dfa7ed_1",
+      "surface": "WaterBrook",
+      "protect": [
+        "green",
+        "bunker",
+        "tee",
+        "water",
+        "water_lake",
+        "lake"
+      ],
+      "outline3006": [
+        [
+          530749.62,
+          6486839.22
+        ],
+        [
+          530752.91,
+          6486843.58
+        ],
+        [
+          530754.67,
+          6486845.62
+        ],
+        [
+          530755.6,
+          6486846.56
+        ],
+        [
+          530757.58,
+          6486848.2
+        ],
+        [
+          530758.65,
+          6486848.88
+        ],
+        [
+          530759.77,
+          6486849.45
+        ],
+        [
+          530761.36,
+          6486850.05
+        ],
+        [
+          530762.21,
+          6486848.29
+        ],
+        [
+          530760.25,
+          6486847.49
+        ],
+        [
+          530759.12,
+          6486846.89
+        ],
+        [
+          530758.04,
+          6486846.2
+        ],
+        [
+          530756.92,
+          6486845.32
+        ],
+        [
+          530755.84,
+          6486844.34
+        ],
+        [
+          530753.85,
+          6486842.14
+        ],
+        [
+          530752.0,
+          6486839.72
+        ],
+        [
+          530749.36,
+          6486836.01
+        ],
+        [
+          530743.37,
+          6486828.55
+        ],
+        [
+          530741.61,
+          6486829.29
+        ]
+      ],
+      "uvM": 2,
+      "rise": {
+        "mode": "dem",
+        "apronM": 1.5,
+        "noiseM": 0,
+        "maxEdgeM": 0.25
+      },
+      "note": "Creek 06dfa7ed (feature:06dfa7ed-a544-4c1b-a61c-0da41bedba3c): dug in the DEM (median 0.84 m), the OPCD bed set onto it; 6 needsBed spot(s) within 15 m, 51 m2."
+    },
+    {
+      "id": "brook_06dfa7ed_2",
+      "op": "golfmap.cut_out",
+      "name": "brook_06dfa7ed_2",
+      "surface": "WaterBrook",
+      "protect": [
+        "green",
+        "bunker",
+        "tee",
+        "water",
+        "water_lake",
+        "lake"
+      ],
+      "outline3006": [
+        [
+          530642.38,
+          6486710.13
+        ],
+        [
+          530644.72,
+          6486712.42
+        ],
+        [
+          530647.79,
+          6486715.2
+        ],
+        [
+          530650.94,
+          6486717.93
+        ],
+        [
+          530653.04,
+          6486719.62
+        ],
+        [
+          530654.5,
+          6486718.29
+        ],
+        [
+          530650.2,
+          6486714.56
+        ],
+        [
+          530647.97,
+          6486712.9
+        ],
+        [
+          530643.73,
+          6486710.05
+        ],
+        [
+          530642.19,
+          6486709.18
+        ],
+        [
+          530641.41,
+          6486708.9
+        ],
+        [
+          530641.68,
+          6486709.34
+        ]
+      ],
+      "uvM": 2,
+      "rise": {
+        "mode": "dem",
+        "apronM": 1.5,
+        "noiseM": 0,
+        "maxEdgeM": 0.25
+      },
+      "note": "Creek 06dfa7ed (feature:06dfa7ed-a544-4c1b-a61c-0da41bedba3c): dug in the DEM (median 0.84 m), the OPCD bed set onto it; 6 needsBed spot(s) within 15 m, 26 m2."
+    }
+  ]
+}

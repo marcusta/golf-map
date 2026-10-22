@@ -140,6 +140,10 @@ namespace GolfMap.Editor
             // CloseGaps: the most a side may widen / an end move on in all, the shallowest the water may get over its bed when
             // lowered, the most it may be lowered, and the steps it is lowered in (see CloseGaps).
             public float gapWidenM = 2f, gapExtendM = 4f, minDepthM = 0.05f, maxLowerM = 0.1f, levelStepM = 0.02f;
+            // A creek whose every point lies more than farFromPlayM from the playing field (tee, fairway, green, semi, rough,
+            // bunker meshes) is held less strictly: its water's edge may hang farGapM before it counts as a gap, and what is
+            // left is listed as farFromPlay, not needsBed (Marcus 2026-10-22: a ball seldom gets there).
+            public float farFromPlayM = 75f, farGapM = 0.15f;
             public string trace;  // a creek id (or part of one): its stations go into the result
             public string water = "lake";  // lake: the lakes' AQUAS water; profile: R.A.M.'s material
             public float pondFadeM = 2f;  // how far into a lake a creek's water runs and fades out; 0 = no fade, every vertex opaque
@@ -158,7 +162,7 @@ namespace GolfMap.Editor
         static void MenuProfile() { Debug.Log("[GolfMap Creeks] " + GolfMapJson.Serialize(Style("profile"), false)); }
 
         [BridgeCommand("golfmap.creeks.import", "Import the course's unity-creeks-v1 export (<prefix>-inner-creeks.json) as NatureManufacture R.A.M. splines under 'GolfMap Creeks': one RamSpline per creek with its profile, fitted to the course meshes under it (water aboveBedM over the bed; each side out to where the bank rises above the water plus bankM; both ends run on into the bank the same way, or at a lake pondFadeM past its shore, the water fading out over the lake by vertex alpha), wearing the lakes' water (water=lake) or the profile's material (water=profile). Re-import after changing creeks, heightmap or meshes refits them in place (points and transform reset) and removes creeks no longer exported. Marks the scene dirty; save=true saves it (and the assets it changed) once the import has succeeded.",
-            args = "file (default: the active course's export), dryRun=false, fit=true (false: the export's surface and width as they are), aboveBedM=0.15, bankM=2, buryM=0.05, searchM=8 (how far past the export's half width to look for a bank), widenM=2 (a side reaches at most the export's half width + bankM + widenM), gapWidenM=2 / gapExtendM=4 (closing gaps: the most a side widens / an end moves on), minDepthM=0.05 / maxLowerM=0.1 / levelStepM=0.02 (closing gaps: the water lowered in steps, no shallower over its bed), trace (a creek id or part of one: its fit station by station), water=lake|profile, pondFadeM=2 (0: no fade at lakes), " + GolfMapSceneSave.Arg)]
+            args = "file (default: the active course's export), dryRun=false, fit=true (false: the export's surface and width as they are), aboveBedM=0.15, bankM=2, buryM=0.05, searchM=8 (how far past the export's half width to look for a bank), widenM=2 (a side reaches at most the export's half width + bankM + widenM), gapWidenM=2 / gapExtendM=4 (closing gaps: the most a side widens / an end moves on), minDepthM=0.05 / maxLowerM=0.1 / levelStepM=0.02 (closing gaps: the water lowered in steps, no shallower over its bed), farFromPlayM=75 / farGapM=0.15 (a creek wholly that far from the playing field: an edge may hang that much, the rest is farFromPlay, not needsBed), trace (a creek id or part of one: its fit station by station), water=lake|profile, pondFadeM=2 (0: no fade at lakes), " + GolfMapSceneSave.Arg)]
         static object Command(BridgeArgs a)
         {
             var o = new FitOptions();
@@ -173,6 +177,8 @@ namespace GolfMap.Editor
             o.minDepthM = (float)a.Number("minDepthM", o.minDepthM);
             o.maxLowerM = (float)a.Number("maxLowerM", o.maxLowerM);
             o.levelStepM = (float)a.Number("levelStepM", o.levelStepM);
+            o.farFromPlayM = (float)a.Number("farFromPlayM", o.farFromPlayM);
+            o.farGapM = (float)a.Number("farGapM", o.farGapM);
             o.trace = a.String("trace");
             o.water = a.String("water") ?? o.water;
             o.pondFadeM = (float)a.Number("pondFadeM", o.pondFadeM);
@@ -213,6 +219,7 @@ namespace GolfMap.Editor
             var ownMaterial = new Dictionary<GameObject, string>();
             var onLakeAt = new Dictionary<GameObject, Vector3>();
             int created = 0, updated = 0;
+            Func<Bounds, bool> nearPlay = null;   // made at the first creek built: the playing field's distance grid
 
             if (!dryRun)
             {
@@ -279,7 +286,10 @@ namespace GolfMap.Editor
                 splineType.GetMethod("GenerateSpline").Invoke(spline, new object[] { null });
                 // A creek on a lake lies on the lake's water plane, whose collider takes the ball: no gaps to close, and widening
                 // its end over the low ground beside a fall's wall swung hole 9's channel creek 3.5 m aside, 14 m wide.
-                row["gaps"] = c.onLake ? (object)"on a lake: as fitted" : CloseGaps(spline, splineType, fit, c.neckPoints ?? c.fallPoints);
+                if (nearPlay == null) nearPlay = GolfMapMakeReady.NearPlay(scene.GetRootGameObjects(), fit.farFromPlayM);
+                bool far = !c.points.Any(p => nearPlay(new Bounds(new Vector3(p.x, 0, p.z), Vector3.zero)));
+                if (far) row["farFromPlay"] = true;
+                row["gaps"] = c.onLake ? (object)"on a lake: as fitted" : CloseGaps(spline, splineType, fit, c.neckPoints ?? c.fallPoints, far);
                 int faded = FadeIntoLakes(spline, splineType, fit.pondFadeM, c.onLake);
                 if (faded > 0) row["lakeFadeVertices"] = faded;
                 var colliderError = WaterCollider(spline);
@@ -308,7 +318,8 @@ namespace GolfMap.Editor
             {
                 { "file", file }, { "dryRun", dryRun }, { "creeks", creeks.Count }, { "exported", exported },
                 { "fit", fit.fit ? (object)new Dictionary<string, object> { { "aboveBedM", fit.aboveBedM }, { "bankM", fit.bankM }, { "buryM", fit.buryM }, { "searchM", fit.searchM },
-                    { "gapWidenM", fit.gapWidenM }, { "gapExtendM", fit.gapExtendM }, { "minDepthM", fit.minDepthM }, { "maxLowerM", fit.maxLowerM } } : false },
+                    { "gapWidenM", fit.gapWidenM }, { "gapExtendM", fit.gapExtendM }, { "minDepthM", fit.minDepthM }, { "maxLowerM", fit.maxLowerM },
+                    { "farFromPlayM", fit.farFromPlayM }, { "farGapM", fit.farGapM } } : false },
                 { "created", created }, { "updated", updated }, { "removed", removed },
                 { "missingProfiles", missingProfiles.ToList() },
                 { "water", water ?? (object)fit.water },
@@ -1111,7 +1122,9 @@ namespace GolfMap.Editor
         // grass). The level that closes the most gaps wins,
         // then the highest: widen and extend first, lower only as far as that needs. Raising never helps: a gap is water
         // standing above the ground. The spline is built again, up to CloseRounds times. A gap no level closes is left
-        // and listed in needsBed with how far the water hangs there: its bed must be dug deeper (in Blender).
+        // and listed in needsBed with how far the water hangs there: its bed must be dug deeper (in Blender). A creek far
+        // from the playing field (`far`, FitOptions.farFromPlayM) counts an edge as a gap only past farGapM, and lists
+        // what is left as farFromPlay instead.
         const string WaterPhysics = "Assets/Resources/Physics/GSPwater.physicMaterial";
         const float GapM = 0.02f, MeetM = 0.02f, BuryM = 0.2f, ReachStepM = 0.1f, BedStepM = 0.25f;
         const int CloseRounds = 6;
@@ -1133,12 +1146,13 @@ namespace GolfMap.Editor
             public int closed;
         }
 
-        static Dictionary<string, object> CloseGaps(Component spline, Type splineType, FitOptions o, HashSet<int> neck)
+        static Dictionary<string, object> CloseGaps(Component spline, Type splineType, FitOptions o, HashSet<int> neck, bool far)
         {
             var go = spline.gameObject;
             var field = splineType.GetField("controlPoints");
             var pts = new List<Vector4>((List<Vector4>)field.GetValue(spline));
             neck = new HashSet<int>(neck);
+            float gapM = far ? o.farGapM : GapM;
             var trimmed = TrimOffMeshEnds(pts, neck);
             if (trimmed.Count > 0)
             {
@@ -1189,7 +1203,7 @@ namespace GolfMap.Editor
                     foreach (int j in new[] { 0, per - 1 })
                     {
                         var v = w[l * per + j];
-                        if (!Hangs(v)) continue;
+                        if (!Hangs(v, gapM)) continue;
                         var inner = w[l * per + (j == 0 ? 1 : per - 2)];
                         int side = Vector2.Dot(new Vector2(v.x, v.z) - XZ(pts[i]), right) >= 0 ? 1 : 0;
                         gaps.Add(new Gap { point = i, side = side, v = v, dir = new Vector2(v.x - inner.x, v.z - inner.z) });
@@ -1200,7 +1214,7 @@ namespace GolfMap.Editor
                     int l = e == 0 ? 0 : loops - 1, inward = e == 0 ? 1 : loops - 2, i = e == 0 ? 0 : n - 1;
                     if (neck.Contains(i)) continue;
                     for (int j = 0; j < per; j++)
-                        if (Hangs(w[l * per + j])) gaps.Add(new Gap { point = i, end = e, v = w[l * per + j], dir = centre[l] - centre[inward] });
+                        if (Hangs(w[l * per + j], gapM)) gaps.Add(new Gap { point = i, end = e, v = w[l * per + j], dir = centre[l] - centre[inward] });
                 }
                 if (gaps.Count == 0 || rounds == CloseRounds) break;
 
@@ -1215,7 +1229,7 @@ namespace GolfMap.Editor
                     {
                         float dy = -step * o.levelStepM;
                         if (step > 0 && -dy > room + 1e-4f) break;
-                        var level = TryLevel(at, dy, widen, extend, o);
+                        var level = TryLevel(at, dy, widen, extend, o, gapM);
                         if (best == null || level.closed > best.closed) best = level;
                     }
                     var p = next[i];
@@ -1270,27 +1284,27 @@ namespace GolfMap.Editor
                 { "lowered", lowered.Count(v => v > 0) }, { "mostLoweredM", Math.Round(lowered.Length > 0 ? lowered.Max() : 0, 2) }, { "rounds", rounds },
             };
             if (trimmed.Count > 0) result["trimmed"] = trimmed;
-            if (needsBed.Count > 0) result["needsBed"] = needsBed;
+            if (needsBed.Count > 0) result[far ? "farFromPlay" : "needsBed"] = needsBed;
             return result;
         }
 
-        // Does this edge vertex hang over lower ground (not over a lake, whose plane takes the ball)?
-        static bool Hangs(Vector3 v)
+        // Does this edge vertex hang more than gapM over lower ground (not over a lake, whose plane takes the ball)?
+        static bool Hangs(Vector3 v, float gapM)
         {
             var p = new Vector2(v.x, v.z);
             float g = GroundAt(p);
-            return !(!float.IsNaN(g) && g >= v.y - GapM) && !OverLake(p);
+            return !(!float.IsNaN(g) && g >= v.y - gapM) && !OverLake(p);
         }
 
         // One point's gaps with its water dy lower: each closed by the lower water, else by widening its side or moving
         // its end on within what is left of gapWidenM / gapExtendM.
-        static Level TryLevel(IEnumerable<Gap> gaps, float dy, float[,] widen, float[] extend, FitOptions o)
+        static Level TryLevel(IEnumerable<Gap> gaps, float dy, float[,] widen, float[] extend, FitOptions o, float gapM)
         {
             var level = new Level { dy = dy };
             foreach (var g in gaps)
             {
                 var v = new Vector3(g.v.x, g.v.y + dy, g.v.z);
-                if (!Hangs(v)) { level.closed++; continue; }
+                if (!Hangs(v, gapM)) { level.closed++; continue; }
                 float left = g.end >= 0 ? o.gapExtendM - extend[g.end] : o.gapWidenM - widen[g.point, g.side];
                 float reach = left >= ReachStepM ? Reach(v, g.dir, left) : float.NaN;
                 // Into a lake is no spreading: its plane takes the ball, so that reach may run on to searchM.
