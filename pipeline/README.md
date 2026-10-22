@@ -1037,7 +1037,7 @@ texture/channel with its sources.
 ### `gspro.py gkd` — the GreenKeeper course file (`<scene>.GKD`)
 
 ```sh
-python gspro.py gkd --square-3006 x0,y0,x1,y1 --course Vreta     --sidecar out/vreta-inner-dem-2050m.tif.json     --out "C:/GSProV1/Core/GSP/Courses/<scene>/<scene>.GKD"     [--dem out/vreta-inner-dem-2050m.tif] [--simplify 1.0]     [--water-margin 0.5] [--bank-max 3.0] [--bank-slope 8] [--node-spacing 3.0]     [--tee-map Silver=Blue] [--altitude 79.9] [--template other.GKD] [--no-merge]
+python gspro.py gkd --square-3006 x0,y0,x1,y1 --course Vreta     --sidecar out/vreta-inner-dem-2050m.tif.json     --out "C:/GSProV1/Core/GSP/Courses/<scene>/<scene>.GKD"     [--dem out/vreta-inner-dem-2050m.tif] [--simplify 1.0]     [--water-margin 1.0] [--bank-max 3.0] [--bank-slope-deep 15] [--bank-slope 20] [--node-spacing 3.0]     [--tee-map Silver=Blue] [--altitude 79.9] [--template other.GKD] [--no-merge]
 ```
 
 The JSON GSPro reads for everything about a course that is not geometry, as
@@ -1082,14 +1082,23 @@ point lands on the imported heightmap.
   a warning) so GSPro always has a cup.
 - **Water hazards are staked outside the water.** Water is drawn where the
   water is, so its line never touches it: every node and every straight
-  line GSPro draws between two nodes is at least `--water-margin` (0.5 m)
-  outside, checked against the drawn water after straightening. Where the
-  water has a bank the line goes where the bank ends: rays are cast straight
-  out from the shore every 0.5 m over the export DEM (smoothed 0.5 m so
-  single lidar returns don't count), and a run of ground steeper than
-  `--bank-slope` (8°) that starts within 2 m of the water is the bank; the
-  line goes to its first flatter ground, never further than `--bank-max`
-  (3 m). The offsets are median-filtered over neighbouring rays (single-ray
+  line GSPro draws between two nodes is at least `--water-margin` (1 m)
+  outside the drawn water shape (not the R.A.M. spline), checked after
+  straightening. Where the water has a bank the line goes where the bank
+  ends: rays are cast straight out from the shore every 0.5 m over the
+  export DEM (smoothed 0.5 m so single lidar returns don't count), and a run
+  of ground **rising away from the water** more steeply than the bank slope,
+  starting within 2 m of the water, is the bank; the line goes to the first
+  ground rising no more than that, never further than `--bank-max` (3 m: a
+  pond at the foot of a hill would otherwise take the hillside). The bank
+  slope is `--bank-slope-deep` (15 %) where the ground 0.25-1.5 m out is
+  mostly deep rough — drawn `deep_rough`, or no surface drawn at all, which
+  OPCD builds as Outer_Deep — and `--bank-slope` (20 %) next to any other
+  surface (`_GkdSurfaces`, the app's paint order). Only the rise along the
+  ray counts, so a creek along a hillside gets no bank from the cross slope
+  and a pond dammed above its surroundings none from its falling sides. On
+  a bank only just over the slope the line stops up to half a metre short of
+  its top, where the smoothed slope drops back under it. The offsets are median-filtered over neighbouring rays (single-ray
   outliers out) and then Gaussian-smoothed over 3 m of shore: along a ditch
   the bank reading flickers on and off, and without that the line was
   notched in and out along a straight creek. Steeper ground further back is the
@@ -1099,9 +1108,16 @@ point lands on the imported heightmap.
   back over the water. Water whose lines would run closer than 2 m (a creek
   into a pond, a pond drawn in pieces) is one hazard. Lines are straightened
   within 0.2 m, only ever outwards, and get a node at least every
-  `--node-spacing` (3 m) so the markings follow the ground. On Vreta about a
-  quarter of the shoreline has no bank and is staked at the margin; the rest
-  follows a bank, typically 2-3 m out.
+  `--node-spacing` (3 m) so the markings follow the ground. On Vreta and
+  Omberg the line sits a median 2 m out, 1 m out on about a third of the
+  shore.
+- **Play as it lies.** Every hazard goes in with `noAIL` off: GSPro then lets
+  a ball inside the line but out of the water (on the bank) be played as it
+  lies; a ball in the water is water anyway, by its GSPwater collider. A
+  line asks for "no as it lies" with `noAsItLies: true` in the attributes of
+  its penalty feature, or of any water an automatic line holds (Furniture ›
+  Rules lines, or `bun run gkd:lines -- <course> ail`). Inner-OOB rings never
+  have it.
 - **Penalty areas and OOB.** `penalty_yellow` and `penalty_red` features are
   drawn where the line is and go in as drawn (never straightened inwards);
   water entirely inside one is left to it. The largest `oob` ring is the
@@ -1136,6 +1152,22 @@ point lands on the imported heightmap.
 
 Holes past 18, aim points past the second and points outside the square are
 left out, each with a warning.
+
+
+### `gspro.py gkd-lines` — the hazard lines alone, as JSON
+
+```sh
+python gspro.py gkd-lines --square-3006 x0,y0,x1,y1 --course Vreta     --sidecar out/vreta-inner-dem-2050m.tif.json --out lines.json     [--gkd "C:/GSProV1/Core/GSP/Courses/<scene>/<scene>.GKD"] [the gkd line options]
+```
+
+The hazard lines `gkd` would write, from the same code (`_gkd_hazard_lines`),
+in EPSG:3006 instead of Unity metres: `{courseId, crs, rule {marginM,
+bankMaxM, bankStartM, deepPct, roughPct}, lines: [{kind: water | penalty |
+inner_oob, waterIds | featureId (+ type), noAsItLies, points}]}` — one entry
+per GKD hazard, `points` a closed ring without the first point repeated.
+`--gkd` lends the file's boundary when no `oob` ring is drawn. Furniture mode
+shows these (`GsproExportService.gkdLines`) and turns an automatic one into a
+drawn penalty line; Vreta takes 8 s.
 
 ### `manifest` — write manifest.json
 

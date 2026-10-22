@@ -181,14 +181,20 @@ the next 10 m (`SIDE_STEP_M`) so a hand-typed area is never a decimal-metre terr
   `aim_points` tables; the `Hazards` from its `water`, `water_creek`, `penalty_yellow` and
   `penalty_red` features, and `pOOB` from the largest `oob` ring (any other `oob` shape is a hazard
   with `innerOOB`), outlines expanded like the SVG's and clipped to the square. Water is staked
-  OUTSIDE the water: at least `--water-margin` (0.5 m) for every node and the straight lines between
-  them, and out to where its bank ends (ground steeper than `--bank-slope` 8° starting within 2 m of
-  the shore, followed up to `--bank-max` 3 m), with a node every `--node-spacing` (3 m) or closer;
+  OUTSIDE the water shape: at least `--water-margin` (1 m) for every node and the straight lines between
+  them, and out to where its bank ends (ground rising away from the water more steeply than
+  `--bank-slope-deep` 15 % in deep rough or undrawn ground (OPCD's Outer_Deep), `--bank-slope` 20 % next
+  to any other surface, starting within 2 m of the shore, followed up to `--bank-max` 3 m), with a node
+  every `--node-spacing` (3 m) or closer;
   water whose lines would run within 2 m of each other is one hazard. A water body the drawn penalty
   areas hold (allowing 1 m of it past the line, `GKD_PENALTY_HOLDS_WATER_M`) gets no line of its own,
   however tight to the shore the drawn one runs; decided per body, so a creek out of a penalty-held pond
   is still staked, alone. Penalty areas go in as drawn and
-  the OOB rings within `--simplify` (1 m); nothing is ever straightened inwards. Every hazard is held strictly inside the course boundary (GSPro's rule): cut 0.25 m
+  the OOB rings within `--simplify` (1 m); nothing is ever straightened inwards. `noAIL` ("no as it
+  lies") is off on every hazard unless its line asks for it (`noAsItLies: true` in the attributes of
+  the penalty feature, or of any water an automatic line holds; Furniture › Rules lines). `gkd-lines`
+  writes the same lines as JSON in EPSG:3006 for Furniture mode, which shows the automatic ones and
+  turns one into a drawn penalty line (Edit line). Every hazard is held strictly inside the course boundary (GSPro's rule): cut 0.25 m
   (`GKD_OOB_INSET_M`) inside the drawn `oob` ring or, with none drawn, the file's own `pOOB`; one
   entirely beyond it is left out. Positions are Unity world metres exactly as `trees` writes them — x/z from the
   square's south-west corner, y the ground above the terrain's zero, read off `--dem` (default: the

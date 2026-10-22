@@ -92,7 +92,7 @@ HOLE = {
 def _make_db(path, holes=(HOLE,), features=(), course_name="Testbana"):
     """A database with the app's shape. `holes` are dicts like HOLE above,
     with positions as (x, z) metres from the square's south-west corner;
-    `features` are (type, geometry rings, hole number or None)."""
+    `features` are (type, geometry rings, hole number or None[, attributes])."""
     conn = sqlite3.connect(path)
     conn.executescript(
         """CREATE TABLE courses (id TEXT PRIMARY KEY, name TEXT);
@@ -106,7 +106,8 @@ def _make_db(path, holes=(HOLE,), features=(), course_name="Testbana"):
            CREATE TABLE aim_points (id TEXT PRIMARY KEY, hole_id TEXT, sort_order INTEGER,
                                     lat REAL, lon REAL, label TEXT);
            CREATE TABLE course_features (id TEXT PRIMARY KEY, course_id TEXT, hole_id TEXT,
-                                         type TEXT, geometry_json TEXT, sort_order INTEGER);"""
+                                         type TEXT, geometry_json TEXT, sort_order INTEGER,
+                                         attributes_json TEXT);"""
     )
     conn.execute("INSERT INTO courses (id, name) VALUES (?, ?)", (COURSE, course_name))
     for hole in holes:
@@ -130,11 +131,13 @@ def _make_db(path, holes=(HOLE,), features=(), course_name="Testbana"):
                 lat, lon = _wgs84(E0 + x, N0 + z)
                 conn.execute("INSERT INTO pins (id, green_id, name, lat, lon, active) VALUES (?,?,?,?,?,1)",
                              (f"{green_id}-pin-{i}", green_id, name, lat, lon))
-    for i, (kind, rings, hole_number) in enumerate(features):
+    for i, (kind, rings, hole_number, *attributes) in enumerate(features):
         conn.execute(
-            "INSERT INTO course_features (id, course_id, hole_id, type, geometry_json, sort_order) VALUES (?,?,?,?,?,?)",
+            "INSERT INTO course_features (id, course_id, hole_id, type, geometry_json, sort_order, attributes_json) "
+            "VALUES (?,?,?,?,?,?,?)",
             (f"feat-{i}", COURSE, f"hole-{hole_number}" if hole_number else None, kind,
-             json.dumps({"crs": "EPSG:3006", "curveType": "bezier", "rings": rings}), i))
+             json.dumps({"crs": "EPSG:3006", "curveType": "bezier", "rings": rings}), i,
+             json.dumps(attributes[0]) if attributes else None))
     conn.commit()
     conn.close()
     return path
@@ -465,17 +468,13 @@ def _line_to_water(hazard, water) -> np.ndarray:
     return np.array([water.distance(ring.interpolate(s)) for s in np.arange(0.0, ring.length, 0.1)])
 
 
-def _bank_terrain(tmp_path, water_box, bank_m, start_m=0.0, degrees=30.0):
-    """A flat 400 m square with the water at its lowest and one bank all
-    round it: level ground for `start_m` out from the water, then a
-    `degrees` slope for `bank_m`, then level again. Returns the sidecar."""
-    x0, y0, x1, y1 = water_box
+def _dem_terrain(tmp_path, heights_of):
+    """A 400 m square at 0.5 m/px whose heights are `heights_of(xs, ys)`
+    (metres from the square's south-west corner). Returns the sidecar."""
     res, size = 0.5, 800
     c = (np.arange(size) + 0.5) * res
     xs, ys = np.meshgrid(c, SIDE - c)
-    dist = np.hypot(np.maximum(np.maximum(x0 - xs, xs - x1), 0), np.maximum(np.maximum(y0 - ys, ys - y1), 0))
-    rise = bank_m * math.tan(math.radians(degrees))
-    heights = 58.0 + np.clip((dist - start_m) / bank_m, 0, 1) * rise
+    heights = heights_of(xs, ys)
     dem = tmp_path / "bank-inner-dem-400m.tif"
     with rasterio.open(
         dem, "w", driver="GTiff", height=size, width=size, count=1, dtype="float32",
@@ -484,8 +483,24 @@ def _bank_terrain(tmp_path, water_box, bank_m, start_m=0.0, degrees=30.0):
         dst.write(heights.astype(np.float32), 1)
     sidecar = dem.with_suffix(".tif.json")
     sidecar.write_text(json.dumps({"crs": "EPSG:3006", "terrain": "inner", "square3006": list(EXTENT),
-                                   "sideM": SIDE, "minM": 58.0, "maxM": 58.0 + rise}), encoding="utf-8")
+                                   "sideM": SIDE, "minM": float(heights.min()), "maxM": float(heights.max())}),
+                       encoding="utf-8")
     return sidecar
+
+
+def _bank_terrain(tmp_path, water_box, bank_m, start_m=0.0, degrees=30.0, percent=None):
+    """A flat 400 m square with the water at its lowest and one bank all
+    round it: level ground for `start_m` out from the water, then a
+    `degrees` (or `percent`) slope for `bank_m`, then level again — falling
+    instead where the slope is negative. Returns the sidecar."""
+    x0, y0, x1, y1 = water_box
+    grade = percent / 100 if percent is not None else math.tan(math.radians(degrees))
+
+    def heights(xs, ys):
+        dist = np.hypot(np.maximum(np.maximum(x0 - xs, xs - x1), 0), np.maximum(np.maximum(y0 - ys, ys - y1), 0))
+        return 58.0 + np.clip((dist - start_m) / bank_m, 0, 1) * bank_m * grade
+
+    return _dem_terrain(tmp_path, heights)
 
 
 # Where a line with no bank to follow may sit: the margin, plus the outward
@@ -506,7 +521,7 @@ def test_water_is_staked_at_least_the_margin_outside_it(tmp_path, terrain):
     assert _hazard_poly(hazard).contains(_water(100, 100, 140, 140).buffer(gspro.DEFAULT_GKD_WATER_MARGIN_M))
     assert all(c["y"] == pytest.approx(_unity_y(E0 + c["x"]), abs=0.05) for c in hazard["coords"])
     assert (hazard["innerOOB"], hazard["noAIL"], hazard["hasDZ"], hazard["freeDrop"],
-            hazard["islandGreen"]) == (False, True, False, False, False)
+            hazard["islandGreen"]) == (False, False, False, False, False)
 
 
 def test_the_line_is_staked_where_the_bank_ends(tmp_path):
@@ -546,6 +561,122 @@ def test_a_gentle_bank_is_not_a_bank(tmp_path):
     doc, _ = _run(tmp_path, terrain, _make_db(tmp_path / "app.sqlite", features=features))
 
     assert _line_to_water(doc["Hazards"][0], _water(150, 150, 250, 250)).max() <= AT_MARGIN_M
+
+
+def _gap_by_side(hazard, water_box) -> dict[str, np.ndarray]:
+    """`_line_to_water` split by which side of a box-shaped water the line
+    runs along, leaving out 12 m at each corner, where the line eases from
+    one side's offset to the next's."""
+    x0, y0, x1, y1 = water_box
+    water = _water(*water_box)
+    ring = _hazard_poly(hazard).exterior
+    sides: dict[str, list[float]] = {"west": [], "east": [], "south": [], "north": []}
+    for s in np.arange(0.0, ring.length, 0.1):
+        p = ring.interpolate(s)
+        x, y = p.x - E0, p.y - N0
+        if y0 + 12 < y < y1 - 12 and (x < x0 or x > x1):
+            sides["west" if x < x0 else "east"].append(water.distance(p))
+        elif x0 + 12 < x < x1 - 12 and (y < y0 or y > y1):
+            sides["south" if y < y0 else "north"].append(water.distance(p))
+    return {k: np.array(v) for k, v in sides.items()}
+
+
+def test_a_bank_in_deep_rough_is_steeper_than_15_percent(tmp_path):
+    """A 2 m bank at 17.5 %, with no surface drawn round the water (OPCD's
+    Outer_Deep, deep rough in GSPro): over 15 %, so the line goes out onto it
+    — to where the smoothed slope drops to 15 %, half a metre short of the
+    top of so gentle a bank."""
+    terrain = _bank_terrain(tmp_path, (150, 150, 250, 250), bank_m=2.0, percent=17.5)
+    features = [("water", [_box(150, 150, 250, 250)], 1)]
+    doc, _ = _run(tmp_path, terrain, _make_db(tmp_path / "app.sqlite", features=features))
+
+    gap = _line_to_water(doc["Hazards"][0], _water(150, 150, 250, 250))
+    assert np.median(gap) == pytest.approx(1.5, abs=0.2)
+
+
+def test_the_same_bank_in_rough_is_no_bank(tmp_path):
+    """Rough drawn round the water: the bank must be steeper than 20 %, so a
+    17.5 % one leaves the line 1 m out; drawn deep rough is like undrawn."""
+    terrain = _bank_terrain(tmp_path, (150, 150, 250, 250), bank_m=2.0, percent=17.5)
+    for kind, expected in (("rough", 1.0), ("deep_rough", 1.5)):
+        features = [(kind, [_box(120, 120, 280, 280)], 1), ("water", [_box(150, 150, 250, 250)], 1)]
+        doc, _ = _run(tmp_path, terrain, _make_db(tmp_path / f"{kind}.sqlite", features=features),
+                      out=tmp_path / f"{kind}.GKD")
+
+        gap = _line_to_water(doc["Hazards"][0], _water(150, 150, 250, 250))
+        assert np.median(gap) == pytest.approx(expected, abs=0.2), kind
+
+
+def test_ground_falling_away_from_the_water_is_no_bank(tmp_path):
+    """A pond dammed above its surroundings: its steep sides fall away from
+    the water, so the line stays 1 m out."""
+    terrain = _bank_terrain(tmp_path, (150, 150, 250, 250), bank_m=2.0, degrees=-30.0)
+    features = [("water", [_box(150, 150, 250, 250)], 1)]
+    doc, _ = _run(tmp_path, terrain, _make_db(tmp_path / "app.sqlite", features=features))
+
+    assert _line_to_water(doc["Hazards"][0], _water(150, 150, 250, 250)).max() <= AT_MARGIN_M
+
+
+def test_a_pond_on_a_hillside_has_its_bank_on_the_uphill_side_only(tmp_path):
+    """The ground rises 30 % to the east all over: the line follows it up to
+    the 3 m cap on the east side, and stays 1 m out where the ground falls
+    away (west) or runs along the shore (north and south)."""
+    terrain = _dem_terrain(tmp_path, lambda xs, ys: 50.0 + 0.3 * xs)
+    features = [("water", [_box(150, 150, 250, 250)], 1)]
+    doc, _ = _run(tmp_path, terrain, _make_db(tmp_path / "app.sqlite", features=features))
+
+    sides = _gap_by_side(doc["Hazards"][0], (150, 150, 250, 250))
+    assert np.median(sides["east"]) == pytest.approx(gspro.DEFAULT_GKD_BANK_MAX_M,
+                                                     abs=gspro.GKD_HAZARD_TOLERANCE_M + 0.05)
+    for side in ("west", "north", "south"):
+        assert sides[side].max() <= AT_MARGIN_M, side
+
+
+def test_hazards_are_played_as_they_lie_unless_their_line_says_otherwise(tmp_path, terrain):
+    """noAIL is off by default; `noAsItLies` on a penalty area turns it on
+    for that line, and on a water body for the automatic line holding it —
+    also when that line holds other water as well."""
+    features = [("penalty_red", [_box(20, 20, 60, 60)], 1, {"noAsItLies": True}),
+                ("penalty_yellow", [_box(20, 300, 60, 340)], 1),
+                ("water", [_box(100, 100, 140, 140)], 1),
+                ("water_creek", [_box(140, 115, 200, 125)], 1, {"noAsItLies": True}),
+                ("water", [_box(300, 300, 330, 330)], 2, {"noAsItLies": False})]
+    doc, _ = _run(tmp_path, terrain, _make_db(tmp_path / "app.sqlite", features=features))
+
+    def at(x, y):
+        from shapely.geometry import Point
+        return next(h for h in doc["Hazards"] if _hazard_poly(h).contains(Point(E0 + x, N0 + y)))
+
+    assert at(40, 40)["noAIL"] is True
+    assert at(40, 320)["noAIL"] is False
+    assert at(120, 120)["noAIL"] is True          # the pond, merged with the creek that asks
+    assert at(315, 315)["noAIL"] is False
+
+
+def test_gkd_lines_are_the_lines_in_the_gkd(tmp_path, terrain):
+    """`gkd-lines` writes the very lines the .GKD gets, in EPSG:3006, with
+    the water each automatic line holds and the feature each drawn one is."""
+    features = [("water", [_box(100, 100, 140, 140)], 1),
+                ("water_creek", [_box(140, 115, 200, 125)], 1),
+                ("water", [_box(300, 300, 330, 330)], 2, {"noAsItLies": True}),
+                ("penalty_red", [_box(20, 20, 60, 60)], 1)]
+    db = _make_db(tmp_path / "app.sqlite", features=features)
+    doc, _ = _run(tmp_path, terrain, db)
+    out = tmp_path / "lines.json"
+    gspro.cmd_gkd_lines(None, db, COURSE, terrain, out, extent=EXTENT)
+    lines = json.loads(out.read_text(encoding="utf-8"))
+
+    assert lines["courseId"] == COURSE and lines["crs"] == "EPSG:3006"
+    assert lines["rule"] == {"marginM": 1.0, "bankMaxM": 3.0, "bankStartM": 2.0, "deepPct": 15.0, "roughPct": 20.0}
+    found = {(line["kind"], tuple(line.get("waterIds") or [line.get("featureId")]), line["noAsItLies"])
+             for line in lines["lines"]}
+    assert found == {("penalty", ("feat-3",), False), ("water", ("feat-0", "feat-1"), False),
+                     ("water", ("feat-2",), True)}
+    assert next(line for line in lines["lines"] if line["kind"] == "penalty")["type"] == "penalty_red"
+    assert len(lines["lines"]) == len(doc["Hazards"])
+    for line, hazard in zip(lines["lines"], doc["Hazards"]):
+        coords = np.array([[c["x"] + E0, c["z"] + N0] for c in hazard["coords"]])
+        assert np.abs(coords - np.array(line["points"])).max() < 2e-3
 
 
 def test_water_that_meets_is_one_hazard(tmp_path, terrain):
@@ -1000,7 +1131,7 @@ def _patchy_bank_terrain(tmp_path, water_box):
     c = (np.arange(size) + 0.5) * res
     xs, ys = np.meshgrid(c, SIDE - c)
     below = np.clip(y0 - ys, 0, None)  # metres south of the shore
-    rise = 2.5 * math.tan(math.radians(gspro.DEFAULT_GKD_BANK_SLOPE_DEG + 0.5))
+    rise = 2.5 * (gspro.DEFAULT_GKD_BANK_DEEP_PCT + 1.0) / 100
     noise = np.random.default_rng(7).normal(0.0, 0.06, xs.shape)
     heights = 58.0 + np.clip(below / 2.5, 0, 1) * rise + noise
     dem = tmp_path / "patchy-inner-dem-400m.tif"

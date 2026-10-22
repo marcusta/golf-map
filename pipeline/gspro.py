@@ -6353,24 +6353,41 @@ GKD_PENALTY_TYPES = ("penalty_yellow", "penalty_red")
 GKD_HAZARD_TYPES = (*GKD_WATER_TYPES, *GKD_PENALTY_TYPES)
 GKD_OOB_TYPE = "oob"
 # A water hazard line never touches the water: every node AND the straight
-# line between two nodes stays at least this far outside it.
-DEFAULT_GKD_WATER_MARGIN_M = 0.5
+# line between two nodes stays at least this far outside the drawn water
+# shape (not the R.A.M. spline Unity draws the creek with).
+DEFAULT_GKD_WATER_MARGIN_M = 1.0
 # Where the water has a bank the line is staked where the bank ends — the
-# first ground flatter than DEFAULT_GKD_BANK_SLOPE_DEG past a run of steeper
-# ground that starts within GKD_BANK_START_M of the water — but never further
-# out than DEFAULT_GKD_BANK_MAX_M. Found along rays cast straight out from the
-# shore every GKD_BANK_RAY_SPACING_M, sampled every GKD_BANK_STEP_M, on a DEM
-# smoothed by GKD_SLOPE_SIGMA_M so single lidar returns don't read as banks,
-# and the offsets are median-filtered over GKD_BANK_SMOOTH_RAYS neighbouring
-# rays (single-ray outliers out) and then Gaussian-smoothed along the shore
-# over GKD_BANK_SMOOTH_M. A bank reading flips on and off along a creek edge;
-# the median keeps each flip as a hard step, which staked a notched line
-# along a straight ditch, so the Gaussian eases the line between the margin
-# and the bank top over a few metres instead. Vreta's steep banks peak at
-# 12-18 degrees 0.5-2 m from the water and are down to the 3-5 degrees of the
-# surrounding ground by 2.5-3.5 m.
+# first ground rising away from the water by no more than the bank slope,
+# past a run of steeper ground that starts within GKD_BANK_START_M of the
+# water — but never further out than DEFAULT_GKD_BANK_MAX_M (a pond at the
+# foot of a hill would otherwise take the whole hillside). The bank slope
+# depends on what grows next to the water: DEFAULT_GKD_BANK_DEEP_PCT where it
+# is deep rough — drawn `deep_rough`, or ground with no surface drawn on it,
+# which OPCD builds as Outer_Deep and GSPro plays as deep rough — and
+# DEFAULT_GKD_BANK_PCT next to any other surface (Marcus 2026-10-22). Only the
+# rise along the ray counts, so a creek running along a hillside gets no bank
+# from the cross slope, nor a pond dammed above its surroundings. What grows
+# there is read GKD_BANK_SURFACE_M out from the shore, by majority.
+# Rays are cast straight out from the shore every GKD_BANK_RAY_SPACING_M,
+# sampled every GKD_BANK_STEP_M, on a DEM smoothed by GKD_SLOPE_SIGMA_M so
+# single lidar returns don't read as banks, and the offsets are
+# median-filtered over GKD_BANK_SMOOTH_RAYS neighbouring rays (single-ray
+# outliers out) and then Gaussian-smoothed along the shore over
+# GKD_BANK_SMOOTH_M. A bank reading flips on and off along a creek edge (and
+# the slope it is read at, where deep rough meets rough); the median keeps
+# each flip as a hard step, which staked a notched line along a straight
+# ditch, so the Gaussian eases the line between the margin and the bank top
+# over a few metres instead. Measured on Vreta and Omberg (18.6 km of shore):
+# the line sits a median 1.9 m out, 1 m out on a third of the shore.
 DEFAULT_GKD_BANK_MAX_M = 3.0
-DEFAULT_GKD_BANK_SLOPE_DEG = 8.0
+DEFAULT_GKD_BANK_DEEP_PCT = 15.0
+DEFAULT_GKD_BANK_PCT = 20.0
+GKD_BANK_DEEP_TYPES = ("deep_rough",)
+# The drawn surfaces the bank slope is read off (in the app's paint order,
+# the last one drawn over a point wins); anywhere none is drawn is deep rough.
+GKD_BANK_SURFACE_TYPES = ("tee", "fairway", "green", "bunker", "semi_rough", "rough", "deep_rough",
+                          "trees", "path", "outside")
+GKD_BANK_SURFACE_M = (0.25, 0.5, 0.75, 1.0, 1.5)
 GKD_BANK_START_M = 2.0
 GKD_BANK_RAY_SPACING_M = 0.5
 GKD_BANK_STEP_M = 0.25
@@ -6419,11 +6436,12 @@ class _GkdGround:
             raise SystemExit(f"error: {dem_path.name} covers {tuple(round(v) for v in b)}, "
                              f"which does not hold the square {list(extent)}")
         self._dem = band.filled
+        self._transform = band.transform
         self._inv = ~band.transform
         self._res = abs(band.transform.a)
         self._min_m = float(min_m)
         self._rows, self._cols = self._dem.shape
-        self._slope: "np.ndarray | None" = None
+        self._gradient: "tuple[np.ndarray, np.ndarray] | None" = None
 
     def _bilinear(self, grid: np.ndarray, xs, ys) -> np.ndarray:
         """`grid` (on the DEM's pixels) sampled bilinearly at EPSG:3006 points."""
@@ -6443,15 +6461,47 @@ class _GkdGround:
         """Unity y (metres above the terrain's zero) at an EPSG:3006 point."""
         return float(self._bilinear(self._dem, [x], [y])[0]) - self._min_m
 
-    def slope_deg(self, xs, ys) -> np.ndarray:
-        """Ground slope in degrees at EPSG:3006 points, off the DEM smoothed
-        by GKD_SLOPE_SIGMA_M (computed once, on first use)."""
-        if self._slope is None:
+    def rise_pct(self, xs, ys, dx, dy) -> np.ndarray:
+        """How steeply the ground rises, in percent, at EPSG:3006 points
+        heading along the unit vector (dx, dy) — negative where it falls —
+        off the DEM smoothed by GKD_SLOPE_SIGMA_M (gradient computed once)."""
+        if self._gradient is None:
             from scipy.ndimage import gaussian_filter
             smooth = gaussian_filter(self._dem, GKD_SLOPE_SIGMA_M / self._res)
-            gy, gx = np.gradient(smooth, self._res)
-            self._slope = np.degrees(np.arctan(np.hypot(gx, gy))).astype("float32")
-        return self._bilinear(self._slope, xs, ys)
+            # Signed pixel sizes: rows usually run north to south.
+            north, east = np.gradient(smooth, self._transform.e, self._transform.a)
+            self._gradient = (east.astype("float32"), north.astype("float32"))
+        east, north = self._gradient
+        return (self._bilinear(east, xs, ys) * dx + self._bilinear(north, xs, ys) * dy) * 100.0
+
+
+class _GkdSurfaces:
+    """Which ground next to the water is deep rough: the course's drawn
+    surfaces (GKD_BANK_SURFACE_TYPES) in paint order, the last one drawn
+    over a point deciding, and deep rough wherever none is drawn."""
+
+    def __init__(self, rows: list) -> None:
+        import shapely
+
+        self._shapes = []
+        for row in rows:
+            shape = _row_shape(row, ZONE_FLATTEN_M)
+            if shape is None or shape.is_empty:
+                continue
+            shapely.prepare(shape)
+            self._shapes.append((shape, shape.bounds, row["type"] in GKD_BANK_DEEP_TYPES))
+
+    def deep(self, xs: np.ndarray, ys: np.ndarray) -> np.ndarray:
+        """True where each EPSG:3006 point lies in deep rough."""
+        import shapely
+
+        deep = np.ones(xs.shape, dtype=bool)
+        for shape, (bx0, by0, bx1, by1), is_deep in self._shapes:
+            near = np.flatnonzero((xs >= bx0) & (xs <= bx1) & (ys >= by0) & (ys <= by1))
+            if near.size:
+                inside = near[shapely.contains_xy(shape, xs[near], ys[near])]
+                deep[inside] = is_deep
+        return deep
 
 
 def _gkd_tee_type(name: str | None, color: str | None, overrides: dict[str, str]) -> str | None:
@@ -6711,14 +6761,15 @@ def _load_gkd_ratings(db_path: Path, course_id: str, tee_map: dict[str, str]) ->
 
 
 def _load_gkd_outlines(db_path: Path, course_ident: str) -> list[sqlite3.Row]:
-    """The course's hazard and OOB features (id, type, geometry_json, hole
-    number), in the app's own order."""
+    """The course's hazard and OOB features (id, type, geometry_json,
+    attributes_json, hole number), in the app's own order."""
     conn = _open_course_db(db_path)
     course = _resolve_course(conn, course_ident)
     types = (*GKD_HAZARD_TYPES, GKD_OOB_TYPE)
     playable = " AND h.drawing_group_name IS NULL" if _has_column(conn, "holes", "drawing_group_name") else ""
+    attributes = "f.attributes_json" if _has_column(conn, "course_features", "attributes_json") else "NULL"
     rows = conn.execute(
-        f"""SELECT f.id, f.type, f.geometry_json, h.number AS hole_number
+        f"""SELECT f.id, f.type, f.geometry_json, {attributes} AS attributes_json, h.number AS hole_number
             FROM course_features f LEFT JOIN holes h ON h.id = f.hole_id
             WHERE f.course_id = ? AND f.type IN ({','.join('?' * len(types))}){playable}
             ORDER BY h.number, f.sort_order, f.id""",
@@ -6737,14 +6788,33 @@ def _gkd_filled(geom) -> list:
     return [Polygon(p.exterior) for p in _each_polygon(geom) if not p.is_empty]
 
 
+def _gkd_bank_slopes(pts: np.ndarray, normals: np.ndarray, surfaces: "_GkdSurfaces | None",
+                     deep_pct: float, pct: float) -> np.ndarray:
+    """The bank slope (percent) at each shore point: `deep_pct` where most of
+    the ground GKD_BANK_SURFACE_M out along the normal is deep rough, else
+    `pct`. Without the course's surfaces everything is deep rough."""
+    if surfaces is None:
+        return np.full(len(pts), deep_pct)
+    out = np.asarray(GKD_BANK_SURFACE_M)
+    xs = pts[:, 0, None] + normals[:, 0, None] * out
+    ys = pts[:, 1, None] + normals[:, 1, None] * out
+    deep = surfaces.deep(xs.ravel(), ys.ravel()).reshape(xs.shape).mean(axis=1) >= 0.5
+    return np.where(deep, deep_pct, pct)
+
+
 def _gkd_bank_offsets(pts: np.ndarray, normals: np.ndarray, ground: _GkdGround,
-                      margin_m: float, bank_max_m: float, bank_slope_deg: float) -> np.ndarray:
+                      margin_m: float, bank_max_m: float, slopes_pct: np.ndarray) -> np.ndarray:
     """How far out from each shore point the hazard line goes: where the bank
-    ends along the outward normal, or `margin_m` where there is no bank."""
+    ends along the outward normal, or `margin_m` where there is no bank. A
+    bank is ground rising away from the water more steeply than that point's
+    `slopes_pct`; it ends at the first ground rising no more than that."""
     steps = np.arange(0.0, bank_max_m + 1e-9, GKD_BANK_STEP_M)
     xs = pts[:, 0, None] + normals[:, 0, None] * steps
     ys = pts[:, 1, None] + normals[:, 1, None] * steps
-    steep = ground.slope_deg(xs.ravel(), ys.ravel()).reshape(xs.shape) >= bank_slope_deg
+    dx = np.broadcast_to(normals[:, 0, None], xs.shape)
+    dy = np.broadcast_to(normals[:, 1, None], xs.shape)
+    rise = ground.rise_pct(xs.ravel(), ys.ravel(), dx.ravel(), dy.ravel()).reshape(xs.shape)
+    steep = rise > slopes_pct[:, None]
     offsets = np.full(len(pts), margin_m)
     for i, row in enumerate(steep):
         first = int(np.argmax(row))
@@ -6768,10 +6838,11 @@ def _gkd_smooth_offsets(offsets: np.ndarray) -> np.ndarray:
     return offsets
 
 
-def _gkd_water_outline(water, ground: _GkdGround, margin_m: float, bank_max_m: float,
-                       bank_slope_deg: float):
+def _gkd_water_outline(water, ground: _GkdGround, surfaces: "_GkdSurfaces | None", margin_m: float,
+                       bank_max_m: float, deep_pct: float, pct: float):
     """The area a water hazard line encloses: the water, `margin_m` round it
-    everywhere, and out to where the bank ends where it has one. Built as a
+    everywhere, and out to where the bank ends where it has one (its slope
+    `deep_pct` in deep rough, `pct` elsewhere). Built as a
     variable-width buffer — a disc of the local offset on every shore sample,
     consecutive discs joined by their convex hull — so a concave shore or a
     narrow channel can't fold the line back over the water."""
@@ -6787,7 +6858,8 @@ def _gkd_water_outline(water, ground: _GkdGround, margin_m: float, bank_max_m: f
         tangents = np.roll(pts, -1, axis=0) - np.roll(pts, 1, axis=0)
         tangents /= np.maximum(np.hypot(tangents[:, 0], tangents[:, 1]), 1e-9)[:, None]
         normals = np.column_stack([tangents[:, 1], -tangents[:, 0]])
-        offsets = _gkd_bank_offsets(pts, normals, ground, margin_m, bank_max_m, bank_slope_deg)
+        slopes = _gkd_bank_slopes(pts, normals, surfaces, deep_pct, pct)
+        offsets = _gkd_bank_offsets(pts, normals, ground, margin_m, bank_max_m, slopes)
         discs = [Point(p).buffer(r, quad_segs=4) for p, r in zip(pts, offsets)]
         for i in range(n):
             a, b = discs[i], discs[(i + 1) % n]
@@ -6839,21 +6911,198 @@ def _gkd_ring(outline, must_hold, square, tolerance_m: float, spacing_m: float |
     return rings
 
 
-def _gkd_hazard(coords: list[Pt], ground: _GkdGround, e0: float, n0: float, inner_oob: bool) -> dict:
+def _gkd_hazard(coords: list[Pt], ground: _GkdGround, e0: float, n0: float, inner_oob: bool,
+                no_ail: bool = False) -> dict:
     """One GKD hazard: a closed outline on the terrain plus the flags GSPro
-    plays it by. `noAIL` is set on every water hazard in GreenKeeper's own
-    files and cleared on inner-OOB rings, so it is mirrored rather than
-    guessed at; drop zones and island greens stay GreenKeeper's to place."""
+    plays it by. `noAIL` ("no as it lies": a ball inside the line must be
+    dropped) is off unless the line asks for it: GreenKeeper sets it on
+    every water hazard, but the line is staked out to the top of the bank,
+    and a ball on the dry bank should be playable. A ball in the water is
+    water either way (its GSPwater collider). Drop zones and island greens
+    stay GreenKeeper's to place."""
     return {
         "pointCount": len(coords),
         "coords": [_gkd_pos(ground, e0, n0, x, y) for x, y in coords],
         "DZpos": {"x": 0.0, "y": 0.0, "z": 0.0},
         "freeDrop": False,
         "innerOOB": inner_oob,
-        "noAIL": not inner_oob,
+        "noAIL": bool(no_ail) and not inner_oob,
         "hasDZ": False,
         "islandGreen": False,
     }
+
+
+def _gkd_no_ail(row) -> bool:
+    """Whether a penalty or water feature asks for "no as it lies"
+    (`noAsItLies: true` in its attributes, set in Furniture mode)."""
+    raw = row["attributes_json"] if "attributes_json" in row.keys() else None
+    if not raw:
+        return False
+    try:
+        attributes = json.loads(raw)
+    except ValueError:
+        return False
+    return isinstance(attributes, dict) and attributes.get("noAsItLies") is True
+
+
+class _GkdLines:
+    """A course's hazard lines over one terrain square (`_gkd_hazard_lines`):
+    one dict per GKD hazard — `kind` water / penalty / inner_oob, `points`
+    (a closed ring in EPSG:3006 metres, first point not repeated),
+    `noAsItLies`, and `waterIds` (an automatic line) or `featureId` (+ `type`
+    for a penalty area) — plus the course boundary and what was left out."""
+
+    def __init__(self) -> None:
+        self.lines: list[dict] = []
+        self.boundary: "list[Pt] | None" = None
+        self.held = None
+        self.dropped = self.covered = self.beyond = self.cut = self.slivers = 0
+
+
+def _gkd_hazard_lines(db_path: Path, course_ident: str, ground: _GkdGround, square, file_boundary,
+                      simplify_m: float, water_margin_m: float, bank_max_m: float, bank_deep_pct: float,
+                      bank_pct: float, node_spacing_m: float) -> _GkdLines:
+    """Every hazard line of the course on the terrain `square`: the drawn
+    penalty areas as drawn, a line staked round the water they don't hold,
+    and the inner OOB rings, all inside the course boundary — the largest
+    drawn `oob` ring, else `file_boundary` (the one already in the .GKD)."""
+    from shapely.geometry import Polygon
+    from shapely.ops import unary_union
+
+    found = _GkdLines()
+    oob_rings: list[tuple[list[Pt], str]] = []
+    waters: list[tuple[str, object, bool]] = []
+    penalties: list[tuple[sqlite3.Row, object]] = []
+    for row in _load_gkd_outlines(db_path, course_ident):
+        geom = _zone_geometry_m(json.loads(row["geometry_json"]))
+        if geom is None or geom.is_empty or not geom.intersects(square):
+            found.dropped += 1
+        elif row["type"] in GKD_WATER_TYPES:
+            waters.append((row["id"], geom, _gkd_no_ail(row)))
+        elif row["type"] in GKD_PENALTY_TYPES:
+            penalties.append((row, unary_union(_gkd_filled(geom))))
+        else:
+            oob_rings += [(r, row["id"]) for r in _gkd_ring(unary_union(_gkd_filled(geom)), geom, square,
+                                                            simplify_m, None)]
+    inner_oob: list[tuple[list[Pt], str]] = []
+    if oob_rings:
+        # The course boundary is the ring that holds the golf course; any
+        # other `oob` shape is an internal out-of-bounds, which GSPro plays
+        # as a hazard with the innerOOB flag.
+        oob_rings.sort(key=lambda r: Polygon(r[0]).area, reverse=True)
+        found.boundary, inner_oob = oob_rings[0][0], oob_rings[1:]
+
+    # Every hazard line lies strictly inside the course boundary: GSPro
+    # forbids one on or beyond it, and GreenKeeper misdraws it. The boundary
+    # is the drawn ring, else the one already in the file; a hazard is cut
+    # GKD_OOB_INSET_M inside it, and one entirely beyond it is left out
+    # (out of bounds is out of bounds, water or not).
+    held = found.held = Polygon(found.boundary) if found.boundary else file_boundary
+    clip = square if held is None else square.intersection(held.buffer(-GKD_OOB_INSET_M))
+
+    def stake(outline, must_hold, tolerance_m: float, spacing_m: "float | None", line: dict) -> None:
+        on_terrain = outline.intersection(square)
+        if held is not None:
+            if not on_terrain.intersects(clip):
+                found.beyond += 1
+                return
+            if not clip.contains(on_terrain):
+                found.cut += 1
+        # A hazard that only just reaches over the boundary (or the terrain
+        # edge) leaves a strip along it after the cut; no player can be in
+        # one, and GreenKeeper draws it as a doubled line.
+        parts = _gkd_filled(outline.intersection(clip))
+        kept = [p for p in parts if not p.buffer(-GKD_MIN_HAZARD_WIDTH_M / 2).is_empty]
+        found.slivers += len(parts) - len(kept)
+        for part in kept:
+            found.lines.extend({**line, "points": r}
+                               for r in _gkd_ring(part, must_hold, clip, tolerance_m, spacing_m))
+
+    for row, area in penalties:
+        # Drawn where the line is: in as drawn, never inside it.
+        stake(area, area, GKD_HAZARD_TOLERANCE_M, node_spacing_m,
+              {"kind": "penalty", "featureId": row["id"], "type": row["type"], "noAsItLies": _gkd_no_ail(row)})
+    if penalties:
+        # A water body the drawn penalty areas already hold is theirs: no
+        # second, automatic line round it, however tight the drawn one runs
+        # to the shore. Decided per body before the merge below, so a creek
+        # running out of a penalty-held pond is staked on its own and does
+        # not drag the pond back in.
+        drawn = unary_union([area for _, area in penalties]).buffer(GKD_PENALTY_HOLDS_WATER_M)
+        kept = [w for w in waters if not drawn.contains(w[1])]
+        found.covered += len(waters) - len(kept)
+        waters = kept
+    if waters:
+        # Water bodies whose lines would meet (a creek running into a pond,
+        # a pond drawn in pieces) are staked as one hazard, not overlapping ones.
+        surfaces = _GkdSurfaces([r for r in _load_course_features(db_path, course_ident, "app")[1]
+                                 if r["type"] in GKD_BANK_SURFACE_TYPES])
+        wet = unary_union([geom.buffer(water_margin_m) for _, geom, _ in waters])
+        staked = unary_union([_gkd_water_outline(geom, ground, surfaces, water_margin_m, bank_max_m,
+                                                 bank_deep_pct, bank_pct)
+                              for _, geom, _ in waters])
+        half = GKD_HAZARD_MERGE_M / 2
+        staked = staked.union(staked.buffer(half).buffer(-half))
+        for part in _gkd_filled(staked):
+            held_water = [(fid, no_ail) for fid, geom, no_ail in waters if part.intersects(geom)]
+            stake(part, wet, GKD_HAZARD_TOLERANCE_M, node_spacing_m,
+                  {"kind": "water", "waterIds": [fid for fid, _ in held_water],
+                   "noAsItLies": any(no_ail for _, no_ail in held_water)})
+    for ring, fid in inner_oob:
+        area = Polygon(ring)
+        stake(area, area, simplify_m, None, {"kind": "inner_oob", "featureId": fid, "noAsItLies": False})
+    return found
+
+
+def _check_gkd_line_args(simplify_m: float, water_margin_m: float, bank_max_m: float, bank_deep_pct: float,
+                         bank_pct: float, node_spacing_m: float) -> None:
+    if simplify_m < 0:
+        raise SystemExit("error: --simplify must be >= 0")
+    if water_margin_m < 0 or bank_max_m < water_margin_m:
+        raise SystemExit("error: --water-margin must be >= 0 and --bank-max at least --water-margin")
+    if bank_deep_pct <= 0 or bank_pct <= 0:
+        raise SystemExit("error: --bank-slope-deep and --bank-slope must be > 0 (percent)")
+    if node_spacing_m <= 0:
+        raise SystemExit("error: --node-spacing must be > 0")
+
+
+def _add_gkd_line_args(p) -> None:
+    """The options `gkd` and `gkd-lines` stake the hazard lines by."""
+    p.add_argument("--simplify", type=float, default=DEFAULT_GKD_SIMPLIFY_M,
+                   help=f"how far in metres the OOB rings may be straightened, outwards only (default {DEFAULT_GKD_SIMPLIFY_M:g})")
+    p.add_argument("--water-margin", dest="water_margin", type=float, default=DEFAULT_GKD_WATER_MARGIN_M,
+                   help=f"least distance in metres between the water and its hazard line, nodes and the lines "
+                        f"between them (default {DEFAULT_GKD_WATER_MARGIN_M:g})")
+    p.add_argument("--bank-max", dest="bank_max", type=float, default=DEFAULT_GKD_BANK_MAX_M,
+                   help=f"furthest in metres the line goes out to follow a bank (default {DEFAULT_GKD_BANK_MAX_M:g})")
+    p.add_argument("--bank-slope-deep", dest="bank_deep_pct", type=float, default=DEFAULT_GKD_BANK_DEEP_PCT,
+                   help=f"ground rising away from the water more steeply than this many percent is its bank, "
+                        f"in deep rough or where no surface is drawn (default {DEFAULT_GKD_BANK_DEEP_PCT:g})")
+    p.add_argument("--bank-slope", dest="bank_pct", type=float, default=DEFAULT_GKD_BANK_PCT,
+                   help=f"the same next to any other surface (default {DEFAULT_GKD_BANK_PCT:g})")
+    p.add_argument("--node-spacing", dest="node_spacing", type=float, default=DEFAULT_GKD_NODE_SPACING_M,
+                   help=f"most metres between two hazard nodes (default {DEFAULT_GKD_NODE_SPACING_M:g})")
+
+
+def _gkd_line_kwargs(args) -> dict:
+    return dict(simplify_m=args.simplify, water_margin_m=args.water_margin, bank_max_m=args.bank_max,
+                bank_deep_pct=args.bank_deep_pct, bank_pct=args.bank_pct, node_spacing_m=args.node_spacing)
+
+
+def _print_gkd_line_notes(found: _GkdLines) -> None:
+    """What `_gkd_hazard_lines` left out or cut, for the command's report."""
+    if found.dropped:
+        print(f"  warning: {found.dropped} hazard/OOB shape(s) fall outside the square; skipped")
+    if found.covered:
+        print(f"  {found.covered} water hazard(s) left out: a drawn penalty area already holds them")
+    if found.slivers:
+        print(f"  {found.slivers} sliver(s) under {GKD_MIN_HAZARD_WIDTH_M:g} m wide left by the cut dropped")
+    if found.held is None:
+        print("  warning: no OOB boundary, drawn or in the file; hazards are not held inside one (GSPro needs them to be)")
+    elif found.beyond or found.cut:
+        print(f"  {found.beyond} hazard(s) beyond the OOB boundary left out, {found.cut} cut "
+              f"{GKD_OOB_INSET_M:g} m inside it "
+              f"({'the drawn `oob` ring' if found.boundary else 'the boundary already in the file'})")
 
 
 def _gkd_file_boundary(doc: dict, e0: float, n0: float):
@@ -6907,7 +7156,7 @@ def cmd_gkd(bbox, db_path: Path, course_ident: str, sidecar_path: Path, out: Pat
             extent: Extent | None = None, simplify_m: float = DEFAULT_GKD_SIMPLIFY_M,
             tee_map: dict[str, str] | None = None, altitude: float | None = None,
             water_margin_m: float = DEFAULT_GKD_WATER_MARGIN_M, bank_max_m: float = DEFAULT_GKD_BANK_MAX_M,
-            bank_slope_deg: float = DEFAULT_GKD_BANK_SLOPE_DEG,
+            bank_deep_pct: float = DEFAULT_GKD_BANK_DEEP_PCT, bank_pct: float = DEFAULT_GKD_BANK_PCT,
             node_spacing_m: float = DEFAULT_GKD_NODE_SPACING_M) -> None:
     """Write the GreenKeeper `.GKD` for a course over one terrain square.
 
@@ -6917,7 +7166,10 @@ def cmd_gkd(bbox, db_path: Path, course_ident: str, sidecar_path: Path, out: Pat
     is an inner-OOB hazard). Water is staked outside the water — at least
     `water_margin_m`, out to where its bank ends up to `bank_max_m` — and a
     drawn penalty area as drawn; neither line ever cuts inside what it must
-    hold. Positions are Unity world metres on that terrain, the heights read
+    hold (`_gkd_hazard_lines`). A hazard is played "no as it lies" only where
+    its line says so (`noAsItLies` in the attributes of the penalty feature,
+    or of any water an automatic line holds).
+    Positions are Unity world metres on that terrain, the heights read
     off the export DEM so they sit on the ground the heightmap built.
     The course details — name, location, designer, description, keywords —
     are the app's when it keeps any for the course
@@ -6925,15 +7177,9 @@ def cmd_gkd(bbox, db_path: Path, course_ident: str, sidecar_path: Path, out: Pat
     course tee set's when it has one (`course_tee_sets`); the rest of the
     header (the range, wind, stimp), and those too when the app keeps none,
     are carried over from the file being replaced (or --template) untouched."""
-    from shapely.geometry import Polygon, box
-    from shapely.ops import unary_union
+    from shapely.geometry import box
 
-    if simplify_m < 0:
-        raise SystemExit("error: --simplify must be >= 0")
-    if water_margin_m < 0 or bank_max_m < water_margin_m:
-        raise SystemExit("error: --water-margin must be >= 0 and --bank-max at least --water-margin")
-    if node_spacing_m <= 0:
-        raise SystemExit("error: --node-spacing must be > 0")
+    _check_gkd_line_args(simplify_m, water_margin_m, bank_max_m, bank_deep_pct, bank_pct, node_spacing_m)
     extent = extent or _square_3006_extent(bbox)
     e0, n0, e1, n1 = extent
     sidecar = _read_plot_sidecar(sidecar_path, extent)
@@ -7048,83 +7294,13 @@ def cmd_gkd(bbox, db_path: Path, course_ident: str, sidecar_path: Path, out: Pat
             "Pins": [{"Day": day, "Position": position} for day, position in zip(GKD_PIN_DAYS, pins)],
         })
 
-    square = box(e0, n0, e1, n1)
-    hazards: list[dict] = []
-    oob_rings: list[list[Pt]] = []
-    boundary: "list[Pt] | None" = None
-    dropped = covered = beyond = cut = slivers = 0
-    waters, penalties = [], []
-    for row in _load_gkd_outlines(db_path, course_ident):
-        geom = _zone_geometry_m(json.loads(row["geometry_json"]))
-        if geom is None or geom.is_empty or not geom.intersects(square):
-            dropped += 1
-        elif row["type"] in GKD_WATER_TYPES:
-            waters.append(geom)
-        elif row["type"] in GKD_PENALTY_TYPES:
-            penalties.append(unary_union(_gkd_filled(geom)))
-        else:
-            oob_rings += _gkd_ring(unary_union(_gkd_filled(geom)), geom, square, simplify_m, None)
-    inner_oob: list[list[Pt]] = []
-    if oob_rings:
-        # The course boundary is the ring that holds the golf course; any
-        # other `oob` shape is an internal out-of-bounds, which GSPro plays
-        # as a hazard with the innerOOB flag.
-        oob_rings.sort(key=lambda r: Polygon(r).area, reverse=True)
-        boundary, inner_oob = oob_rings[0], oob_rings[1:]
-
-    # Every hazard line lies strictly inside the course boundary: GSPro
-    # forbids one on or beyond it, and GreenKeeper misdraws it. The boundary
-    # is the drawn ring, else the one already in the file; a hazard is cut
-    # GKD_OOB_INSET_M inside it, and one entirely beyond it is left out
-    # (out of bounds is out of bounds, water or not).
-    held = Polygon(boundary) if boundary else _gkd_file_boundary(doc, e0, n0)
-    clip = square if held is None else square.intersection(held.buffer(-GKD_OOB_INSET_M))
-
-    def stake(outline, must_hold, tolerance_m: float, spacing_m: "float | None", inner: bool) -> None:
-        nonlocal beyond, cut, slivers
-        on_terrain = outline.intersection(square)
-        if held is not None:
-            if not on_terrain.intersects(clip):
-                beyond += 1
-                return
-            if not clip.contains(on_terrain):
-                cut += 1
-        # A hazard that only just reaches over the boundary (or the terrain
-        # edge) leaves a strip along it after the cut; no player can be in
-        # one, and GreenKeeper draws it as a doubled line.
-        parts = _gkd_filled(outline.intersection(clip))
-        kept = [p for p in parts if not p.buffer(-GKD_MIN_HAZARD_WIDTH_M / 2).is_empty]
-        slivers += len(parts) - len(kept)
-        for part in kept:
-            hazards.extend(_gkd_hazard(r, ground, e0, n0, inner_oob=inner)
-                           for r in _gkd_ring(part, must_hold, clip, tolerance_m, spacing_m))
-
-    for area in penalties:
-        # Drawn where the line is: in as drawn, never inside it.
-        stake(area, area, GKD_HAZARD_TOLERANCE_M, node_spacing_m, inner=False)
-    if penalties:
-        # A water body the drawn penalty areas already hold is theirs: no
-        # second, automatic line round it, however tight the drawn one runs
-        # to the shore. Decided per body before the merge below, so a creek
-        # running out of a penalty-held pond is staked on its own and does
-        # not drag the pond back in.
-        drawn = unary_union(penalties).buffer(GKD_PENALTY_HOLDS_WATER_M)
-        kept = [w for w in waters if not drawn.contains(w)]
-        covered += len(waters) - len(kept)
-        waters = kept
-    if waters:
-        # Water bodies whose lines would meet (a creek running into a pond,
-        # a pond drawn in pieces) are staked as one hazard, not overlapping ones.
-        wet = unary_union([w.buffer(water_margin_m) for w in waters])
-        staked = unary_union([_gkd_water_outline(w, ground, water_margin_m, bank_max_m, bank_slope_deg)
-                              for w in waters])
-        half = GKD_HAZARD_MERGE_M / 2
-        staked = staked.union(staked.buffer(half).buffer(-half))
-        for part in _gkd_filled(staked):
-            stake(part, wet, GKD_HAZARD_TOLERANCE_M, node_spacing_m, inner=False)
-    for ring in inner_oob:
-        area = Polygon(ring)
-        stake(area, area, simplify_m, None, inner=True)
+    found = _gkd_hazard_lines(db_path, course_ident, ground, box(e0, n0, e1, n1),
+                              _gkd_file_boundary(doc, e0, n0), simplify_m, water_margin_m, bank_max_m,
+                              bank_deep_pct, bank_pct, node_spacing_m)
+    boundary, held = found.boundary, found.held
+    hazards = [_gkd_hazard(line["points"], ground, e0, n0, inner_oob=line["kind"] == "inner_oob",
+                           no_ail=line["noAsItLies"])
+               for line in found.lines]
 
     doc["Holes"] = gkd_holes
     doc["Hazards"] = hazards
@@ -7170,8 +7346,9 @@ def cmd_gkd(bbox, db_path: Path, course_ident: str, sidecar_path: Path, out: Pat
           + (f"boundary {len(boundary)} points" if boundary
              else f"no `oob` ring drawn, kept the file's boundary ({doc['pOOB']['pointCount']} points)"
              if (doc.get("pOOB") or {}).get("pointCount") else "NO course boundary (draw an `oob` ring)"))
-    print(f"  water staked {water_margin_m:g} m out, to the end of banks steeper than {bank_slope_deg:g} deg "
-          f"up to {bank_max_m:g} m; hazard nodes every {node_spacing_m:g} m or closer, OOB within {simplify_m:g} m")
+    print(f"  water staked {water_margin_m:g} m out, to the top of banks steeper than {bank_deep_pct:g} % "
+          f"(deep rough) / {bank_pct:g} % up to {bank_max_m:g} m; {sum(1 for h in hazards if h['noAIL'])} "
+          f"no-as-it-lies; hazard nodes every {node_spacing_m:g} m or closer, OOB within {simplify_m:g} m")
     print(f"  heights from {dem_path.name}, terrain zero {float(sidecar['minM']):.2f} m, "
           f"altitude {doc.get('altitudeV2', 0):.1f} m")
     if meta is not None:
@@ -7195,19 +7372,56 @@ def cmd_gkd(bbox, db_path: Path, course_ident: str, sidecar_path: Path, out: Pat
         print(f"  warning: {extra_aims} aim point(s) past the second dropped (a GKD holds two)")
     if skipped_holes:
         print(f"  warning: hole(s) {', '.join(str(n) for n in skipped_holes)} are past 18 and were left out")
-    if dropped:
-        print(f"  warning: {dropped} hazard/OOB shape(s) fall outside the square; skipped")
-    if covered:
-        print(f"  {covered} water hazard(s) left out: a drawn penalty area already holds them")
-    if slivers:
-        print(f"  {slivers} sliver(s) under {GKD_MIN_HAZARD_WIDTH_M:g} m wide left by the cut dropped")
-    if held is None:
-        print("  warning: no OOB boundary, drawn or in the file; hazards are not held inside one (GSPro needs them to be)")
-    elif beyond or cut:
-        print(f"  {beyond} hazard(s) beyond the OOB boundary left out, {cut} cut {GKD_OOB_INSET_M:g} m inside it "
-              f"({'the drawn `oob` ring' if boundary else 'the boundary already in the file'})")
+    _print_gkd_line_notes(found)
     for what in outside:
         print(f"  warning: {what} falls outside the square; left unplaced")
+
+
+def cmd_gkd_lines(bbox, db_path: Path, course_ident: str, sidecar_path: Path, out: Path,
+                  dem_path: Path | None = None, gkd_path: Path | None = None, extent: Extent | None = None,
+                  simplify_m: float = DEFAULT_GKD_SIMPLIFY_M, water_margin_m: float = DEFAULT_GKD_WATER_MARGIN_M,
+                  bank_max_m: float = DEFAULT_GKD_BANK_MAX_M, bank_deep_pct: float = DEFAULT_GKD_BANK_DEEP_PCT,
+                  bank_pct: float = DEFAULT_GKD_BANK_PCT, node_spacing_m: float = DEFAULT_GKD_NODE_SPACING_M) -> None:
+    """Write the hazard lines `gkd` puts in the .GKD as JSON, in EPSG:3006
+    metres: what Furniture mode shows and turns into drawn penalty lines.
+    The same lines from the same code (`_gkd_hazard_lines`); without a drawn
+    `oob` ring they are held inside the boundary of `gkd_path` when given."""
+    from shapely.geometry import box
+
+    _check_gkd_line_args(simplify_m, water_margin_m, bank_max_m, bank_deep_pct, bank_pct, node_spacing_m)
+    extent = extent or _square_3006_extent(bbox)
+    e0, n0, e1, n1 = extent
+    sidecar = _read_plot_sidecar(sidecar_path, extent)
+    dem_path = dem_path or sidecar_path.with_suffix("")
+    if not dem_path.is_file():
+        raise SystemExit(f"error: no such DEM GeoTIFF: {dem_path} (pass --dem)")
+    ground = _GkdGround(dem_path, extent, float(sidecar["minM"]))
+    conn = _open_course_db(db_path)
+    course = _resolve_course(conn, course_ident)
+    conn.close()
+    file_boundary = None
+    if gkd_path is not None and gkd_path.is_file():
+        file_boundary = _gkd_file_boundary(json.loads(gkd_path.read_text(encoding="utf-8")), e0, n0)
+
+    found = _gkd_hazard_lines(db_path, course_ident, ground, box(e0, n0, e1, n1), file_boundary, simplify_m,
+                              water_margin_m, bank_max_m, bank_deep_pct, bank_pct, node_spacing_m)
+    lines = [{**line, "points": [[round(x, 3), round(y, 3)] for x, y in line["points"]]} for line in found.lines]
+    payload = {
+        "courseId": course["id"],
+        "crs": "EPSG:3006",
+        "rule": {"marginM": water_margin_m, "bankMaxM": bank_max_m, "bankStartM": GKD_BANK_START_M,
+                 "deepPct": bank_deep_pct, "roughPct": bank_pct},
+        "lines": lines,
+    }
+    out.parent.mkdir(parents=True, exist_ok=True)
+    out.write_text(json.dumps(payload, separators=(",", ":")), encoding="utf-8")
+
+    kinds = {k: sum(1 for line in lines if line["kind"] == k) for k in ("water", "penalty", "inner_oob")}
+    print(f"Wrote {out}")
+    print(f"  {len(lines)} hazard lines on {course['name']}: {kinds['water']} round water, "
+          f"{kinds['penalty']} drawn penalty, {kinds['inner_oob']} inner OOB; "
+          f"{sum(1 for line in lines if line['noAsItLies'])} no-as-it-lies")
+    _print_gkd_line_notes(found)
 
 
 # --- Command: holes -----------------------------------------------------------
@@ -8599,23 +8813,24 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--template", help="GKD whose course metadata to keep (default: the --out file itself)")
     p.add_argument("--no-merge", dest="merge", action="store_false",
                    help="start from a bare GreenKeeper v4.1 file instead of the one at --out")
-    p.add_argument("--simplify", type=float, default=DEFAULT_GKD_SIMPLIFY_M,
-                   help=f"how far in metres the OOB rings may be straightened, outwards only (default {DEFAULT_GKD_SIMPLIFY_M:g})")
-    p.add_argument("--water-margin", dest="water_margin", type=float, default=DEFAULT_GKD_WATER_MARGIN_M,
-                   help=f"least distance in metres between the water and its hazard line, nodes and the lines "
-                        f"between them (default {DEFAULT_GKD_WATER_MARGIN_M:g})")
-    p.add_argument("--bank-max", dest="bank_max", type=float, default=DEFAULT_GKD_BANK_MAX_M,
-                   help=f"furthest in metres the line goes out to follow a bank (default {DEFAULT_GKD_BANK_MAX_M:g})")
-    p.add_argument("--bank-slope", dest="bank_slope", type=float, default=DEFAULT_GKD_BANK_SLOPE_DEG,
-                   help=f"ground steeper than this many degrees next to the water is its bank "
-                        f"(default {DEFAULT_GKD_BANK_SLOPE_DEG:g})")
-    p.add_argument("--node-spacing", dest="node_spacing", type=float, default=DEFAULT_GKD_NODE_SPACING_M,
-                   help=f"most metres between two hazard nodes (default {DEFAULT_GKD_NODE_SPACING_M:g})")
+    _add_gkd_line_args(p)
     p.add_argument("--tee-map", dest="tee_map", action="append", metavar="NAME=TEESET",
                    help=f"map one of the course's tee names or colours onto a GKD tee set "
                         f"(repeatable; sets: {', '.join(GKD_TEE_TYPES)})")
     p.add_argument("--altitude", type=float,
                    help="course altitude in metres above sea level (default: the ground under the green centres)")
+
+    p = sub.add_parser("gkd-lines", help="write the hazard lines `gkd` would put in the .GKD (round water, drawn "
+                       "penalty areas, inner OOB) as JSON in EPSG:3006, for Furniture mode")
+    _add_area(p)
+    p.add_argument("--db", default=str(DEFAULT_DB), help=f"app database (default {DEFAULT_DB})")
+    p.add_argument("--course", required=True, help="course id, or a name substring (e.g. Vreta)")
+    p.add_argument("--sidecar", required=True,
+                   help="the INNER terrain's heightmap sidecar (<dem>.tif.json) — the square and the terrain's zero")
+    p.add_argument("--out", required=True, help="output JSON path")
+    p.add_argument("--dem", help="DEM GeoTIFF to read heights from (default: the sidecar's own .tif)")
+    p.add_argument("--gkd", help="the course's .GKD: its boundary holds the lines when no `oob` ring is drawn")
+    _add_gkd_line_args(p)
 
     p = sub.add_parser("shaping-global", help="write a course's generated Blender shaping layers: 00-global "
                        "(tees flattened, paths cut + smoothed, lots and building pads levelled) and 10-features "
@@ -8790,9 +9005,11 @@ def main(argv: list[str] | None = None) -> int:
         cmd_gkd(bbox, Path(args.db), args.course, Path(args.sidecar), Path(args.out),
                 Path(args.dem) if args.dem else None,
                 Path(args.template) if args.template else None, args.merge, extent=extent,
-                simplify_m=args.simplify, tee_map=_parse_tee_map(args.tee_map), altitude=args.altitude,
-                water_margin_m=args.water_margin, bank_max_m=args.bank_max, bank_slope_deg=args.bank_slope,
-                node_spacing_m=args.node_spacing)
+                tee_map=_parse_tee_map(args.tee_map), altitude=args.altitude, **_gkd_line_kwargs(args))
+    elif args.command == "gkd-lines":
+        cmd_gkd_lines(bbox, Path(args.db), args.course, Path(args.sidecar), Path(args.out),
+                      Path(args.dem) if args.dem else None, Path(args.gkd) if args.gkd else None,
+                      extent=extent, **_gkd_line_kwargs(args))
     elif args.command == "svg":
         if args.check_only and not args.checks_out:
             parser.error("svg --check-only needs --checks-out")
