@@ -10,6 +10,7 @@ import { ZoneTypesPanelComponent } from '../zones/zone-types-panel.component';
 import { VegetationRulesPanelComponent } from '../zones/vegetation-rules-panel.component';
 import { PhotoStemsPanelComponent } from '../zones/photo-stems-panel.component';
 import { HoleAssignmentPanelComponent } from '../draw/hole-assignment-panel.component';
+import { BunkerProposalsPanelComponent } from '../draw/bunker-proposals-panel.component';
 import { TeeLengthsPanelComponent } from '../furniture/tee-lengths-panel.component';
 import { SvgCheckPanelComponent } from '../draw/svg-check-panel.component';
 import { HoleInfoPanelComponent } from './hole-info-panel.component';
@@ -134,6 +135,8 @@ export class CourseDetailComponent extends Component {
         this.spawn(PhotoStemsPanelComponent, this.ref(frag, 'editorCanvas'));
         // Assign to holes (shapes in Others onto their holes), opened from the Draw stack panel.
         this.spawn(HoleAssignmentPanelComponent, this.ref(frag, 'editorCanvas'));
+        // Find bunkers (the surface model's bunkers not drawn yet, outlines on the map), opened from the Draw stack panel.
+        this.spawn(BunkerProposalsPanelComponent, this.ref(frag, 'editorCanvas'));
         // Scorecard and Place tees (the club's lengths, the tees from them), opened from Furniture › Tee sets.
         this.spawn(TeeLengthsPanelComponent, this.ref(frag, 'editorCanvas'));
         // Check shapes (the SVG export's checks, findings on the map), from the stack panel or an export error.

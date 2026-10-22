@@ -267,6 +267,10 @@ export class FeaturesService {
     private zoneTypes = di.get(ZoneTypesService);
 
     private loadedCourseId: string | null = null;
+    /** The course whose features the store holds (create/createMany write to it), null before a load. */
+    get loadedCourse(): string | null {
+        return this.loadedCourseId;
+    }
     // Memo fields of the identity-stable Computeds below. Declared first:
     // a Computed runs in its field initializer.
     private lastFeatureIds: string[] | null = null;
@@ -1801,6 +1805,8 @@ type CreateInput = {
     layer?: FeatureLayer;
     geometry: FeatureGeometry;
     attributes?: FeatureAttributesPatch | null;
+    /** Provenance of a shape made from a proposal (course_features.source), e.g. 'surface-model'. */
+    source?: string;
 };
 
 /** Stable empty list (no kerb fillets). */

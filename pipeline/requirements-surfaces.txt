@@ -1,0 +1,17 @@
+# Optional extras for the course-surface model (`golfpipe surfaces-predict`,
+# `propose-bunkers`): a segmentation-models-pytorch UNet. Not part of
+# requirements.txt — torch is heavy. torch itself comes from the CUDA build
+# already in the venv; install these WITHOUT their dependencies so pip does not
+# pull a second (CPU) torch:
+#
+#   bun run py -m pip install --no-deps -r requirements-surfaces.txt
+#
+# The model file (data/models/surfaces-*.pt + its .json card) is made by
+# tools/surface-lab/pilot/train.py --holdout none; it is not committed.
+torchvision==0.29.1
+timm==1.0.30
+segmentation-models-pytorch==0.5.0
+huggingface_hub<1.0
+safetensors
+pyyaml
+tqdm

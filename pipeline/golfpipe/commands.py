@@ -29,6 +29,7 @@ from golfpipe import detect_trees as detect_trees_mod
 from golfpipe import detect_water as detect_water_mod
 from golfpipe import grid_dem as grid_dem_mod
 from golfpipe import hydro as hydro_mod
+from golfpipe import nir as nir_mod
 from golfpipe import nvdb as nvdb_mod
 from golfpipe import osm as osm_mod
 from golfpipe import patches as patches_mod
@@ -128,8 +129,9 @@ def cmd_fetch_ortho(bbox: tuple[float, float, float, float], workdir: Path, out:
     Without `collection`, uses the newest vintage covering the bbox. Pass
     `collection` (e.g. from list-ortho-vintages) to fetch a specific vintage.
 
-    Ortho items are RGBI (4-band); only the first 3 bands (RGB) are kept
-    since tile-ortho produces opaque WebP (no alpha/NIR).
+    Ortho items are RGBI (4-band); `out` keeps the first 3 bands (RGB)
+    since tile-ortho produces opaque WebP (no alpha/NIR), and the fourth
+    goes beside it as `<out stem>.nir.tif` (golfpipe.nir).
 
     `items` pins STAC item ids (from a sources.json recipe) instead of
     searching; the fetch is recorded in the recipe next to `out`.
@@ -166,10 +168,14 @@ def cmd_fetch_ortho(bbox: tuple[float, float, float, float], workdir: Path, out:
 def _drop_to_rgb_bands(path: Path) -> None:
     """If the raster has more than 3 bands (e.g. RGBI), rewrites it keeping
     only the first 3 (RGB) so downstream WebP tiling doesn't need to guess.
+    The fourth (NIR: what tells sand from grass, bunker_proposals.py) goes
+    beside it first as `<stem>.nir.tif`.
     """
     with rasterio.open(path) as src:
         if src.count <= 3:
             return
+    nir_mod.split_nir(path)
+    with rasterio.open(path) as src:
         data = src.read([1, 2, 3])
         profile = src.profile.copy()
         profile.update(count=3)

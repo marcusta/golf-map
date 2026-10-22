@@ -36,6 +36,7 @@
         "ramroads": "bun scripts/ram-roads.ts",
         "trees:photo": "bun scripts/trees-photo.ts",
         "holes:assign": "bun scripts/holes-assign.ts",
+        "bunkers": "bun scripts/bunkers.ts",
         "scorecard": "bun scripts/scorecard.ts",
         "tees:place": "bun scripts/tees-place.ts",
         "gkd:lines": "bun scripts/gkd-lines.ts",

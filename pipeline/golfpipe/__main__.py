@@ -2,7 +2,10 @@
 
 Commands:
   fetch-dem         STAC search + download DTM COG(s), mosaic/crop -> dem.tif
-  fetch-ortho       STAC search + download best-coverage ortho COG(s) -> ortho.tif
+  fetch-ortho       STAC search + download best-coverage ortho COG(s) -> ortho.tif (+ ortho.nir.tif, the NIR band)
+  fetch-nir         The NIR band for an ortho fetched before it was kept -> <ortho stem>.nir.tif
+  surfaces-predict  The course-surface model over a site -> class + confidence GeoTIFF (0.32 m)
+  propose-bunkers   Bunkers found by the surface model, edges from the NIR band -> EPSG:3006 GeoJSON proposals
   fetch-lidar       STAC search + download classified lidar COPC point cloud(s)
   fetch-water       Marktäcke vector water -> typed GeoJSON (water / water_creek)
   fetch-hydro       Hydrografi Direkt water + creeks -> typed GeoJSON (water / water_creek)
@@ -47,7 +50,12 @@ import os
 import sys
 from pathlib import Path
 
+import json
+
 from golfpipe import buildings
+from golfpipe import bunker_proposals
+from golfpipe import nir as nir_mod
+from golfpipe import surface_model
 from golfpipe.sculpt import SculptError
 from golfpipe import clean_ortho
 from golfpipe import cleaned
@@ -128,6 +136,34 @@ def build_parser() -> argparse.ArgumentParser:
 
     p = sub.add_parser("list-ortho-vintages", help="List ortho vintages covering an area (JSON, newest first)")
     _add_area_args(p)
+
+    p = sub.add_parser("fetch-nir", help="The ortho's near-infrared band beside it (<ortho stem>.nir.tif) from its vintage's RGBI items")
+    p.add_argument("--ortho", required=True, help="the site's RGB ortho GeoTIFF the NIR must line up with")
+    p.add_argument("--collection", required=True, help="its vintage, e.g. orto-l2-2025")
+    p.add_argument("--tile-dir", action="append", default=[],
+                   help="folder of RGBI items already on disk (<item id>.tif, also one level down); repeatable")
+    p.add_argument("--workdir", help="where missing items are downloaded and deleted afterwards (default: beside the ortho)")
+    p.add_argument("--no-download", action="store_true", help="only items already on disk")
+
+    p = sub.add_parser("surfaces-predict", help="The course-surface model over a site -> class + confidence GeoTIFF (0.32 m)")
+    p.add_argument("--ortho", required=True, help="RGB ortho GeoTIFF (EPSG:3006)")
+    p.add_argument("--nir", help="its NIR band (default <ortho stem>.nir.tif, see fetch-nir)")
+    p.add_argument("--dem", required=True, help="the raw lidar DEM GeoTIFF")
+    p.add_argument("--model", required=True, help="the model .pt (its card .json beside it)")
+    p.add_argument("--out", required=True, help="output GeoTIFF (+ .json of what it was made from)")
+    p.add_argument("--device", help="cpu | cuda | mps (default: the best there is)")
+    p.add_argument("--force", action="store_true", help="run even when the output is current")
+
+    p = sub.add_parser("propose-bunkers", help="Bunker proposals: the surface model finds them, the NIR band draws the edges (EPSG:3006 GeoJSON)")
+    p.add_argument("--ortho", required=True, help="RGB ortho GeoTIFF (EPSG:3006) the course is drawn on")
+    p.add_argument("--nir", help="its NIR band (default <ortho stem>.nir.tif)")
+    p.add_argument("--dem", required=True, help="the raw lidar DEM GeoTIFF")
+    p.add_argument("--model", required=True, help="the surface model .pt")
+    p.add_argument("--surfaces", required=True, help="the model's GeoTIFF for this site: reused when current, else made")
+    p.add_argument("--known", help="drawn bunkers, EPSG:3006 GeoJSON: proposals on them are left out")
+    p.add_argument("--min-area", type=float, default=2.0, help="smallest bunker, m² (default 2)")
+    p.add_argument("--out", required=True, help="output EPSG:3006 GeoJSON, most confident first")
+    p.add_argument("--device", help="cpu | cuda | mps for the model (default: the best there is)")
 
     p = sub.add_parser("fetch-lidar", help="STAC search + download classified lidar COPC point cloud(s)")
     _add_area_args(p)
@@ -809,6 +845,38 @@ def main(argv: list[str] | None = None) -> int:
             bbox = _resolve_area(args)
             commands.cmd_fetch_ortho(bbox, Path(args.workdir), Path(args.out), buffer_m=args.buffer, collection=args.collection, items=sources.parse_items_arg(args.items))
 
+        elif args.command == "fetch-nir":
+            ortho = Path(args.ortho)
+            report = nir_mod.fetch_nir(ortho, args.collection, [Path(d) for d in args.tile_dir],
+                                       Path(args.workdir) if args.workdir else ortho.parent / "nir-work",
+                                       allow_download=not args.no_download)
+            print(f"wrote {report['out']} from {len(report['items'])} item(s), {report['downloaded']} downloaded; "
+                  f"RGB check {report['rgbCheck']:.2f}")
+            print(json.dumps(report))
+
+        elif args.command in ("surfaces-predict", "propose-bunkers"):
+            ortho = Path(args.ortho)
+            nir = Path(args.nir) if args.nir else nir_mod.nir_path(ortho)
+            if not nir.exists():
+                raise surface_model.SurfaceModelError(f"{nir} is missing: run fetch-nir for {ortho.name} first")
+            dem, model = Path(args.dem), Path(args.model)
+            surfaces = Path(args.out if args.command == "surfaces-predict" else args.surfaces)
+            if getattr(args, "force", False) or not surface_model.is_current(surfaces, ortho, nir, dem, model):
+                rep = surface_model.predict(ortho, nir, dem, model, surfaces, device=args.device)
+                print(f"surfaces: {rep['width']}x{rep['height']} px on {rep['device']} in {rep['seconds']} s")
+            else:
+                print(f"surfaces: {surfaces.name} is current")
+            if args.command == "propose-bunkers":
+                fc = bunker_proposals.propose(surfaces, ortho, nir,
+                                              bunker_proposals.load_known(Path(args.known) if args.known else None),
+                                              min_area_m2=args.min_area)
+                Path(args.out).parent.mkdir(parents=True, exist_ok=True)
+                Path(args.out).write_text(json.dumps(fc))
+                sk = fc["skipped"]
+                print(f"{len(fc['features'])} bunker proposal(s); left out: {sk['drawn']} already drawn, "
+                      f"{sk['notCourse']} not course, {sk['small']} small")
+                print(json.dumps({"proposals": len(fc["features"]), "skipped": sk}))
+
         elif args.command == "list-ortho-vintages":
             bbox = _resolve_area(args)
             commands.cmd_list_ortho_vintages(bbox)
@@ -1226,6 +1294,9 @@ def main(argv: list[str] | None = None) -> int:
         print(f"error: {exc}", file=sys.stderr)
         return 1
     except hole_cleanup.HoleCleanupError as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return 1
+    except (surface_model.SurfaceModelError, bunker_proposals.BunkerProposalsError) as exc:
         print(f"error: {exc}", file=sys.stderr)
         return 1
     except patches.PatchError as exc:

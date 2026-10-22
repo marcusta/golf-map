@@ -35,6 +35,7 @@ import { TerrainGeneratorsService } from './terrain-generators.service';
 import { PondEdgeService } from './pond-edge.service';
 import { WaterStepsService } from './water-steps.service';
 import { PhotoStemsService } from './photo-stems.service';
+import { BunkerProposalsService } from './bunker-proposals.service';
 import { HoleAssignmentService } from './hole-assignment.service';
 import { TeePlacementService } from './tee-placement.service';
 import { ScorecardService } from './scorecard.service';
@@ -136,6 +137,8 @@ export function createServices(db: Kysely<Database>, config: ServicesConfig = {}
     const waterStepsService = new WaterStepsService({ db, courses: coursesService, courseFeatures: courseFeaturesService, dataDir });
     // Young trees the lidar missed, from their shadows in the summer photo (the Vegetation mode's "Find trees in photo", `bun run trees:photo`).
     const photoStemsService = new PhotoStemsService({ courses: coursesService, courseFeatures: courseFeaturesService, assets: assetsService, dataDir });
+    // Bunkers the surface model finds on the photo, edges from its NIR band (the Draw mode's "Find bunkers", `bun run bunkers`).
+    const bunkerProposalsService = new BunkerProposalsService({ db, courses: coursesService, assets: assetsService, holeAssignment: holeAssignmentService, dataDir });
     const publishService = new PublishService({ db, dataDir });
     // Serve-mode ingest endpoint (§8); the service is cheap to construct in
     // either mode — only its API is mounted (serve only) by main.ts.
@@ -177,6 +180,7 @@ export function createServices(db: Kysely<Database>, config: ServicesConfig = {}
         pondEdgeService,
         waterStepsService,
         photoStemsService,
+        bunkerProposalsService,
         holeAssignmentService,
         teePlacementService,
         scorecardService,

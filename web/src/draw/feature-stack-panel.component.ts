@@ -5,6 +5,7 @@ import { CourseDetailService } from '../course-detail/course-detail.service';
 import { FeaturesService, fillScopeOptions, scopeFromKey, scopeKey, scopeOf } from './features.service';
 import { DrawToolService } from './draw-tool.service';
 import { HoleAssignmentService } from './hole-assignment.service';
+import { BunkerProposalsService } from './bunker-proposals.service';
 import { SvgCheckService } from './svg-check.service';
 import { FEATURE_STYLES } from './feature-palette';
 import { icon } from '../ui/icons';
@@ -107,6 +108,8 @@ const tpl = template(`
             <button bind="editLayerOrder" type="button" class="op-btn" data-testid="layer-order-edit">Edit layer order…</button>
             <button bind="assignHoles" type="button" class="op-btn" data-testid="hole-assign-open"
                 title="Put the shapes in Others on their holes, from each hole's tees, aim points and green">Assign to holes…</button>
+            <button bind="findBunkers" type="button" class="op-btn" data-testid="bunker-find-open"
+                title="Bunkers the surface model finds on the photo that are not drawn yet, to add on their holes">Find bunkers…</button>
             <button bind="checkShapes" type="button" class="op-btn" data-testid="svg-check-open"
                 title="Run the GSPro SVG export's checks on the shapes and list what would stop it">Check shapes…</button>
             <button bind="roughsToggle" type="button" class="layer-toggle" data-testid="stack-roughs-toggle"></button>
@@ -360,6 +363,7 @@ export class FeatureStackPanelComponent extends Component {
     private features = this.inject(FeaturesService);
     private courseDetail = this.inject(CourseDetailService);
     private holeAssign = this.inject(HoleAssignmentService);
+    private bunkerFind = this.inject(BunkerProposalsService);
     private svgCheck = this.inject(SvgCheckService);
     private zoneTypes = this.inject(ZoneTypesService);
     private map = this.inject(MapService);
@@ -415,6 +419,13 @@ export class FeatureStackPanelComponent extends Component {
                 onclick: () => {
                     const course = this.courseDetail.course.peek();
                     if (course) this.holeAssign.open(course.id);
+                },
+            },
+            findBunkers: {
+                style: () => this.tool.scope.get() === 'surfaces' ? '' : 'display:none',
+                onclick: () => {
+                    const course = this.courseDetail.course.peek();
+                    if (course) this.bunkerFind.open(course.id);
                 },
             },
             checkShapes: {

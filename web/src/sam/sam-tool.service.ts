@@ -20,11 +20,13 @@ import type { ToolContext } from '../editor/tool';
 import type { MapPointerEvent } from '../map/map.service';
 import type { CourseFeature } from '../../../shared/api/course-features.gen';
 import { tileUrlTemplate } from '../map/map-style';
-import { rdpSimplifyClosed, MIN_RING_POINTS } from '../draw/draw-state';
 import { DrawToolService } from '../draw/draw-tool.service';
 import { snapshotOf, type EditHistory } from '../draw/history';
 import type { FeatureType } from '../draw/feature-palette';
-import { fitClosedBspline } from '../geo/spline-fit';
+import {
+    OUTLINE_CURVATURE_SHARE, OUTLINE_FIT_TOLERANCE_M, OUTLINE_MAX_CONTROLS, OUTLINE_METERS_PER_CONTROL,
+    OUTLINE_SIMPLIFY_EPS_M, outlineMinControls, outlineToBspline, ringPerimeter,
+} from '../geo/outline-fit';
 import { SamClient, largestPolygon, SAM_CROP_SIZE } from './sam-client';
 import { planCrop, cropPolygonToSweref, type CropPlan } from './sam-crop';
 import { composeCropCanvas, canvasToBase64, cropTiles, type CropTile } from '../imaging/crop-source';
@@ -33,40 +35,14 @@ import { SidecarHealth, type SidecarStatus } from '../imaging/sidecar-health';
 /** Interaction-claim id for the SAM tool (also its registry id). */
 export const SAM_TOOL_ID = 'sam';
 
-/** RDP epsilon (meters) applied to the mask contour before fitting. Ortho
- * pixels are ~0.15 m, so 0.2 strips the staircase and keeps real detail. */
-export const SAM_SIMPLIFY_EPS_M = 0.2;
-/** B-spline fit tolerance (meters) — contours are raster-quantized, so
- * tighter than the freehand trace's 0.75 (the source is steadier). */
-export const SAM_FIT_TOLERANCE_M = 0.3;
-/** Vertex-density floor: the fit starts at one control per this many
- * metres of contour perimeter (a 34 m bunker outline → 14 controls, where
- * the tolerance alone settled at 8) and still climbs until it meets
- * SAM_FIT_TOLERANCE_M. */
-export const SAM_METERS_PER_CONTROL = 2.5;
-/** Adaptive-ladder cap. The 512 px crop bounds shapes to ~75 m across, so
- * 48 covers a full-crop green at ~3 m spacing. */
-export const SAM_MAX_CONTROLS = 48;
-/** Share of the controls placed by turning angle rather than arc length
- * (geo/spline-fit FitOptions.curvatureShare): straight stretches thin out,
- * bends pick up the difference. */
-export const SAM_CURVATURE_SHARE = 0.5;
-
-/** Closed-ring perimeter (meters) of a point list. */
-export function ringPerimeter(pts: Array<{ x: number; y: number }>): number {
-    let sum = 0;
-    for (let i = 0; i < pts.length; i++) {
-        const a = pts[i];
-        const b = pts[(i + 1) % pts.length];
-        sum += Math.hypot(b.x - a.x, b.y - a.y);
-    }
-    return sum;
-}
-
-/** SAM's perimeter-scaled ladder floor, clamped to the cap. */
-export function samMinControls(perimeterM: number): number {
-    return Math.min(SAM_MAX_CONTROLS, Math.round(perimeterM / SAM_METERS_PER_CONTROL));
-}
+// The mask contour's fit is the shared outline fit (geo/outline-fit.ts); its values under the SAM names.
+export const SAM_SIMPLIFY_EPS_M = OUTLINE_SIMPLIFY_EPS_M;
+export const SAM_FIT_TOLERANCE_M = OUTLINE_FIT_TOLERANCE_M;
+export const SAM_METERS_PER_CONTROL = OUTLINE_METERS_PER_CONTROL;
+export const SAM_MAX_CONTROLS = OUTLINE_MAX_CONTROLS;
+export const SAM_CURVATURE_SHARE = OUTLINE_CURVATURE_SHARE;
+export { ringPerimeter };
+export const samMinControls = outlineMinControls;
 
 /** Sidecar reachability, as shown by the panel. */
 export type SamHealth = SidecarStatus;
@@ -215,24 +191,15 @@ export class SamToolService {
             this.notice.set('SAM found no shape there — try clicking nearer its center.');
             return undefined;
         }
-        const ring = cropPolygonToSweref(plan, mask);
-        const simplified = rdpSimplifyClosed(ring, SAM_SIMPLIFY_EPS_M);
-        const { controls } = fitClosedBspline(simplified, SAM_FIT_TOLERANCE_M, SAM_MAX_CONTROLS, {
-            minControls: samMinControls(ringPerimeter(simplified)),
-            curvatureShare: SAM_CURVATURE_SHARE,
-        });
-        if (controls.length < MIN_RING_POINTS) {
+        const geometry = outlineToBspline(cropPolygonToSweref(plan, mask));
+        if (!geometry) {
             this.notice.set('The segmented shape was too small to keep.');
             return undefined;
         }
         const created = await ctx.features.create({
             type: this.armedType.peek(),
             holeId: this.resolveHoleId(),
-            geometry: {
-                crs: 'EPSG:3006',
-                curveType: 'bspline',
-                rings: [{ points: controls.map(p => ({ x: p.x, y: p.y })) }],
-            },
+            geometry,
         });
         if (!created) {
             this.notice.set('Saving the feature failed — see the draw panel.');

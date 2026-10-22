@@ -215,6 +215,26 @@ export class HoleAssignmentService {
         }
     }
 
+    /**
+     * The hole each new shape (not drawn yet: a proposal) would go on, by the same rules as `propose`: one of this
+     * course's holes, or null (another course's hole, ambiguous, none). Rings in EPSG:3006 metres.
+     */
+    async holesFor(courseId: string, shapes: { id: string; type: string; rings: Xy[][] }[]): Promise<Map<string, { holeId: string; holeNumber: number } | null>> {
+        const { db } = this.deps;
+        const course = await db.selectFrom('courses').select(['id', 'site_id']).where('id', '=', courseId).executeTakeFirst();
+        if (!course) throw new NotFoundError(`Course ${courseId} not found`);
+        const courseIds = course.site_id
+            ? (await db.selectFrom('courses').select('id').where('site_id', '=', course.site_id).execute()).map((c) => c.id)
+            : [courseId];
+        const holes = await this.holes(courseIds);
+        const byId = new Map(holes.map((h) => [h.id, h]));
+        return new Map(shapes.map((s) => {
+            const m = matchHole(s, holes);
+            const hole = m.kind === 'hole' ? byId.get(m.holeId)! : null;
+            return [s.id, hole && hole.courseId === courseId ? { holeId: hole.id, holeNumber: hole.number } : null];
+        }));
+    }
+
     private async holes(courseIds: string[]): Promise<AssignHole[]> {
         const { db } = this.deps;
         if (!courseIds.length) return [];
